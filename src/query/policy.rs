@@ -836,13 +836,67 @@ pub fn effective_policy_check<'a>(
     schema.policies.get(op).and_then(|p| p.check.as_ref())
 }
 
+/// The read-side SELECT-policy decision (#950 T5c) — the SINGLE source of
+/// truth every SELECT read face consults, so the SQL and in-memory evaluators
+/// cannot diverge on the clause-less case (CLAUDE.md invariant 12).
+///
+/// A select policy ROW existing is supposed to MEAN reads are restricted; a
+/// row that carries no `using` broke that (`effective_policy_using` → `None` →
+/// no filter, yet `collection_has_policy` → true). The write face now refuses
+/// to CREATE that shape, but a legacy row already stored must still be honored
+/// — fail CLOSED, deny every row, rather than silently reverting to "no
+/// filter". This is SELECT-verb only: an update/delete policy's `using` is a
+/// row-targeting pre-flight and a missing one legitimately means "no USING
+/// filter" there (CHECK gates the write instead).
+pub enum SelectReadAccess<'a> {
+    /// No select policy row (or a service caller) → reads unrestricted by policy.
+    Unrestricted,
+    /// A `using` clause filters reads.
+    Filtered(&'a FilterAst),
+    /// A select policy row that carries no `using` → deny every row.
+    DenyAll,
+}
+
+/// Classify the effective SELECT read access for `ctx` on `schema`. Service
+/// bypasses all explicit policies. Both the SQL side ([`policy_using_sql`]) and
+/// the in-memory side (anon SSE per-event filtering, `tenant::sse`) route
+/// through this, so the clause-less decision is made in exactly one place.
+pub fn select_read_access<'a>(ctx: &AuthCtx, schema: &'a CollectionSchema) -> SelectReadAccess<'a> {
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return SelectReadAccess::Unrestricted;
+    }
+    match schema.policies.select.as_ref() {
+        None => SelectReadAccess::Unrestricted,
+        Some(p) => match p.using.as_ref() {
+            Some(ast) => SelectReadAccess::Filtered(ast),
+            None => SelectReadAccess::DenyAll,
+        },
+    }
+}
+
 /// Convenience: resolve + compile the USING for `op` into `(sql_fragment, binds)`.
 /// `None` when there is no explicit policy (or the caller is service).
+///
+/// For [`DmlVerb::Select`] this fails CLOSED on a clause-less policy row: it
+/// routes through [`select_read_access`] and compiles `DenyAll` to an
+/// always-false clause the read builder AND-composes, hiding every row (#950
+/// T5c). The always-false fragment carries no binds, so it is safe to splice.
 pub fn policy_using_sql(
     ctx: &AuthCtx,
     schema: &CollectionSchema,
     op: DmlVerb,
 ) -> Result<Option<(String, Vec<Value>)>, PolicyError> {
+    if op == DmlVerb::Select {
+        return match select_read_access(ctx, schema) {
+            SelectReadAccess::Unrestricted => Ok(None),
+            SelectReadAccess::Filtered(ast) => Ok(Some(compile_policy_using(
+                schema,
+                ast,
+                &PolicyCtx::from_auth(ctx),
+            )?)),
+            SelectReadAccess::DenyAll => Ok(Some(("0=1".to_string(), Vec::new()))),
+        };
+    }
     match effective_policy_using(ctx, schema, op) {
         None => Ok(None),
         Some(ast) => Ok(Some(compile_policy_using(

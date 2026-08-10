@@ -856,17 +856,14 @@ pub async fn admin_update_policies(
             // a stored select policy, widening every anon-callable query-kind
             // RPC over the collection from "the policy's rows" to the whole
             // table. Same guard the data-plane PUT and DELETE carry, keyed on
-            // the effective USING clause. (Surfaces 400 like this face's
-            // sibling RPC_ANON_OWNER_SCOPED rejection, not the data plane's
-            // 409 — one face, one shape.)
-            if let Err(e) = crate::rpc::prepare::guard_select_policy_clear(
-                c,
-                &coll_c,
-                body.select
-                    .as_ref()
-                    .and_then(|p| p.using.as_ref())
-                    .is_some(),
-            ) {
+            // select-policy-ROW presence (T5c): the validate-ahead block above
+            // already refused a clause-less `select`, and a legacy clause-less
+            // STORED row (deny-all) is still caught on clear. (Surfaces 400
+            // like this face's sibling RPC_ANON_OWNER_SCOPED rejection, not the
+            // data plane's 409 — one face, one shape.)
+            if let Err(e) =
+                crate::rpc::prepare::guard_select_policy_clear(c, &coll_c, body.select.is_some())
+            {
                 return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
             }
             for (op, p) in [

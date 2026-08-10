@@ -376,3 +376,65 @@ async fn anon_sse_denied_on_owner_scoped_collection_scope_all() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error_code"], "ANON_FORBIDDEN_OWNER_SCOPED");
 }
+
+/// #950 T5c — a LEGACY clause-less `{select:{}}` policy DENIES ALL anon SSE
+/// events, in lockstep with the SQL read faces. `set_select_using` writes it
+/// straight past `validate_policy` (the shape the write face now refuses to
+/// create but a legacy row already holds); the shared `select_read_access`
+/// classifier makes the SSE filter drop every event. Before the fix
+/// `select_using` was `policies.select.and_then(using)` = None → PASS ALL, so
+/// anon received every event.
+#[tokio::test]
+async fn anon_sse_denies_all_events_under_a_clause_less_select_policy() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("policy-sse-clauseless").await;
+    seed_realtime_posts(&dir, &tid).await;
+    // A clause-less select policy row — deny-all.
+    set_select_using(&dir, &tid, "posts", json!({})).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/t/{tid}/records/posts/subscribe"))
+                .header(header::AUTHORIZATION, format!("Bearer {anon}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body();
+    let bytes_stream = tokio_stream::wrappers::ReceiverStream::new({
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let mut body_stream = body.into_data_stream();
+        tokio::spawn(async move {
+            while let Some(chunk) = body_stream.next().await {
+                if let Ok(b) = chunk {
+                    let _ = tx.send(Ok::<_, std::io::Error>(b)).await;
+                }
+            }
+        });
+        rx
+    });
+    let mut events = bytes_stream.eventsource();
+
+    let app2 = app.clone();
+    let tid2 = tid.clone();
+    let svc2 = svc.clone();
+    let inserter = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Even a "published" row must be dropped — deny-all is not a filter.
+        insert_post(&app2, &tid2, &svc2, "published").await;
+        insert_post(&app2, &tid2, &svc2, "draft").await;
+    });
+
+    // NOTHING must arrive.
+    let next = tokio::time::timeout(Duration::from_millis(500), events.next()).await;
+    inserter.await.unwrap();
+    assert!(
+        next.is_err(),
+        "a clause-less (deny-all) select policy must drop every anon SSE event, got {next:?}"
+    );
+}

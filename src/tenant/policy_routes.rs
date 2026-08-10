@@ -111,16 +111,13 @@ pub async fn put_policies(
             // `DELETE /policies/select` is guarded against, reached by another
             // verb: guarding only the DELETE would leave this door open, and
             // `validate_policy` cannot see it (it is never called on an absent
-            // policy). Keyed on the effective USING clause, so a clause-less
-            // legacy row is judged by what it actually filters.
-            if let Err(e) = crate::rpc::prepare::guard_select_policy_clear(
-                c,
-                &coll_c,
-                body.select
-                    .as_ref()
-                    .and_then(|p| p.using.as_ref())
-                    .is_some(),
-            ) {
+            // policy). Keyed on select-policy-ROW presence (T5c): the
+            // validate-ahead block above already refused a clause-less
+            // `select`, so a present `body.select` filters, and a legacy
+            // clause-less STORED row (deny-all) is still caught on clear.
+            if let Err(e) =
+                crate::rpc::prepare::guard_select_policy_clear(c, &coll_c, body.select.is_some())
+            {
                 return Ok(Err(("RPC_QUERY_GRANT_ACTIVE", e.to_string())));
             }
             for (op, p) in [

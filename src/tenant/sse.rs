@@ -13,6 +13,18 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+/// Per-event anon SELECT filter (#950 T5c), owned so it can move into the
+/// stream closure. Derived from the shared `select_read_access` classifier so
+/// the clause-less deny stays in lockstep with the SQL read faces.
+enum AnonSelectFilter {
+    /// No select policy (or service): every event passes.
+    PassAll,
+    /// A clause-less (deny-all) select policy: every event is dropped.
+    DenyAll,
+    /// A `using` clause: filter each event's record in memory.
+    Using(crate::query::vector_filter::FilterAst),
+}
+
 pub async fn subscribe_handler(
     bus: EventBus,
     Extension(t): Extension<TenantRef>,
@@ -98,39 +110,48 @@ pub async fn subscribe_handler(
     // events (id-only, no record) are DROPPED when a policy is active (audit
     // F3) — they can't be policy-evaluated and would leak deletion id/timing
     // for hidden rows; with no policy they pass through as before.
-    let select_using: Option<crate::query::vector_filter::FilterAst> =
-        if matches!(ctx, AuthCtx::Anon) {
-            schema
-                .policies
-                .select
-                .as_ref()
-                .and_then(|p| p.using.clone())
-        } else {
-            None
-        };
+    //
+    // #950 T5c — the three-state comes from the SHARED `select_read_access`
+    // classifier the SQL read faces use, so a clause-less (deny-all) select
+    // policy hides every event here too, in lockstep with `policy_using_sql`.
+    let anon_select = if matches!(ctx, AuthCtx::Anon) {
+        match crate::query::policy::select_read_access(&ctx, &schema) {
+            crate::query::policy::SelectReadAccess::Unrestricted => AnonSelectFilter::PassAll,
+            crate::query::policy::SelectReadAccess::Filtered(ast) => {
+                AnonSelectFilter::Using(ast.clone())
+            }
+            crate::query::policy::SelectReadAccess::DenyAll => AnonSelectFilter::DenyAll,
+        }
+    } else {
+        AnonSelectFilter::PassAll
+    };
     let rx = bus.subscribe(&tenant, &coll);
     let stream = BroadcastStream::new(rx)
         .filter_map(|r| r.ok())
-        .filter(move |ev: &Event| match (&select_using, ev) {
-            (Some(using), Event::Created { record }) | (Some(using), Event::Updated { record }) => {
-                let map = record.as_object().cloned().unwrap_or_default();
-                crate::query::policy::eval_policy(
-                    using,
-                    &map,
-                    &crate::query::policy::PolicyCtx {
-                        auth_id: None,
-                        data: None,
-                    },
-                )
-            }
-            // F3 (audit 2026-06-22) — a Deleted event carries only the id, so
-            // the select policy cannot be evaluated against the (now-gone) row.
-            // When a policy is active for this anon subscriber, drop Deleted
-            // events entirely rather than leak the id/timing of deletions for
-            // policy-hidden rows. `select_using = None` (service, or anon on a
-            // no-policy collection) keeps the prior pass-through behavior.
-            (Some(_), Event::Deleted { .. }) => false,
-            _ => true,
+        .filter(move |ev: &Event| match &anon_select {
+            // No select policy (or service): everything passes, as before.
+            AnonSelectFilter::PassAll => true,
+            // A clause-less (deny-all) select policy hides every row, so drop
+            // every event — including Deleted (F3 covers it a fortiori).
+            AnonSelectFilter::DenyAll => false,
+            AnonSelectFilter::Using(using) => match ev {
+                Event::Created { record } | Event::Updated { record } => {
+                    let map = record.as_object().cloned().unwrap_or_default();
+                    crate::query::policy::eval_policy(
+                        using,
+                        &map,
+                        &crate::query::policy::PolicyCtx {
+                            auth_id: None,
+                            data: None,
+                        },
+                    )
+                }
+                // F3 (audit 2026-06-22) — a Deleted event carries only the id,
+                // so the select policy cannot be evaluated against the
+                // (now-gone) row. Drop it rather than leak deletion id/timing
+                // for policy-hidden rows.
+                Event::Deleted { .. } => false,
+            },
         })
         .map(to_sse_event);
     Sse::new(stream)

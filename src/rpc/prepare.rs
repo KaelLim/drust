@@ -552,36 +552,41 @@ pub fn guard_clear_against_anon_query_rpcs(
 
 /// The select-policy half of the CLEAR guard, transition-gated — the ONE place
 /// the "does this write widen the read filter?" rule lives, so the five policy
-/// faces that can effect a clear cannot drift apart (#950 T5b, B1 DiD + B5).
+/// faces that can effect a clear cannot drift apart (#950 T5b/T5c).
 ///
-/// `new_using_present` is what the caller's write leaves behind: `false` for a
-/// DELETE / `clear_policy`, and for a REPLACE face
-/// `body.select.and_then(|p| p.using).is_some()`.
+/// `new_select_policy_present` is whether the caller's write leaves a select
+/// policy ROW behind: `false` for a DELETE / `clear_policy`, and for a REPLACE
+/// face `body.select.is_some()`.
 ///
-/// The key is the **effective USING clause**, never the presence of a policy
-/// ROW. Those two came apart in the worst possible direction: a select policy
-/// carrying no `using` filters nothing, yet a row-presence key reads it as
-/// "still protected". `validate_policy` now refuses to WRITE that shape (the
-/// root fix), and keying on `using` here means even a legacy row that already
-/// holds it is judged by what actually filters. It also makes the guard fire
-/// only on a real `Some → None` transition, so clearing an absent policy is a
-/// no-op rather than a spurious refusal — one query RPC must never freeze
-/// config it does not depend on.
+/// The key is the **presence of a select policy ROW**, not its `using` clause.
+/// Under the T5c read-deny model a select policy row ALWAYS restricts reads —
+/// a `using` clause filters, and a clause-less row DENIES ALL
+/// (`policy_using_sql` compiles it to `0=1`). So "a select policy row exists
+/// ⟺ reads are restricted", and row-presence is exactly the widening key:
+/// removing ANY select policy row opens reads back up. A using-presence key
+/// (the T5b shape) would MISS the clear of a legacy clause-less row — its
+/// `using` is absent, yet clearing it goes deny-all → open, a real widening.
+///
+/// The covert `{"select":{}}` REPLACE cannot slip through this key: the write
+/// faces `validate_policy` a supplied `select` AHEAD of this guard and reject a
+/// clause-less one (`POLICY_SELECT_REQUIRES_USING`), so by the time the guard
+/// runs `body.select.is_some()` implies it filters. Clearing an absent policy
+/// stays a no-op (nothing to lose), so one query RPC cannot freeze config it
+/// does not depend on.
 pub fn guard_select_policy_clear(
     conn: &Connection,
     collection: &str,
-    new_using_present: bool,
+    new_select_policy_present: bool,
 ) -> Result<(), PrepareError> {
-    if new_using_present {
-        return Ok(()); // a filter remains — nothing widens
+    if new_select_policy_present {
+        return Ok(()); // a select policy remains → reads still restricted
     }
-    let stored_using_present = crate::storage::schema::read_policies(conn, collection)
+    let stored_present = crate::storage::schema::read_policies(conn, collection)
         .map_err(|e| PrepareError::Rejected(format!("policy probe failed: {e}")))?
         .select
-        .and_then(|p| p.using)
         .is_some();
-    if !stored_using_present {
-        return Ok(()); // no filter to lose
+    if !stored_present {
+        return Ok(()); // no select policy to lose
     }
     guard_clear_against_anon_query_rpcs(conn, collection, "the select policy")
 }
@@ -1073,18 +1078,18 @@ mod tests {
             .expect("a clear on a collection no template targets must pass");
     }
 
-    /// (T5b B1 DiD + B5) The select-policy transition rule, keyed on the
-    /// effective USING clause rather than on the presence of a policy ROW.
+    /// (T5c) The select-policy clear rule, keyed on the presence of a select
+    /// policy ROW — not on its `using` clause.
     ///
-    /// The middle case is the whole point and the one a row-presence key gets
-    /// WRONG: a clause-less select policy (the covert-clear shape
-    /// `validate_policy` now refuses to write, still reachable as a legacy
-    /// row) filters NOTHING, so clearing it widens NOTHING and must not be
-    /// refused — while a row-presence key would read it as "protected" and
-    /// block. Getting that backwards is what let the exploit through in the
-    /// first place, so it is pinned here rather than inferred.
+    /// The middle case is the whole point and the one T5c FLIPS: under the
+    /// read-deny model a clause-less select policy DENIES ALL reads
+    /// (`policy_using_sql` → `0=1`), so it genuinely restricts reads and
+    /// clearing it goes deny-all → open — a real widening the guard MUST
+    /// catch. The T5b using-presence key missed exactly this, which is what
+    /// left the legacy residual. Reverting the key to `.select.and_then(using)`
+    /// reds case (b), so the row-presence choice is pinned, not inferred.
     #[test]
-    fn select_policy_clear_is_gated_on_the_effective_using_clause() {
+    fn select_policy_clear_is_gated_on_select_policy_row_presence() {
         use crate::query::policy::Policy;
         use crate::storage::schema::{DmlVerb, write_policy};
         let (_t, conn) = fresh();
@@ -1092,19 +1097,24 @@ mod tests {
         let set_select = |p: Option<&Policy>| write_policy(&conn, "posts", DmlVerb::Select, p);
 
         // (a) No stored select policy → nothing to lose → a clear is fine even
-        //     with the grant live (B5: no spurious refusal).
+        //     with the grant live (no spurious refusal).
         guard_select_policy_clear(&conn, "posts", false)
             .expect("clearing an absent policy widens nothing");
 
-        // (b) A clause-less stored policy → still no read filter → still fine.
-        //     A ROW-presence key would wrongly refuse here.
+        // (b) A LEGACY clause-less stored policy → now DENIES ALL reads, so
+        //     clearing it IS a widening → refused. (T5c reconciliation; a
+        //     using-presence key would wrongly PASS here.)
         set_select(Some(&Policy {
             using: None,
             check: None,
         }))
         .unwrap();
-        guard_select_policy_clear(&conn, "posts", false)
-            .expect("a policy row that filters nothing cannot be widened away");
+        let PrepareError::Rejected(msg) =
+            guard_select_policy_clear(&conn, "posts", false).unwrap_err();
+        assert!(
+            msg.contains(RPC_QUERY_GRANT_ACTIVE),
+            "clearing a deny-all legacy policy must be guarded: {msg}"
+        );
 
         // (c) A real USING → clearing it IS the widening → refused.
         set_select(Some(&Policy {
@@ -1116,9 +1126,10 @@ mod tests {
             guard_select_policy_clear(&conn, "posts", false).unwrap_err();
         assert!(msg.contains(RPC_QUERY_GRANT_ACTIVE), "{msg}");
 
-        // (d) …but replacing it with another USING keeps a filter, so it passes.
+        // (d) …but a REPLACE that leaves a select policy row present keeps
+        //     reads restricted, so it is not a clear.
         guard_select_policy_clear(&conn, "posts", true)
-            .expect("a replacement that still filters is not a clear");
+            .expect("a replacement that leaves a select policy is not a clear");
     }
 
     /// The three shapes that cannot grant anything and so must never block a

@@ -360,3 +360,85 @@ fn fts_operand_is_rejected_in_policies() {
         "save CHECK: {verr}"
     );
 }
+
+/// #950 T5c lockstep — a clause-less SELECT policy (a policy row with no
+/// `using`) must DENY on BOTH evaluators, in lockstep. There is no `ast` to run
+/// through the shared corpus above, so the two sides meet at the shared
+/// `select_read_access` classifier instead: the SQL face compiles `DenyAll` to
+/// an always-false clause that excludes every row, and the in-memory face
+/// (anon SSE) reads the same `DenyAll` and drops every event. This is the
+/// clause-less counterpart of `evaluators_agree_on_corpus`.
+#[test]
+fn clause_less_select_policy_denies_on_both_evaluators() {
+    use drust::auth::middleware::AuthCtx;
+    use drust::query::policy::{SelectReadAccess, policy_using_sql, select_read_access};
+
+    let mut s = schema(&[("status", "TEXT")]);
+    // A stored SELECT policy row that carries no `using` (the legacy shape).
+    s.policies.select = Some(Policy {
+        using: None,
+        check: None,
+    });
+
+    let anon = AuthCtx::Anon;
+    let user = AuthCtx::User {
+        user_id: "u-1".into(),
+        token_hash: "h".into(),
+    };
+    let service = AuthCtx::Service { admin_id: None };
+
+    // ── in-memory side (what anon SSE consumes): DenyAll for non-service.
+    assert!(matches!(
+        select_read_access(&anon, &s),
+        SelectReadAccess::DenyAll
+    ));
+    assert!(matches!(
+        select_read_access(&user, &s),
+        SelectReadAccess::DenyAll
+    ));
+    // Service bypasses every explicit policy.
+    assert!(matches!(
+        select_read_access(&service, &s),
+        SelectReadAccess::Unrestricted
+    ));
+
+    // ── SQL side: DenyAll compiles to an always-false clause that GENUINELY
+    //    excludes a row (not just a `None` no-filter). Populate a table and
+    //    prove the emitted WHERE returns zero.
+    let (frag, binds) = policy_using_sql(&anon, &s, DmlVerb::Select)
+        .unwrap()
+        .expect("a clause-less select policy must emit a deny clause, not None");
+    assert!(binds.is_empty(), "the deny clause carries no binds: {frag}");
+
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT);")
+        .unwrap();
+    conn.execute("INSERT INTO t (status) VALUES ('published')", [])
+        .unwrap();
+    let n: i64 = conn
+        .query_row(&format!("SELECT COUNT(*) FROM t WHERE {frag}"), [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0, "the deny clause must exclude every row: WHERE {frag}");
+
+    // Service → None (bypass), same as the classifier.
+    assert!(
+        policy_using_sql(&service, &s, DmlVerb::Select)
+            .unwrap()
+            .is_none()
+    );
+
+    // The deny is SELECT-verb only: an update/delete policy with no `using`
+    // legitimately means "no USING pre-flight" (CHECK gates the write there).
+    s.policies.update = Some(Policy {
+        using: None,
+        check: None,
+    });
+    assert!(
+        policy_using_sql(&anon, &s, DmlVerb::Update)
+            .unwrap()
+            .is_none(),
+        "a using-less UPDATE policy must NOT deny — its using is a row pre-flight"
+    );
+}

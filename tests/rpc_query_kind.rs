@@ -2014,3 +2014,263 @@ async fn admin_save_still_validates_a_changed_template() {
     let (anon_callable, _) = rpc_row(&pool, "feed").await;
     assert!(!anon_callable, "the flip must not have landed");
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// T5c review round — the LEGACY clause-less select policy residual
+// ══════════════════════════════════════════════════════════════════════
+
+/// Write a clause-less `{select:{}}` policy STRAIGHT to the tenant DB via
+/// `write_policy`, bypassing `validate_policy` — the legacy/hand-edited shape
+/// the T5b write-face reject cannot retroactively remove.
+async fn set_clause_less_select_policy(pool: &SharedTenantPool, coll: &str) {
+    let policy: drust::query::policy::Policy = serde_json::from_value(json!({})).unwrap();
+    assert!(policy.using.is_none(), "fixture must be clause-less");
+    let coll_owned = coll.to_string();
+    pool.with_writer(move |c| {
+        drust::storage::schema::write_policy(
+            c,
+            &coll_owned,
+            drust::storage::schema::DmlVerb::Select,
+            Some(&policy),
+        )
+    })
+    .await
+    .unwrap();
+    pool.schema_cache.invalidate(coll);
+}
+
+/// `POST /t/<id>/collections/<c>/list` as `tok` → the `records` array.
+async fn list_as(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Value> {
+    let (status, v) = rest(
+        app,
+        "POST",
+        tid,
+        &format!("/collections/{coll}/list"),
+        Some(json!({})),
+        tok,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list {coll}: {v}");
+    v["records"].as_array().cloned().unwrap_or_default()
+}
+
+/// THE residual pin. A LEGACY clause-less select policy already stored still
+/// leaked the whole table to anon through a query RPC — `effective_policy_using`
+/// returned None (no filter) on every read face. The read-path deny makes a
+/// select-policy ROW mean "reads restricted" even with no `using`: anon must
+/// now see ZERO rows, not `["public","SECRET"]`.
+#[tokio::test]
+async fn legacy_clause_less_select_policy_denies_anon_query_rpc_reads() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-legacy-deny").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_clause_less_select_policy(&pool, "posts").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "public"}),
+    )
+    .await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "draft", "title": "SECRET"}),
+    )
+    .await;
+
+    // Service still reads both — service bypasses policy.
+    let (_s, v) = call_rpc(&app, &tid, &svc, "feed", json!({})).await;
+    assert_eq!(
+        v["total"], 2,
+        "service bypasses the clause-less policy: {v}"
+    );
+
+    // Anon sees ZERO rows (was ["public","SECRET"] — the residual leak).
+    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    assert!(
+        titles(&v).is_empty(),
+        "a clause-less select policy must deny every row to anon: {v}"
+    );
+    assert_eq!(v["total"], 0, "deny-all total: {v}");
+}
+
+/// The same deny must cover the NON-RPC read faces, or the fix is partial:
+/// `/list` as anon (with `anon_caps[select]` granted) → zero rows too.
+#[tokio::test]
+async fn legacy_clause_less_select_policy_denies_anon_list_reads() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-legacy-list").await;
+    // anon_caps[select] granted — the cap is open, so ONLY the policy deny
+    // keeps anon out. Without the read-path deny anon would see both rows.
+    let pool = seed_posts(&dir, &tid, None, None, r#"["select"]"#, "[]").await;
+    set_clause_less_select_policy(&pool, "posts").await;
+
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "public"}),
+    )
+    .await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "draft", "title": "SECRET"}),
+    )
+    .await;
+
+    assert!(
+        list_as(&app, &tid, &anon, "posts").await.is_empty(),
+        "clause-less select policy must deny /list reads for anon too"
+    );
+    // Service bypasses — sees both.
+    assert_eq!(
+        list_as(&app, &tid, &svc, "posts").await.len(),
+        2,
+        "service bypasses the clause-less policy on /list"
+    );
+}
+
+/// Repairability: a tenant with a legacy clause-less select policy can still
+/// FIX it by PUTting a real `using` (which passes validate) — reads then filter
+/// instead of deny — OR clear it. The clear is guarded only while an anon query
+/// RPC targets the collection (the T5c reconciliation).
+#[tokio::test]
+async fn legacy_clause_less_select_policy_is_repairable() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-legacy-repair").await;
+    let pool = seed_posts(&dir, &tid, None, None, r#"["select"]"#, "[]").await;
+    set_clause_less_select_policy(&pool, "posts").await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "public"}),
+    )
+    .await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "draft", "title": "SECRET"}),
+    )
+    .await;
+
+    // FIX by PUTting a real using — a valid select policy, so it passes.
+    let (status, v) = rest(
+        &app,
+        "PUT",
+        &tid,
+        "/collections/posts/policies",
+        Some(json!({"select": {"using": {"status": "published"}}})),
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "repair via using must pass: {v}");
+    // Now anon reads the published row (filter, not deny).
+    assert_eq!(
+        list_as(&app, &tid, &anon, "posts")
+            .await
+            .iter()
+            .map(|r| r["title"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>(),
+        vec!["public".to_string()],
+        "after repair, the filter applies instead of deny-all"
+    );
+
+    // Reset to clause-less, then CLEAR it — no anon query RPC targets it, so the
+    // clear goes through and anon reads everything (the deny is genuinely gone).
+    set_clause_less_select_policy(&pool, "posts").await;
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/policies/select",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "clearing with no active RPC is fine: {v}"
+    );
+    assert_eq!(
+        list_as(&app, &tid, &anon, "posts").await.len(),
+        2,
+        "after clear, no policy → anon reads all (anon_caps[select] granted)"
+    );
+}
+
+/// The reconciliation: clearing a LEGACY clause-less select policy while an
+/// anon query RPC targets the collection IS a widening (deny-all → open), so
+/// the guard fires — even though the row has no `using`.
+#[tokio::test]
+async fn clearing_a_legacy_clause_less_policy_is_guarded_when_a_query_rpc_targets_it() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-legacy-guard").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_clause_less_select_policy(&pool, "posts").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "{out}");
+
+    // DELETE the (clause-less) select policy → refused: it denies reads, so
+    // dropping it widens the anon RPC to the whole table.
+    let (status, v) = rest(
+        &app,
+        "DELETE",
+        &tid,
+        "/collections/posts/policies/select",
+        None,
+        &svc,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
+    assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
+
+    // MCP clear_policy refuses identically.
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "clear_policy",
+        json!({"collection": "posts", "op": "select"}),
+    )
+    .await;
+    assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
+
+    // Still stored after both refusals.
+    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    assert!(
+        !stored["stored"]["select"].is_null(),
+        "a refused clear must leave the policy row in place: {stored}"
+    );
+}
