@@ -626,6 +626,52 @@ fn json_content(v: Value) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(text)]))
 }
 
+/// Turn a fully-built axum `json_error` response (the shape
+/// `exec_query::run_query_rpc` returns) into an `McpError`, preserving the
+/// `error_code` + `suggested_fix` fields on `data` — the same structured shape
+/// `bail_mcp` produces, so an MCP client sees a uniform error surface across the
+/// sql and query `call_rpc` arms (#950 T6).
+async fn mcp_error_from_response(resp: axum::response::Response) -> McpError {
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let msg = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("rpc query failed")
+        .to_string();
+    let mut data = serde_json::Map::new();
+    if let Some(code) = v.get("error_code") {
+        data.insert("error_code".into(), code.clone());
+    }
+    if let Some(fix) = v.get("suggested_fix") {
+        data.insert("suggested_fix".into(), fix.clone());
+    }
+    let data_val = if data.is_empty() {
+        None
+    } else {
+        Some(Value::Object(data))
+    };
+    McpError::invalid_params(msg, data_val)
+}
+
+/// Fire-and-forget RPC call-counter bump on the writer mutex. MCP is
+/// service-only, so the role is hardcoded `Service`; shared by both the sql and
+/// query arms of `call_rpc` (#950 T6).
+fn spawn_rpc_counter_bump(pool: crate::storage::pool::SharedTenantPool, name: String) {
+    tokio::spawn(async move {
+        let res = pool
+            .with_writer(move |c| {
+                crate::rpc::registry::increment(c, &name, crate::tenant::router::TokenRole::Service)
+            })
+            .await;
+        if let Err(e) = res {
+            tracing::warn!(error = %e, "rpc counter bump failed (mcp call_rpc)");
+        }
+    });
+}
+
 /// v1.26 — Wrap an anyhow error into McpError, attaching error_code +
 /// suggested_fix to the `data` field so LLM tools see structured
 /// remediation hints. Convention: tool functions `anyhow::bail!` with
@@ -1970,10 +2016,15 @@ impl DrustMcpService {
 
     #[tool(
         annotations(read_only_hint = false, open_world_hint = false),
-        description = "Invoke a stored RPC by name with named params. \
-        Returns the same envelope as the query tool: {column_names, rows, \
-        row_count, truncated}. MCP is service-only, so anon_callable is not \
-        consulted on this surface — a service-key holder may call any RPC."
+        description = "Invoke a stored RPC by name with named params. The result \
+        envelope depends on the RPC's stored kind. A kind=\"sql\" RPC returns \
+        the query tool's shape {column_names, rows, row_count, truncated}. A \
+        kind=\"query\" RPC (a structured filter template) runs through the /list \
+        pipeline and returns {records, total, page, perPage} — the same page \
+        shape as list_records; page/perPage default here (they are not tool \
+        params). MCP is service-only, so anon_callable is not consulted on this \
+        surface — a service-key holder may call any RPC, and a query RPC runs \
+        under the service identity."
     )]
     async fn call_rpc(
         &self,
@@ -1981,29 +2032,76 @@ impl DrustMcpService {
     ) -> Result<CallToolResult, McpError> {
         let pool = self.state.inner().pool.clone();
         let name = p.name.clone();
-        // HashMap → serde_json::Map for params::validate_and_bind.
+        // HashMap → serde_json::Map for params::validate_and_bind /
+        // exec_query::run_query_rpc (they take the same arg map).
         let body_map: serde_json::Map<String, Value> =
             p.body.unwrap_or_default().into_iter().collect();
 
+        // One lookup up front: the stored `kind` selects BOTH the executor and
+        // the result envelope. A missing row is reported exactly as before.
         let lookup_name = name.clone();
-        let bind_body = body_map.clone();
-        let outcome = pool
+        let stored = pool
             .with_reader(move |c| {
-                let rpc = match crate::rpc::registry::lookup(c, &lookup_name).map_err(|e| {
+                crate::rpc::registry::lookup(c, &lookup_name).map_err(|e| {
                     rusqlite::Error::SqliteFailure(
                         rusqlite::ffi::Error::new(1),
                         Some(e.to_string()),
                     )
-                })? {
-                    Some(r) => r,
-                    None => return Ok(Err(format!("no such rpc: {lookup_name}"))),
-                };
-                let bound = match crate::rpc::params::validate_and_bind(&rpc.params, &bind_body) {
+                })
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let stored = match stored {
+            Some(r) => r,
+            None => {
+                return Err(McpError::invalid_params(
+                    format!("no such rpc: {name}"),
+                    None,
+                ));
+            }
+        };
+
+        // #950: a kind='query' RPC is a structured filter template. It runs
+        // through the SAME single executor REST uses (`exec_query::run_query_rpc`
+        // → the /list pipeline) — MCP is service-only, so the caller is
+        // `AuthCtx::Service` (anon_callable is not consulted) and the envelope is
+        // the /list page {records,total,page,perPage}, NOT the sql arm's columnar
+        // shape. `page`/`per_page` are not MCP params, so the default window
+        // applies.
+        if stored.kind == crate::rpc::registry::RpcKind::Query {
+            let ctx = crate::auth::middleware::AuthCtx::Service { admin_id: None };
+            let page = match crate::rpc::exec_query::run_query_rpc(
+                &pool, &ctx, &stored, body_map, None, None,
+            )
+            .await
+            {
+                Ok(pg) => pg,
+                Err(resp) => return Err(mcp_error_from_response(resp).await),
+            };
+            spawn_rpc_counter_bump(pool.clone(), name.clone());
+            let envelope = serde_json::json!({
+                "records": page.records,
+                "total": page.total,
+                "page": page.page,
+                "perPage": page.per_page,
+            });
+            let body_str = serde_json::to_string(&envelope)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            return Ok(CallToolResult::success(vec![Content::text(body_str)]));
+        }
+
+        // kind == Sql: unchanged read-only execution + columnar envelope.
+        let bind_body = body_map.clone();
+        let sql = stored.sql.clone();
+        let params = stored.params.clone();
+        let outcome = pool
+            .with_reader(move |c| {
+                let bound = match crate::rpc::params::validate_and_bind(&params, &bind_body) {
                     Ok(b) => b,
                     Err(e) => return Ok(Err(e.to_string())),
                 };
                 let qr = match crate::query::executor::execute_read_query_with_named(
-                    c, &rpc.sql, &bound, 1_000, 1_048_576,
+                    c, &sql, &bound, 1_000, 1_048_576,
                 ) {
                     Ok(qr) => qr,
                     Err(e) => return Ok(Err(e.to_string())),
@@ -2018,24 +2116,7 @@ impl DrustMcpService {
             Err(msg) => return Err(McpError::invalid_params(msg, None)),
         };
 
-        // Fire-and-forget counter bump on the writer mutex. MCP is
-        // service-only, so the role is hardcoded.
-        let pool_clone = pool.clone();
-        let bump_name = name.clone();
-        tokio::spawn(async move {
-            let res = pool_clone
-                .with_writer(move |c| {
-                    crate::rpc::registry::increment(
-                        c,
-                        &bump_name,
-                        crate::tenant::router::TokenRole::Service,
-                    )
-                })
-                .await;
-            if let Err(e) = res {
-                tracing::warn!(error = %e, "rpc counter bump failed (mcp call_rpc)");
-            }
-        });
+        spawn_rpc_counter_bump(pool.clone(), name.clone());
 
         let row_count = qr.rows.len();
         let envelope = serde_json::json!({
@@ -3360,6 +3441,92 @@ mod description_tests {
         assert!(
             d.contains("rejects raw SQL") || d.contains("FilterAst") || d.contains("raw SQL"),
             "list_records must state it is structured-only / rejects raw SQL"
+        );
+    }
+
+    /// #950 T6: the machine-readable `call_rpc` contract must document BOTH
+    /// result envelopes, keyed by the stored `kind` — a query RPC returns the
+    /// /list page, a sql RPC returns the columnar result. `mcp-surface.md` treats
+    /// these descriptions as the contract, so the branch and both shapes are
+    /// spelled out here for the model.
+    #[test]
+    fn call_rpc_description_documents_both_kind_envelopes() {
+        let d = desc_of("call_rpc");
+        assert!(
+            d.contains("kind"),
+            "call_rpc must name the kind branch: {d}"
+        );
+        // sql arm envelope keys.
+        assert!(
+            d.contains("column_names") && d.contains("row_count"),
+            "call_rpc must document the sql envelope: {d}"
+        );
+        // query arm envelope keys.
+        assert!(
+            d.contains("records") && d.contains("perPage"),
+            "call_rpc must document the query envelope: {d}"
+        );
+    }
+
+    /// create_rpc / update_rpc descriptions must both point at the kind='query'
+    /// path so a model discovers the structured-template surface.
+    #[test]
+    fn create_and_update_rpc_descriptions_mention_query_kind() {
+        for name in ["create_rpc", "update_rpc"] {
+            let d = desc_of(name);
+            assert!(
+                d.contains("query"),
+                "{name} description must mention the kind='query' path: {d}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rpc_query_schema_tests {
+    use super::{CreateRpcParams, UpdateRpcParams};
+
+    /// #950 T6 anti-drift: the `query` template param is published by TWO tool
+    /// faces (`create_rpc` and `update_rpc`), each via the SAME
+    /// `#[schemars(with = "Option<QueryTemplate>")]` override. If one is edited
+    /// and the other is not, MCP clients see two different shapes for the same
+    /// concept. Pin them identical — both derive from `QueryTemplate`, so the
+    /// generated `query` property (and the `QueryTemplate` `$defs` it pulls in)
+    /// must match byte-for-byte.
+    #[test]
+    fn query_param_schema_is_identical_across_create_and_update() {
+        let create = serde_json::to_value(schemars::schema_for!(CreateRpcParams)).unwrap();
+        let update = serde_json::to_value(schemars::schema_for!(UpdateRpcParams)).unwrap();
+        // The prose `description` is deliberately different (create says
+        // "Validated at create time", update says "Refused on a kind=sql row");
+        // everything STRUCTURAL — the `QueryTemplate` `$ref`, nullability,
+        // default — must match, so the two faces can't grow different shapes.
+        let mut cq = create["properties"]["query"].clone();
+        let mut uq = update["properties"]["query"].clone();
+        if let Some(o) = cq.as_object_mut() {
+            o.remove("description");
+        }
+        if let Some(o) = uq.as_object_mut() {
+            o.remove("description");
+        }
+        assert_eq!(
+            cq, uq,
+            "the `query` param STRUCTURE drifted between create_rpc and update_rpc"
+        );
+        // The pulled-in QueryTemplate definition must be identical too — this is
+        // the actual template shape both faces publish.
+        assert_eq!(
+            create["$defs"]["QueryTemplate"], update["$defs"]["QueryTemplate"],
+            "the QueryTemplate `$defs` drifted between the two publishing sites"
+        );
+        // And it must be the typed QueryTemplate, not schemars' untyped "any":
+        // the template's filter override advertises the `$param`/`$auth`
+        // operands, so their presence proves the real template shape is
+        // published (the v1.58.6 bare-Value regression class).
+        let create_str = serde_json::to_string(&create).unwrap();
+        assert!(
+            create_str.contains("collection") && create_str.contains("$param"),
+            "create_rpc.query must publish the QueryTemplate shape, not `any`: {create_str}"
         );
     }
 }

@@ -2274,3 +2274,156 @@ async fn clearing_a_legacy_clause_less_policy_is_guarded_when_a_query_rpc_target
         "a refused clear must leave the policy row in place: {stored}"
     );
 }
+
+// ── T6: MCP surface — call_rpc envelope branch + list_rpc kind ──────────
+
+/// Create a `kind='sql'` RPC via the MCP `create_rpc` tool.
+async fn create_sql_rpc(
+    app: &axum::Router,
+    tid: &str,
+    svc: &str,
+    sid: &str,
+    name: &str,
+    sql: &str,
+) -> String {
+    mcp_call_tool(
+        app,
+        tid,
+        svc,
+        sid,
+        "create_rpc",
+        json!({ "name": name, "sql": sql, "params": [] }),
+    )
+    .await
+}
+
+/// The value envelope embedded in an MCP `tools/call` text result.
+fn parse_tool_json(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or(Value::Null)
+}
+
+/// MCP `call_rpc` on a `kind='query'` row returns the `/list` page envelope
+/// `{records,total,page,perPage}` — NOT the sql arm's `{column_names,rows,…}`.
+/// MCP is service-only, so the caller is `AuthCtx::Service` and every row is
+/// visible.
+#[tokio::test]
+async fn mcp_call_rpc_on_query_row_returns_list_envelope() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-query").await;
+    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "a"}),
+    )
+    .await;
+    insert_post(&app, &tid, &svc, json!({"status": "draft", "title": "b"})).await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "feed",
+        json!([]),
+        json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
+        false,
+    )
+    .await;
+    assert!(out.contains("created"), "create_rpc: {out}");
+
+    let text = mcp_call_tool(&app, &tid, &svc, &sid, "call_rpc", json!({"name": "feed"})).await;
+    let v = parse_tool_json(&text);
+    assert!(
+        v.get("records").and_then(|r| r.as_array()).is_some(),
+        "query envelope must carry a `records` array: {text}"
+    );
+    assert!(
+        v.get("column_names").is_none() && v.get("row_count").is_none(),
+        "query envelope must NOT carry the sql arm's keys: {text}"
+    );
+    assert_eq!(v["total"], 2, "both rows visible to service: {text}");
+    assert!(v.get("perPage").is_some(), "envelope has perPage: {text}");
+    assert!(v.get("page").is_some(), "envelope has page: {text}");
+    assert_eq!(titles(&v), vec!["a".to_string(), "b".to_string()], "{text}");
+}
+
+/// MCP `call_rpc` on a `kind='sql'` row is unchanged: it returns the read
+/// executor's `{column_names,rows,row_count,truncated}` envelope.
+#[tokio::test]
+async fn mcp_call_rpc_on_sql_row_returns_column_envelope() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-sql").await;
+    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    insert_post(
+        &app,
+        &tid,
+        &svc,
+        json!({"status": "published", "title": "only"}),
+    )
+    .await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_sql_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "raw",
+        "SELECT title FROM posts ORDER BY id",
+    )
+    .await;
+    assert!(out.contains("created"), "create_rpc(sql): {out}");
+
+    let text = mcp_call_tool(&app, &tid, &svc, &sid, "call_rpc", json!({"name": "raw"})).await;
+    let v = parse_tool_json(&text);
+    assert!(
+        v.get("column_names").and_then(|c| c.as_array()).is_some(),
+        "sql envelope must carry `column_names`: {text}"
+    );
+    assert!(
+        v.get("rows").is_some() && v.get("row_count").is_some(),
+        "sql envelope must carry `rows` + `row_count`: {text}"
+    );
+    assert!(
+        v.get("records").is_none() && v.get("total").is_none(),
+        "sql envelope must NOT carry the query arm's keys: {text}"
+    );
+    assert_eq!(v["row_count"], 1, "{text}");
+}
+
+/// `list_rpc` surfaces the stored `kind` on every row, so a model can tell a
+/// query RPC from a sql one without calling either.
+#[tokio::test]
+async fn mcp_list_rpc_carries_kind_for_both() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-list").await;
+    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_sql_rpc(&app, &tid, &svc, &sid, "s_row", "SELECT 1 AS one").await;
+    assert!(out.contains("created"), "create sql: {out}");
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "q_row",
+        json!([]),
+        json!({"collection": "posts"}),
+        false,
+    )
+    .await;
+    assert!(out.contains("created"), "create query: {out}");
+
+    let text = mcp_call_tool(&app, &tid, &svc, &sid, "list_rpc", json!({})).await;
+    let arr = parse_tool_json(&text);
+    let rows = arr.as_array().expect("list_rpc returns a JSON array");
+    let kind_of = |name: &str| -> Option<String> {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .and_then(|r| r["kind"].as_str())
+            .map(|s| s.to_string())
+    };
+    assert_eq!(kind_of("s_row").as_deref(), Some("sql"), "{text}");
+    assert_eq!(kind_of("q_row").as_deref(), Some("query"), "{text}");
+}

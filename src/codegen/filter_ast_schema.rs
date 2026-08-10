@@ -190,4 +190,53 @@ mod tests {
         assert!(FILTER_AST_TS.contains("$fts"), "TS missing $fts operand");
         assert!(FILTER_AST_ZOD.contains("$fts"), "Zod missing $fts operand");
     }
+
+    /// #950 anti-drift: the `$param` / `$auth` template-only leaf operands exist
+    /// ONLY inside a stored `kind='query'` template
+    /// (`query_template::template_filter_json_schema`), NEVER in a
+    /// caller-supplied filter — so the SHARED FilterAst schema every codegen
+    /// renderer publishes (and the shared MCP `filter_arg_json_schema`) must not
+    /// mention them. Leaking either into the caller schema would tell clients to
+    /// send `{"$auth":"id"}` as a normal filter, which the parser rejects and
+    /// which — if it ever compiled — would be an identity-injection channel.
+    #[test]
+    fn shared_filter_schema_carries_no_template_operands() {
+        let oa = serde_json::to_string(&filter_ast_openapi_schema()).unwrap();
+        let shared_mcp =
+            serde_json::to_string(&crate::query::vector_filter::filter_arg_json_schema(
+                &mut schemars::SchemaGenerator::default(),
+            ))
+            .unwrap();
+        for operand in ["$param", "$auth"] {
+            assert!(
+                !oa.contains(operand),
+                "OpenAPI FilterAst schema leaks template operand `{operand}`"
+            );
+            assert!(
+                !FILTER_AST_TS.contains(operand),
+                "TS FilterAst leaks template operand `{operand}`"
+            );
+            assert!(
+                !FILTER_AST_ZOD.contains(operand),
+                "Zod FilterAst leaks template operand `{operand}`"
+            );
+            assert!(
+                !shared_mcp.contains(operand),
+                "shared MCP filter_arg_json_schema leaks template operand `{operand}`"
+            );
+        }
+
+        // Positive control: the template schema (the ONE place these belong)
+        // DOES advertise both. If a refactor moved the operands out of the
+        // template and into the shared schema, THIS assertion reds alongside the
+        // negatives above, so the guard can never pass vacuously.
+        let tpl = serde_json::to_string(&crate::rpc::query_template::template_filter_json_schema(
+            &mut schemars::SchemaGenerator::default(),
+        ))
+        .unwrap();
+        assert!(
+            tpl.contains("$param") && tpl.contains("$auth"),
+            "template schema must be the sole home of the $param/$auth operands: {tpl}"
+        );
+    }
 }

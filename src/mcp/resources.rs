@@ -790,6 +790,32 @@ mod tests {
     }
 
     #[test]
+    fn redact_rpc_obj_strips_query_json_for_a_query_row() {
+        // The `rpcs/{name}` single-row resource calls `redact_rpc_obj` DIRECTLY
+        // (not via the array mapper), so pin that path too: a query-kind row's
+        // `query_json` — a potential credential carrier — must not survive into
+        // the auto-fetchable resource, exactly as `sql` does not.
+        let mut v = serde_json::json!({
+            "name": "feed", "kind": "query", "sql": "",
+            "query_json": "{\"collection\":\"posts\",\"filter\":{\"key\":\"SECRET_SINGLE_qk\"}}",
+            "params": [{"name": "who", "default": "SECRET_DEFAULT_single"}]
+        });
+        redact_rpc_obj(&mut v);
+        let s = v.to_string();
+        assert!(
+            !s.contains("SECRET_SINGLE_qk"),
+            "query_json must be stripped on the single-row path: {s}"
+        );
+        assert!(v.get("query_json").is_none(), "query_json key gone: {s}");
+        assert!(
+            !s.contains("SECRET_DEFAULT_single"),
+            "param default must be stripped: {s}"
+        );
+        assert!(s.contains("feed"), "name is preserved: {s}");
+        assert!(s.contains("query"), "kind is preserved: {s}");
+    }
+
+    #[test]
     fn redact_cron_strips_payload_json() {
         let mut v = serde_json::json!({"jobs": [
             {"name": "j1", "schedule": "* * * * *", "payload_json": "{\"token\":\"SECRET_PAYLOAD\"}"}
