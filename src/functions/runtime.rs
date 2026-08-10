@@ -30,6 +30,11 @@ pub fn engine() -> &'static Engine {
         // is deprecated as a no-op, so it is not called here.
         cfg.epoch_interruption(true);
         cfg.wasm_component_model(true);
+        // Multi-memory multiplies the per-memory-cap hole and nothing we ship
+        // needs it — the canonical wasip2 component shape is one memory per
+        // core instance. The cumulative MemLimiter is the real fix; this
+        // shrinks the surface.
+        cfg.wasm_multi_memory(false);
         let engine = Engine::new(&cfg).expect("construct wasmtime engine");
         let ticker = engine.clone();
         std::thread::Builder::new()
@@ -54,6 +59,9 @@ pub fn engine() -> &'static Engine {
 /// starved every other future (v1.58.5 family). `UpdateDeadline::Interrupt`
 /// raises the same `Trap::Interrupt` the old shape did, so the Timeout
 /// classification in `run` is unchanged.
+///
+/// Async entrypoints only: `UpdateDeadline::Yield` hard-errors on a
+/// synchronous wasm call — every executor call site is async today.
 pub(crate) fn arm_epoch_budget<T>(store: &mut Store<T>, timeout_secs: u64) {
     let total_ticks = timeout_secs.saturating_mul(10).max(1);
     let mut used_ticks: u64 = 0;
@@ -260,29 +268,56 @@ const LOG_CAP_BYTES: usize = 64 * 1024;
 
 struct MemLimiter {
     cap: usize,
+    /// Bytes currently granted across ALL linear memories in this Store —
+    /// the cap is a per-invoke budget, not per-memory (a component holds one
+    /// memory per core instance, so a per-memory check multiplied the cap).
+    granted: usize,
+    /// Elements granted across ALL tables (same multiplication argument).
+    tables_granted: usize,
     oom_hit: bool,
 }
 
 impl wasmtime::ResourceLimiter for MemLimiter {
     fn memory_growing(
         &mut self,
-        _current: usize,
+        current: usize,
         desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        if desired > self.cap {
+        let new_total = self.granted.saturating_sub(current).saturating_add(desired);
+        if new_total > self.cap {
             self.oom_hit = true;
             return Ok(false);
         }
+        self.granted = new_total;
         Ok(true)
     }
     fn table_growing(
         &mut self,
-        _current: usize,
+        current: usize,
         desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        Ok(desired <= 1_000_000)
+        let new_total = self
+            .tables_granted
+            .saturating_sub(current)
+            .saturating_add(desired);
+        if new_total > 1_000_000 {
+            return Ok(false);
+        }
+        self.tables_granted = new_total;
+        Ok(true)
+    }
+    // wasmtime defaults each of these to 10_000 per Store. 64 is far above
+    // any legitimate single-component shape and far below amplification use.
+    fn instances(&self) -> usize {
+        64
+    }
+    fn tables(&self) -> usize {
+        64
+    }
+    fn memories(&self) -> usize {
+        64
     }
 }
 
@@ -734,6 +769,8 @@ impl StoreData {
             table: wasmtime::component::ResourceTable::new(),
             limits: MemLimiter {
                 cap: 64 * 1024 * 1024,
+                granted: 0,
+                tables_granted: 0,
                 oom_hit: false,
             },
             host: HostState {
@@ -967,6 +1004,8 @@ impl FunctionRunner for WasmRunner {
             table: wasmtime::component::ResourceTable::new(),
             limits: MemLimiter {
                 cap: self.cfg.memory_max_bytes,
+                granted: 0,
+                tables_granted: 0,
                 oom_hit: false,
             },
             host: HostState {
@@ -1107,6 +1146,61 @@ mod tests {
                 "guest spin starved the executor: heartbeat ran {observed} times"
             );
         });
+    }
+
+    /// HIGH #3: the cap is a per-STORE budget, not per-memory. Two memories
+    /// of 60 each must not fit under cap=100.
+    #[test]
+    fn mem_limiter_cap_is_cumulative_across_memories() {
+        use wasmtime::ResourceLimiter as _;
+        let mut l = MemLimiter {
+            cap: 100,
+            granted: 0,
+            tables_granted: 0,
+            oom_hit: false,
+        };
+        assert!(l.memory_growing(0, 60, None).unwrap()); // memory A: 60
+        assert!(!l.memory_growing(0, 60, None).unwrap()); // memory B would total 120
+        assert!(l.oom_hit);
+        // Growing memory A itself re-uses its own grant: 60 -> 90 totals 90.
+        let mut l2 = MemLimiter {
+            cap: 100,
+            granted: 60,
+            tables_granted: 0,
+            oom_hit: false,
+        };
+        assert!(l2.memory_growing(60, 90, None).unwrap());
+        assert_eq!(l2.granted, 90);
+    }
+
+    /// Table elements are also a per-store budget (1M elements total).
+    #[test]
+    fn table_cap_is_cumulative() {
+        use wasmtime::ResourceLimiter as _;
+        let mut l = MemLimiter {
+            cap: 100,
+            granted: 0,
+            tables_granted: 0,
+            oom_hit: false,
+        };
+        assert!(l.table_growing(0, 900_000, None).unwrap());
+        assert!(!l.table_growing(0, 200_000, None).unwrap()); // would total 1.1M
+    }
+
+    /// wasmtime's 10_000 defaults for instances/tables/memories are replaced
+    /// by small fixed caps.
+    #[test]
+    fn store_entity_counts_are_capped() {
+        use wasmtime::ResourceLimiter as _;
+        let l = MemLimiter {
+            cap: 100,
+            granted: 0,
+            tables_granted: 0,
+            oom_hit: false,
+        };
+        assert_eq!(l.instances(), 64);
+        assert_eq!(l.tables(), 64);
+        assert_eq!(l.memories(), 64);
     }
 
     /// The runner resolves tenants by id string AFTER arbitrary queue/lock
@@ -1271,6 +1365,8 @@ mod tests {
             table: wasmtime::component::ResourceTable::new(),
             limits: MemLimiter {
                 cap: 64 * 1024 * 1024,
+                granted: 0,
+                tables_granted: 0,
                 oom_hit: false,
             },
             host: HostState {
@@ -1350,6 +1446,8 @@ mod tests {
             table: wasmtime::component::ResourceTable::new(),
             limits: MemLimiter {
                 cap: 64 * 1024 * 1024,
+                granted: 0,
+                tables_granted: 0,
                 oom_hit: false,
             },
             host: HostState {
