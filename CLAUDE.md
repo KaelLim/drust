@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-09
+updated: 2026-08-10
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -179,8 +179,11 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    `bus.evict_collection`,** after `schema_cache.invalidate` and never before. The subscribe
    handler captures caps and the select policy **once at connect**, so invalidating the
    cache alone only affects the *next* connect and leaves in-flight subscribers reading
-   revoked data. Applies to realtime-disable, `anon_caps` revoke, policy attach or clear, and
-   `set_owner_field`. (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
+   revoked data. Applies to realtime-disable, `anon_caps` revoke, policy attach or clear,
+   `set_owner_field`, and **token reroll** (`reroll_token_json` revokes the old bearer, so
+   in-flight SSE/rooms subscribers holding it must be dropped — a tenant-wide `evict_tenant`,
+   not `evict_collection`, since the revoked identity spans all collections).
+   (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks
    deletion id and timing for policy-hidden rows.

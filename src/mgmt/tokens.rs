@@ -142,6 +142,15 @@ pub async fn reroll_token_json(
         }
     }
 
+    // Invariant 5 (task #934): the reroll revoked every active (tenant, role)
+    // bearer, but SSE + WS-rooms subscribers captured their grant at connect —
+    // without an evict they keep streaming on the revoked key until restart.
+    // Tenant-wide evict, same shape as soft_delete_tenant; a subscriber on the
+    // OTHER role's still-valid token simply reconnects. Cache clear stays FIRST
+    // (invariant 5 ordering: state change, then evict).
+    state.bus.evict_tenant(&tenant_id);
+    state.bus_rooms.evict_tenant(&tenant_id);
+
     let created: String = conn
         .query_row(
             "SELECT created_at FROM tokens WHERE id = ?1",
