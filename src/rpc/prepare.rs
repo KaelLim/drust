@@ -564,6 +564,23 @@ pub fn validate_new_query_rpc(
     tpl: &crate::rpc::query_template::QueryTemplate,
     specs: &[ParamSpec],
 ) -> Result<(), PrepareError> {
+    // A caller-suppliable identity is not an identity. The sql arms HARD-BIND
+    // `:user_id` from the bearer token (`handler.rs` overwrites any body value,
+    // and refuses an anon caller outright), so an author who declares a
+    // `user_id` param reasonably expects the same. A template gets no such
+    // binding: the value arrives verbatim from the request body, so an
+    // anon-callable "my rows" template keyed on `{"$param":"user_id"}` returns
+    // ANY user's rows to ANY caller. Refuse the name and point at the operand
+    // that IS bound. (`exec_query::run_query_rpc` re-checks at call time for
+    // rows that predate this gate.)
+    if specs.iter().any(|p| p.name == "user_id") {
+        return Err(PrepareError::Rejected(format!(
+            "{RPC_KIND_INVALID}: kind='query' cannot declare a 'user_id' param — unlike the sql \
+             arms, a template does NOT bind it from the caller's token, so it would be \
+             caller-supplied; use the {{\"$auth\":\"id\"}} operand, which drust substitutes from \
+             the bearer identity and no caller can set"
+        )));
+    }
     // Typed code for the protected case before the generic load, so the face
     // reports `PROTECTED_COLLECTION` rather than a template shape message.
     // `validate_template` refuses it a second time (double door).
@@ -591,6 +608,73 @@ mod tests {
     use super::*;
     use crate::storage::tenant_db::open_write;
     use tempfile::TempDir;
+
+    /// A tenant DB with one `posts(owner_id TEXT, title TEXT)` collection, plus
+    /// the schema cache the query-template validator reads through.
+    fn query_fixture(
+        name: &str,
+    ) -> (
+        TempDir,
+        Connection,
+        crate::storage::schema_cache::SchemaCache,
+    ) {
+        let d = TempDir::new().unwrap();
+        let conn = open_write(d.path(), name).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY, owner_id TEXT, title TEXT);",
+        )
+        .unwrap();
+        (d, conn, crate::storage::schema_cache::SchemaCache::new())
+    }
+
+    #[test]
+    fn query_rpc_may_not_declare_a_user_id_param() {
+        // #950 T4b F1. The sql arms HARD-BIND `:user_id` from the bearer token,
+        // so an author reasonably assumes a `user_id` param is trustworthy. A
+        // template has no such binding — the value would come straight from the
+        // caller's body, so an anon-callable "my rows" template would hand any
+        // caller anyone else's rows. Refused at the ONE choke point both create
+        // faces share, pointing at the operand that IS bound: {"$auth":"id"}.
+        let (_d, conn, cache) = query_fixture("t4b_userid");
+        let tpl = crate::rpc::query_template::parse_template(
+            r#"{"collection":"posts","filter":{"owner_id":{"$param":"user_id"}}}"#,
+        )
+        .unwrap();
+        let specs = vec![ParamSpec {
+            name: "user_id".into(),
+            ty: crate::rpc::params::ParamType::Text,
+            required: true,
+            default: None,
+        }];
+        let PrepareError::Rejected(msg) =
+            validate_new_query_rpc(&conn, &cache, &tpl, &specs).unwrap_err();
+        assert!(msg.contains("$auth"), "must point at the fix: {msg}");
+        assert!(msg.contains(RPC_KIND_INVALID), "typed code missing: {msg}");
+
+        // The same template keyed on $auth — the sanctioned form — passes.
+        let ok = crate::rpc::query_template::parse_template(
+            r#"{"collection":"posts","filter":{"owner_id":{"$auth":"id"}}}"#,
+        )
+        .unwrap();
+        validate_new_query_rpc(&conn, &cache, &ok, &[]).unwrap();
+    }
+
+    #[test]
+    fn query_rpc_collection_must_exist_and_be_addressable() {
+        let (_d, conn, cache) = query_fixture("t4b_coll");
+        let missing =
+            crate::rpc::query_template::parse_template(r#"{"collection":"nope"}"#).unwrap();
+        let PrepareError::Rejected(msg) =
+            validate_new_query_rpc(&conn, &cache, &missing, &[]).unwrap_err();
+        assert!(msg.contains("COLLECTION_NOT_FOUND"), "{msg}");
+
+        let protected =
+            crate::rpc::query_template::parse_template(r#"{"collection":"_system_users"}"#)
+                .unwrap();
+        let PrepareError::Rejected(msg) =
+            validate_new_query_rpc(&conn, &cache, &protected, &[]).unwrap_err();
+        assert!(msg.contains("PROTECTED_COLLECTION"), "{msg}");
+    }
 
     #[test]
     fn new_rpc_shape_rules() {

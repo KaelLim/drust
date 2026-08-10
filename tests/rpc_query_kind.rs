@@ -21,10 +21,83 @@ mod helpers;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::pool::SharedTenantPool;
 use helpers::{grab_pool, register_and_login_via_app, spin_up_dual_role_self_register};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tower::ServiceExt;
+
+/// Process-wide audit writer for this test binary (same shape as
+/// `tests/rpc_v2_mutation.rs`), so the `rpc_mode` tag on a query-kind call can
+/// be read back out of the audit DB.
+fn ensure_global_audit_writer() -> &'static PathBuf {
+    static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempfile::tempdir().unwrap());
+        let path = dir.path().join("test_rpc_query_kind_audit.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("test-rpc-query-kind-audit-writer".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build writer runtime");
+                rt.block_on(async move {
+                    let writer = AuditWriter::new(conn);
+                    drust::safety::audit_db::init_globals(writer);
+                    let _ = tx_ready.send(());
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn audit writer thread");
+        rx_ready.recv().expect("audit writer init signal");
+        let path_clone = path.clone();
+        Box::leak(dir);
+        path_clone
+    })
+}
+
+/// Audit rows for `tenant`, `extra` flattened to top level (so `row["rpc_mode"]`
+/// works) — verbatim shape from `tests/rpc_v2_mutation.rs::read_audit_lines`.
+async fn read_audit_lines(tenant: &str) -> Vec<Value> {
+    let path = ensure_global_audit_writer();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let r = open_audit_db_read(path).unwrap();
+    let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    let mut stmt = r
+        .prepare("SELECT tenant, status, op, extra FROM audit WHERE tenant = ?1 ORDER BY id ASC")
+        .unwrap();
+    stmt.query_map(rusqlite::params![tenant], |r| {
+        let tenant: Option<String> = r.get(0)?;
+        let status: Option<String> = r.get(1)?;
+        let op: Option<String> = r.get(2)?;
+        let extra_json: Option<String> = r.get(3)?;
+        let mut map = serde_json::Map::new();
+        if let Some(t) = tenant {
+            map.insert("tenant".into(), Value::String(t));
+        }
+        if let Some(s) = status {
+            map.insert("status".into(), Value::String(s));
+        }
+        if let Some(o) = op {
+            map.insert("op".into(), Value::String(o));
+        }
+        if let Some(extra_str) = extra_json
+            && let Ok(Value::Object(extra_map)) = serde_json::from_str::<Value>(&extra_str)
+        {
+            for (k, v) in extra_map {
+                map.entry(k).or_insert(v);
+            }
+        }
+        Ok(Value::Object(map))
+    })
+    .unwrap()
+    .filter_map(Result::ok)
+    .collect()
+}
 
 // ── MCP plumbing (the create face is service-only MCP / admin) ─────────
 
@@ -814,5 +887,385 @@ async fn query_rpc_equals_post_list_for_the_same_filter() {
         keys(&rpc_body),
         keys(&list_body),
         "the query arm must use the /list envelope"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// T4 review round (T4b) — F1/F3/F4/F6
+// ══════════════════════════════════════════════════════════════════════
+
+/// Seed a `_system_rpc` row straight through the registry, bypassing both
+/// create faces. Used to stand up rows a face now refuses — the LEGACY shape a
+/// runtime gate has to keep catching.
+async fn seed_query_rpc_directly(
+    pool: &SharedTenantPool,
+    name: &str,
+    params_json: &str,
+    query_json: &str,
+    anon_callable: bool,
+) {
+    let (name, params_json, query_json) = (
+        name.to_string(),
+        params_json.to_string(),
+        query_json.to_string(),
+    );
+    pool.with_writer(move |c| {
+        drust::rpc::registry::create(
+            c,
+            drust::rpc::registry::RpcCreate {
+                name: &name,
+                sql: "",
+                params_json: &params_json,
+                description: None,
+                anon_callable,
+                mode: drust::rpc::registry::RpcMode::Read,
+                kind: drust::rpc::registry::RpcKind::Query,
+                query_json: Some(&query_json),
+            },
+        )
+        .map_err(|e| {
+            rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+        })
+    })
+    .await
+    .unwrap();
+}
+
+// ── F1: a caller-suppliable `user_id` param is an identity spoof ───────
+
+#[tokio::test]
+async fn create_face_refuses_a_user_id_param_on_a_query_rpc() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-userid-create").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "my_rows",
+        json!([{"name":"user_id","type":"text","required":true}]),
+        json!({"collection": "posts", "filter": {"owner_id": {"$param": "user_id"}}}),
+        true,
+    )
+    .await;
+    assert!(
+        out.contains("$auth"),
+        "the refusal must point at the operand that IS bound: {out}"
+    );
+    assert!(
+        out.contains("RPC_KIND_INVALID"),
+        "typed code missing: {out}"
+    );
+    let n: i64 = pool
+        .with_reader(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM _system_rpc WHERE name = 'my_rows'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "no row may land");
+
+    // The sanctioned form saves and works.
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "my_rows_auth",
+        json!([]),
+        json!({"collection": "posts", "filter": {"owner_id": {"$auth": "id"}}}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "$auth form must save: {out}");
+}
+
+#[tokio::test]
+async fn legacy_user_id_param_row_is_refused_at_call_time() {
+    // Defense in depth: the create face now refuses this shape, but a row that
+    // predates the refusal (or a hand-edited DB) must not stay spoofable — the
+    // template would filter on a body-supplied user id, so ANY caller could
+    // read ANY user's rows through it.
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-userid-legacy").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let uid_a = user_id_for(&pool, "a@x.com").await;
+    let _ = ta;
+
+    seed_query_rpc_directly(
+        &pool,
+        "my_rows",
+        r#"[{"name":"user_id","type":"text","required":true}]"#,
+        r#"{"collection":"posts","filter":{"owner_id":{"$param":"user_id"}}}"#,
+        true,
+    )
+    .await;
+    insert_post(&app, &tid, &svc, json!({"title":"secret","owner_id":uid_a})).await;
+
+    let (status, v) = call_rpc(&app, &tid, &anon, "my_rows", json!({"user_id": uid_a})).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a spoofable stored row must fail closed, body: {v}"
+    );
+    assert_eq!(v["error_code"], "RPC_KIND_INVALID");
+    assert!(v.get("records").is_none(), "no rows may come back: {v}");
+}
+
+// ── F3: a stale-schema DB error must not echo the generated SQL ────────
+
+#[tokio::test]
+async fn db_error_does_not_leak_the_generated_sql() {
+    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-sqlleak").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "published",
+        json!([]),
+        json!({"collection": "posts", "filter": {"status": "published"}}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+    insert_post(&app, &tid, &svc, json!({"status":"published","title":"a1"})).await;
+
+    // The router's SCHEMA cache is already warm (the create face and the insert
+    // both loaded it) — but no reader has PREPARED the list SQL yet. Now drop
+    // the table out of band through the harness pool (a separate registry, so
+    // the router's schema cache stays stale). The next call compiles a SELECT
+    // against the cached schema and prepares it fresh, and rusqlite renders
+    // that failure as `SqlInputError`, whose Display carries the whole
+    // statement — RLS policy clause included.
+    //
+    // Two mechanics this repro depends on: DROP the TABLE, not a column
+    // (SQLite's legacy double-quoted-string misfeature turns an unresolvable
+    // `"col"` into the string literal 'col', so a dropped column never errors),
+    // and do NOT pre-run the query (`run_bound_select` uses `prepare_cached`,
+    // and a warm statement cache fails at step with a bare `SqliteFailure`
+    // instead — no SQL, and nothing for this test to catch).
+    pool.with_writer(|c| c.execute_batch("DROP TABLE posts;"))
+        .await
+        .unwrap();
+
+    let (status, v) = call_rpc(&app, &tid, &anon, "published", json!({})).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body: {v}");
+    assert_eq!(v["error_code"], "DB_ERROR");
+    let msg = v["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("no such table"),
+        "the operator still needs the cause: {msg}"
+    );
+    assert!(
+        !msg.to_uppercase().contains("SELECT"),
+        "the generated SQL (owner/policy clauses included) leaked to an anon caller: {msg}"
+    );
+    // Honest scope: the drift reachable from HERE (a dropped table) is an
+    // offset-less `SqliteFailure`, which carries no statement to begin with —
+    // SQLite's legacy double-quoted-string misfeature swallows the dropped-
+    // COLUMN case entirely, so this test alone cannot prove the redaction. The
+    // stripping itself is pinned on a real `SqlInputError` by
+    // `records_list::tests::db_error_response_never_echoes_the_generated_statement`.
+}
+
+// ── F4: a bad ?page= is a typed 422, and the sql arms ignore it ────────
+
+#[tokio::test]
+async fn unparsable_paging_is_typed_and_only_binds_the_query_arm() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-badpage").await;
+    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = mcp_call_tool(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "create_rpc",
+        json!({"name": "ping", "sql": "SELECT 1 AS x", "params": []}),
+    )
+    .await;
+    assert!(out.contains("created"), "create sql rpc: {out}");
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "all_posts",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+
+    // A sql-kind RPC never reads paging — a junk value must stay ignored.
+    let (status, v) = call_rpc_qs(&app, &tid, &svc, "ping", json!({}), "page=abc").await;
+    assert_eq!(status, StatusCode::OK, "sql arm must ignore paging: {v}");
+    assert_eq!(v["column_names"][0], "x", "the sql rpc really ran: {v}");
+    assert_eq!(v["rows"][0][0], 1, "the sql rpc really ran: {v}");
+
+    // The query arm reads it, so a junk value is the same typed 422 an
+    // out-of-range value gets — a JSON envelope, not axum's bare rejection.
+    for qs in [
+        "page=abc",
+        "per_page=abc",
+        "page=-1",
+        "per_page=99999999999",
+    ] {
+        let (status, v) = call_rpc_qs(&app, &tid, &svc, "all_posts", json!({}), qs).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{qs} → body: {v}");
+        assert_eq!(v["error_code"], "PAGE_RANGE_INVALID", "{qs}");
+    }
+}
+
+// ── F6: counters, audit tag, and a param literally named `page` ────────
+
+#[tokio::test]
+async fn query_call_bumps_the_counter_and_tags_the_audit_row() {
+    ensure_global_audit_writer();
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-counters").await;
+    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "all_posts",
+        json!([]),
+        json!({"collection": "posts"}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+
+    let (status, _) = call_rpc(&app, &tid, &ta, "all_posts", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The bump is fire-and-forget on the writer mutex — poll briefly.
+    let mut counts = (0i64, 0i64);
+    for _ in 0..40 {
+        counts = pool
+            .with_reader(|c| {
+                c.query_row(
+                    "SELECT anon_calls, service_calls FROM _system_rpc WHERE name = 'all_posts'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .await
+            .unwrap();
+        if counts.0 > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        counts,
+        (1, 0),
+        "a user call must bump anon_calls exactly like the sql read arm"
+    );
+
+    let rows = read_audit_lines(&tid).await;
+    assert!(
+        rows.iter().any(|r| r["rpc_mode"].as_str() == Some("query")),
+        "no audit row tagged rpc_mode=query: {rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_param_named_page_does_not_collide_with_paging() {
+    // The reason paging lives on the query string: the body IS the declared
+    // param map, so `page` must remain a usable param name.
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-page-param").await;
+    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "by_title",
+        json!([{"name":"page","type":"text","required":true}]),
+        json!({"collection": "posts", "filter": {"title": {"$param": "page"}},
+               "sort": {"field": "id", "dir": "asc"}}),
+        true,
+    )
+    .await;
+    assert!(out.contains("created"), "create query rpc: {out}");
+    insert_post(&app, &tid, &svc, json!({"title":"a1"})).await;
+    insert_post(&app, &tid, &svc, json!({"title":"a2"})).await;
+
+    // Body `page` is the filter argument; query-string `page` is the window.
+    let (status, v) = call_rpc(&app, &tid, &svc, "by_title", json!({"page": "a1"})).await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    assert_eq!(titles(&v), vec!["a1".to_string()]);
+    assert_eq!(v["page"], 1);
+
+    let (status, v) = call_rpc_qs(
+        &app,
+        &tid,
+        &svc,
+        "by_title",
+        json!({"page": "a1"}),
+        "page=2&per_page=1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {v}");
+    assert_eq!(v["total"], 1, "the filter still applied");
+    assert_eq!(v["page"], 2);
+    assert!(v["records"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_face_refuses_a_protected_collection_template() {
+    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-protected").await;
+    seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+
+    let sid = mcp_init(&app, &tid, &svc).await;
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "peek_users",
+        json!([]),
+        json!({"collection": "_system_users"}),
+        true,
+    )
+    .await;
+    assert!(
+        out.contains("PROTECTED_COLLECTION"),
+        "typed code missing: {out}"
+    );
+
+    let out = create_query_rpc(
+        &app,
+        &tid,
+        &svc,
+        &sid,
+        "peek_nothing",
+        json!([]),
+        json!({"collection": "nope"}),
+        true,
+    )
+    .await;
+    assert!(
+        out.contains("COLLECTION_NOT_FOUND"),
+        "typed code missing: {out}"
     );
 }

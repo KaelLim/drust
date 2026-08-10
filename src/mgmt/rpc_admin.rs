@@ -346,6 +346,36 @@ pub struct RpcFormBody {
     pub query_json: Option<String>,
 }
 
+/// Fallback code for a query-kind save rejection with no sentinel of its own
+/// (an unknown sort field, an undeclared `$param`, a cross-class operand …).
+///
+/// Admin-form data-attribute ONLY — no JSON API answers with it. The sql side
+/// has had `INVALID_SQL_FOR_MODE` for this since C5; a template rejection was
+/// arriving with NO code at all, so an e2e scraper could not tell a refusal
+/// from a render.
+const RPC_QUERY_TEMPLATE_INVALID: &str = "RPC_QUERY_TEMPLATE_INVALID";
+
+/// The banner's `data-error-code`, from the sentinel the message already
+/// carries.
+///
+/// The sql arm is left BYTE-IDENTICAL to its pre-#950 behaviour (kind sentinel,
+/// else `INVALID_SQL_FOR_MODE`) — its messages are scraped today. Only the
+/// query arm gains the extra sentinels, so a template rejection stops arriving
+/// with no code at all.
+fn save_error_code(msg: &str, kind: registry::RpcKind) -> String {
+    if msg.contains(crate::rpc::prepare::RPC_KIND_INVALID) {
+        return crate::rpc::prepare::RPC_KIND_INVALID.to_string();
+    }
+    match kind {
+        registry::RpcKind::Sql => "INVALID_SQL_FOR_MODE".to_string(),
+        registry::RpcKind::Query => ["PROTECTED_COLLECTION", "COLLECTION_NOT_FOUND"]
+            .into_iter()
+            .find(|s| msg.contains(s))
+            .unwrap_or(RPC_QUERY_TEMPLATE_INVALID)
+            .to_string(),
+    }
+}
+
 /// `POST /admin/tenants/{id}/_rpc/new` (create) and
 /// `POST /admin/tenants/{id}/_rpc/{name}/save` (edit). Both routes funnel
 /// through this handler — create vs. update is decided by whether a row
@@ -511,16 +541,7 @@ pub async fn rpc_save(
                 .await
                 .unwrap_or(false);
             let msg = prep_err.to_string();
-            // The banner's data-attribute is the canonical code an e2e scraper
-            // reads. `INVALID_SQL_FOR_MODE` would be a lie on a template, and
-            // the kind sentinel is only right when the message carries it.
-            let error_code = if msg.contains(crate::rpc::prepare::RPC_KIND_INVALID) {
-                Some(crate::rpc::prepare::RPC_KIND_INVALID.to_string())
-            } else if form_kind == registry::RpcKind::Sql {
-                Some("INVALID_SQL_FOR_MODE".to_string())
-            } else {
-                None
-            };
+            let error_code = Some(save_error_code(&msg, form_kind));
             return render_form_with_error(
                 &state,
                 &tenant_id,

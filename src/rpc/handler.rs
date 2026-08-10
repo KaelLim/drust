@@ -60,10 +60,29 @@ pub struct DryRunQs {
     /// declare a param named `page` must not collide with the wire contract.
     /// Out-of-range values are a typed 422 `PAGE_RANGE_INVALID`, never a
     /// silent clamp. Ignored by the sql arms.
+    ///
+    /// Kept as `String` and parsed in the query arm ON PURPOSE. Typing them
+    /// `Option<u32>` here makes the whole `Query<DryRunQs>` extractor reject
+    /// `?page=abc` with axum's bare non-JSON 400 — for EVERY rpc, including the
+    /// sql ones that never read paging and previously ignored the param.
     #[serde(default)]
-    pub page: Option<u32>,
+    pub page: Option<String>,
     #[serde(default)]
-    pub per_page: Option<u32>,
+    pub per_page: Option<String>,
+}
+
+/// `?page=` / `?per_page=` → the list builder's `Option<u32>`.
+///
+/// `Err` = present but not a `u32`. The caller maps it to the SAME typed 422
+/// `PAGE_RANGE_INVALID` an out-of-range value gets from `build_structured_list_sql`,
+/// because "abc" and "0" are the same mistake to the caller and the extractor
+/// must not answer for the two differently.
+fn parse_page_param(raw: Option<&str>) -> Result<Option<u32>, ()> {
+    match raw {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => Ok(None),
+        Some(s) => s.trim().parse::<u32>().map(Some).map_err(|_| ()),
+    }
 }
 
 pub async fn call_rpc(
@@ -147,13 +166,24 @@ pub async fn call_rpc(
                 "dry_run is not supported on kind='query' (a template only reads)",
             );
         }
+        let (page, per_page) = match (
+            parse_page_param(qs.page.as_deref()),
+            parse_page_param(qs.per_page.as_deref()),
+        ) {
+            (Ok(p), Ok(pp)) => (p, pp),
+            _ => {
+                return crate::tenant::records_list::map_list_error(
+                    crate::query::list_builder::ListError::PageRangeInvalid,
+                );
+            }
+        };
         return match crate::rpc::exec_query::run_query_rpc(
             &pool,
             &ctx_for_lookup,
             &stored,
             body_map,
-            qs.page,
-            qs.per_page,
+            page,
+            per_page,
         )
         .await
         {

@@ -448,6 +448,20 @@ pub fn validate_template(
     };
     list_builder::build_structured_list_sql(schema, &req, None, None)
         .map_err(|e| TemplateError::BadShape(e.to_string()))?;
+
+    // Cross-storage-class check on the dry-compiled AST, sharing the policy
+    // save-time machinery (#954) — see `check_template_operand_classes` for the
+    // one divergence ($fts) and why the rest must NOT be a second copy. It runs
+    // on the SUBSTITUTED ast, so `$auth` is the text "dummy" and each `$param`
+    // is a literal of its DECLARED type; that is exactly the class each will
+    // carry at call time. Without it, `{"score":{"lt":{"$auth":"id"}}}` saves
+    // clean and then matches EVERY row (SQLite orders all INTEGERs before all
+    // TEXT), which reads as a working "my rows" filter while it is a full-table
+    // read — the #954 footgun, one template away.
+    if let Some(f) = &req.filter {
+        crate::query::policy::check_template_operand_classes(schema, f)
+            .map_err(|e| TemplateError::BadShape(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -993,6 +1007,76 @@ mod tests {
             "select":["id","title"]
         }));
         validate_template(&s, &good, &[spec("min", ParamType::Integer)]).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_auth_against_a_numeric_column() {
+        // #950 T4b / #954 recurrence: `$auth` is always a TEXT user id, and
+        // SQLite orders every INTEGER before every TEXT — so `score < '<uid>'`
+        // saves clean and then matches EVERY row. A template author reaching
+        // for "$auth" on a numeric column always means a different column.
+        let s = fixture_schema();
+        for f in [
+            json!({"score":{"lt":{"$auth":"id"}}}),
+            json!({"score":{"$auth":"id"}}),
+            json!({"or":[{"title":"x"},{"score":{"eq":{"$auth":"id"}}}]}),
+            json!({"score":{"in":[1,{"$auth":"id"}]}}),
+        ] {
+            let t = tpl(json!({"collection":"posts","filter":f}));
+            assert!(
+                matches!(
+                    validate_template(&s, &t, &[]),
+                    Err(TemplateError::BadShape(_))
+                ),
+                "cross-class $auth must die at save: {t:?}"
+            );
+        }
+        // The legitimate owner pattern — a TEXT column — still saves.
+        let ok = tpl(json!({"collection":"posts","filter":{"owner_id":{"$auth":"id"}}}));
+        validate_template(&s, &ok, &[]).unwrap();
+    }
+
+    #[test]
+    fn validate_matches_param_class_against_the_column() {
+        // A `$param`'s storage class IS its DECLARED type, so the same
+        // save-time class rule applies to it — one declaration away from the
+        // `$auth` footgun above.
+        let s = fixture_schema();
+        let t = tpl(json!({"collection":"posts","filter":{"score":{"lt":{"$param":"n"}}}}));
+        validate_template(&s, &t, &[spec("n", ParamType::Integer)]).unwrap();
+        assert!(
+            matches!(
+                validate_template(&s, &t, &[spec("n", ParamType::Text)]),
+                Err(TemplateError::BadShape(_))
+            ),
+            "a Text param compared to an INTEGER column must die at save"
+        );
+        // …and the mirror image on a TEXT column.
+        let text = tpl(json!({"collection":"posts","filter":{"title":{"eq":{"$param":"n"}}}}));
+        validate_template(&s, &text, &[spec("n", ParamType::Text)]).unwrap();
+        assert!(matches!(
+            validate_template(&s, &text, &[spec("n", ParamType::Integer)]),
+            Err(TemplateError::BadShape(_))
+        ));
+    }
+
+    #[test]
+    fn validate_still_allows_an_fts_leaf() {
+        // The ONE place templates diverge from policies: `$fts` is a legal
+        // template leaf (it compiles through the same /list pipeline), while
+        // policies refuse it. Guards the class walk from being bolted on with
+        // the policy door by mistake.
+        let mut s = fixture_schema();
+        s.fts_indexes = vec![crate::storage::schema::FtsIndex {
+            name: "main".into(),
+            fields: vec!["title".into()],
+            tokenizer: "trigram".into(),
+        }];
+        let t = tpl(json!({
+            "collection":"posts",
+            "filter":{"and":[{"status":"published"},{"$fts":{"index":"main","query":"hello"}}]}
+        }));
+        validate_template(&s, &t, &[]).unwrap();
     }
 
     #[test]

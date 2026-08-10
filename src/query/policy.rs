@@ -644,14 +644,44 @@ fn check_ast_operand_classes(
     schema: &CollectionSchema,
     ast: &FilterAst,
 ) -> Result<(), PolicyError> {
+    check_operand_classes_inner(schema, ast, false)
+}
+
+/// [`check_ast_operand_classes`] for a stored **query template** (#950), which
+/// diverges from a policy in EXACTLY one way: a `$fts` leaf is legal there.
+///
+/// A template runs through the `/list` pipeline, which compiles `$fts` into a
+/// MATCH subquery with the parent row-gate still applied — so, unlike a policy
+/// (whose two evaluators cannot reason about a search shadow at all), the
+/// operand is well-defined. Everything else — the whole cross-storage-class
+/// rule — is the SAME code, on purpose: the footgun the class check exists for
+/// (`$auth` is always TEXT, and SQLite orders every INTEGER before every TEXT,
+/// so `score < '<uid>'` matches EVERY row) is identical in a template, and a
+/// second implementation would be free to drift.
+///
+/// Templates are dry-compiled with per-type dummies before this runs, so every
+/// `$param` / `$auth` site is already a typed literal by the time it is walked
+/// — a `$param`'s class IS its declared `ParamType`.
+pub(crate) fn check_template_operand_classes(
+    schema: &CollectionSchema,
+    ast: &FilterAst,
+) -> Result<(), PolicyError> {
+    check_operand_classes_inner(schema, ast, true)
+}
+
+fn check_operand_classes_inner(
+    schema: &CollectionSchema,
+    ast: &FilterAst,
+    allow_fts: bool,
+) -> Result<(), PolicyError> {
     match ast {
         FilterAst::And { and } => and
             .iter()
-            .try_for_each(|n| check_ast_operand_classes(schema, n)),
+            .try_for_each(|n| check_operand_classes_inner(schema, n, allow_fts)),
         FilterAst::Or { or } => or
             .iter()
-            .try_for_each(|n| check_ast_operand_classes(schema, n)),
-        FilterAst::Not { not } => check_ast_operand_classes(schema, not),
+            .try_for_each(|n| check_operand_classes_inner(schema, n, allow_fts)),
+        FilterAst::Not { not } => check_operand_classes_inner(schema, not, allow_fts),
         FilterAst::Leaf(obj) => {
             let Some((key, body)) = obj.iter().next() else {
                 return Ok(());
@@ -661,8 +691,15 @@ fn check_ast_operand_classes(
             }
             // `$fts` is not usable in a policy (entry point 3 of 3, the save-time
             // path). compile_policy_using already rejects it, but this keeps
-            // check_ast_operand_classes independently correct.
+            // check_ast_operand_classes independently correct. A stored query
+            // template DOES admit it — the `/list` compiler handles it and the
+            // row gate stays on the parent — and its body is an
+            // `{index, query}` pair, not a column comparison, so there is no
+            // class to check.
             if key == "$fts" {
+                if allow_fts {
+                    return Ok(());
+                }
                 return Err(PolicyError::OperandUnsupported(
                     "$fts references a search shadow the policy evaluators cannot \
                      reason about"
@@ -925,6 +962,43 @@ mod tests {
             .is_ok(),
             "text-column vs $auth is the owner pattern and must pass"
         );
+    }
+
+    #[test]
+    fn template_door_allows_fts_and_the_policy_door_does_not() {
+        // The ONE divergence between the two doors (#950 T4b). A stored query
+        // template legitimately carries a `$fts` leaf (it runs through the
+        // /list pipeline, which can compile it); a policy cannot, because
+        // neither policy evaluator can reason about a search shadow. Everything
+        // else — the class rules — is shared code, so it cannot drift.
+        let s = typed_schema(&[("age", "INTEGER"), ("author", "TEXT")]);
+        let fts: FilterAst = serde_json::from_str(r#"{"$fts":{"index":"i","query":"x"}}"#).unwrap();
+        assert!(
+            check_template_operand_classes(&s, &fts).is_ok(),
+            "a template may carry $fts"
+        );
+        assert!(
+            matches!(
+                check_ast_operand_classes(&s, &fts),
+                Err(PolicyError::OperandUnsupported(_))
+            ),
+            "a policy may not carry $fts"
+        );
+
+        // …and the class rule itself is identical through both doors.
+        let cross: FilterAst = serde_json::from_str(r#"{"age":{"$lt":"nope"}}"#).unwrap();
+        assert!(check_ast_operand_classes(&s, &cross).is_err());
+        assert!(check_template_operand_classes(&s, &cross).is_err());
+        let same: FilterAst = serde_json::from_str(r#"{"age":{"$lt":7}}"#).unwrap();
+        assert!(check_ast_operand_classes(&s, &same).is_ok());
+        assert!(check_template_operand_classes(&s, &same).is_ok());
+
+        // A $fts nested inside a boolean node follows the same split.
+        let nested: FilterAst =
+            serde_json::from_str(r#"{"and":[{"author":"a"},{"$fts":{"index":"i","query":"x"}}]}"#)
+                .unwrap();
+        assert!(check_template_operand_classes(&s, &nested).is_ok());
+        assert!(check_ast_operand_classes(&s, &nested).is_err());
     }
 
     #[test]

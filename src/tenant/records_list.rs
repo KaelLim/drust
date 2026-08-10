@@ -398,13 +398,7 @@ pub async fn post_list(
         }
         Err(ListCoreError::Build(e)) => return map_list_error(e),
         Err(ListCoreError::Http(resp)) => return resp,
-        Err(ListCoreError::Db(e)) => {
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DB_ERROR",
-                &e.to_string(),
-            );
-        }
+        Err(ListCoreError::Db(e)) => return db_error_response(&e),
     };
 
     Json(json!({
@@ -591,6 +585,29 @@ pub async fn post_list_explain(
         .unwrap_or_default();
 
     Json(json!({ "plan": plan })).into_response()
+}
+
+/// The `ListCoreError::Db` arm, in ONE place for every face that renders it
+/// (`/list` and, from #950, the stored query-RPC arm).
+///
+/// > [!WARNING]
+/// > Never `e.to_string()` here. rusqlite renders a `prepare` failure as
+/// > `SqlInputError`, whose `Display` embeds the WHOLE statement — and on this
+/// > path the statement is drust-GENERATED: it carries the compiled owner
+/// > clause and the RLS policy USING, i.e. exactly the row gate that is hiding
+/// > rows from the caller. Both faces are reachable by an unauthenticated
+/// > caller (anon `/list`, an `anon_callable` query RPC).
+///
+/// `crate::error::sqlite_error_without_sql` keeps `msg` + `offset`, so the
+/// operator still reads the cause. Errors that carry no statement (every
+/// `SqliteFailure`, which is what a dropped TABLE produces — SQLite reports no
+/// error offset for it) pass through byte-identical.
+pub(crate) fn db_error_response(e: &rusqlite::Error) -> Response {
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "DB_ERROR",
+        &crate::error::sqlite_error_without_sql(e),
+    )
 }
 
 /// Map a `ListError` to an HTTP response per spec §3.
@@ -990,6 +1007,42 @@ mod cap_mode_tests {
                 "the core must gate protected collections itself"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn db_error_response_never_echoes_the_generated_statement() {
+        // The generated SELECT carries the compiled owner clause and the RLS
+        // policy USING. `SqlInputError`'s Display embeds the whole statement, so
+        // rendering the error raw hands an anon caller the row gate that is
+        // hiding rows from them. A real prepare failure, not a hand-built error
+        // — if a future rusqlite stops embedding the SQL, `src/error.rs`'s own
+        // pin fires and this guard can be retired deliberately.
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE posts (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        let sql = "SELECT \"id\" FROM \"posts\" WHERE owner_secret = 'u-victim'";
+        let e = c.prepare(sql).unwrap_err();
+        assert!(
+            matches!(e, rusqlite::Error::SqlInputError { .. }),
+            "fixture must be the statement-embedding variant: {e:?}"
+        );
+
+        let resp = db_error_response(&e);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error_code"], "DB_ERROR");
+        let msg = body["message"].as_str().unwrap();
+        assert!(
+            !msg.contains("SELECT") && !msg.contains("u-victim"),
+            "the generated statement leaked: {msg}"
+        );
+        assert!(
+            msg.contains("no such column: owner_secret"),
+            "the operator still needs the cause: {msg}"
+        );
     }
 
     #[test]

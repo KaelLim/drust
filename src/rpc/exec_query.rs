@@ -47,6 +47,21 @@ pub(crate) async fn run_query_rpc(
     page: Option<u32>,
     per_page: Option<u32>,
 ) -> Result<ListPage, Response> {
+    // Defense in depth for the create-face refusal in
+    // `prepare::validate_new_query_rpc`: a `user_id` param on a TEMPLATE is not
+    // bound from the bearer token (only the sql arms do that), so its value
+    // would be whatever the caller sent — an anon-callable "my rows" template
+    // would hand any caller anyone's rows. The face now refuses it, but a row
+    // seeded before this gate, or by hand, must fail CLOSED rather than serve.
+    if stored.params.iter().any(|p| p.name == "user_id") {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "RPC_KIND_INVALID",
+            "this kind='query' rpc declares a caller-suppliable 'user_id' param, which a template \
+             never binds from the caller's token — recreate it using the {\"$auth\":\"id\"} operand",
+        ));
+    }
+
     // A kind='query' row without a template is only reachable by hand-editing
     // the DB (`registry::check_kind_rules` refuses to write one), so treat it
     // as the stale-template case rather than a 500.
@@ -112,11 +127,12 @@ pub(crate) async fn run_query_rpc(
         )),
         // Already-typed responses: the auth denies (403) and the FTS probe.
         Err(ListCoreError::Http(r)) => Err(r),
-        Err(ListCoreError::Db(e)) => Err(json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "DB_ERROR",
-            &e.to_string(),
-        )),
+        // Shared with `/list`'s identical arm so neither can start rendering the
+        // raw error: rusqlite's `SqlInputError` Display embeds the WHOLE
+        // statement, and here that statement is drust-generated — it carries the
+        // compiled owner clause and the RLS policy USING that are hiding rows
+        // from this (possibly anonymous) caller.
+        Err(ListCoreError::Db(e)) => Err(crate::tenant::records_list::db_error_response(&e)),
     }
 }
 
