@@ -766,11 +766,12 @@ impl MgmtState {
         };
         use crate::mgmt::tenants::{
             TenantsState, cmdk_tenants_json, create_tenant_form, create_tenant_json,
-            get_publish_policy, list_page_axum, patch_publish_policy, soft_delete_tenant,
-            soft_delete_tenant_form, tenant_files_admin_page, tenant_oauth_provider_delete,
-            tenant_oauth_provider_upsert, tenant_oauth_providers_page,
-            tenant_oauth_redirect_uris_update, tenant_overview_page, tenant_webhook_create_form,
-            tenant_webhook_delete_form, tenant_webhooks_page, tenants_json, toggle_self_register,
+            file_policy_clear, file_policy_save, get_publish_policy, list_page_axum,
+            patch_publish_policy, soft_delete_tenant, soft_delete_tenant_form,
+            tenant_files_admin_page, tenant_oauth_provider_delete, tenant_oauth_provider_upsert,
+            tenant_oauth_providers_page, tenant_oauth_redirect_uris_update, tenant_overview_page,
+            tenant_webhook_create_form, tenant_webhook_delete_form, tenant_webhooks_page,
+            tenants_json, toggle_self_register,
         };
         use axum::extract::DefaultBodyLimit;
 
@@ -1033,6 +1034,19 @@ impl MgmtState {
                 post(super::tokens::reroll_token_form),
             )
             .route("/admin/tenants/{id}/_files", get(tenant_files_admin_page))
+            // v1.63 (#950-B) — the `_files` page's folder-rule card. These two
+            // live on the PAGE prefix, not next to the `/files/...` byte
+            // actions in `admin_tenant_files_router`: they are page-scoped
+            // config over `_system_file_policy` (no key, no bytes, no Garage),
+            // and they need `TenantsState` for the meta lookup + pool registry.
+            .route(
+                "/admin/tenants/{id}/_files/policies",
+                post(file_policy_save),
+            )
+            .route(
+                "/admin/tenants/{id}/_files/policies/clear",
+                post(file_policy_clear),
+            )
             // Legacy alias: /files → 301 /_files. v1.32.7 renamed the page
             // URL for consistency with the other virtual sidebar entries
             // (_overview, _api_keys, _rpc, _broadcast, _oauth_providers,

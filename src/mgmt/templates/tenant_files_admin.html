@@ -81,6 +81,15 @@
                   <label for="tv-disp-attachment">{{ t.s("tenant_files_admin.upload.disp_attachment") }}</label>
                 </div>
               </div>
+              {# v1.63 — optional logical path. Metadata only: the stored object
+                 key is unaffected, and an illegal value is REFUSED server-side
+                 (FILE_PATH_INVALID) rather than trimmed into legality. #}
+              <div class="field">
+                <span class="field-label">{{ t.s("tenant_files_admin.upload.path_label") }}</span>
+                <input class="input" type="text" name="path" id="upload-path"
+                       placeholder="{{ t.s("tenant_files_admin.upload.path_placeholder") }}">
+                <div class="hint">{{ t.s("tenant_files_admin.upload.path_hint") }}</div>
+              </div>
             </div>
 
             <div class="upload-row">
@@ -104,13 +113,14 @@
           </form>
         </div>
 
-        {% if files.is_empty() %}
+        {% if folders.is_empty() %}
         {% call ui::empty_state("sleep", t.s("tenant_files_admin.empty.title"), t.s("tenant_files_admin.empty.body")) %}{% endcall %}
         {% else %}
         <div class="pub-scroll">
           <table class="data pub-files">
             <colgroup>
               <col class="col-name">
+              <col class="col-path">
               <col class="col-vis">
               <col class="col-type">
               <col class="col-size">
@@ -120,6 +130,7 @@
             <thead>
               <tr>
                 <th>{{ t.s("tenant_files_admin.table.col_name") }}</th>
+                <th>{{ t.s("tenant_files_admin.table.col_path") }}</th>
                 <th>{{ t.s("tenant_files_admin.table.col_visibility") }}</th>
                 <th>{{ t.s("tenant_files_admin.table.col_type") }}</th>
                 <th>{{ t.s("tenant_files_admin.table.col_size") }}</th>
@@ -127,11 +138,38 @@
                 <th>{{ t.s("tenant_files_admin.table.col_actions") }}</th>
               </tr>
             </thead>
-            <tbody>
-              {% for f in files %}
+            {# Fake folder tree: one <tbody> per `path` prefix on THIS page.
+               drust stores no folder anywhere — the group header is rendered
+               from the rows themselves, so an empty folder cannot exist and a
+               rename is simply a re-upload under another path. #}
+            {% for g in folders %}
+            <tbody data-folder-prefix="{{ g.prefix }}"{% if g.unfiled %} data-folder-unfiled="1"{% endif %}>
+              <tr class="tree-row">
+                <td colspan="7">
+                  <span class="tree-folder">
+                    {% if g.unfiled %}{{ t.s("tenant_files_admin.tree.unfiled") }}
+                    {% else if g.prefix == "" %}{{ t.s("tenant_files_admin.tree.root") }}
+                    {% else %}{{ g.prefix }}{% endif %}
+                  </span>
+                  <span class="count">{{ t.fmt1("tenant_files_admin.table.row_count", "n", g.files.len()) }}</span>
+                  {% if let Some(p) = g.governed_by %}
+                  <span class="pill lilac"><span class="dot"></span>{% if p == "" %}{{ t.s("tenant_files_admin.tree.rule_root") }}{% else %}{{ p }}{% endif %}</span>
+                  {% else %}
+                  <span class="pill mute"><span class="dot"></span>{{ t.s("tenant_files_admin.tree.rule_default") }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% for f in g.files %}
               <tr>
                 <td class="cell-name" title="{{ f.original_name }} ({{ f.key }})">
                   <div class="trunc-inner"><a href="{{ f.public_url }}" target="_blank" rel="noopener">{{ f.original_name }}</a></div>
+                </td>
+                <td class="cell-path">
+                  {% if let Some(p) = f.path %}
+                  <div class="trunc-inner" title="{{ p }}">{{ p }}</div>
+                  {% else %}
+                  <span class="muted">—</span>
+                  {% endif %}
                 </td>
                 <td class="cell-vis"><span class="pill {% if f.visibility == "public" %}mint{% else %}warn{% endif %}"><span class="dot"></span>{{ f.visibility }}</span></td>
                 <td class="cell-type" title="{{ f.content_type }}"><div class="trunc-inner">{{ f.content_type }}</div></td>
@@ -157,6 +195,7 @@
               </tr>
               {% endfor %}
             </tbody>
+            {% endfor %}
           </table>
         </div>
         <div class="pager">
@@ -178,6 +217,76 @@
         </div>
       </div>
       {% endif %}
+
+      {# Folder rules (v1.63, #950-B). OUTSIDE the storage_available branch on
+         purpose: the registry is per-tenant config in data.sqlite and is
+         editable with no object store configured at all. #}
+      <div style="margin-top:24px;">
+      {% call ui::card(t.s("tenant_files_admin.policy.card_title"), t.s("tenant_files_admin.policy.card_sub")) %}
+        <div class="card-body">
+          {% if let Some(err) = policy_error %}
+          <div class="banner danger" style="margin-bottom:14px;">
+            <div class="b-body">
+              <div class="b-title">{{ t.s("tenant_files_admin.policy.load_failed") }}</div>
+              <p><code>{{ err }}</code></p>
+            </div>
+          </div>
+          {% endif %}
+
+          {% if policies.is_empty() %}
+          {% call ui::empty_state("", t.s("tenant_files_admin.policy.empty_title"), t.s("tenant_files_admin.policy.empty_body")) %}{% endcall %}
+          {% else %}
+          <div class="pub-scroll">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>{{ t.s("tenant_files_admin.policy.col_prefix") }}</th>
+                  <th>{{ t.s("tenant_files_admin.policy.col_rule") }}</th>
+                  <th>{{ t.s("tenant_files_admin.policy.col_clauses") }}</th>
+                  <th>{{ t.s("tenant_files_admin.table.col_actions") }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for p in policies %}
+                <tr data-policy-prefix="{{ p.prefix }}">
+                  <td class="mono-cell">{% if p.prefix == "" %}{{ t.s("tenant_files_admin.policy.root_label") }}{% else %}{{ p.prefix }}{% endif %}</td>
+                  <td>
+                    {% if p.owner_scoped %}<span class="pill lilac"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.owner_scoped") }}</span>{% endif %}
+                    {% if p.public_read %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.public_read") }}</span>{% endif %}
+                    {% if !p.owner_scoped && !p.public_read && p.select_json.is_none() %}<span class="pill danger"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.deny_all") }}</span>{% endif %}
+                  </td>
+                  <td class="mono-cell">
+                    {% if let Some(s) = p.select_json %}<div class="trunc-inner" title="{{ s }}">select {{ s }}</div>{% endif %}
+                    {% if let Some(d) = p.delete_json %}<div class="trunc-inner" title="{{ d }}">delete {{ d }}</div>{% endif %}
+                    {% if p.select_json.is_none() && p.delete_json.is_none() %}<span class="muted">—</span>{% endif %}
+                  </td>
+                  <td class="cell-actions">
+                    <button type="button" class="btn sm ghost" data-policy-clear="{{ p.prefix }}" style="color:var(--danger);">{{ t.s("tenant_files_admin.policy.clear_btn") }}</button>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endif %}
+
+          <form id="file-policy-form" style="margin-top:16px;">
+            {% call ui::toolbar() %}
+              {% call ui::form_row(t.s("tenant_files_admin.policy.prefix_label"), t.s("tenant_files_admin.policy.prefix_hint")) %}
+                <input class="input" type="text" id="fp-prefix" placeholder="avatars/">
+              {% endcall %}
+              <div class="field">
+                <span class="field-label">{{ t.s("tenant_files_admin.policy.col_rule") }}</span>
+                <label class="check"><input type="checkbox" id="fp-owner-scoped" checked> {{ t.s("tenant_files_admin.policy.owner_scoped") }}</label>
+                <label class="check"><input type="checkbox" id="fp-public-read"> {{ t.s("tenant_files_admin.policy.public_read") }}</label>
+              </div>
+              <button type="submit" class="btn sm primary" id="fp-save">{{ t.s("tenant_files_admin.policy.save_btn") }}</button>
+            {% endcall %}
+          </form>
+          <p class="hint">{{ t.s("tenant_files_admin.policy.form_hint") }}</p>
+        </div>
+      {% endcall %}
+      </div>
     </div>
 {% endblock %}
 
@@ -290,6 +399,64 @@
       drustUI.alert({title: "{{ t.s("tenant_files_admin.sign.success_title") }}", body: '{{ t.s("tenant_files_admin.sign.success_body")|safe }}'.replace('{secs}', expires_in), codeBlock: j.url});
     });
   });
+
+  // ── folder rules (v1.63) ───────────────────────────────────────────────
+  // Both endpoints answer JSON `{error_code, message}` on refusal — the SAME
+  // four codes the REST/MCP registry faces report — so the dialog shows the
+  // code verbatim rather than inventing admin-only wording.
+  (function () {
+    var form = document.getElementById('file-policy-form');
+    if (!form) return;
+    var tid = '{{ tenant_id }}';
+    var base = '{{ crate::base_path::base_path() }}/admin/tenants/' + encodeURIComponent(tid) + '/_files/policies';
+
+    async function post(url, payload, failTitle) {
+      var resp = await fetch(url, {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      if (resp.ok) { window.location.reload(); return; }
+      var detail = '';
+      try { var j = await resp.json(); detail = (j.error_code || '') + ' ' + (j.message || ''); }
+      catch (e) { detail = String(resp.status); }
+      if (window.chonkReact) window.chonkReact('oops', 900);
+      drustUI.alert({title: failTitle, body: detail, danger: true});
+    }
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var prefix = document.getElementById('fp-prefix').value;
+      var ok = await drustUI.confirm({
+        title: "{{ t.s("tenant_files_admin.policy.save_confirm_title") }}",
+        body: '{{ t.s("tenant_files_admin.policy.save_confirm_body")|safe }}'.replace('{prefix}', prefix),
+        okText: '{{ t.s("tenant_files_admin.policy.save_btn")|safe }}',
+      });
+      if (!ok) return;
+      await post(base, {
+        prefix: prefix,
+        owner_scoped: document.getElementById('fp-owner-scoped').checked,
+        public_read: document.getElementById('fp-public-read').checked,
+      }, "{{ t.s("tenant_files_admin.policy.save_failed_title") }}");
+    });
+
+    document.querySelectorAll('[data-policy-clear]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        // getAttribute, not dataset-truthiness: the tenant root's prefix is
+        // the empty string, and `if (!prefix)` would make the root rule the
+        // one row this button cannot remove.
+        var prefix = btn.getAttribute('data-policy-clear');
+        if (prefix === null) return;
+        var ok = await drustUI.confirm({
+          title: "{{ t.s("tenant_files_admin.policy.clear_confirm_title") }}",
+          body: '{{ t.s("tenant_files_admin.policy.clear_confirm_body")|safe }}'.replace('{prefix}', prefix),
+          okText: '{{ t.s("tenant_files_admin.policy.clear_btn")|safe }}',
+          danger: true,
+        });
+        if (!ok) return;
+        await post(base + '/clear', {prefix: prefix}, "{{ t.s("tenant_files_admin.policy.clear_failed_title") }}");
+      });
+    });
+  })();
 
   document.querySelectorAll('[data-delete-key]').forEach(function(btn) {
     btn.addEventListener('click', async function() {

@@ -26,7 +26,7 @@ pub use crud::{
     get_publish_policy, list_page_axum, patch_publish_policy, soft_delete_tenant,
     soft_delete_tenant_form, tenants_json, toggle_self_register,
 };
-pub use files_page::tenant_files_admin_page;
+pub use files_page::{file_policy_clear, file_policy_save, tenant_files_admin_page};
 pub use oauth_page::{
     tenant_oauth_provider_delete, tenant_oauth_provider_upsert, tenant_oauth_providers_page,
     tenant_oauth_redirect_uris_update,
