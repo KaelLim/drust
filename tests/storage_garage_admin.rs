@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::mock_garage_admin::MockAdminServer;
 use drust::storage::garage::GarageClient;
 

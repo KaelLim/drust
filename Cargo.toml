@@ -127,11 +127,60 @@ path = "tests/admin_pat_bearer.rs"
 name = "admin_pat_reroll"
 path = "tests/admin_pat_reroll.rs"
 [[test]]
+name = "g_audit"
+path = "tests/g_audit.rs"
+[[test]]
+# Isolation exception (#925 T3): measures that a retention pass drops NO
+# inbound audit row, a count over the whole process's audit traffic — and it
+# installs the writer it counts through the first-write-wins
+# `audit_db::init_globals` OnceLock that audit_middleware also races for. Its
+# own header asks for a binary to itself.
+name = "audit_retention_no_drop"
+path = "tests/audit_retention_no_drop.rs"
+[[test]]
 name = "g_auth"
 path = "tests/g_auth.rs"
 [[test]]
+name = "g_egress"
+path = "tests/g_egress.rs"
+[[test]]
+# Isolation exception (#925 T3): asserts on audit rows in the DB it installs
+# via the first-write-wins `audit_db::init_globals` OnceLock, which
+# egress_config — which asserts on its own DB the same way — also races for
+# inside g_egress.
+name = "egress_http_fetch"
+path = "tests/egress_http_fetch.rs"
+[[test]]
+name = "g_file"
+path = "tests/g_file.rs"
+[[test]]
+name = "g_fts"
+path = "tests/g_fts.rs"
+[[test]]
+name = "g_functions"
+path = "tests/g_functions.rs"
+[[test]]
 name = "g_mcp"
 path = "tests/g_mcp.rs"
+[[test]]
+name = "g_policy"
+path = "tests/g_policy.rs"
+[[test]]
+name = "g_record"
+path = "tests/g_record.rs"
+[[test]]
+name = "g_rpc"
+path = "tests/g_rpc.rs"
+[[test]]
+# Isolation exception (#925 T3): asserts on audit rows in the DB it installs
+# via the first-write-wins `audit_db::init_globals` OnceLock, which
+# rpc_query_kind — which asserts on its own DB the same way — also races for
+# inside g_rpc.
+name = "rpc_v2_mutation"
+path = "tests/rpc_v2_mutation.rs"
+[[test]]
+name = "g_storage"
+path = "tests/g_storage.rs"
 [[test]]
 name = "g_tenant"
 path = "tests/g_tenant.rs"
@@ -142,29 +191,14 @@ path = "tests/g_tenant.rs"
 name = "tenant_quota_requests"
 path = "tests/tenant_quota_requests.rs"
 [[test]]
+name = "g_webhook"
+path = "tests/g_webhook.rs"
+[[test]]
 name = "admin_theme"
 path = "tests/admin_theme.rs"
 [[test]]
 name = "aggregate"
 path = "tests/aggregate.rs"
-[[test]]
-name = "audit3_readscope_all_caps"
-path = "tests/audit3_readscope_all_caps.rs"
-[[test]]
-name = "audit3_sse_evict"
-path = "tests/audit3_sse_evict.rs"
-[[test]]
-name = "audit_middleware"
-path = "tests/audit_middleware.rs"
-[[test]]
-name = "audit_retention_no_drop"
-path = "tests/audit_retention_no_drop.rs"
-[[test]]
-name = "audit_sqlite"
-path = "tests/audit_sqlite.rs"
-[[test]]
-name = "audit_ui_routes"
-path = "tests/audit_ui_routes.rs"
 [[test]]
 name = "authorizer"
 path = "tests/authorizer.rs"
@@ -259,21 +293,6 @@ path = "tests/deploy4_login_version.rs"
 name = "disk_check_root"
 path = "tests/disk_check_root.rs"
 [[test]]
-name = "egress_backfill"
-path = "tests/egress_backfill.rs"
-[[test]]
-name = "egress_column"
-path = "tests/egress_column.rs"
-[[test]]
-name = "egress_config"
-path = "tests/egress_config.rs"
-[[test]]
-name = "egress_http_fetch"
-path = "tests/egress_http_fetch.rs"
-[[test]]
-name = "egress_webhook_gate"
-path = "tests/egress_webhook_gate.rs"
-[[test]]
 name = "end_to_end"
 path = "tests/end_to_end.rs"
 [[test]]
@@ -283,74 +302,11 @@ path = "tests/error_suggested_fix.rs"
 name = "explain_endpoint"
 path = "tests/explain_endpoint.rs"
 [[test]]
-name = "file_policy_expression"
-path = "tests/file_policy_expression.rs"
-[[test]]
-name = "files_rls_admin_ui"
-path = "tests/files_rls_admin_ui.rs"
-[[test]]
-name = "files_rls_policy"
-path = "tests/files_rls_policy.rs"
-[[test]]
-name = "files_rls_read"
-path = "tests/files_rls_read.rs"
-[[test]]
-name = "files_rls_schema"
-path = "tests/files_rls_schema.rs"
-[[test]]
-name = "files_rls_upload"
-path = "tests/files_rls_upload.rs"
-[[test]]
-name = "file_visibility"
-path = "tests/file_visibility.rs"
-[[test]]
 name = "filter_composition"
 path = "tests/filter_composition.rs"
 [[test]]
 name = "fts_deadline"
 path = "tests/fts_deadline.rs"
-[[test]]
-name = "fts_index_lifecycle"
-path = "tests/fts_index_lifecycle.rs"
-[[test]]
-name = "fts_query"
-path = "tests/fts_query.rs"
-[[test]]
-name = "fts_surface"
-path = "tests/fts_surface.rs"
-[[test]]
-name = "fts_write_rpc"
-path = "tests/fts_write_rpc.rs"
-[[test]]
-name = "functions_caller_enforcement"
-path = "tests/functions_caller_enforcement.rs"
-[[test]]
-name = "functions_caller_escalation"
-path = "tests/functions_caller_escalation.rs"
-[[test]]
-name = "functions_dispatch"
-path = "tests/functions_dispatch.rs"
-[[test]]
-name = "functions_invoke_acl_config"
-path = "tests/functions_invoke_acl_config.rs"
-[[test]]
-name = "functions_invoke_gate"
-path = "tests/functions_invoke_gate.rs"
-[[test]]
-name = "functions_isolation"
-path = "tests/functions_isolation.rs"
-[[test]]
-name = "functions_mcp"
-path = "tests/functions_mcp.rs"
-[[test]]
-name = "functions_rest"
-path = "tests/functions_rest.rs"
-[[test]]
-name = "functions_schema"
-path = "tests/functions_schema.rs"
-[[test]]
-name = "functions_wasm_real"
-path = "tests/functions_wasm_real.rs"
 [[test]]
 name = "host_files_owner_only"
 path = "tests/host_files_owner_only.rs"
@@ -388,30 +344,6 @@ path = "tests/owner_field_records.rs"
 name = "owner_field"
 path = "tests/owner_field.rs"
 [[test]]
-name = "policy_backward_compat"
-path = "tests/policy_backward_compat.rs"
-[[test]]
-name = "policy_config_rest"
-path = "tests/policy_config_rest.rs"
-[[test]]
-name = "policy_deny_surfaces"
-path = "tests/policy_deny_surfaces.rs"
-[[test]]
-name = "policy_expression"
-path = "tests/policy_expression.rs"
-[[test]]
-name = "policy_mcp"
-path = "tests/policy_mcp.rs"
-[[test]]
-name = "policy_read_enforcement"
-path = "tests/policy_read_enforcement.rs"
-[[test]]
-name = "policy_sse"
-path = "tests/policy_sse.rs"
-[[test]]
-name = "policy_write_enforcement"
-path = "tests/policy_write_enforcement.rs"
-[[test]]
 name = "pragma_optimize_smoke"
 path = "tests/pragma_optimize_smoke.rs"
 [[test]]
@@ -439,33 +371,6 @@ path = "tests/rate_limit.rs"
 name = "reconcile_pending"
 path = "tests/reconcile_pending.rs"
 [[test]]
-name = "record_history_capture"
-path = "tests/record_history_capture.rs"
-[[test]]
-name = "record_history_read"
-path = "tests/record_history_read.rs"
-[[test]]
-name = "record_history_retention"
-path = "tests/record_history_retention.rs"
-[[test]]
-name = "record_history_rpc"
-path = "tests/record_history_rpc.rs"
-[[test]]
-name = "records_body_limit"
-path = "tests/records_body_limit.rs"
-[[test]]
-name = "records_crud"
-path = "tests/records_crud.rs"
-[[test]]
-name = "records_list_structured"
-path = "tests/records_list_structured.rs"
-[[test]]
-name = "records_list_user_caps"
-path = "tests/records_list_user_caps.rs"
-[[test]]
-name = "records_user_filter_denied"
-path = "tests/records_user_filter_denied.rs"
-[[test]]
 name = "returning_mcp_parity"
 path = "tests/returning_mcp_parity.rs"
 [[test]]
@@ -480,21 +385,6 @@ path = "tests/rooms_rest_publish.rs"
 [[test]]
 name = "rooms_ws"
 path = "tests/rooms_ws.rs"
-[[test]]
-name = "rpc_prepare_cached_staleness"
-path = "tests/rpc_prepare_cached_staleness.rs"
-[[test]]
-name = "rpc_query_kind"
-path = "tests/rpc_query_kind.rs"
-[[test]]
-name = "rpc_user_id_spoof"
-path = "tests/rpc_user_id_spoof.rs"
-[[test]]
-name = "rpc_v2_create_validation"
-path = "tests/rpc_v2_create_validation.rs"
-[[test]]
-name = "rpc_v2_mutation"
-path = "tests/rpc_v2_mutation.rs"
 [[test]]
 name = "schema_description_read"
 path = "tests/schema_description_read.rs"
@@ -528,24 +418,6 @@ path = "tests/sse_realtime_gating.rs"
 [[test]]
 name = "sse"
 path = "tests/sse.rs"
-[[test]]
-name = "storage_disk"
-path = "tests/storage_disk.rs"
-[[test]]
-name = "storage_files_helpers"
-path = "tests/storage_files_helpers.rs"
-[[test]]
-name = "storage_garage_admin"
-path = "tests/storage_garage_admin.rs"
-[[test]]
-name = "storage_garage_signing"
-path = "tests/storage_garage_signing.rs"
-[[test]]
-name = "storage_meta_migration"
-path = "tests/storage_meta_migration.rs"
-[[test]]
-name = "storage_tenant_db"
-path = "tests/storage_tenant_db.rs"
 [[test]]
 name = "strict_new_collection"
 path = "tests/strict_new_collection.rs"
@@ -594,21 +466,6 @@ path = "tests/vector_storage.rs"
 [[test]]
 name = "webhook_concurrency"
 path = "tests/webhook_concurrency.rs"
-[[test]]
-name = "webhook_dns_rebind"
-path = "tests/webhook_dns_rebind.rs"
-[[test]]
-name = "webhook_egress_per_attempt"
-path = "tests/webhook_egress_per_attempt.rs"
-[[test]]
-name = "webhooks_migration"
-path = "tests/webhooks_migration.rs"
-[[test]]
-name = "webhooks"
-path = "tests/webhooks.rs"
-[[test]]
-name = "webhook_url_validation"
-path = "tests/webhook_url_validation.rs"
 [[test]]
 name = "x_drust_version_header"
 path = "tests/x_drust_version_header.rs"

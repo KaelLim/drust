@@ -1,5 +1,5 @@
 mod helpers;
-mod webhooks_common;
+use crate::webhooks_common;
 use axum::body::Body;
 use axum::http::{Request, header};
 use drust::tenant::webhook_dispatcher::{

@@ -23,7 +23,7 @@
 //! is pinned back to the local `FakeHook` with an injected resolver, the same
 //! trick `tests/webhook_dns_rebind.rs` case 2 uses.
 
-mod webhooks_common;
+use crate::webhooks_common;
 use webhooks_common::FakeHook;
 
 use drust::storage::meta::open_meta;

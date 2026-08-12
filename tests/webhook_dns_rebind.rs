@@ -21,7 +21,7 @@
 //! `deliver_for_test`; cases 1, 3, 4 retain the production code path
 //! (pre_check = None → real `resolve_public`).
 
-mod webhooks_common;
+use crate::webhooks_common;
 use webhooks_common::FakeHook;
 
 use drust::tenant::webhook_dispatcher::{
