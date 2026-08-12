@@ -9,6 +9,7 @@ pub mod webhook_resolver;
 pub use webhook_dispatcher::WebhookDispatcher;
 pub mod auth_cache;
 pub mod file_caps;
+pub mod file_policy_routes;
 pub mod mcp_dispatch;
 pub mod oauth_admin_routes;
 pub mod oauth_config;
@@ -327,6 +328,16 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 let b = bus.clone();
                 move |ext, path| policy_routes::delete_policy(ext, path, b.clone())
             }),
+        )
+        // v1.63 (#950-B) — Files-RLS prefix policy registry. Tenant-scoped, not
+        // collection-scoped: it governs `_system_files`, which is one table per
+        // tenant rather than a user collection. Service-only on all three verbs
+        // (enforced inline in the handlers, like the collection-policy routes).
+        .route(
+            "/t/{tenant}/file-policies",
+            put(file_policy_routes::put_file_policy)
+                .get(file_policy_routes::list_file_policies)
+                .delete(file_policy_routes::clear_file_policy),
         )
         .route(
             "/t/{tenant}/collections/{coll}/description",

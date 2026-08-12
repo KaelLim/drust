@@ -588,6 +588,55 @@ fn backfill_egress_allowlist(
     Ok(())
 }
 
+/// v1.63 (#950-B) — one-time, per-tenant seed of the Files-RLS ROOT policy
+/// (`'' → public_read=1`).
+///
+/// v1.63 makes an unmatched file owner-scoped, and every legacy row was
+/// uploaded as `"service"` with a NULL `path` — so without this seed, upgrading
+/// would hide every existing file from every end user that can read it today.
+/// The root rule reproduces the pre-v1.63 rule exactly: the file cap is the only
+/// door. A tenant opts INTO deny-by-default by clearing it
+/// (`DELETE /t/<id>/file-policies?prefix=`).
+///
+/// Run-once by the `tenants.file_policy_seeded` marker, for the reason the
+/// egress backfill above has one: `run_migrations` runs on EVERY boot, so a bare
+/// `INSERT OR IGNORE` would resurrect a DELIBERATELY cleared root policy once
+/// per restart — silently re-opening a prefix an operator closed (the v1.41.5
+/// idempotency invariant). Seeding and stamping happen in the same pass, and
+/// tenants created after v1.63 are stamped at create time (`make_tenant_inner`)
+/// so this never touches them at all.
+///
+/// Must run AFTER `migrate_tenant_db`, which is what creates
+/// `_system_file_policy` on an upgraded tenant. Best-effort: a tenant with no
+/// `data.sqlite` (soft-deleted, directory moved to `_trash`) is skipped WITHOUT
+/// stamping, so it is seeded correctly if it ever comes back — the probe costs
+/// one `stat` per boot.
+fn seed_file_policy_root(meta: &Connection, tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
+    // Run-once guard. An absent row / read error resolves to "done" so a
+    // vanished tenant is never looped on.
+    let done: i64 = meta
+        .query_row(
+            "SELECT COALESCE(file_policy_seeded, 0) FROM tenants WHERE id = ?1",
+            [tid],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    if done != 0 {
+        return Ok(());
+    }
+    let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
+    if !path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(&path)?;
+    crate::storage::file_policy::seed_root_policy(&conn)?;
+    meta.execute(
+        "UPDATE tenants SET file_policy_seeded = 1 WHERE id = ?1",
+        [tid],
+    )?;
+    Ok(())
+}
+
 fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
     let open = original_sql.find('(')?;
     let close = original_sql.rfind(')')?;
@@ -1212,6 +1261,18 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
             report
                 .degraded
                 .push((tid.clone(), "egress_backfill", e.to_string()));
+        }
+        // v1.63 (#950-B) — one-time Files-RLS root policy seed, so an upgraded
+        // tenant's existing files stay readable to exactly the callers that can
+        // read them today. Run-once by the file_policy_seeded marker (see fn
+        // doc). Same best-effort posture as the egress backfill above: a miss
+        // is degraded maintenance retried next boot, NOT a serving-blocking
+        // failure, so it never touches tenants_failed (the 503 door).
+        if let Err(e) = seed_file_policy_root(meta, tenants_root, &tid) {
+            tracing::error!(tenant = %tid, error = ?e, "file policy root seed failed (tenant still serves; retries next boot)");
+            report
+                .degraded
+                .push((tid.clone(), "file_policy_seed", e.to_string()));
         }
         // v1.43 — boot-time STRICT rebuild of pre-STRICT tenant collections.
         // Runs AFTER migrate_tenant_db, on a dedicated bare connection (the

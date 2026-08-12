@@ -424,13 +424,25 @@ pub fn make_tenant_inner(
     // owner_admin_id — v1.50 tenant ownership: the creating admin owns the
     // tenant. On the recycle branch above the old row was hard-DELETEd, so
     // this INSERT stamps the NEW creator (never resurrects the old owner).
+    // file_policy_seeded = 1: same posture, same reason (v1.63, #950-B). This
+    // fn seeds the root file policy itself a few lines below, so the boot pass
+    // must never look at this tenant again — otherwise clearing the root
+    // (`DELETE /file-policies?prefix=`) would be undone on the next restart.
     conn.execute(
         "INSERT INTO tenants (id, name, quota_db_mb, quota_rows, egress_backfill_done, \
-         owner_admin_id) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+         file_policy_seeded, owner_admin_id) VALUES (?1, ?2, ?3, ?4, 1, 1, ?5)",
         rusqlite::params![id, name, quota_mb, quota_rows, owner_admin_id],
     )?;
-    // Create directory + data.sqlite file
-    let _ = open_write(data_dir, id)?;
+    // Create directory + data.sqlite file (fresh DDL via apply_schema), then
+    // seed the Files-RLS root policy `'' → public_read=1` onto that same fresh
+    // database. This is the ONE shared create seam for both HTTP creation
+    // faces, and the id-recycle branch above reaches it too (it deletes the
+    // directory, so this `open_write` rebuilds from scratch) — no extra wiring.
+    // Without the seed a brand-new tenant would be deny-by-default on files,
+    // which is a different product than the one an upgraded tenant gets.
+    let tenant_conn = open_write(data_dir, id)?;
+    crate::storage::file_policy::seed_root_policy(&tenant_conn)?;
+    drop(tenant_conn);
     std::fs::write(
         tenant_dir(data_dir, id).join("meta.json"),
         serde_json::to_vec_pretty(&json!({
