@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-10
+updated: 2026-08-13
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -52,12 +52,22 @@ Building needs `clang` + `libclang`: the rusqlite `preupdate_hook` feature force
 ## Tests
 
 > [!TIP]
-> Cost here is COMPILE, not run. Each `tests/*.rs` is its own binary statically linking the
-> drust lib + wasmtime, so a bare `cargo test <name>` still compiles **all** of them —
-> **only `--test <name>` limits what compiles.** The `Makefile` groups by the
-> `tests/<prefix>_*.rs` convention: `make test-lib` (fast inner loop), `make test-<prefix>`
-> (`make groups` lists them), `make test-all` (full gate). Per-task agents run `make
+> Cost here is COMPILE, not run. Every test binary statically links the drust lib +
+> wasmtime, so a bare `cargo test <name>` still compiles **all** of them — **only
+> `--test <name>` limits what compiles.** #925 merged 253 binaries into 38: 24 group
+> harnesses `tests/g_<group>.rs`, each `#[path]`-including its member files unchanged,
+> plus 14 targets that must keep a process to themselves. `make test-lib` (fast inner
+> loop), `make test-<group>` (= `cargo test --lib --test g_<group>`; `make groups` lists
+> the groups and their members), `make test-all` (full gate). Per-task agents run `make
 > test-lib` plus the relevant group; only the final review runs `make test-all`.
+
+Group membership is declared in the harness, not inferred from the filename, and
+`autotests = false` means an unregistered `tests/*.rs` would compile into nothing at all —
+so a new test file either joins its group harness with `#[path = "<file>.rs"] mod <file>;`
+or gets its own `[[test]]` entry, and build.rs's ninth gate
+(`build_support/test_targets_gate.rs`) fails the build on a file that is neither, or one
+registered twice. Group table, the 14 standalone targets and the collision rule are in
+[`.claude/rules/build-deploy.md`](.claude/rules/build-deploy.md) §Tests.
 
 Never `cargo test --release` — LTO plus `codegen-units = 1` makes it take 40+ minutes. The
 one exception is the argon2 timing test. The authoritative pre-release gate is
@@ -346,7 +356,7 @@ the glob fires, just read the file.
 
 | File | Fires on | Covers |
 |---|---|---|
-| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**` | build toolchain, test-compile economics, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
+| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
 | `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
