@@ -8,10 +8,9 @@
 //!
 //! 1. **A hidden file answers 404, never 403.** A 403 would confirm the object
 //!    exists to a caller who may not see it — the same rule `owner_field` reads
-//!    follow. Scope note: this holds per-verb for the three single-file verbs
-//!    covered here. `GET /files` (list) is still unfiltered until T5, so a
-//!    `list`-capable caller can still enumerate what these 404s hide — the
-//!    plane-wide claim is T5's to earn.
+//!    follow. As of T5 this holds plane-wide: `GET /files` compiles the same
+//!    decision into SQL (`build_file_list_filter`), so the list face cannot
+//!    enumerate what the single-file faces hide.
 //! 2. **The longest matching prefix wins**, so `shared/hr/` can tighten what
 //!    `shared/` opened.
 //! 3. **A clause-less registry row denies everything.** The write face refuses
@@ -274,6 +273,34 @@ impl Ctx {
         self.send("DELETE", format!("/t/{tid}/files/{key}"), token, None)
             .await
             .status()
+    }
+
+    /// `GET /files` — the status plus the returned `(keys, file_count,
+    /// used_bytes)`, so a test can assert the totals describe the FILTERED set
+    /// rather than the tenant.
+    async fn list(&self, token: &str) -> (StatusCode, Vec<String>, i64, i64) {
+        let tid = &self.tid;
+        let resp = self
+            .send("GET", format!("/t/{tid}/files"), token, None)
+            .await;
+        let status = resp.status();
+        if status != StatusCode::OK {
+            return (status, Vec::new(), 0, 0);
+        }
+        let v = body_json(resp).await;
+        let mut keys: Vec<String> = v["files"]
+            .as_array()
+            .expect("files array")
+            .iter()
+            .map(|f| f["key"].as_str().unwrap().to_string())
+            .collect();
+        keys.sort();
+        (
+            status,
+            keys,
+            v["file_count"].as_i64().unwrap(),
+            v["used_bytes"].as_i64().unwrap(),
+        )
     }
 
     async fn put_policy(&self, body: Value) {
@@ -620,6 +647,115 @@ async fn passing_the_policy_does_not_grant_the_cap() {
         StatusCode::FORBIDDEN,
         "the per-verb cap layer is OUTSIDE the RLS gate and still refuses first"
     );
+}
+
+// ─── (i) the list face runs the same decision, compiled to SQL ───────────────
+
+/// The oracle T4 deliberately left open. Every upload here is 11 bytes
+/// (`hello-bytes`), so `used_bytes` is a direct read-out of WHICH rows the
+/// caller was shown — the totals must describe the caller's slice, not the
+/// tenant, or the list still leaks the tenant's size.
+#[tokio::test]
+async fn list_shows_each_caller_only_the_rows_its_single_file_verbs_would_serve() {
+    let c = stack("rls-rd-list").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    let (bob, _bid) = c.user("bob@x.com").await;
+    c.put_policy(json!({"prefix": "avatars/", "owner_scoped": true}))
+        .await;
+
+    let akey = c
+        .upload(&alice, "a.png", Some("avatars/alice/a.png"), None)
+        .await;
+    let bkey = c
+        .upload(&bob, "b.png", Some("avatars/bob/b.png"), None)
+        .await;
+    // Unfiled (`path` NULL): matches no folder rule, so it can only reach the
+    // SEEDED root — which is `public_read`, hence visible to everyone. This row
+    // is what a missing `path IS NULL` branch in the root arm silently drops.
+    let ukey = c.upload(&alice, "u.bin", None, None).await;
+
+    let (st, keys, count, used) = c.list(&alice).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        keys,
+        sorted([&akey, &ukey]),
+        "alice sees her own avatar and the open unfiled row — never bob's"
+    );
+    assert_eq!((count, used), (2, 22), "the totals describe alice's slice");
+
+    let (_, keys, count, used) = c.list(&bob).await;
+    assert_eq!(keys, sorted([&bkey, &ukey]));
+    assert_eq!((count, used), (2, 22));
+
+    let anon = c.anon.clone();
+    let (_, keys, _, _) = c.list(&anon).await;
+    assert_eq!(
+        keys,
+        sorted([&ukey]),
+        "anon has no id, so the owner-scoped prefix can never admit it; only \
+         the explicitly-open root does"
+    );
+
+    let svc = c.svc.clone();
+    let (_, keys, count, used) = c.list(&svc).await;
+    assert_eq!(keys, sorted([&akey, &bkey, &ukey]));
+    assert_eq!(
+        (count, used),
+        (3, 33),
+        "service bypasses the filter entirely — the management view is whole"
+    );
+}
+
+/// The list face must refuse the same way the single-file faces do when the
+/// registry cannot be read: an empty result would read as "nothing here",
+/// which is indistinguishable from a correct answer and would hide the outage.
+#[tokio::test]
+async fn list_refuses_when_the_registry_cannot_be_read() {
+    let c = stack("rls-rd-list-noreg").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    c.upload(&alice, "a.bin", Some("any/a.bin"), None).await;
+    assert_eq!(c.list(&alice).await.0, StatusCode::OK);
+
+    c.raw_tenant_sql("DROP TABLE \"_system_file_policy\"");
+
+    assert_eq!(
+        c.list(&alice).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "an undecidable registry is an error, never an empty list"
+    );
+    let svc = c.svc.clone();
+    assert_eq!(
+        c.list(&svc).await.0,
+        StatusCode::OK,
+        "service never reads the registry, so recovery stays possible"
+    );
+}
+
+/// A clause-less row denies its prefix on the list face too — the SQL arm
+/// collapses to `0=1` rather than falling through to "no restriction".
+#[tokio::test]
+async fn list_denies_a_clause_less_prefix() {
+    let c = stack("rls-rd-list-clauseless").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    c.raw_tenant_sql(
+        "INSERT INTO \"_system_file_policy\" (prefix, owner_scoped, public_read, \
+         select_policy_json, delete_policy_json) VALUES ('x/', 0, 0, NULL, NULL)",
+    );
+    let hidden = c.upload(&alice, "x.bin", Some("x/mine.bin"), None).await;
+    let visible = c.upload(&alice, "y.bin", Some("y/mine.bin"), None).await;
+
+    let (_, keys, _, _) = c.list(&alice).await;
+    assert_eq!(
+        keys,
+        sorted([&visible]),
+        "'restricted but unspecified' hides {hidden} from its own uploader"
+    );
+}
+
+fn sorted<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut v: Vec<String> = keys.into_iter().cloned().collect();
+    v.sort();
+    v
 }
 
 // ─── (h) edge `get-file` under the caller's identity ─────────────────────────

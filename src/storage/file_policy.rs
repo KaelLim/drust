@@ -25,9 +25,9 @@
 //! * **Config is service-only** on every face. An end user able to write its own
 //!   policy is a privilege escalation, not a feature.
 
-use crate::query::policy::{CollectionPolicies, Policy, validate_policy};
+use crate::query::policy::{CollectionPolicies, Policy, compile_policy_using, validate_policy};
 use crate::query::vector_filter::FilterAst;
-use crate::storage::file_path::validate_file_prefix;
+use crate::storage::file_path::{prefix_upper_bound, validate_file_prefix};
 use crate::storage::schema::{CollectionSchema, DmlVerb, Field};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -381,6 +381,170 @@ fn caller_is_uploader(
         Some(uid) => row_map.get("uploader").and_then(|v| v.as_str()) == Some(uid),
         None => false,
     }
+}
+
+/// **The list face of [`authorize_file`].** Returns a `WHERE` fragment plus its
+/// binds, in placeholder order, admitting exactly the rows `authorize_file`
+/// would admit for `FileAccess::Read`. `tests/file_policy_expression.rs` runs
+/// one corpus through both and asserts set equality — a change to either
+/// function is a change to both.
+///
+/// **Service callers never call this**: the `list` handler bypasses before
+/// loading policies, as every other RLS surface does for a service key.
+///
+/// ## Shape
+///
+/// One arm per registered prefix, OR-ed. Each arm owns exactly the rows whose
+/// LONGEST match it is, which is what turns "longest prefix wins" into a flat
+/// disjunction:
+///
+/// ```text
+/// (  ((path >= ?p AND path < ?p⁺) AND NOT (…deeper prefix ranges…) AND (decision))
+///  OR ((path IS NULL OR NOT (…every prefix range…))                 AND (decision)) )
+/// ```
+///
+/// Three details are load-bearing, each for a measured reason:
+///
+/// * **Binary range, never `substr` and never `LIKE`.** SQLite's `substr`
+///   counts CHARACTERS while Rust's `len()` counts BYTES, so a CJK prefix arm
+///   would never fire and the shorter, looser arm would win — a silent
+///   fail-OPEN (spec §前綴比對機制). `LIKE` is out because `%` and `_` are
+///   ordinary path characters and SQLite's `LIKE` is case-insensitive. The
+///   range is byte-exact under the default BINARY collation and can be served
+///   by `idx_system_files_path`.
+/// * **`path IS NULL OR …` is explicit.** `NOT (NULL >= ?)` is NULL, not TRUE,
+///   so without that branch every unfiled row would vanish from the root arm
+///   instead of being governed by it.
+/// * **Every fragment is parenthesized and the whole disjunction is wrapped**,
+///   so the result is safe to `AND` into any caller's `WHERE` and never depends
+///   on operator precedence — nor on `compile_policy_using` happening to emit an
+///   atomic fragment today. The group is never negated: wrapping it in `NOT`
+///   would turn each Unknown into an admission.
+pub fn build_file_list_filter(
+    policies: &[FilePolicyRow],
+    auth: &crate::auth::middleware::AuthCtx,
+) -> (String, Vec<rusqlite::types::Value>) {
+    let mut binds: Vec<rusqlite::types::Value> = Vec::new();
+    let mut arms: Vec<String> = Vec::new();
+
+    // Deepest first: only cosmetic for correctness (the arms are mutually
+    // exclusive by construction) but it makes a logged statement readable
+    // override-first, the way the rules are reasoned about.
+    let mut filed: Vec<&FilePolicyRow> = policies.iter().filter(|p| !p.prefix.is_empty()).collect();
+    filed.sort_by(|a, b| {
+        b.prefix
+            .len()
+            .cmp(&a.prefix.len())
+            .then_with(|| a.prefix.cmp(&b.prefix))
+    });
+
+    for p in &filed {
+        let mut parts = vec![prefix_range_sql(&p.prefix, &mut binds)];
+        // Subtract every DEEPER registration that lives under this one; those
+        // rows belong to that deeper arm. A deeper prefix's range is a subset
+        // of this one's, so this is the whole of "longest match wins".
+        for deeper in filed.iter().filter(|q| {
+            q.prefix.len() > p.prefix.len() && q.prefix.as_bytes().starts_with(p.prefix.as_bytes())
+        }) {
+            let range = prefix_range_sql(&deeper.prefix, &mut binds);
+            parts.push(format!("NOT {range}"));
+        }
+        parts.push(decision_sql(p, auth, &mut binds));
+        arms.push(format!("({})", parts.join(" AND ")));
+    }
+
+    // The unmatched set: unfiled rows, plus filed rows under no registration.
+    // It is governed by the root rule if one is registered, and by the
+    // owner-scoped default if not.
+    let unmatched = if filed.is_empty() {
+        "1=1".to_string()
+    } else {
+        let ranges: Vec<String> = filed
+            .iter()
+            .map(|q| prefix_range_sql(&q.prefix, &mut binds))
+            .collect();
+        format!("(\"path\" IS NULL OR NOT ({}))", ranges.join(" OR "))
+    };
+    let decision = match policies.iter().find(|p| p.prefix.is_empty()) {
+        Some(root) => decision_sql(root, auth, &mut binds),
+        None => owner_sql(auth, &mut binds),
+    };
+    arms.push(format!("({unmatched} AND {decision})"));
+
+    (format!("({})", arms.join(" OR ")), binds)
+}
+
+/// `path` starts with `prefix`, as a half-open byte range. Pushes both bounds.
+fn prefix_range_sql(prefix: &str, binds: &mut Vec<rusqlite::types::Value>) -> String {
+    binds.push(rusqlite::types::Value::Text(prefix.to_string()));
+    binds.push(rusqlite::types::Value::Text(prefix_upper_bound(prefix)));
+    "(\"path\" >= ? AND \"path\" < ?)".to_string()
+}
+
+/// `uploader = $auth`. Anon and service bind SQL NULL, so the comparison is
+/// Unknown and the row is excluded — the same answer `caller_is_uploader`
+/// gives them in memory.
+fn owner_sql(
+    auth: &crate::auth::middleware::AuthCtx,
+    binds: &mut Vec<rusqlite::types::Value>,
+) -> String {
+    binds.push(match auth.user_id() {
+        Some(id) => rusqlite::types::Value::Text(id.to_string()),
+        None => rusqlite::types::Value::Null,
+    });
+    "(\"uploader\" = ?)".to_string()
+}
+
+/// The per-prefix verdict — step (a)–(d) of [`authorize_file`] as SQL.
+fn decision_sql(
+    p: &FilePolicyRow,
+    auth: &crate::auth::middleware::AuthCtx,
+    binds: &mut Vec<rusqlite::types::Value>,
+) -> String {
+    // (a) clause-less ⇒ deny, exactly as in memory.
+    if !p.owner_scoped && p.select_policy.is_none() && !p.public_read {
+        return "(0=1)".to_string();
+    }
+    // Compile BEFORE pushing anything: a mid-arm bail-out after a push would
+    // desynchronize binds from placeholders for the whole statement.
+    let compiled = match &p.select_policy {
+        None => None,
+        Some(ast) => {
+            match compile_policy_using(
+                &file_policy_schema(),
+                ast,
+                &crate::query::policy::PolicyCtx::from_auth(auth),
+            ) {
+                Ok(c) => Some(c),
+                // A stored clause the compiler refuses (a hand-INSERTed row
+                // naming a column outside the synthetic schema). Denying the
+                // prefix is the fail-closed direction; dropping the clause and
+                // keeping the arm would publish it.
+                Err(e) => {
+                    tracing::error!(
+                        prefix = %p.prefix,
+                        error = %e,
+                        "file policy clause would not compile — denying the prefix"
+                    );
+                    return "(0=1)".to_string();
+                }
+            }
+        }
+    };
+    let mut parts: Vec<String> = Vec::new();
+    // (b) the owner clause AND-composes; it never replaces the policy.
+    if p.owner_scoped {
+        parts.push(owner_sql(auth, binds));
+    }
+    if let Some((frag, mut clause_binds)) = compiled {
+        parts.push(format!("({frag})"));
+        binds.append(&mut clause_binds);
+    }
+    // (d) reaching here with neither means `public_read=1` answered it.
+    if parts.is_empty() {
+        return "(1=1)".to_string();
+    }
+    format!("({})", parts.join(" AND "))
 }
 
 /// Seed the root policy `'' → public_read=1` if the tenant has no root rule.

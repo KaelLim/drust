@@ -614,7 +614,16 @@ async fn list_returns_empty_for_fresh_tenant() {
     );
     state.disk_min_free_pct = 0;
 
-    let response = list(State(state), Path(tenant_id.to_string())).await;
+    // Service identity: these two pin the WHOLE-tenant management view, which
+    // is the one caller v1.63's list filter deliberately does not touch.
+    let response = list(
+        State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
+        Path(tenant_id.to_string()),
+    )
+    .await;
 
     use axum::response::IntoResponse;
     let resp = response.into_response();
@@ -805,7 +814,16 @@ async fn list_returns_rows_when_files_exist() {
     );
     state.disk_min_free_pct = 0;
 
-    let response = list(State(state), Path(tenant_id.to_string())).await;
+    // Service identity: these two pin the WHOLE-tenant management view, which
+    // is the one caller v1.63's list filter deliberately does not touch.
+    let response = list(
+        State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
+        Path(tenant_id.to_string()),
+    )
+    .await;
 
     use axum::response::IntoResponse;
     let resp = response.into_response();

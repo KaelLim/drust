@@ -750,17 +750,23 @@ async fn upload_inner(
 }
 
 /// GET /drust/t/<tenant>/files
-/// Returns all rows in _system_files for this tenant, ordered by uploaded_at DESC.
+/// Returns the rows of _system_files this caller may read, ordered by
+/// uploaded_at DESC.
 ///
-/// **Not RLS-filtered yet — T5 wires `build_file_list_filter` here.** Until it
-/// does, a caller holding the `list` file cap enumerates `key` / `path` /
-/// `uploader` / `original_name` for rows `get_one`, `stream_bytes` and
-/// `delete_one` already answer 404 for. So the "a hidden file is
-/// indistinguishable from an absent one" property those three verbs now hold is
-/// **per-verb, not plane-wide**: this handler is the remaining oracle, and the
-/// non-oracular claim is only true once it filters too.
+/// Data-plane only (like `get_one`), so the identity is REQUIRED. v1.63 makes
+/// this the SQL face of the same rule the single-file verbs apply per row:
+/// `build_file_list_filter` compiles the caller's registry into a `WHERE`, so a
+/// `list`-capable caller can no longer enumerate `key` / `path` / `uploader` for
+/// rows `get_one` answers 404 for. Service bypasses before the registry is even
+/// read — the management view stays whole, and an unreadable registry does not
+/// lock a tenant out of its own recovery.
+///
+/// `file_count` / `used_bytes` are derived from the filtered rows on purpose:
+/// tenant-wide totals handed to a caller who may see two files would leak the
+/// size of everything else.
 pub async fn list(
     State(state): State<TenantFilesState>,
+    RequiredAuthCtx(ctx): RequiredAuthCtx,
     Path(tenant_id): Path<String>,
 ) -> axum::response::Response {
     let conn = match crate::storage::tenant_db::open_read(&state.data_root, &tenant_id) {
@@ -770,7 +776,41 @@ pub async fn list(
         }
     };
 
-    let mut stmt = match conn.prepare("SELECT * FROM _system_files ORDER BY uploaded_at DESC") {
+    // The filter rides the connection the handler already opened (spec
+    // §連線紀律). `None` = service: no filter at all.
+    let filter = if matches!(ctx, AuthCtx::Service { .. }) {
+        None
+    } else {
+        match crate::storage::file_policy::load_file_policies(&conn) {
+            Ok(policies) => Some(crate::storage::file_policy::build_file_list_filter(
+                &policies, &ctx,
+            )),
+            // An undecidable registry is an error, never an empty page: a
+            // silent `[]` is indistinguishable from a correct answer and would
+            // hide the outage the single-file verbs are already 404-ing on.
+            Err(e) => {
+                tracing::error!(error = %e, "file policy read failed — refusing to list");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "file policy read failed")
+                    .into_response();
+            }
+        }
+    };
+    let (sql, binds) = match &filter {
+        Some((where_sql, binds)) => (
+            format!("SELECT * FROM _system_files WHERE ({where_sql}) ORDER BY uploaded_at DESC"),
+            binds.as_slice(),
+        ),
+        None => (
+            "SELECT * FROM _system_files ORDER BY uploaded_at DESC".to_string(),
+            [].as_slice(),
+        ),
+    };
+
+    // Plain `prepare`, never `prepare_cached`: `SELECT *` reads its column set
+    // before stepping, and a cached statement would serve a stale one after DDL
+    // (CLAUDE.md invariant 11). The per-caller SQL text here would defeat a
+    // cache anyway.
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -781,7 +821,8 @@ pub async fn list(
         }
     };
 
-    let rows: Vec<FileRow> = match stmt.query_map([], map_file_row) {
+    let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let rows: Vec<FileRow> = match stmt.query_map(&refs[..], map_file_row) {
         Ok(it) => it.filter_map(|r| r.ok()).collect(),
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db query: {e}")).into_response();
