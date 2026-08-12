@@ -93,7 +93,8 @@ reachable by an untrusted caller.
 | `/t/<id>/records:batch`, `records:upsert` | **service only** on both REST and MCP |
 | `/t/<id>/collections/<c>/subscribe` (SSE) | anon, gated on `realtime_enabled` AND `anon_caps[select]` AND any select policy |
 | `/t/<id>/realtime` (WS rooms) | subscribe: anyone with a tenant token. publish: service, unless the per-tenant publish flags are on |
-| `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer`; `sign` and set-visibility stay service-only |
+| `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer` **AND** per-file gated by the prefix policy registry (`authorize_file` on read/delete, `build_file_list_filter` on list) — the two AND; `sign` and set-visibility stay service-only |
+| `/t/<id>/file-policies` (PUT / GET / DELETE) | **service only** on every verb, list included — the registry IS the tenant's file-access map |
 | `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
 | `/t/<id>/rpc/<name>` (`kind='query'`) | service; anon/user when `anon_callable` — runs a stored `FilterAst` template through the `/list` pipeline under the **caller's** identity, so owner-scope + RLS policy apply by construction (the structured camp; `RPC_ANON_OWNER_SCOPED` does not apply) |
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
@@ -104,7 +105,7 @@ reachable by an untrusted caller.
 | `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
-audit toggle) are **service-only** on every face. Storage tier and per-member tenant cap are
+file prefix policies, audit toggle) are **service-only** on every face. Storage tier and per-member tenant cap are
 **admin-plane only** — a tenant's own key must never raise its own limits.
 
 ## Invariants
@@ -300,6 +301,43 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     them. Head-vs-internal is decided by `pragma_table_list.type` (`virtual` vs `shadow`),
     never by name suffix.
 
+19. **No non-service caller has any path into the `public` bucket.** A public object is
+    served by Caddy straight out of Garage and never reaches drust, so publishing is a
+    permanent escape from every per-file gate — which makes it a service decision at **every
+    upload station**. The three stations with a caller identity share one decision
+    (`files::enforce_upload_visibility` — Mode-A multipart, tus `create`, and edge
+    `put-file` via `enforced_put_file`); the fourth, host-admin `/admin/files/upload`, is
+    owner-only management plane. On top sit the two after-the-fact doors, `PATCH`
+    set-visibility and `sign`, which stay **service-only** — `sign` because a signed URL is
+    redeemed with no caller at all (`signed_bytes.rs`), so authorization can only happen at
+    mint. A non-service caller asking for `public` is REFUSED
+    (`FILE_VISIBILITY_SERVICE_ONLY`), never silently downgraded. The per-station service
+    DEFAULT deliberately differs — Mode-A `public`, tus `private` — and "unifying" them
+    would publish every existing tus upload that omits the field; a test pins each direction.
+
+20. **File reads are gated twice, and the two file evaluators stay in lockstep.** Outer gate
+    = `file_caps_layer`'s per-verb cap; inner gate = the `_system_file_policy` prefix
+    registry, where a "folder" is a prefix of `_system_files.path` and the LONGEST match
+    wins. `authorize_file` (single file: `get_one`, bytes, `delete_one`, edge `get-file`)
+    and `build_file_list_filter` (the `list` SQL) must admit exactly the same rows — the
+    invariant-12 rule, second pair — pinned by the `tests/file_policy_expression.rs` corpus.
+    Four things fail CLOSED and must stay that way: no matching prefix ⇒ owner-scoped
+    (`uploader == $auth`); a clause-less row (`owner_scoped=0`, no select clause,
+    `public_read=0`) DENIES rather than meaning "unrestricted"; an unreadable registry or an
+    unserializable row refuses; and a hidden file answers **404**, never 403. Prefix
+    matching is a **binary byte range** (`path >= ?p AND path < ?p⁺`) — never `substr`
+    (SQLite counts characters, Rust counts bytes, and a CJK prefix then fails OPEN) and
+    never `LIKE` (`%`/`_` are ordinary path characters and `LIKE` is case-insensitive) — and
+    the root/default arm must spell out `path IS NULL OR …`, because `NOT (NULL >= ?)` is
+    NULL, not TRUE. **Gate polarity**: the three dual-mounted verbs (upload / stream /
+    delete) are split into an admin twin (`admin_tfiles_*`, explicit bypass) over a shared
+    `_inner`, and a data-plane handler taking `RequiredAuthCtx` that refuses with
+    `AUTH_CTX_MISSING`. "Extension absent ⇒ treat as service" is permitted **only** for
+    uploader stamping, never for a read or delete gate. Policy reads ride the connection the
+    handler already opened (REST `tenant_db::open_read`, MCP/edge the pooled reader) — never
+    a second open, never `get_or_create` on a read path, and never under the read-only
+    authorizer, which would deny its own `_system_*` read.
+
 ## Where the rest lives
 
 Mechanism moved into path-scoped rule files. Each loads automatically when you read a file
@@ -313,7 +351,7 @@ the glob fires, just read the file.
 | `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
-| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage}.rs`, `src/tenant/{uploads/**,file_caps.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | Garage integration, upload/delete ordering, file caps, tus, the stored-XSS defense |
+| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | Garage integration, upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, publish closure), the stored-XSS defense |
 | `.claude/rules/background-jobs.md` | `src/{functions,cron,rpc,safety}/**`, `src/tenant/{webhook*,egress,rooms}` | edge functions, cron semantics, stored-RPC guards, webhooks, egress, audit writer, SSE |
 | `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **eight `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
 

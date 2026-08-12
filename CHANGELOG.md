@@ -1,3 +1,96 @@
+## v1.63.0 — 2026-08-12
+
+**Files RLS — per-file access control for tenant objects (#950-B, Supabase-Storage-aligned).**
+Until now a file cap was the whole door: a caller holding `file.read` could read **every**
+object in the tenant, and `file.list` could enumerate all of them. v1.63 adds the inner
+gate. A file may carry a caller-declared logical `path` (`avatars/alice/me.png`); a "folder"
+is a **prefix** of that path, and a service-registered prefix rule decides who may read or
+delete the files under it, with the **longest matching prefix winning** — inheritance and
+override with no folder objects, no tree, and no rename problem. This is Phase 1's RLS model
+carried onto `_system_files`: `uploader` ≈ `storage.objects.owner`, `$auth` ≈ `auth.uid()`,
+and the same `FilterAst` policy engine, reused verbatim through a synthetic file schema.
+Physical storage is untouched — the Garage object key is still a flat server-minted UUID,
+`/public/*`, signed URLs and the byte responders are byte-identical.
+
+### Added
+- `_system_files.path` (nullable TEXT, + a partial index) — a caller-declared label, NULL =
+  unfiled. Accepted at upload by Mode-A multipart, tus `Upload-Metadata`, and the admin form
+  through one grammar choke point (`storage::file_path`: ≤512 bytes, segments 1–255 **bytes**,
+  no `.`/`..`/empty segment, no C0/DEL, no leading or trailing `/`). Stored verbatim — never
+  normalized, never trimmed — and immutable; it is not unique (same path, many rows).
+- `_system_file_policy`, a per-tenant prefix registry: `prefix` (`''` = tenant root, otherwise
+  a mandatory trailing `/`), `owner_scoped`, `public_read`, and optional `select` / `delete`
+  `FilterAst` clauses. A `delete` clause left absent inherits the select semantics.
+- Service-only faces: REST `PUT` / `GET` / `DELETE /t/<id>/file-policies`, MCP
+  `set_file_policy` / `list_file_policies` / `clear_file_policy` (tool count 73 → 76), and
+  admin-plane twins for the UI. All share one validate-then-write kernel.
+- Admin `_files` page: a `path` column, a render-time fake folder tree (grouped by everything
+  up to the last `/`, with the governing rule and row count per group, and unfiled rows in
+  their own group), a folder-rule card that registers and removes rules, and an optional
+  `path` on the admin upload form. Both locale bundles updated.
+- MCP `list_files` file objects carry `path`, so a client can reconcile a file against the
+  rules `list_file_policies` returns.
+- New error codes: `FILE_PATH_INVALID`, `FILE_VISIBILITY_SERVICE_ONLY`,
+  `FILE_POLICY_PREFIX_INVALID`, `FILE_POLICY_OPEN_REQUIRES_FLAG`,
+  `FILE_POLICY_OPERAND_UNSUPPORTED`, `FILE_POLICY_NOT_FOUND`.
+
+### Changed
+- **Existing tenants keep today's behaviour**: boot seeds each one the root rule
+  `'' → public_read=1` — "the file cap is the only door", exactly as before — guarded by a
+  run-once `tenants.file_policy_seeded` marker, because `run_migrations` runs on every boot
+  and a bare `INSERT OR IGNORE` would resurrect a root policy an operator deliberately
+  cleared. Tenants created after v1.63 are stamped at create. **Opt into deny-by-default with
+  `DELETE /t/<id>/file-policies?prefix=`**; unmatched files are then owner-scoped.
+- Three deliberate convergences for non-service callers, and nothing else moves: a Mode-A
+  upload is stamped with the **caller** rather than the literal `"service"`; a non-Privileged
+  edge `put-file` is stamped with the caller instead of `"function"`; and a non-service upload
+  is forced `private` (see Security). A tenant whose file caps are the default `'[]'`
+  (service-only) is byte-identical.
+
+### Security
+- **A non-service caller now has no path into the `public` bucket** (CLAUDE.md invariant 19).
+  A public object is served by Caddy straight out of Garage and never reaches drust, so
+  publishing permanently escapes every per-file gate. One shared decision
+  (`files::enforce_upload_visibility`) now covers all four upload stations: a non-service
+  caller gets `private` when it says nothing and is **refused**
+  (`FILE_VISIBILITY_SERVICE_ONLY`), never silently downgraded, when it asks for `public`. This
+  closes the edge hole where the WIT passed the guest's `visibility` string through untouched,
+  so a user-invoked function could publish. `sign` and `PATCH` set-visibility remain
+  service-only — a signed URL is redeemed with **no caller at all**, so authorization can only
+  happen at mint. Per-station service defaults deliberately still differ (Mode-A `public`, tus
+  `private`); a test pins each direction, because "unifying" them would publish every existing
+  tus upload that omits the field.
+- **Two gates, one decision, two evaluators in lockstep** (invariant 20).
+  `authorize_file` serves every single-file face (`get_one`, bytes, `delete_one`, edge
+  `get-file` — whose signature now takes an `AuthCtx`, since the default rule is
+  `uploader == $auth` and `TokenRole::User` carries no id); `build_file_list_filter` compiles
+  the same decision into the `list` SQL, so a `list`-capable caller can no longer enumerate the
+  key, path and uploader of rows the other verbs answer 404 for. `tests/file_policy_expression.rs`
+  asserts set equality between the two across a registry × caller × row corpus.
+- **Fail-closed in four places.** No matching prefix ⇒ owner-scoped. A clause-less row
+  (`owner_scoped=0`, no select clause, `public_read=0`) **denies** — the write face refuses to
+  create that shape and the read face denies it anyway, so a legacy or hand-INSERTed row can
+  never read as "unrestricted" (`public_read` is a stored column precisely so the open decision
+  is structural, the `select_read_access` lesson from v1.62). An unreadable registry or an
+  unserializable row refuses rather than admits. A hidden file answers **404**, not 403.
+- **Prefix matching is a binary byte range, never `substr` and never `LIKE`.** SQLite's
+  `substr` counts characters while Rust's `len()` counts bytes, so a CJK prefix arm would never
+  fire and the shorter, looser arm would win — a silent fail-**open**, measured during design.
+  `LIKE` is out because `%`/`_` are ordinary path characters and SQLite's `LIKE` is
+  case-insensitive. The root/default arm spells out `path IS NULL OR …`, because
+  `NOT (NULL >= ?)` is NULL rather than TRUE and every unfiled row would otherwise vanish.
+- **Gate polarity: the dual-mounted verbs were split.** `upload` / `stream_bytes` /
+  `delete_one` are mounted both on the data plane and under `/admin` (session cookie, no
+  bearer, therefore no `AuthCtx`). Reading "extension absent" as "service" is fail-open the
+  moment a read gate hangs off it, so each verb is now an explicit admin twin plus a
+  data-plane handler taking a **required** `AuthCtx` (`AUTH_CTX_MISSING`, typed) over one
+  shared inner. "Absent ⇒ service" survives only for uploader stamping, never for a read or
+  delete gate.
+- Policy reads ride the connection the handler already opened — no second open, no
+  `get_or_create` on a read path, and no read-only authorizer (it would deny its own
+  `_system_*` read). Service and the admin plane bypass before the registry is read, so a
+  broken registry cannot lock a tenant out of its own recovery.
+
 ## v1.62.0 — 2026-08-11
 
 **`kind='query'` stored RPCs — Supabase-style RLS reaches curated queries (#950 Phase 1).**
