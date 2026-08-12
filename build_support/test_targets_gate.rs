@@ -66,23 +66,221 @@ pub fn tests_relative(path: &str) -> String {
     p.strip_prefix("tests/").unwrap_or(p).to_string()
 }
 
-/// Every `#[path = "..."]` literal in one test source, in file order.
+/// Byte mask over a Rust source: `true` where the byte is live code, `false`
+/// inside a comment (`//`, `/* */`, nesting) or inside a string / char literal
+/// (including `b"…"`, `r"…"`, `br##"…"##`).
 ///
-/// Line comments are stripped first: commenting a harness member out MUST make
-/// the gate go red, which is exactly how the red/green proof is run. A `#[path]`
-/// that survives only inside a `//` comment is not a compiled include.
+/// This exists because the gate is a TEXT scan, and a text scan that only
+/// understands `//` is fail-OPEN in the one direction that matters: a `#[path]`
+/// left inside a `/* … */` block is invisible to rustc but looked like a live
+/// include, so commenting a harness member out that way dropped its tests while
+/// the build stayed green — precisely the silent-dark suite the gate exists to
+/// prevent.
+///
+/// String awareness is not optional either, and not theoretical: the real test
+/// tree contains `/public/*` inside multi-line string literals
+/// (`tests/upload_content_type_safety.rs`). A comment scanner blind to strings
+/// would open a block comment there and swallow every include after it — the
+/// opposite failure (a false red), but a broken build all the same.
+///
+/// `'` is a char literal only when it closes like one (`'x'`, `'\n'`,
+/// `'\u{1F600}'`); anything else is a lifetime tick and stays code.
+fn code_mask(source: &str) -> Vec<bool> {
+    let b = source.as_bytes();
+    let mut mask = vec![true; b.len()];
+    let mut i = 0usize;
+
+    // Blank `b[from..to)`, clamped to the source.
+    let blank = |mask: &mut [bool], from: usize, to: usize| {
+        for m in mask.iter_mut().take(to.min(b.len())).skip(from) {
+            *m = false;
+        }
+    };
+
+    while i < b.len() {
+        // Raw / byte string prefixes must be tested before the bare `"` arm:
+        // `r#"…"#` has no escapes and ends only on `"` + the same hash count.
+        if (b[i] == b'r' || b[i] == b'b')
+            && let Some((quote, hashes, raw)) = string_prefix_at(b, i)
+        {
+            let end = string_end(b, quote, hashes, raw);
+            blank(&mut mask, i, end);
+            i = end;
+            continue;
+        }
+        match b[i] {
+            b'/' if i + 1 < b.len() && b[i + 1] == b'/' => {
+                let mut j = i;
+                while j < b.len() && b[j] != b'\n' {
+                    j += 1;
+                }
+                blank(&mut mask, i, j);
+                i = j;
+            }
+            b'/' if i + 1 < b.len() && b[i + 1] == b'*' => {
+                let mut depth = 1usize;
+                let mut j = i + 2;
+                while j < b.len() && depth > 0 {
+                    if j + 1 < b.len() && b[j] == b'/' && b[j + 1] == b'*' {
+                        depth += 1;
+                        j += 2;
+                    } else if j + 1 < b.len() && b[j] == b'*' && b[j + 1] == b'/' {
+                        depth -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut mask, i, j);
+                i = j;
+            }
+            b'"' => {
+                let end = string_end(b, i, 0, false);
+                blank(&mut mask, i, end);
+                i = end;
+            }
+            b'\'' => match char_literal_end(b, i) {
+                Some(end) => {
+                    blank(&mut mask, i, end + 1);
+                    i = end + 1;
+                }
+                None => i += 1, // lifetime tick — live code
+            },
+            _ => i += 1,
+        }
+    }
+    mask
+}
+
+/// If a string-literal prefix starts at `i` (`b"`, `r"`, `r#"`, `br##"`, …),
+/// return `(index of the opening quote, hash count, is_raw)`. `None` when the
+/// byte is just part of an identifier (`for`, `bytes`, a variable named `r`).
+fn string_prefix_at(b: &[u8], i: usize) -> Option<(usize, usize, bool)> {
+    if i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_') {
+        return None;
+    }
+    let mut j = i;
+    if b[j] == b'b' {
+        j += 1;
+    }
+    let mut raw = false;
+    if j < b.len() && b[j] == b'r' {
+        raw = true;
+        j += 1;
+    }
+    if j == i {
+        return None; // consumed neither `b` nor `r`
+    }
+    let mut hashes = 0usize;
+    if raw {
+        while j < b.len() && b[j] == b'#' {
+            hashes += 1;
+            j += 1;
+        }
+    }
+    if j < b.len() && b[j] == b'"' {
+        Some((j, hashes, raw))
+    } else {
+        None
+    }
+}
+
+/// One past the closing quote of the string literal whose opening quote is at
+/// `quote`. Unterminated literals end at EOF rather than panicking — this runs
+/// in a build script over files that may be mid-edit.
+fn string_end(b: &[u8], quote: usize, hashes: usize, raw: bool) -> usize {
+    let mut j = quote + 1;
+    while j < b.len() {
+        if !raw && b[j] == b'\\' {
+            j += 2;
+            continue;
+        }
+        if b[j] == b'"' {
+            let close = j + 1;
+            if !raw
+                || b[close..]
+                    .iter()
+                    .take(hashes)
+                    .filter(|c| **c == b'#')
+                    .count()
+                    == hashes
+            {
+                return close + if raw { hashes } else { 0 };
+            }
+        }
+        j += 1;
+    }
+    b.len()
+}
+
+/// Index of the closing `'` when a char literal starts at `i`, else `None`
+/// (which means the tick opened a lifetime, not a literal).
+fn char_literal_end(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    if j >= b.len() {
+        return None;
+    }
+    if b[j] == b'\\' {
+        j += 1;
+        if j >= b.len() {
+            return None;
+        }
+        if b[j] == b'u' {
+            // '\u{1F600}' — scan to the tick, bounded by the line.
+            while j < b.len() && b[j] != b'\'' && b[j] != b'\n' {
+                j += 1;
+            }
+            return (j < b.len() && b[j] == b'\'').then_some(j);
+        }
+        j += 1;
+    } else {
+        // One UTF-8 scalar; a `'` here is the empty-looking `'''` typo, not ours.
+        j += match b[j] {
+            0x00..=0x7f => 1,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            _ => 4,
+        };
+    }
+    (j < b.len() && b[j] == b'\'').then_some(j)
+}
+
+/// True when only whitespace separates `start` from the beginning of its line.
+fn is_first_token_on_line(source: &str, start: usize) -> bool {
+    source[..start]
+        .rsplit('\n')
+        .next()
+        .is_none_or(|before| before.trim().is_empty())
+}
+
+/// Every `#[path = "..."]` literal in one test source that rustc would actually
+/// act on, in file order.
+///
+/// Two conditions, both required, because the ONE thing this gate must never do
+/// is count a `#[path]` the compiler ignores — that is how a commented-out
+/// harness member goes dark with a green build:
+///
+/// 1. the attribute starts in live code (see `code_mask`): not inside `//`, not
+///    inside `/* … */`, not inside a string literal;
+/// 2. the attribute is the first non-whitespace token on its line, which is how
+///    every real `#[path]` site in `tests/` is written. This is the belt to
+///    `code_mask`'s braces: it independently rejects a `#[path = "…"]` that
+///    appears mid-line inside prose or a literal, so forging a phantom include
+///    edge takes two coincidences instead of one.
 pub fn path_includes(source: &str) -> Vec<String> {
     let re = regex_lite::Regex::new(r#"#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]"#)
         .expect("compile #[path] scan regex");
+    let mask = code_mask(source);
     let mut out = Vec::new();
-    for raw_line in source.lines() {
-        let line = match raw_line.find("//") {
-            Some(i) => &raw_line[..i],
-            None => raw_line,
-        };
-        for cap in re.captures_iter(line) {
-            out.push(cap.get(1).expect("capture group 1").as_str().to_string());
+    for cap in re.captures_iter(source) {
+        let start = cap.get(0).expect("whole match").start();
+        if !mask.get(start).copied().unwrap_or(false) {
+            continue; // inside a comment or a literal — rustc never sees it
         }
+        if !is_first_token_on_line(source, start) {
+            continue;
+        }
+        out.push(cap.get(1).expect("capture group 1").as_str().to_string());
     }
     out
 }
@@ -299,6 +497,80 @@ path = "tests/base_path_root.rs"
         assert_eq!(v[0].file, "mcp_read.rs");
     }
 
+    /// Same edit, block-comment flavour. This one was live fail-OPEN: wrapping
+    /// the include in `/* … */` left `cargo check` green while
+    /// `cargo test --test g_mcp` silently dropped that member's tests, because
+    /// the scanner only knew about `//`.
+    #[test]
+    fn red_when_a_harness_member_is_block_commented_out() {
+        let (m, mut sources) = green_fixture();
+        sources[0] = src(
+            "g_mcp.rs",
+            "/*\n#[path = \"mcp_read.rs\"]\nmod mcp_read;\n*/\n#[path = \"mcp_write.rs\"]\nmod mcp_write;\n",
+        );
+        let v = check_test_targets(&m, &sources);
+        assert_eq!(
+            v.len(),
+            1,
+            "block-commented include is not an include: {v:?}"
+        );
+        assert_eq!(v[0].file, "mcp_read.rs");
+        assert_eq!(v[0].rule, "unregistered-test-file");
+    }
+
+    /// Rust block comments nest, so the closing `*/` of an inner block does not
+    /// end the outer one. A depth-blind scanner would treat everything after it
+    /// as live code again.
+    #[test]
+    fn red_when_a_harness_member_is_inside_a_nested_block_comment() {
+        let (m, mut sources) = green_fixture();
+        sources[0] = src(
+            "g_mcp.rs",
+            "/* outer /* inner */\n#[path = \"mcp_read.rs\"]\nmod mcp_read;\n*/\n#[path = \"mcp_write.rs\"]\nmod mcp_write;\n",
+        );
+        let v = check_test_targets(&m, &sources);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].file, "mcp_read.rs");
+    }
+
+    /// The other half of the same textual-scan class: a `#[path = "…"]` that
+    /// only exists inside a string literal must not forge an include edge and
+    /// launder an unregistered file into the reached set.
+    #[test]
+    fn a_path_attribute_inside_a_string_literal_does_not_register_a_file() {
+        let (m, mut sources) = green_fixture();
+        sources.push(src("orphan.rs", "#[test]\nfn t() {}\n"));
+        // A reached member "mentions" orphan.rs in a doc line and in a literal.
+        sources[1] = src(
+            "mcp_read.rs",
+            "#[path = \"helpers.rs\"]\nmod helpers;\n//! see #[path = \"orphan.rs\"]\nconst S: &str = r#\"\n#[path = \"orphan.rs\"]\n\"#;\n",
+        );
+        sources.sort();
+        let v = check_test_targets(&m, &sources);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].file, "orphan.rs");
+        assert_eq!(v[0].rule, "unregistered-test-file");
+    }
+
+    /// The false-RED direction, and not hypothetical: the real tree has
+    /// `/public/*` inside multi-line string literals
+    /// (tests/upload_content_type_safety.rs). A comment scanner blind to
+    /// strings opens a block comment there and swallows every include that
+    /// follows — turning a green tree into a build failure.
+    #[test]
+    fn a_slash_star_inside_a_string_does_not_swallow_later_includes() {
+        let s = "const C: &str = \"the Caddy /public/* layer\";\n#[path = \"a.rs\"]\nmod a;\n";
+        assert_eq!(path_includes(s), vec!["a.rs"]);
+
+        let raw = "const C: &str = r#\"/admin/* and a \" quote\"#;\n#[path = \"b.rs\"]\nmod b;\n";
+        assert_eq!(path_includes(raw), vec!["b.rs"]);
+
+        // Char literals and lifetimes must not desync the scanner either:
+        // `'"'` is a real occurrence in tests/batch_insert.rs.
+        let quoted_char = "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\\\"\\\"\") }\n#[path = \"c.rs\"]\nmod c;\n";
+        assert_eq!(path_includes(quoted_char), vec!["c.rs"]);
+    }
+
     #[test]
     fn red_when_a_brand_new_test_file_is_never_registered() {
         let (m, mut sources) = green_fixture();
@@ -463,5 +735,28 @@ path = "tests/base_path_root.rs"
     fn path_includes_tolerates_spacing_and_ignores_comments() {
         let s = "#[path=\"a.rs\"]\n#[ path = \"b.rs\" ]\n// #[path = \"c.rs\"]\nlet x = 1; // #[path = \"d.rs\"]\n";
         assert_eq!(path_includes(s), vec!["a.rs", "b.rs"]);
+    }
+
+    /// Every real `#[path]` site in `tests/` opens its line; a mid-line one is
+    /// prose or a literal, never a module declaration rustc acts on.
+    #[test]
+    fn path_includes_requires_the_attribute_to_open_its_line() {
+        assert_eq!(
+            path_includes("  \t#[path = \"a.rs\"]\nmod a;\n"),
+            vec!["a.rs"]
+        );
+        assert!(path_includes("let s = x; #[path = \"a.rs\"] mod a;\n").is_empty());
+        assert!(path_includes("//! carries #[path = \"helpers.rs\"] itself\n").is_empty());
+    }
+
+    #[test]
+    fn path_includes_ignores_block_comments_at_any_nesting_depth() {
+        assert!(path_includes("/*\n#[path = \"a.rs\"]\n*/\n").is_empty());
+        assert!(path_includes("/* /* x */\n#[path = \"a.rs\"]\n*/\n").is_empty());
+        // …and the block must actually close before code resumes.
+        assert_eq!(
+            path_includes("/* off */\n#[path = \"a.rs\"]\nmod a;\n"),
+            vec!["a.rs"]
+        );
     }
 }

@@ -1,4 +1,10 @@
-# drust test runner — grouped by the tests/<prefix>_*.rs filename convention.
+# drust test runner — one binary per merged group harness (#925).
+#
+# Group membership is declared, not inferred: each tests/g_<group>.rs lists its
+# members with `#[path]`, and Cargo.toml lists the harnesses. The old
+# tests/<prefix>_*.rs filename convention no longer decides anything (four group
+# names are not even prefixes of all their members) — it survives only in the
+# mid-migration fallback at the bottom of this file, which says so out loud.
 #
 # Why this exists: the cost of `cargo test` in this crate is COMPILE, not run.
 # Every test binary statically links the drust lib + wasmtime, and a bare
@@ -70,8 +76,21 @@ groups:
 # precedence over this pattern for those names.
 #
 # While the #925 migration is in flight, a group whose harness does not exist
-# yet falls back to the pre-merge behaviour — one --test flag per
-# tests/<group>_*.rs file — so every group stays runnable at every step.
+# yet falls back to one --test flag per tests/<group>_*.rs file. That glob is an
+# APPROXIMATION of the plan's group table, never the table itself, in both
+# directions:
+#
+#   - it MISSES members whose filename does not start with "<group>_" —
+#     audit skips audit3_*, file skips files_rls_*, record skips records_*,
+#     webhook skips webhooks.rs and webhooks_migration.rs;
+#   - it SWEEPS IN isolation-exception files that are not group members at all
+#     (admin_theme, cli_device_approval, fts_deadline, webhook_concurrency).
+#
+# So the fallback keeps a group runnable; it is not a baseline, and a green from
+# it does not mean the group is green. It prints that warning before and after
+# the run (last line wins the scrollback) rather than letting a partial green
+# pass for the whole group. The window closes per group the moment its
+# tests/g_<group>.rs lands.
 test-%:
 	@if [ -f tests/g_$*.rs ]; then \
 	  echo "cargo test --lib --test g_$*"; \
@@ -79,7 +98,18 @@ test-%:
 	else \
 	  files=$$(ls tests/$*_*.rs 2>/dev/null | sed 's#tests/##; s#\.rs$$##'); \
 	  if [ -z "$$files" ]; then echo "no tests/g_$*.rs and no tests/$*_*.rs (try: make groups)"; exit 1; fi; \
+	  warn() { \
+	    echo "" >&2; \
+	    echo "WARNING: tests/g_$*.rs does not exist yet — running the tests/$*_*.rs prefix" >&2; \
+	    echo "WARNING: glob instead. That glob is an approximation of the #925 group table:" >&2; \
+	    echo "WARNING: it can miss members not named '$*_*' and can pull in non-members." >&2; \
+	    echo "WARNING: Do NOT read this result as a baseline for group '$*'." >&2; \
+	    echo "" >&2; \
+	  }; \
+	  warn; \
 	  flags=$$(for f in $$files; do printf -- '--test %s ' "$$f"; done); \
 	  echo "cargo test --lib $$flags"; \
-	  cargo test --lib $$flags; \
+	  cargo test --lib $$flags; rc=$$?; \
+	  warn; \
+	  exit $$rc; \
 	fi
