@@ -73,7 +73,13 @@ fn require_file_cap(
 /// v1.42 — the creating bearer's stable identity, persisted on the session row
 /// (the existing `uploader` column, reused as the binding key — no migration).
 /// Service callers bypass binding; anon share one identity; users are distinct.
-fn session_identity(ctx: &crate::auth::middleware::AuthCtx) -> String {
+///
+/// v1.63 (#950-B): Mode-A stamps `_system_files.uploader` with this SAME
+/// function, so a row's uploader means the same thing whichever station wrote
+/// it — which is what lets one owner-scope rule cover both. The sentinels
+/// (`service` / `anon` / `function` / `admin`) cannot collide with a real user
+/// id: those are always server-minted `u-<uuid>`.
+pub(crate) fn session_identity(ctx: &crate::auth::middleware::AuthCtx) -> String {
     use crate::auth::middleware::AuthCtx;
     match ctx {
         AuthCtx::Service { .. } => "service".to_string(),
@@ -221,9 +227,48 @@ pub async fn create(
         .get("filename")
         .cloned()
         .unwrap_or_else(|| "upload.bin".to_string());
-    let visibility = match meta.get("visibility").map(|s| s.as_str()) {
-        Some("public") => "public",
-        _ => "private",
+    // v1.63 (#950-B) — the tus default has ALWAYS been private (`_ =>
+    // "private"`), and it stays private for service too: this is the station
+    // Mode-A was tightened TOWARD, never the other way round. The only new
+    // rule is that a non-service caller asking for `public` is refused rather
+    // than silently downgraded — see `files::enforce_upload_visibility`.
+    let requested = match meta.get("visibility").map(|s| s.as_str()) {
+        Some("public") => Some(Visibility::Public),
+        Some(_) => Some(Visibility::Private),
+        None => None,
+    };
+    let visibility = match crate::storage::files::enforce_upload_visibility(
+        matches!(ctx, crate::auth::middleware::AuthCtx::Service { .. }),
+        requested,
+        Visibility::Private,
+    ) {
+        Ok(Visibility::Public) => "public",
+        Ok(Visibility::Private) => "private",
+        Err(_) => {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                crate::storage::files::FILE_VISIBILITY_SERVICE_ONLY,
+                "only a service key may upload a public file; omit the `visibility` \
+                 metadata (or send `private`) and ask a service key to publish it",
+            );
+        }
+    };
+    // The caller-declared logical path (metadata only — the physical key is
+    // still `derive_key`'s server-minted one). Validated here, at the same
+    // choke point Mode-A uses, and carried on the session so finalize can copy
+    // it onto the `_system_files` row.
+    let path = match meta.get("path").filter(|p| !p.is_empty()) {
+        Some(p) => match crate::storage::file_path::validate_file_path(p) {
+            Ok(()) => Some(p.clone()),
+            Err(e) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    crate::storage::file_path::FILE_PATH_INVALID,
+                    &e,
+                );
+            }
+        },
+        None => None,
     };
     let content_type = meta.get("filetype").cloned().or_else(|| {
         mime_guess::from_path(&original_name)
@@ -278,9 +323,7 @@ pub async fn create(
         total_length,
         expires_at: expires_at.clone(),
         uploader: session_identity(&ctx),
-        // v1.63 (#950-B) T1 lands the COLUMN only; the `Upload-Metadata: path`
-        // intake (validate + carry into `_system_files` at finalize) is T2.
-        path: None,
+        path,
     };
     if let Err(e) = insert_session(&t.pool, row).await {
         let _ = tokio::fs::remove_file(&spool).await; // compensate
@@ -553,6 +596,9 @@ async fn finalize_and_respond(
         let vis = sess.visibility.clone();
         let total = sess.total_length;
         let uploader = sess.uploader.clone();
+        // v1.63 (#950-B) — the path declared at `create` rides the session row
+        // to here; finalize is the only place it reaches `_system_files`.
+        let path = sess.path.clone();
         if let Err(e) = t
             .pool
             .with_writer(move |c| {
@@ -576,9 +622,9 @@ async fn finalize_and_respond(
                 c.execute(
                     "INSERT OR IGNORE INTO _system_files
                    (key, original_name, content_type, size_bytes, content_disposition,
-                    visibility, cache_control, meta_json, uploader)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
-                    rusqlite::params![key, on, ct, total, disp_mode, vis, cc, uploader],
+                    visibility, cache_control, meta_json, uploader, path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
+                    rusqlite::params![key, on, ct, total, disp_mode, vis, cc, uploader, path],
                 )
                 .map(|_| ())
             })

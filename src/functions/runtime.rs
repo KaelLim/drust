@@ -532,10 +532,16 @@ impl host::Host for StoreData {
                     !matches!(caller, CallerCtx::Privileged),
                     "non-privileged branch reached with Privileged caller"
                 );
+                // v1.63 (#950-B) — the row is stamped with the CALLER, in the
+                // same string shape `uploads::session_identity` writes on the
+                // REST stations, so `uploader == $auth` means the same thing
+                // whichever door the file came through.
+                let identity = crate::tenant::uploads::session_identity(&caller.to_auth_ctx());
                 crate::functions::enforce::enforced_put_file(
                     &self.host.mcp,
                     caller.role(),
                     &self.host.file_caps,
+                    &identity,
                     &key,
                     bytes,
                     &content_type,

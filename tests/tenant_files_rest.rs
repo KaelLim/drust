@@ -78,6 +78,11 @@ async fn stream_bytes_returns_404_when_row_missing() {
     // DB lookup. This confirms the 503 path is exercised correctly.
     let result = stream_bytes(
         State(state.clone()),
+        // v1.63 (#950-B) — the data-plane twin takes a REQUIRED identity; the
+        // admin mount uses `admin_tfiles_stream`, which takes none.
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
         Path((tenant_id.to_string(), "nonexistent-key.bin".to_string())),
     )
     .await;
@@ -482,6 +487,9 @@ async fn stream_bytes_returns_not_found_when_row_absent_with_garage() {
 
     let result = stream_bytes(
         State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
         Path((tenant_id.to_string(), "ghost-key.png".to_string())),
     )
     .await;
@@ -568,6 +576,14 @@ async fn upload_rejects_oversize_via_content_length_pre_check() {
 
     let app = axum::Router::new()
         .route("/t/{tenant}/files", axum::routing::post(upload))
+        // v1.63 (#950-B) — the data-plane handler REQUIRES an identity (in
+        // production `bearer_auth_layer` inserts it). Without this layer the
+        // request now 500s `AUTH_CTX_MISSING` before it can reach the
+        // Content-Length pre-check this test is about; that fail-closed
+        // polarity is pinned separately in tests/files_rls_upload.rs.
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
         .with_state(state);
 
     let response = tower::ServiceExt::oneshot(app, req).await.unwrap();
@@ -673,6 +689,9 @@ async fn delete_one_returns_404_for_missing_key() {
 
     let response = delete_one(
         State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
         Path((tenant_id.to_string(), "ghost-key.bin".to_string())),
     )
     .await;

@@ -752,9 +752,17 @@ impl MgmtState {
             PublicFilesState, admin_sign_url, admin_stream_bytes, delete_submit,
             list_page as public_files_list_page, reconcile_apply, reconcile_page, upload_submit,
         };
+        // v1.63 (#950-B) — the three dual-mounted verbs come from their ADMIN
+        // twins. The identically-named data-plane handlers take a required
+        // `AuthCtx` that this router (admin session, no bearer) cannot supply,
+        // so mounting them here would 500 every admin file action; the twins
+        // name `FileCaller::AdminPlane` explicitly instead of inferring
+        // "service" from a missing extension. `sign` / `visibility` stay
+        // shared: neither reads a caller identity.
         use crate::mgmt::tenant_files::{
-            TenantFilesState, delete_one as tfiles_delete, set_visibility_admin as tfiles_set_vis,
-            sign_url as tfiles_sign, stream_bytes as tfiles_stream, upload as tfiles_upload,
+            TenantFilesState, admin_tfiles_delete as tfiles_delete,
+            admin_tfiles_stream as tfiles_stream, admin_tfiles_upload as tfiles_upload,
+            set_visibility_admin as tfiles_set_vis, sign_url as tfiles_sign,
         };
         use crate::mgmt::tenants::{
             TenantsState, cmdk_tenants_json, create_tenant_form, create_tenant_json,

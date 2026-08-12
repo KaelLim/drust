@@ -69,6 +69,59 @@ async fn accepts_visibility_public_default() {
     assert_eq!(fields.original_name, "test.txt");
 }
 
+/// v1.63 (#950-B) — `visibility` alone cannot tell the data-plane gate whether
+/// the caller ASKED for public or merely said nothing, because the default IS
+/// public. `visibility_explicit` carries that difference, and getting it wrong
+/// either refuses every silent upload or lets a user publish.
+#[tokio::test]
+async fn reports_whether_visibility_was_sent() {
+    let mp = extract_multipart(&[("file", "hello", Some("test.txt"))]).await;
+    let fields = parse_upload_fields(mp).await.expect("should parse ok");
+    assert!(
+        !fields.visibility_explicit,
+        "an absent field must not read as an explicit `public`"
+    );
+
+    for sent in ["public", "private"] {
+        let mp = extract_multipart(&[
+            ("file", "hello", Some("test.txt")),
+            ("visibility", sent, None),
+        ])
+        .await;
+        let fields = parse_upload_fields(mp).await.expect("should parse ok");
+        assert!(fields.visibility_explicit, "{sent} was sent explicitly");
+    }
+}
+
+/// The `path` field goes through the one grammar choke point, byte-for-byte —
+/// no normalization, and an empty field is `None` rather than `Some("")`.
+#[tokio::test]
+async fn accepts_and_validates_the_path_field() {
+    let mp = extract_multipart(&[
+        ("file", "hello", Some("x.png")),
+        ("path", "照片/alice/x.png", None),
+    ])
+    .await;
+    let fields = parse_upload_fields(mp).await.expect("should parse ok");
+    assert_eq!(fields.path.as_deref(), Some("照片/alice/x.png"));
+
+    let mp = extract_multipart(&[("file", "hello", Some("x.png")), ("path", "", None)]).await;
+    let fields = parse_upload_fields(mp).await.expect("should parse ok");
+    assert_eq!(fields.path, None, "an empty path field is no path at all");
+
+    for bad in ["../x", "a//b", "/a", "a/"] {
+        let mp = extract_multipart(&[("file", "hello", Some("x.png")), ("path", bad, None)]).await;
+        let err = match parse_upload_fields(mp).await {
+            Ok(f) => panic!("{bad:?} must be rejected, parsed as {:?}", f.path),
+            Err(e) => e,
+        };
+        assert!(
+            err.starts_with("FILE_PATH_INVALID"),
+            "the caller gets a typed code for {bad:?}, got {err:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn accepts_visibility_private() {
     let mp = extract_multipart(&[

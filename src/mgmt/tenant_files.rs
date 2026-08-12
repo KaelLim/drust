@@ -6,17 +6,86 @@
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
-    http::{HeaderMap, StatusCode, header},
-    response::IntoResponse,
+    extract::{FromRequestParts, Multipart, Path, State},
+    http::{HeaderMap, StatusCode, header, request::Parts},
+    response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use std::sync::Arc;
 
+use crate::auth::middleware::AuthCtx;
 use crate::storage::{
     files::{FileRow, Owner, Visibility, build_public_url, map_file_row},
     garage::GarageClient,
 };
+
+/// v1.63 (#950-B) — the caller a file verb runs as.
+///
+/// Three of the Mode-A verbs (upload / stream / delete) are mounted TWICE: on
+/// the data plane behind `bearer_auth_layer`, and under `/admin` behind an
+/// admin session cookie. The admin mount has no bearer, so it has no
+/// `AuthCtx` — and "extension absent ⇒ treat as service" would be fail-OPEN
+/// the moment a read gate reads it (T4 does). The two mounts are therefore
+/// SEPARATE handlers over a shared `_inner`, and this enum is what they differ
+/// by: the admin twin names `AdminPlane` explicitly, and the data-plane
+/// handler cannot be reached at all without an identity (see
+/// [`RequiredAuthCtx`]).
+pub enum FileCaller {
+    /// Admin session (`/admin/tenants/{id}/files/*`) — management face, full
+    /// visibility, stamps uploads as `service` exactly as before the split.
+    AdminPlane,
+    /// Tenant bearer, resolved by `bearer_auth_layer`.
+    DataPlane(AuthCtx),
+}
+
+impl FileCaller {
+    /// Whether this caller has service power: the admin plane always, and a
+    /// data-plane `AuthCtx::Service` (shared service token, admin PAT, or
+    /// OAuth-issued token — all three are service-equivalent).
+    pub fn is_service(&self) -> bool {
+        match self {
+            FileCaller::AdminPlane => true,
+            FileCaller::DataPlane(ctx) => matches!(ctx, AuthCtx::Service { .. }),
+        }
+    }
+
+    /// The `uploader` stamp for a row this caller creates: `service` /
+    /// `anon` / the bare `u-…` user id. Same string shape tus has recorded
+    /// since v1.42, so both stations' rows compare against `$auth` identically.
+    pub fn uploader(&self) -> String {
+        match self {
+            FileCaller::AdminPlane => "service".to_string(),
+            FileCaller::DataPlane(ctx) => crate::tenant::uploads::session_identity(ctx),
+        }
+    }
+}
+
+/// A REQUIRED `AuthCtx` extractor: a data-plane file handler that cannot see
+/// who is calling refuses the request instead of guessing.
+///
+/// `Extension<AuthCtx>` would already reject, but with axum's generic 500 and
+/// no error code. This exists so the refusal is (a) typed
+/// (`AUTH_CTX_MISSING`), and (b) impossible to "fix" by relaxing it to an
+/// `Option` — the whole point of the v1.63 route split is that the data-plane
+/// handlers fail CLOSED on a missing identity, matching the polarity of
+/// `file_caps_layer` and `require_service_layer`.
+pub struct RequiredAuthCtx(pub AuthCtx);
+
+impl<S: Send + Sync> FromRequestParts<S> for RequiredAuthCtx {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        match parts.extensions.get::<AuthCtx>() {
+            Some(ctx) => Ok(RequiredAuthCtx(ctx.clone())),
+            None => Err(crate::error::json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "AUTH_CTX_MISSING",
+                "no authenticated identity on a data-plane file route; \
+                 refusing rather than assuming service",
+            )),
+        }
+    }
+}
 
 #[derive(serde::Deserialize, Default)]
 pub struct SignRequest {
@@ -124,13 +193,34 @@ pub async fn redirect_legacy_files_page(
     .into_response()
 }
 
-/// GET /drust/t/<tenant>/files/<key>/bytes
-/// Streams the file body. Auth via bearer_auth_layer (must be a service token
-/// for the tenant — anon tokens will be 403 by the dispatch layer for any
-/// non-list operation).
+/// GET /drust/t/<tenant>/files/<key>/bytes — data-plane twin.
+/// Streams the file body. The per-verb `read` cap is enforced by
+/// `file_caps_layer`; the identity is required here so the per-file RLS gate
+/// (T4) has one, and so a missing one is a refusal rather than an assumption.
 pub async fn stream_bytes(
     State(state): State<TenantFilesState>,
+    RequiredAuthCtx(ctx): RequiredAuthCtx,
     Path((tenant_id, key)): Path<(String, String)>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    stream_bytes_inner(state, FileCaller::DataPlane(ctx), tenant_id, key).await
+}
+
+/// GET /drust/admin/tenants/<id>/files/<key>/bytes — admin twin (no bearer,
+/// hence no `AuthCtx`; the admin session + ownership guard are the auth).
+pub async fn admin_tfiles_stream(
+    State(state): State<TenantFilesState>,
+    Path((tenant_id, key)): Path<(String, String)>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    stream_bytes_inner(state, FileCaller::AdminPlane, tenant_id, key).await
+}
+
+async fn stream_bytes_inner(
+    state: TenantFilesState,
+    // T4 (#950-B) reads this to run `authorize_file` on the row below. T2 only
+    // establishes that BOTH mounts can name their caller.
+    _caller: FileCaller,
+    tenant_id: String,
+    key: String,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     let garage = state.garage.clone().ok_or_else(|| {
         (
@@ -291,14 +381,48 @@ pub struct ListResponse {
     pub used_bytes: i64,
 }
 
-/// POST /drust/t/<tenant>/files
-/// Multipart upload (same field shape as admin route): file, visibility,
-/// disposition, cache_control, meta.  Resolves bucket via visibility, INSERTs
-/// into the per-tenant _system_files, PUTs to Garage.  Content-Length pre-check
-/// and best-effort disk check mirror the admin handler (Task 15).
+/// POST /drust/t/<tenant>/files — data-plane twin.
+/// Multipart upload (same field shape as the admin route): file, visibility,
+/// disposition, cache_control, meta, and (v1.63) the optional logical `path`.
+/// Resolves bucket via visibility, INSERTs into the per-tenant _system_files,
+/// PUTs to Garage.  Content-Length pre-check and best-effort disk check mirror
+/// the admin handler (Task 15).
+///
+/// v1.63 (#950-B): the row is stamped with the CALLER, and only a service
+/// caller may publish — see `upload_inner`.
 pub async fn upload(
     State(state): State<TenantFilesState>,
+    RequiredAuthCtx(ctx): RequiredAuthCtx,
     Path(tenant_id): Path<String>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> axum::response::Response {
+    upload_inner(
+        state,
+        FileCaller::DataPlane(ctx),
+        tenant_id,
+        headers,
+        multipart,
+    )
+    .await
+}
+
+/// POST /drust/admin/tenants/<id>/files/upload — admin twin. Stamps `service`
+/// and keeps the historical `public`-by-default, exactly as the single
+/// pre-v1.63 handler did for every caller.
+pub async fn admin_tfiles_upload(
+    State(state): State<TenantFilesState>,
+    Path(tenant_id): Path<String>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> axum::response::Response {
+    upload_inner(state, FileCaller::AdminPlane, tenant_id, headers, multipart).await
+}
+
+async fn upload_inner(
+    state: TenantFilesState,
+    caller: FileCaller,
+    tenant_id: String,
     headers: HeaderMap,
     multipart: Multipart,
 ) -> axum::response::Response {
@@ -352,6 +476,15 @@ pub async fn upload(
         Err(e) if e.starts_with("__413__") => {
             return (StatusCode::PAYLOAD_TOO_LARGE, e[7..].to_string()).into_response();
         }
+        // An illegal `path` is the one parse failure with its own code — the
+        // rest stay plain-text 400s, as they have been since Task 15.
+        Err(e) if e.starts_with(crate::storage::file_path::FILE_PATH_INVALID) => {
+            return crate::error::json_error(
+                StatusCode::BAD_REQUEST,
+                crate::storage::file_path::FILE_PATH_INVALID,
+                &e,
+            );
+        }
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
@@ -360,10 +493,35 @@ pub async fn upload(
         explicit_ct,
         body,
         visibility,
+        visibility_explicit,
         disposition,
         cache_control_override,
         meta_json,
+        path,
     } = fields;
+
+    // v1.63 (#950-B) — publishing is a service decision (see
+    // `files::enforce_upload_visibility`). Mode-A's service default stays
+    // `public`; a non-service caller gets `private` and is refused if it asked
+    // for `public`. Decided BEFORE the bucket/cache-control derivation below,
+    // so every later use sees the enforced value.
+    let requested = visibility_explicit.then_some(visibility);
+    let visibility = match crate::storage::files::enforce_upload_visibility(
+        caller.is_service(),
+        requested,
+        Visibility::Public,
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return crate::error::json_error(
+                StatusCode::FORBIDDEN,
+                crate::storage::files::FILE_VISIBILITY_SERVICE_ONLY,
+                "only a service key may upload a public file; omit `visibility` \
+                 (or send `private`) and ask a service key to publish it",
+            );
+        }
+    };
+    let uploader = caller.uploader();
 
     let size = body.len() as i64;
 
@@ -430,6 +588,8 @@ pub async fn upload(
         let meta_json_w = meta_json.clone();
         let disp_mode_w = disp_mode;
         let vis_str_w = vis_str;
+        let uploader_w = uploader.clone();
+        let path_w = path.clone();
         if let Err(e) = pool
             .with_writer(move |c| {
                 // Reject when this upload's `size` bytes would push the tenant
@@ -443,8 +603,8 @@ pub async fn upload(
                 c.execute(
                     "INSERT INTO _system_files
                      (key, original_name, content_type, size_bytes, content_disposition,
-                      visibility, cache_control, meta_json, uploader)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      visibility, cache_control, meta_json, uploader, path)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         &key_w,
                         &original_name_w,
@@ -454,7 +614,8 @@ pub async fn upload(
                         vis_str_w,
                         &cache_control_w,
                         &meta_json_w,
-                        "service",
+                        &uploader_w,
+                        &path_w,
                     ],
                 )
                 .map(|_| ())
@@ -600,12 +761,32 @@ pub async fn get_one(
     }
 }
 
-/// DELETE /drust/t/<tenant>/files/<key>
+/// DELETE /drust/t/<tenant>/files/<key> — data-plane twin.
 /// Removes the Garage object (idempotent on 404) then deletes the DB row.
 /// Returns 204 NO_CONTENT on success, 404 if the row doesn't exist.
 pub async fn delete_one(
     State(state): State<TenantFilesState>,
+    RequiredAuthCtx(ctx): RequiredAuthCtx,
     Path((tenant_id, key)): Path<(String, String)>,
+) -> axum::response::Response {
+    delete_one_inner(state, FileCaller::DataPlane(ctx), tenant_id, key).await
+}
+
+/// DELETE /drust/admin/tenants/<id>/files/<key> — admin twin.
+pub async fn admin_tfiles_delete(
+    State(state): State<TenantFilesState>,
+    Path((tenant_id, key)): Path<(String, String)>,
+) -> axum::response::Response {
+    delete_one_inner(state, FileCaller::AdminPlane, tenant_id, key).await
+}
+
+async fn delete_one_inner(
+    state: TenantFilesState,
+    // T4 (#950-B) evaluates the row's delete policy here, BEFORE the Garage
+    // delete below (an unauthorized delete must not destroy the object first).
+    _caller: FileCaller,
+    tenant_id: String,
+    key: String,
 ) -> axum::response::Response {
     let Some(garage) = state.garage.clone() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();

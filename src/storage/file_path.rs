@@ -26,6 +26,10 @@
 //!   uniqueness conflict would be an existence oracle for files the caller is
 //!   not allowed to see.
 
+/// Error code for a caller-declared path that violates the grammar. Every
+/// intake face reports this one code (HTTP 400, or a host-op `Err` prefix).
+pub const FILE_PATH_INVALID: &str = "FILE_PATH_INVALID";
+
 /// Maximum length of a whole path (or prefix), in BYTES — not characters.
 pub const MAX_PATH_BYTES: usize = 512;
 /// Maximum length of one `/`-separated segment, in BYTES.

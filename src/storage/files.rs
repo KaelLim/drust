@@ -22,6 +22,49 @@ pub enum Disposition {
     Attachment,
 }
 
+/// Error code returned when a non-service caller asks to publish an upload.
+pub const FILE_VISIBILITY_SERVICE_ONLY: &str = "FILE_VISIBILITY_SERVICE_ONLY";
+
+/// v1.63 (#950-B) — the ONE publish decision, shared by every upload station
+/// that has a caller identity (Mode-A multipart, tus create, edge `put-file`).
+///
+/// `public` objects are served by Caddy straight out of Garage and never reach
+/// drust, so per-file RLS cannot gate them: publishing is a permanent,
+/// irreversible-by-policy escape from the read path. It therefore stays a
+/// service decision at every station, and set-visibility stays service-only,
+/// which together mean a user has NO path to the public bucket.
+///
+/// * `is_service` — the caller is `AuthCtx::Service` (or the admin plane).
+/// * `requested` — what the caller asked for; `None` = the field was absent.
+/// * `service_default` — what a service caller gets when it asks for nothing.
+///   **This differs per station on purpose**: Mode-A multipart has always
+///   defaulted to `Public` and tus has always defaulted to `Private`. Do not
+///   "unify" them — flipping tus to public would publish every existing
+///   service upload that omits the field.
+///
+/// A non-service caller gets `Private` when it asks for nothing, and is
+/// REFUSED (never silently downgraded) when it asks for `Public`, so a client
+/// that believes it published something is told otherwise.
+pub fn enforce_upload_visibility(
+    is_service: bool,
+    requested: Option<Visibility>,
+    service_default: Visibility,
+) -> Result<Visibility, VisibilityRefused> {
+    if is_service {
+        return Ok(requested.unwrap_or(service_default));
+    }
+    match requested {
+        Some(Visibility::Public) => Err(VisibilityRefused),
+        Some(Visibility::Private) | None => Ok(Visibility::Private),
+    }
+}
+
+/// A non-service caller asked to publish. Carries no data — the station maps it
+/// to its own transport (HTTP 403 / host-op `Err`) with
+/// [`FILE_VISIBILITY_SERVICE_ONLY`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct VisibilityRefused;
+
 /// Bucket for the given visibility. Only two buckets exist host-wide:
 /// `public` (website=on, anonymous read via Caddy) and `private` (drust-
 /// proxied). Tenant vs admin ownership is encoded in the key prefix,
@@ -519,5 +562,50 @@ mod content_type_safety_tests {
             normalize_content_type_case("APPLICATION/RSS+XML"),
             "application/rss+xml"
         );
+    }
+
+    /// The full v1.63 publish matrix: (caller × requested × station default).
+    /// The two station defaults are deliberately different and both are pinned
+    /// here — a "harmonising" edit that flips tus to public fails this test.
+    #[test]
+    fn enforce_upload_visibility_matrix() {
+        use Visibility::{Private, Public};
+        // Service keeps its station's default and may ask for either.
+        assert_eq!(
+            enforce_upload_visibility(true, None, Public),
+            Ok(Public),
+            "Mode-A service default"
+        );
+        assert_eq!(
+            enforce_upload_visibility(true, None, Private),
+            Ok(Private),
+            "tus service default — must NOT become public"
+        );
+        assert_eq!(
+            enforce_upload_visibility(true, Some(Public), Private),
+            Ok(Public)
+        );
+        assert_eq!(
+            enforce_upload_visibility(true, Some(Private), Public),
+            Ok(Private)
+        );
+
+        // Non-service: silence means private on BOTH stations, whatever the
+        // station default is, and an explicit `public` is refused outright.
+        for station_default in [Public, Private] {
+            assert_eq!(
+                enforce_upload_visibility(false, None, station_default),
+                Ok(Private)
+            );
+            assert_eq!(
+                enforce_upload_visibility(false, Some(Private), station_default),
+                Ok(Private)
+            );
+            assert_eq!(
+                enforce_upload_visibility(false, Some(Public), station_default),
+                Err(VisibilityRefused),
+                "a refusal, never a silent downgrade"
+            );
+        }
     }
 }

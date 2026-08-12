@@ -6,6 +6,7 @@
 
 use crate::auth::middleware::AdminSessionState;
 use crate::mgmt::i18n::{LocaleHint, Translator};
+use crate::storage::file_path::FILE_PATH_INVALID;
 use crate::storage::files::{
     Disposition, Owner, Visibility, bucket_for_upload, default_cache_control,
 };
@@ -323,9 +324,22 @@ pub struct UploadFields {
     pub explicit_ct: Option<String>,
     pub body: bytes::Bytes,
     pub visibility: Visibility,
+    /// v1.63 (#950-B) — whether the caller actually SENT a `visibility` field.
+    ///
+    /// `visibility` alone cannot answer that: its default is `Public`, so a
+    /// silent upload and an explicit `visibility=public` are indistinguishable
+    /// once parsed. The data-plane gate needs the difference — a non-service
+    /// caller who says nothing gets `private`, while one who asks for `public`
+    /// is refused (`FILE_VISIBILITY_SERVICE_ONLY`) rather than quietly
+    /// downgraded.
+    pub visibility_explicit: bool,
     pub disposition: Disposition,
     pub cache_control_override: Option<String>,
     pub meta_json: Option<String>,
+    /// v1.63 (#950-B) — the caller-declared logical path (`storage::file_path`
+    /// grammar). Metadata only: the physical Garage key is unaffected. `None`
+    /// when the field is absent or empty, never `Some("")`.
+    pub path: Option<String>,
 }
 
 /// Parse and validate the multipart fields from an admin upload form.
@@ -341,6 +355,7 @@ pub async fn parse_upload_fields(mut multipart: Multipart) -> Result<UploadField
     let mut disposition_str: Option<String> = None;
     let mut cache_control: Option<String> = None;
     let mut meta_json: Option<String> = None;
+    let mut path: Option<String> = None;
 
     loop {
         let field = match multipart.next_field().await {
@@ -398,6 +413,19 @@ pub async fn parse_upload_fields(mut multipart: Multipart) -> Result<UploadField
                     cache_control = Some(v);
                 }
             }
+            // v1.63 (#950-B) — the single grammar choke point for Mode-A and
+            // the host-admin form alike. An illegal path is REFUSED, never
+            // trimmed into legality: the stored bytes are what a prefix policy
+            // will later be matched against, so a server-side rewrite would
+            // silently move a file into a different folder's rules.
+            "path" => {
+                let v = field.text().await.map_err(|e| format!("path field: {e}"))?;
+                if !v.is_empty() {
+                    crate::storage::file_path::validate_file_path(&v)
+                        .map_err(|e| format!("{FILE_PATH_INVALID}: {e}"))?;
+                    path = Some(v);
+                }
+            }
             "meta" => {
                 let v = field.text().await.map_err(|e| format!("meta field: {e}"))?;
                 if !v.is_empty() {
@@ -420,6 +448,7 @@ pub async fn parse_upload_fields(mut multipart: Multipart) -> Result<UploadField
     let body = file_body.ok_or("missing file field")?;
     let original_name = file_name.unwrap_or_else(|| "unnamed".to_string());
 
+    let visibility_explicit = visibility_str.is_some();
     let visibility = match visibility_str.as_deref().unwrap_or("public") {
         "public" => Visibility::Public,
         "private" => Visibility::Private,
@@ -445,9 +474,11 @@ pub async fn parse_upload_fields(mut multipart: Multipart) -> Result<UploadField
         explicit_ct: file_ct,
         body,
         visibility,
+        visibility_explicit,
         disposition,
         cache_control_override: cache_control,
         meta_json,
+        path,
     })
 }
 
@@ -514,9 +545,14 @@ pub async fn upload_submit(
         explicit_ct,
         body,
         visibility,
+        // The host-admin form is an owner-only management face: it has no
+        // bearer identity to gate, so the publish rule (service-only) is
+        // satisfied by the route guard, not by this field.
+        visibility_explicit: _,
         disposition,
         cache_control_override,
         meta_json,
+        path,
     } = fields;
 
     let size = body.len() as i64;
@@ -568,8 +604,8 @@ pub async fn upload_submit(
         if let Err(e) = conn.execute(
             "INSERT INTO _system_files
              (key, original_name, content_type, size_bytes, content_disposition,
-              visibility, cache_control, meta_json, uploader)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+              visibility, cache_control, meta_json, uploader, path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 &key,
                 &original_name,
@@ -580,6 +616,7 @@ pub async fn upload_submit(
                 &cache_control,
                 &meta_json,
                 "admin",
+                &path,
             ],
         ) {
             return internal(format!("db insert: {e}"));

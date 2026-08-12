@@ -68,6 +68,14 @@ fn setup() -> (
             "/t/{tenant}/files/{key}/bytes",
             axum::routing::get(stream_bytes),
         )
+        // v1.63 (#950-B) — the data-plane twins REQUIRE an identity, which
+        // `bearer_auth_layer` supplies in production; without it they refuse
+        // with 500 `AUTH_CTX_MISSING`. Service, because these tests upload
+        // `visibility=public` on purpose (the attacker's best case) and only a
+        // service key may publish.
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
         .with_state(state.clone());
     (app, state, pool, dir)
 }

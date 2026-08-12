@@ -89,6 +89,13 @@ fn setup_mode_a(
     state.disk_min_free_pct = 0; // the CI/host disk is often <20% free
     let app = axum::Router::new()
         .route("/t/{tenant}/files", axum::routing::post(upload))
+        // v1.63 (#950-B) — the data-plane handler REQUIRES an identity
+        // (`bearer_auth_layer` supplies it in production, and its absence is a
+        // 500 `AUTH_CTX_MISSING` by design). Service here, so this file keeps
+        // measuring the quota gate rather than the new identity gate.
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
         .with_state(state.clone());
     (app, state, pool, dir)
 }

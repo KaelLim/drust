@@ -477,6 +477,9 @@ async fn file_caps_gate_read_and_upload() {
         &mcp,
         drust::tenant::router::TokenRole::User,
         &no_caps,
+        // v1.63 (#950-B) — the caller's uploader stamp; the cap gate fires
+        // before it is ever read here.
+        "u-caller",
         "u.bin",
         b"x".to_vec(),
         "application/octet-stream",
@@ -493,6 +496,7 @@ async fn file_caps_gate_read_and_upload() {
         &mcp,
         drust::tenant::router::TokenRole::User,
         &user_up,
+        "u-caller",
         "u.bin",
         b"x".to_vec(),
         "application/octet-stream",
