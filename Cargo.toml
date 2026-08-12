@@ -114,101 +114,36 @@ resolver = "2"
 # any tests/*.rs that is neither a target here nor a `#[path]` member of one.
 # Spec: docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md
 [[test]]
-name = "g_mcp"
-path = "tests/g_mcp.rs"
+name = "g_admin"
+path = "tests/g_admin.rs"
 [[test]]
-name = "admin_api_audit"
-path = "tests/admin_api_audit.rs"
-[[test]]
-name = "admin_api_backups"
-path = "tests/admin_api_backups.rs"
-[[test]]
-name = "admin_api_tenants"
-path = "tests/admin_api_tenants.rs"
-[[test]]
-name = "admin_api_tokens"
-path = "tests/admin_api_tokens.rs"
-[[test]]
-name = "admin_broadcast_page"
-path = "tests/admin_broadcast_page.rs"
-[[test]]
-name = "admin_cap_switch_toggle"
-path = "tests/admin_cap_switch_toggle.rs"
-[[test]]
-name = "admin_description_write"
-path = "tests/admin_description_write.rs"
-[[test]]
-name = "admin_email_migration"
-path = "tests/admin_email_migration.rs"
-[[test]]
-name = "admin_files_routes"
-path = "tests/admin_files_routes.rs"
-[[test]]
-name = "admin_files_upgrade"
-path = "tests/admin_files_upgrade.rs"
-[[test]]
-name = "admin_frame_guard"
-path = "tests/admin_frame_guard.rs"
-[[test]]
-name = "admin_index_routes"
-path = "tests/admin_index_routes.rs"
-[[test]]
-name = "admin_login_rate_limit"
-path = "tests/admin_login_rate_limit.rs"
-[[test]]
-name = "admin_login_timing"
-path = "tests/admin_login_timing.rs"
-[[test]]
-name = "admin_metrics"
-path = "tests/admin_metrics.rs"
-[[test]]
-name = "admin_oauth_provider_handlers"
-path = "tests/admin_oauth_provider_handlers.rs"
-[[test]]
-name = "admin_oauth"
-path = "tests/admin_oauth.rs"
-[[test]]
-name = "admin_password"
-path = "tests/admin_password.rs"
-[[test]]
-name = "admin_pat_admin_plane"
-path = "tests/admin_pat_admin_plane.rs"
-[[test]]
+# Isolation exceptions (#925 T2). Both assert on audit rows in an audit DB
+# they install through the first-write-wins `audit_db::init_globals`
+# OnceLock, and g_admin already has a third installer (admin_oauth, via
+# common::oauth_helpers), so merged they read whichever file won the race.
 name = "admin_pat_bearer"
 path = "tests/admin_pat_bearer.rs"
-[[test]]
-name = "admin_pat_reroll_keeps_cli"
-path = "tests/admin_pat_reroll_keeps_cli.rs"
 [[test]]
 name = "admin_pat_reroll"
 path = "tests/admin_pat_reroll.rs"
 [[test]]
-name = "admin_policy_routes"
-path = "tests/admin_policy_routes.rs"
+name = "g_auth"
+path = "tests/g_auth.rs"
 [[test]]
-name = "admin_relocated_pages_smoke"
-path = "tests/admin_relocated_pages_smoke.rs"
+name = "g_mcp"
+path = "tests/g_mcp.rs"
 [[test]]
-name = "admin_session_pat_fallback"
-path = "tests/admin_session_pat_fallback.rs"
+name = "g_tenant"
+path = "tests/g_tenant.rs"
 [[test]]
-name = "admin_team_batch"
-path = "tests/admin_team_batch.rs"
-[[test]]
-name = "admin_team_crud"
-path = "tests/admin_team_crud.rs"
-[[test]]
-name = "admin_team_invariants"
-path = "tests/admin_team_invariants.rs"
+# Isolation exception (#925 T2): asserts on audit rows in the DB it installs
+# via the first-write-wins `audit_db::init_globals` OnceLock, which
+# tenant_oauth (via common::oauth_helpers) also races for inside g_tenant.
+name = "tenant_quota_requests"
+path = "tests/tenant_quota_requests.rs"
 [[test]]
 name = "admin_theme"
 path = "tests/admin_theme.rs"
-[[test]]
-name = "admin_users"
-path = "tests/admin_users.rs"
-[[test]]
-name = "admin_webhook_handlers"
-path = "tests/admin_webhook_handlers.rs"
 [[test]]
 name = "aggregate"
 path = "tests/aggregate.rs"
@@ -231,95 +166,11 @@ path = "tests/audit_sqlite.rs"
 name = "audit_ui_routes"
 path = "tests/audit_ui_routes.rs"
 [[test]]
-name = "auth_admin_ui"
-path = "tests/auth_admin_ui.rs"
-[[test]]
-name = "auth_audit"
-path = "tests/auth_audit.rs"
-[[test]]
-name = "auth_bearer_resolution"
-path = "tests/auth_bearer_resolution.rs"
-[[test]]
-name = "auth_cache_change_password"
-path = "tests/auth_cache_change_password.rs"
-[[test]]
-name = "auth_cache_delete_user"
-path = "tests/auth_cache_delete_user.rs"
-[[test]]
-name = "auth_cache_hit"
-path = "tests/auth_cache_hit.rs"
-[[test]]
-name = "auth_cache_logout"
-path = "tests/auth_cache_logout.rs"
-[[test]]
-name = "auth_cache_mcp_publish_policy"
-path = "tests/auth_cache_mcp_publish_policy.rs"
-[[test]]
-name = "auth_cache_mcp_user"
-path = "tests/auth_cache_mcp_user.rs"
-[[test]]
-name = "auth_cache_missed_hook_ttl"
-path = "tests/auth_cache_missed_hook_ttl.rs"
-[[test]]
-name = "auth_cache_negative"
-path = "tests/auth_cache_negative.rs"
-[[test]]
-name = "auth_cache_pat_reroll"
-path = "tests/auth_cache_pat_reroll.rs"
-[[test]]
-name = "auth_cache_publish_policy"
-path = "tests/auth_cache_publish_policy.rs"
-[[test]]
-name = "auth_cache_revoke_all"
-path = "tests/auth_cache_revoke_all.rs"
-[[test]]
-name = "auth_cache_revoke_reroll"
-path = "tests/auth_cache_revoke_reroll.rs"
-[[test]]
-name = "auth_cache_set_file_caps"
-path = "tests/auth_cache_set_file_caps.rs"
-[[test]]
-name = "auth_cache_state"
-path = "tests/auth_cache_state.rs"
-[[test]]
-name = "auth_cache_tenant_lifecycle"
-path = "tests/auth_cache_tenant_lifecycle.rs"
-[[test]]
-name = "auth_cache_user_expiry"
-path = "tests/auth_cache_user_expiry.rs"
-[[test]]
-name = "auth_login"
-path = "tests/auth_login.rs"
-[[test]]
-name = "auth_mcp_blocked"
-path = "tests/auth_mcp_blocked.rs"
-[[test]]
-name = "auth_me"
-path = "tests/auth_me.rs"
-[[test]]
-name = "auth_migration"
-path = "tests/auth_migration.rs"
-[[test]]
 name = "authorizer"
 path = "tests/authorizer.rs"
 [[test]]
 name = "authorizer_writable"
 path = "tests/authorizer_writable.rs"
-[[test]]
-name = "auth_query_blocked"
-path = "tests/auth_query_blocked.rs"
-[[test]]
-name = "auth_register"
-path = "tests/auth_register.rs"
-[[test]]
-name = "auth_rpc"
-path = "tests/auth_rpc.rs"
-[[test]]
-name = "auth_session"
-path = "tests/auth_session.rs"
-[[test]]
-name = "auth_xff"
-path = "tests/auth_xff.rs"
 [[test]]
 name = "backup_roundtrip"
 path = "tests/backup_roundtrip.rs"
@@ -702,59 +553,8 @@ path = "tests/strict_new_collection.rs"
 name = "strict_rebuild"
 path = "tests/strict_rebuild.rs"
 [[test]]
-name = "tenant_auth"
-path = "tests/tenant_auth.rs"
-[[test]]
-name = "tenant_cap_request_limits"
-path = "tests/tenant_cap_request_limits.rs"
-[[test]]
-name = "tenant_db"
-path = "tests/tenant_db.rs"
-[[test]]
-name = "tenant_files_rest"
-path = "tests/tenant_files_rest.rs"
-[[test]]
-name = "tenant_id_recycle_keeps_trash"
-path = "tests/tenant_id_recycle_keeps_trash.rs"
-[[test]]
-name = "tenant_id_validation"
-path = "tests/tenant_id_validation.rs"
-[[test]]
-name = "tenant_oauth"
-path = "tests/tenant_oauth.rs"
-[[test]]
-name = "tenant_ownership_create"
-path = "tests/tenant_ownership_create.rs"
-[[test]]
-name = "tenant_ownership_guard"
-path = "tests/tenant_ownership_guard.rs"
-[[test]]
-name = "tenant_ownership_hostwide"
-path = "tests/tenant_ownership_hostwide.rs"
-[[test]]
-name = "tenant_ownership_pat"
-path = "tests/tenant_ownership_pat.rs"
-[[test]]
-name = "tenant_ownership_transfer"
-path = "tests/tenant_ownership_transfer.rs"
-[[test]]
-name = "tenant_ownership_visibility"
-path = "tests/tenant_ownership_visibility.rs"
-[[test]]
-name = "tenant_quota_db"
-path = "tests/tenant_quota_db.rs"
-[[test]]
-name = "tenant_quota_files"
-path = "tests/tenant_quota_files.rs"
-[[test]]
-name = "tenant_quota_requests"
-path = "tests/tenant_quota_requests.rs"
-[[test]]
 name = "tenants_api"
 path = "tests/tenants_api.rs"
-[[test]]
-name = "tenant_settings"
-path = "tests/tenant_settings.rs"
 [[test]]
 name = "three_tier_roles"
 path = "tests/three_tier_roles.rs"

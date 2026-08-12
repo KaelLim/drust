@@ -6,7 +6,7 @@
 //! plugged into a fresh `GoogleAdapter` / `GitHubAdapter` via the
 //! per-test `new(...)` constructors.
 
-mod common;
+use crate::common;
 use common::oauth_helpers::*;
 
 use axum::body::Body;

@@ -13,7 +13,7 @@
 //! adapter uses an actual `reqwest::Client`; for Google we still spawn it
 //! for parity.
 
-mod common;
+use crate::common;
 use common::oauth_helpers::*;
 
 use axum::Router;
