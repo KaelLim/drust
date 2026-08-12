@@ -200,7 +200,10 @@ async fn files_stack(
                     content_disposition TEXT, visibility TEXT NOT NULL DEFAULT 'public',
                     cache_control TEXT, meta_json TEXT,
                     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    uploader TEXT NOT NULL DEFAULT 'service');",
+                    uploader TEXT NOT NULL DEFAULT 'service',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    path TEXT);",
             )
         })
         .await

@@ -39,7 +39,10 @@ fn make_tenant(dir: &tempfile::TempDir, tenant_id: &str) -> drust::storage::pool
             cache_control TEXT,
             meta_json TEXT,
             uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-            uploader TEXT NOT NULL DEFAULT 'service'
+            uploader TEXT NOT NULL DEFAULT 'service',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            path TEXT
         );",
     )
     .unwrap();
@@ -320,7 +323,10 @@ async fn mcp_set_visibility_success_returns_from_to() {
                         content_disposition TEXT, visibility TEXT NOT NULL DEFAULT 'public',
                         cache_control TEXT, meta_json TEXT,
                         uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                        uploader TEXT NOT NULL DEFAULT 'service');",
+                        uploader TEXT NOT NULL DEFAULT 'service',
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        path TEXT);",
                 )?;
                 c.execute(
                     "INSERT INTO _system_files (key, original_name, content_type, size_bytes,
@@ -429,7 +435,10 @@ async fn rest_setup(
                     content_disposition TEXT, visibility TEXT NOT NULL DEFAULT 'public',
                     cache_control TEXT, meta_json TEXT,
                     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    uploader TEXT NOT NULL DEFAULT 'service');",
+                    uploader TEXT NOT NULL DEFAULT 'service',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    path TEXT);",
             )?;
             c.execute(
                 "INSERT INTO _system_files (key, original_name, content_type, size_bytes,

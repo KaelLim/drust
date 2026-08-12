@@ -1,5 +1,6 @@
 pub mod blast_radius;
 pub mod disk;
+pub mod file_path;
 pub mod files;
 pub mod garage;
 pub mod janitor;

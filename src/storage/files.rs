@@ -101,6 +101,19 @@ pub struct FileRow {
     pub meta_json: Option<String>,
     pub uploaded_at: String,
     pub uploader: String,
+    /// v1.63 (#950-B) — caller-declared logical path; NULL = unfiled. Metadata
+    /// only: never an address (the physical key is `key`).
+    pub path: Option<String>,
+    /// v1.63 (#950-B) — carried so the row map handed to the policy evaluator
+    /// contains the SYSTEM columns. `validate_field` waves `id`/`created_at`/
+    /// `updated_at` through unconditionally, and `eval_policy` reads the map
+    /// by key: a MISSING key is not an error there, it reads as Null, so a
+    /// `created_at` comparison would over-deny (Unknown) and an
+    /// `updated_at is_null` test would silently be TRUE — fail-OPEN over every
+    /// file in the tenant. Keeping both columns on `FileRow` is what keeps the
+    /// SQL and in-memory evaluators in lockstep.
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
@@ -116,6 +129,14 @@ pub fn map_file_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRow> {
         meta_json: row.get("meta_json")?,
         uploaded_at: row.get("uploaded_at")?,
         uploader: row.get("uploader")?,
+        // By NAME, like every field above — all six call sites are
+        // `SELECT * FROM _system_files` on a plain (never `prepare_cached`)
+        // statement, so a column added to either `_system_files` copy is
+        // picked up without touching the SQL. See CLAUDE.md invariant 11 for
+        // why the "plain prepare" half of that sentence matters.
+        path: row.get("path")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
     })
 }
 

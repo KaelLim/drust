@@ -278,6 +278,9 @@ pub async fn create(
         total_length,
         expires_at: expires_at.clone(),
         uploader: session_identity(&ctx),
+        // v1.63 (#950-B) T1 lands the COLUMN only; the `Upload-Metadata: path`
+        // intake (validate + carry into `_system_files` at finalize) is T2.
+        path: None,
     };
     if let Err(e) = insert_session(&t.pool, row).await {
         let _ = tokio::fs::remove_file(&spool).await; // compensate

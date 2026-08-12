@@ -21,6 +21,11 @@ pub struct NewSession {
     /// session binding key (no migration). HEAD/PATCH/DELETE require a
     /// non-service caller's identity to match this; service bypasses.
     pub uploader: String,
+    /// v1.63 (#950-B) — the logical path the caller declared in
+    /// `Upload-Metadata` at create time, validated by
+    /// `storage::file_path::validate_file_path`. Held on the session so
+    /// finalize can copy it into `_system_files.path`; `None` = unfiled.
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +40,8 @@ pub struct Session {
     pub expires_at: String,
     /// v1.42 — creator identity; see `NewSession::uploader`.
     pub uploader: String,
+    /// v1.63 — declared logical path; see `NewSession::path`.
+    pub path: Option<String>,
 }
 
 /// Parse a tus `Upload-Metadata` header: comma-separated `key b64value`
@@ -97,8 +104,8 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
         c.execute(
             "INSERT INTO _system_upload_sessions
                (upload_token, tenant_id, key, visibility, original_name,
-                content_type, total_length, expires_at, uploader)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                content_type, total_length, expires_at, uploader, path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 s.upload_token,
                 s.tenant_id,
@@ -109,6 +116,7 @@ pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite:
                 s.total_length,
                 s.expires_at,
                 s.uploader,
+                s.path,
             ],
         )
         .map(|_| ())
@@ -124,7 +132,7 @@ pub async fn get_session(
     pool.with_reader(move |c| {
         c.query_row(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at, uploader
+                    content_type, total_length, expires_at, uploader, path
              FROM _system_upload_sessions WHERE upload_token = ?1",
             rusqlite::params![token],
             |r| {
@@ -138,6 +146,7 @@ pub async fn get_session(
                     total_length: r.get(6)?,
                     expires_at: r.get(7)?,
                     uploader: r.get(8)?,
+                    path: r.get(9)?,
                 })
             },
         )
@@ -176,7 +185,7 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
     pool.with_reader(move |c| {
         let mut stmt = c.prepare(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at, uploader
+                    content_type, total_length, expires_at, uploader, path
              FROM _system_upload_sessions ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -190,6 +199,7 @@ pub async fn list_sessions(pool: &SharedTenantPool) -> rusqlite::Result<Vec<Sess
                 total_length: r.get(6)?,
                 expires_at: r.get(7)?,
                 uploader: r.get(8)?,
+                path: r.get(9)?,
             })
         })?;
         rows.collect()
@@ -245,7 +255,7 @@ pub async fn expired_tokens(
     pool.with_reader(move |c| {
         let mut stmt = c.prepare(
             "SELECT upload_token, tenant_id, key, visibility, original_name,
-                    content_type, total_length, expires_at, uploader
+                    content_type, total_length, expires_at, uploader, path
              FROM _system_upload_sessions WHERE expires_at < ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![now_rfc3339], |r| {
@@ -259,6 +269,7 @@ pub async fn expired_tokens(
                 total_length: r.get(6)?,
                 expires_at: r.get(7)?,
                 uploader: r.get(8)?,
+                path: r.get(9)?,
             })
         })?;
         rows.collect()
@@ -321,11 +332,22 @@ mod tests {
             total_length: 1234,
             expires_at: "2999-01-01T00:00:00Z".into(),
             uploader: "service".into(),
+            // v1.63 (#950-B) — the declared logical path must survive the round
+            // trip: `finalize` copies it from here into `_system_files.path`,
+            // so a column that silently dropped it would file every tus upload
+            // at the tenant root.
+            path: Some("照片/家庭/k1.bin".into()),
         };
         insert_session(&pool, row.clone()).await.unwrap();
         let got = get_session(&pool, "tok-rt").await.unwrap().unwrap();
         assert_eq!(got.key, "k1.bin");
         assert_eq!(got.total_length, 1234);
+        assert_eq!(got.path.as_deref(), Some("照片/家庭/k1.bin"));
+        assert_eq!(
+            list_sessions(&pool).await.unwrap()[0].path.as_deref(),
+            Some("照片/家庭/k1.bin"),
+            "list_sessions is a separate Session constructor and must read path too"
+        );
         assert_eq!(count_in_flight(&pool).await.unwrap(), 1);
         delete_session(&pool, "tok-rt").await.unwrap();
         assert!(get_session(&pool, "tok-rt").await.unwrap().is_none());
@@ -350,6 +372,7 @@ mod tests {
                 total_length: 10,
                 expires_at: "2000-01-01T00:00:00+00:00".into(),
                 uploader: "service".into(),
+                path: None,
             },
         )
         .await
@@ -367,6 +390,7 @@ mod tests {
                 total_length: 10,
                 expires_at: "2999-01-01T00:00:00+00:00".into(),
                 uploader: "service".into(),
+                path: None,
             },
         )
         .await

@@ -54,7 +54,10 @@ async fn stream_bytes_returns_404_when_row_missing() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -140,7 +143,10 @@ async fn sign_url_returns_400_for_zero_ttl() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -201,7 +207,10 @@ async fn sign_url_returns_400_for_ttl_over_7days() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -264,7 +273,10 @@ async fn sign_url_private_row_returns_signed_url() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -358,7 +370,10 @@ async fn sign_url_public_row_returns_stable_url() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -440,7 +455,10 @@ async fn stream_bytes_returns_not_found_when_row_absent_with_garage() {
                 cache_control TEXT,
                 meta_json TEXT,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                uploader TEXT NOT NULL DEFAULT 'tenant'
+                uploader TEXT NOT NULL DEFAULT 'tenant',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                path TEXT
             );",
         )
         .unwrap();
@@ -495,7 +513,12 @@ fn make_tenant_db(dir: &tempfile::TempDir, tenant_id: &str) {
             uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
             uploader TEXT NOT NULL DEFAULT 'service',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            -- v1.63 (#950-B). `map_file_row` reads BY NAME, so a fixture that
+            -- omits a real column makes every read through it fail at runtime
+            -- (500 on get_one, silently-dropped rows on list) — keep this DDL
+            -- in step with storage/tenant_db.rs SCHEMA_SQL.
+            path TEXT
         );",
     )
     .unwrap();

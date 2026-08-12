@@ -69,12 +69,25 @@ CREATE TABLE IF NOT EXISTS "_system_files" (
   uploaded_at         TEXT    NOT NULL DEFAULT (datetime('now')),
   uploader            TEXT    NOT NULL,
   created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-  updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+  updated_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- v1.63 (#950-B) — caller-declared LOGICAL path ("avatars/alice/me.png").
+  -- Pure metadata: the physical Garage key stays the flat `<uuid>.<ext>` in
+  -- `key`, and serving/signing never look here. Only (a) Files-RLS prefix
+  -- matching and (b) the admin UI's fake folder tree read it. Nullable with
+  -- NO default on purpose: an unfiled row is NULL, never "". Kept in lockstep
+  -- with the `add_column_if_missing` in db::migrations::migrate_tenant_db and
+  -- with BOTH meta.rs landing points (four application points total).
+  path                TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
   ON "_system_files"(uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_system_files_visibility
   ON "_system_files"(visibility);
+-- Partial: only filed rows are prefix-matched, and the RLS list arm compares
+-- with a binary range (`path >= ?p AND path < ?p_upper`), which this index can
+-- serve. NULL paths never participate in a range arm, so they stay out of it.
+CREATE INDEX IF NOT EXISTS idx_system_files_path
+  ON "_system_files"(path) WHERE path IS NOT NULL;
 
 -- v1.6: per-collection anon DML capability allowlist.
 -- Rows are upserted by the structured DDL handlers (create_collection,
@@ -182,6 +195,15 @@ COMMIT;
 "#;
 
 fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
+    // v1.63 (#950-B) — MUST precede SCHEMA_SQL. That batch creates a partial
+    // index on `_system_files(path)`, and `CREATE INDEX IF NOT EXISTS` raises
+    // `no such column` rather than skipping, so on a tenant DB that predates
+    // v1.63 (its `CREATE TABLE IF NOT EXISTS` being a no-op) the whole writer
+    // open would fail. `migrate_tenant_db` covers boot, but only for a tenant
+    // still listed in `tenants` whose additive migration succeeded — this is
+    // the door for the rest (restored from `_trash`, previously failed, or
+    // opened via `open_write_existing`'s documented upgrade catch-up).
+    crate::db::migrations::ensure_system_files_path(conn)?;
     conn.execute_batch(SCHEMA_SQL)?;
     // v1.32.8 — keep parity with `db::migrations::migrate_tenant_db`.
     // SCHEMA_SQL above predates v1.9's end-user auth and was never
@@ -204,6 +226,11 @@ fn apply_schema(conn: &Connection) -> rusqlite::Result<()> {
     // at runtime must get _system_record_history on pool open (spec §5.1) or
     // its first audited write would fail until the next boot's migration pass.
     conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS)?;
+    // v1.63 (#950-B) — same parity rule for the Files-RLS prefix policy table:
+    // a tenant created at runtime never sees the boot migration pass, so
+    // without this line its file reads would find no `_system_file_policy` and
+    // the RLS gate would have to guess. Shared const = one DDL forever.
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_SYSTEM_FILE_POLICY_IF_NOT_EXISTS)?;
     Ok(())
 }
 

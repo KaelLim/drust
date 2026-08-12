@@ -95,10 +95,45 @@ CREATE TABLE IF NOT EXISTS "_system_upload_sessions" (
   total_length   INTEGER NOT NULL,
   created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
   expires_at     TEXT    NOT NULL,
-  uploader       TEXT    NOT NULL DEFAULT 'service'
+  uploader       TEXT    NOT NULL DEFAULT 'service',
+  -- v1.63 (#950-B) — the tus caller's declared logical path, carried from
+  -- `Upload-Metadata` at create and copied into `_system_files.path` at
+  -- finalize. Nullable = the caller declared none. LAST column on purpose:
+  -- `add_column_if_missing` appends, so fresh and upgraded tenants must list
+  -- it here in the same position or the two schemas drift in column ORDER.
+  path           TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_system_upload_sessions_expires
   ON "_system_upload_sessions"(expires_at);
+"#;
+
+// v1.63 (#950-B) — per-tenant Files-RLS prefix policy registry. One row per
+// registered logical-path prefix ('' = the tenant root); the longest matching
+// prefix wins, which gives inheritance + override with no folder objects and no
+// tree. Written ONLY by the service-only `set_file_policy` family — an end user
+// setting its own policy would be a privilege escalation.
+//
+// `public_read` is a stored COLUMN, not a derived property: a row with
+// owner_scoped=0, no select clause and public_read=0 means "restricted but
+// unspecified" and DENIES all reads on both evaluators (mirrors the
+// `select_read_access` legacy-row deny, CLAUDE.md invariant 12). Keeping the
+// explicit-open decision in the schema is what makes the fail-open shape
+// structurally impossible instead of merely validated at write time.
+//
+// Shared const so `migrate_tenant_db` (boot, existing tenants) and
+// `tenant_db::apply_schema` (runtime-created tenants, the v1.32.8 parity rule)
+// produce exactly the same schema forever — the
+// SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS precedent.
+pub const SQL_CREATE_SYSTEM_FILE_POLICY_IF_NOT_EXISTS: &str = r#"
+CREATE TABLE IF NOT EXISTS "_system_file_policy" (
+  prefix              TEXT PRIMARY KEY,
+  owner_scoped        INTEGER NOT NULL DEFAULT 0,
+  public_read         INTEGER NOT NULL DEFAULT 0,
+  select_policy_json  TEXT,
+  delete_policy_json  TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 // v1.46 — record-history trail (supa_audit-style). STRICT + drop-protected by
@@ -187,6 +222,54 @@ pub fn add_column_if_missing(
     Ok(())
 }
 
+/// v1.63 (#950-B) — the partial index that serves the Files-RLS prefix range
+/// scan (`path >= ?p AND path < ?p_upper`). Partial because only FILED rows are
+/// ever prefix-matched: a NULL path never participates in a range arm.
+///
+/// Written once here and repeated verbatim in the two hand-written
+/// `_system_files` DDL copies (`storage::tenant_db::SCHEMA_SQL` and
+/// `storage::meta::SCHEMA_SQL`) — that table is the one documented exception to
+/// the shared-const rule, and `tests/files_rls_schema.rs` pins fresh-vs-migrated
+/// parity for exactly that reason.
+pub const SQL_CREATE_SYSTEM_FILES_PATH_INDEX_IF_NOT_EXISTS: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_system_files_path
+  ON "_system_files"(path) WHERE path IS NOT NULL;
+"#;
+
+/// Add `_system_files.path` (+ its partial index) to a database that predates
+/// v1.63, on either side (meta or tenant).
+///
+/// > **Call this BEFORE executing that side's `SCHEMA_SQL`, never after.**
+///
+/// Both `SCHEMA_SQL` copies carry the partial index above, and
+/// `CREATE INDEX IF NOT EXISTS` does **not** tolerate a missing column — it
+/// raises `no such column: path`. Since `CREATE TABLE IF NOT EXISTS
+/// "_system_files"` is a no-op on an upgraded database, running the batch first
+/// makes the whole open fail: fatal at `open_meta` (boot) and at every tenant
+/// writer open. Ordering is the entire point of this helper existing.
+///
+/// The table-existence probe is what makes it safe on a FRESH database (the
+/// table is created moments later by `SCHEMA_SQL`) and on a tenant old enough
+/// to predate tenant-side files: `add_column_if_missing` would raise
+/// `no such table`, and on the boot path that lands the tenant in
+/// `tenants_failed` (the 503 door). Skipping is self-healing — the next
+/// `apply_schema` creates the table with `path` already in it.
+///
+/// Idempotent: additive, guarded, and safe to call on every boot and every
+/// connection open.
+pub fn ensure_system_files_path(conn: &Connection) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_system_files'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(());
+    }
+    add_column_if_missing(conn, "_system_files", "path", "TEXT")?;
+    conn.execute_batch(SQL_CREATE_SYSTEM_FILES_PATH_INDEX_IF_NOT_EXISTS)
+}
+
 pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> {
     let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
     if !path.exists() {
@@ -201,6 +284,23 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     tx.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_WEBHOOKS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS)?;
+    // ── v1.63 (#950-B) Files RLS schema ────────────────────────────────────
+    // `CREATE TABLE IF NOT EXISTS` above is a NO-OP on an existing tenant, so
+    // the new tus session column only reaches live tenants through this
+    // add_column. Additive + guarded = idempotent across boots.
+    add_column_if_missing(&tx, "_system_upload_sessions", "path", "TEXT")?;
+    // `_system_files` has never had a migration step before v1.63 — its DDL is
+    // hand-written in tenant_db.rs SCHEMA_SQL (and, separately, meta.rs), so
+    // fresh tenants got it from `apply_schema` alone. One shared helper, called
+    // from all three upgrade doors (here, `tenant_db::apply_schema`,
+    // `meta::pre_schema_migrations`) — see its doc for why it must precede any
+    // SCHEMA_SQL batch.
+    ensure_system_files_path(&tx)?;
+    // Prefix policy registry — created on BOTH paths from the shared const
+    // (v1.32.8 parity rule). Creates only; seeds nothing. The one-shot root
+    // policy seed is a separate, marker-guarded step (tenants.file_policy_seeded).
+    tx.execute_batch(SQL_CREATE_SYSTEM_FILE_POLICY_IF_NOT_EXISTS)?;
+    // ───────────────────────────────────────────────────────────────────────
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
     add_column_if_missing(
@@ -773,6 +873,20 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         meta,
         "tenants",
         "egress_backfill_done",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // v1.63 (#950-B) — per-tenant run-once marker for the Files-RLS root policy
+    // seed (`'' → public_read=1`, which preserves today's "any file-cap holder
+    // can read" behaviour on upgrade). Default 0 = not yet seeded. Same posture
+    // and same reason as egress_backfill_done directly above: run_migrations
+    // runs on EVERY boot, so a bare `INSERT OR IGNORE` with no marker would
+    // resurrect a root policy a tenant DELIBERATELY cleared, every restart
+    // (the v1.41.5 idempotency invariant). add_column_if_missing is the guard;
+    // this step adds the column only — the seeding itself lands separately.
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "file_policy_seeded",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.

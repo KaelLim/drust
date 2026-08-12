@@ -79,12 +79,20 @@ CREATE TABLE IF NOT EXISTS "_system_files" (
   uploaded_at         TEXT    NOT NULL DEFAULT (datetime('now')),
   uploader            TEXT    NOT NULL,
   created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-  updated_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+  updated_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  -- v1.63 (#950-B) — caller-declared logical path; see the identical column in
+  -- storage/tenant_db.rs SCHEMA_SQL. Present here only to keep the two
+  -- `_system_files` copies the same shape, since both are read through the one
+  -- `FileRow` / `map_file_row` (which reads `SELECT *` BY NAME). Host-admin
+  -- uploads may fill it; nothing in the admin plane matches on it.
+  path                TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_system_files_uploaded_at
   ON "_system_files"(uploaded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_system_files_visibility
   ON "_system_files"(visibility);
+CREATE INDEX IF NOT EXISTS idx_system_files_path
+  ON "_system_files"(path) WHERE path IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "_trash_pending_revokes" (
   tenant_id       TEXT PRIMARY KEY,
@@ -181,6 +189,22 @@ fn pre_schema_migrations(conn: &Connection) -> anyhow::Result<()> {
         )?;
         tracing::info!("meta migration: renamed _system_public_files to _system_files");
     }
+
+    // v1.63 (#950-B): _system_files.path — the meta-side half of the Files-RLS
+    // logical path column. `_system_files` is the ONE table whose DDL is
+    // hand-written on both the meta and tenant sides (it predates the
+    // shared-const rule and `run_migrations` never touches it), so meta's
+    // upgrade landing point is inside `open_meta`, not in db::migrations.
+    //
+    // It sits HERE, in the pre-schema pass, and not in `apply_migrations`
+    // below, for the same reason the rename above does: SCHEMA_SQL creates a
+    // partial index on `_system_files(path)`, and `CREATE INDEX IF NOT EXISTS`
+    // raises `no such column` instead of skipping. Adding the column after the
+    // batch is too late — every upgraded host would fail to open meta.sqlite at
+    // boot. Nullable, no default, additive: an existing host-admin object keeps
+    // path NULL. Lockstep: SCHEMA_SQL above + tenant_db.rs SCHEMA_SQL +
+    // migrate_tenant_db.
+    crate::db::migrations::ensure_system_files_path(conn)?;
 
     Ok(())
 }
