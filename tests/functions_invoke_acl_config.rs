@@ -170,16 +170,17 @@ async fn mcp_set_function_invoke_acl_happy_path() {
 }
 
 #[test]
-fn mcp_exposes_seventy_three_tools() {
+fn mcp_exposes_seventy_six_tools() {
     // v1.48 added the four cron tools (61 → 65). v1.49 adds the two egress
     // tools (65 → 67). v1.54 M1 adds `aggregate` (67 → 68). v1.55 M2 adds
     // `insert_records` (68 → 69) and `upsert_records` (69 → 70). Wave 2 M3
     // adds `create_fts_index`/`drop_fts_index`/`list_fts_indexes` (70 → 73).
-    // `tool_count()` is derived from the macro-generated router, so this pins
-    // router reality to the spec'd number.
+    // v1.63 (#950-B) adds `set_file_policy`/`list_file_policies`/
+    // `clear_file_policy` (73 → 76). `tool_count()` is derived from the
+    // macro-generated router, so this pins router reality to the spec'd number.
     assert_eq!(
         drust::mcp::handler::DrustMcpService::tool_count(),
-        73,
-        "MCP tool count must be 73 after adding the M3 fts index tools"
+        76,
+        "MCP tool count must be 76 after adding the files-RLS policy tools"
     );
 }

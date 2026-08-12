@@ -38,6 +38,12 @@ struct FileBrief {
     visibility: String,
     content_disposition: Option<String>,
     uploaded_at: String,
+    /// v1.63 (#950-B) — the caller-declared LOGICAL path, or `null` for an
+    /// unfiled row. Projected here because it is what the prefix rules
+    /// `list_file_policies` returns are matched against: a file object without
+    /// it cannot be reconciled with the tenant's file-access map. `null` and
+    /// `""` are different facts, so the column is never coalesced.
+    path: Option<String>,
 }
 
 fn storage_unavailable() -> serde_json::Value {
@@ -68,7 +74,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
             let rows: Vec<FileBrief> = if let Some(v) = vis_filter.as_deref() {
                 let mut stmt = conn.prepare(
                     "SELECT key, original_name, size_bytes, content_type, visibility, \
-                     content_disposition, uploaded_at \
+                     content_disposition, uploaded_at, path \
                      FROM _system_files WHERE visibility=?1 \
                      ORDER BY uploaded_at DESC LIMIT ?2 OFFSET ?3",
                 )?;
@@ -81,6 +87,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
                         visibility: r.get(4)?,
                         content_disposition: r.get(5)?,
                         uploaded_at: r.get(6)?,
+                        path: r.get(7)?,
                     })
                 })?
                 .filter_map(Result::ok)
@@ -88,7 +95,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
             } else {
                 let mut stmt = conn.prepare(
                     "SELECT key, original_name, size_bytes, content_type, visibility, \
-                     content_disposition, uploaded_at \
+                     content_disposition, uploaded_at, path \
                      FROM _system_files \
                      ORDER BY uploaded_at DESC LIMIT ?1 OFFSET ?2",
                 )?;
@@ -101,6 +108,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
                         visibility: r.get(4)?,
                         content_disposition: r.get(5)?,
                         uploaded_at: r.get(6)?,
+                        path: r.get(7)?,
                     })
                 })?
                 .filter_map(Result::ok)

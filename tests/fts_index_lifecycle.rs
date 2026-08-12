@@ -352,7 +352,9 @@ async fn fresh_tenant_meta_has_fts_indexes_json_column() {
 /// tool fns take no role/CallerCtx param. Driving the HTTP endpoint with an
 /// anon token is heavier than this task needs; instead pin that the three tools
 /// are registered (count 70 → 73) and that their signatures carry no role gate.
+/// The absolute total moved on to 76 with the v1.63 files-RLS policy tools —
+/// what this test owns is that the fts trio is still IN it.
 #[test]
 fn tool_count_reflects_three_new_service_only_tools() {
-    assert_eq!(drust::mcp::handler::DrustMcpService::tool_count(), 73);
+    assert_eq!(drust::mcp::handler::DrustMcpService::tool_count(), 76);
 }

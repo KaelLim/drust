@@ -2,6 +2,7 @@ pub mod audit;
 pub mod batch;
 pub mod cron;
 pub mod exploration;
+pub mod file_policy;
 pub mod files;
 pub mod fts;
 pub mod functions;

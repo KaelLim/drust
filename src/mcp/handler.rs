@@ -11,9 +11,9 @@
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::{
-    batch, exploration, files as file_tools, oauth as oauth_tools,
-    owner_field as owner_field_tools, read, schema as schema_tools, user as user_tools,
-    vector as vector_tools, webhook as webhook_tools, write as write_tools,
+    batch, exploration, file_policy as file_policy_tools, files as file_tools,
+    oauth as oauth_tools, owner_field as owner_field_tools, read, schema as schema_tools,
+    user as user_tools, vector as vector_tools, webhook as webhook_tools, write as write_tools,
 };
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -1624,7 +1624,10 @@ impl DrustMcpService {
         Optional `visibility` filter (\"public\" | \"private\"); anything else returns all. \
         Paginate with `limit` (1–500, default 50) and `offset`. \
         Returns {files, total_count} where each file has id, original_name, size_bytes, \
-        content_type, visibility, content_disposition, uploaded_at."
+        content_type, visibility, content_disposition, uploaded_at, and `path` — the \
+        caller-declared logical path (\"avatars/alice/me.png\"), null when the file was \
+        uploaded without one. `path` is metadata only: it is what the prefix rules from \
+        `list_file_policies` match against, never the physical object key."
     )]
     async fn list_files(
         &self,
@@ -1667,6 +1670,92 @@ impl DrustMcpService {
         Parameters(args): Parameters<file_tools::SetFileVisibilityArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_tools::set_file_visibility(&self.state, args).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = false, idempotent_hint = true),
+        description = "v1.63 — Register (or replace) the file-access rule for one \
+        folder PREFIX of the tenant's file `path` metadata. A \"folder\" is a \
+        prefix, never an object: `prefix` is \"\" (the tenant root, which also \
+        governs files uploaded with no path) or a string ending in `/`, and the \
+        LONGEST matching prefix wins, so a deeper rule overrides its parent. A \
+        rule is one of three shapes — `owner_scoped: true` (only the uploader \
+        reaches the file), a `select` FilterAst (only matching rows), or \
+        `public_read: true` (not access-restricted). They compose: \
+        owner_scoped AND select both apply. A rule that is NONE of the three \
+        denies every read, so it is refused at write time \
+        (FILE_POLICY_OPEN_REQUIRES_FLAG). `delete` defaults to the `select` \
+        semantics. This is a SECOND gate under the per-verb file caps \
+        (`set_file_caps`), never a replacement, and service keys bypass it. \
+        Errors: FILE_POLICY_PREFIX_INVALID, FILE_POLICY_OPEN_REQUIRES_FLAG, \
+        FILE_POLICY_OPERAND_UNSUPPORTED. EXAMPLE: \
+        {\"prefix\":\"avatars/\",\"owner_scoped\":true}."
+    )]
+    async fn set_file_policy(
+        &self,
+        Parameters(file_policy_tools::SetFilePolicyArgs {
+            prefix,
+            owner_scoped,
+            public_read,
+            select,
+            delete,
+        }): Parameters<file_policy_tools::SetFilePolicyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_policy_tools::set_file_policy(
+            &self.state,
+            &prefix,
+            owner_scoped,
+            public_read,
+            select,
+            delete,
+        )
+        .await
+        {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "v1.63 — List every registered file-access rule for this \
+        tenant, ordered by prefix: {policies:[{prefix, owner_scoped, \
+        public_read, select?, delete?}]}. This is the tenant's file-access map — \
+        read it before changing one rule, since the LONGEST matching prefix \
+        decides a file and a deeper rule may already override the one you are \
+        editing. A tenant created on v1.63+ starts with a single seeded root \
+        rule (\"\" → public_read), which preserves pre-v1.63 behaviour until it \
+        is cleared or overridden."
+    )]
+    async fn list_file_policies(
+        &self,
+        Parameters(_): Parameters<EmptyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match file_policy_tools::list_file_policies(&self.state).await {
+            Ok(v) => json_content(v),
+            Err(e) => bail_mcp(e),
+        }
+    }
+
+    #[tool(
+        annotations(destructive_hint = true),
+        description = "v1.63 — Remove the file-access rule registered for one \
+        exact prefix (\"\" clears the tenant root). This does NOT open the \
+        prefix: its files fall to the next-longest matching rule, or — when \
+        none matches — to the owner-scoped default, where only the uploader \
+        reaches a file. Clearing a prefix that has no rule returns \
+        FILE_POLICY_NOT_FOUND rather than a silent success."
+    )]
+    async fn clear_file_policy(
+        &self,
+        Parameters(file_policy_tools::ClearFilePolicyArgs { prefix }): Parameters<
+            file_policy_tools::ClearFilePolicyArgs,
+        >,
+    ) -> Result<CallToolResult, McpError> {
+        match file_policy_tools::clear_file_policy(&self.state, &prefix).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -3092,6 +3181,11 @@ CAPABILITY GROUPS
 
 3. STORAGE (per-tenant Garage buckets — public + private)
    Manage: list_files, delete_file, get_file_url, set_file_visibility  (get_file_url: pass download=true for attachment disposition)
+   Files RLS (v1.63): set_file_policy, list_file_policies, clear_file_policy — per-PREFIX
+     rules over each file's logical `path` ("avatars/", "" = tenant root); longest prefix
+     wins; owner_scoped / select FilterAst / public_read compose. Second gate UNDER the
+     per-verb file caps; service keys bypass. A rule that restricts nothing is refused
+     (FILE_POLICY_OPEN_REQUIRES_FLAG) — say public_read: true to mean "open".
    Upload (small): single request — MCP has no upload tool by design. Use REST:
      POST {base}{bp}/t/{tenant_id}/files
      Header: Authorization: Bearer $DRUST_TOKEN
@@ -3745,8 +3839,8 @@ mod instructions_tests {
 mod annotation_tests {
     use super::*;
 
-    // Wire name == fn name (no `name=` overrides). Buckets sum to 71; call_rpc &
-    // invoke_function are special-cased below. Total must equal tool_count() (73).
+    // Wire name == fn name (no `name=` overrides). Buckets sum to 74; call_rpc &
+    // invoke_function are special-cased below. Total must equal tool_count() (76).
     const READONLY: &[&str] = &[
         "list_collections",
         "whoami",
@@ -3772,6 +3866,7 @@ mod annotation_tests {
         "get_function_logs",
         "list_cron_jobs",
         "list_fts_indexes",
+        "list_file_policies",
     ];
     const DESTRUCTIVE: &[&str] = &[
         "drop_field",
@@ -3788,6 +3883,7 @@ mod annotation_tests {
         "delete_webhook",
         "delete_function",
         "delete_cron_job",
+        "clear_file_policy",
     ];
     const IDEMPOTENT: &[&str] = &[
         "set_anon_caps",
@@ -3797,6 +3893,7 @@ mod annotation_tests {
         "set_policy",
         "set_description",
         "set_file_visibility",
+        "set_file_policy",
         "set_owner_field",
         "set_self_register",
         "set_publish_policy",
@@ -3839,14 +3936,14 @@ mod annotation_tests {
             .unwrap_or_else(|| panic!("tool {name} has no annotations"))
     }
 
-    /// Completeness anchor: proves wire name == fn name, the count is 73, and the
+    /// Completeness anchor: proves wire name == fn name, the count is 76, and the
     /// classification below covers EXACTLY the real tool set (catches renames/adds/typos).
     #[test]
-    fn wire_names_match_classification_and_count_is_73() {
+    fn wire_names_match_classification_and_count_is_76() {
         let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
         assert_eq!(
             names.len(),
-            73,
+            76,
             "tool count changed — update tool_count assertions too"
         );
         let mut covered: Vec<&str> = READONLY
