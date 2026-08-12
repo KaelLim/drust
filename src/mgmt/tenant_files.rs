@@ -751,6 +751,14 @@ async fn upload_inner(
 
 /// GET /drust/t/<tenant>/files
 /// Returns all rows in _system_files for this tenant, ordered by uploaded_at DESC.
+///
+/// **Not RLS-filtered yet — T5 wires `build_file_list_filter` here.** Until it
+/// does, a caller holding the `list` file cap enumerates `key` / `path` /
+/// `uploader` / `original_name` for rows `get_one`, `stream_bytes` and
+/// `delete_one` already answer 404 for. So the "a hidden file is
+/// indistinguishable from an absent one" property those three verbs now hold is
+/// **per-verb, not plane-wide**: this handler is the remaining oracle, and the
+/// non-oracular claim is only true once it filters too.
 pub async fn list(
     State(state): State<TenantFilesState>,
     Path(tenant_id): Path<String>,

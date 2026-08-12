@@ -8,7 +8,10 @@
 //!
 //! 1. **A hidden file answers 404, never 403.** A 403 would confirm the object
 //!    exists to a caller who may not see it — the same rule `owner_field` reads
-//!    follow.
+//!    follow. Scope note: this holds per-verb for the three single-file verbs
+//!    covered here. `GET /files` (list) is still unfiltered until T5, so a
+//!    `list`-capable caller can still enumerate what these 404s hide — the
+//!    plane-wide claim is T5's to earn.
 //! 2. **The longest matching prefix wins**, so `shared/hr/` can tighten what
 //!    `shared/` opened.
 //! 3. **A clause-less registry row denies everything.** The write face refuses
@@ -296,8 +299,11 @@ impl Ctx {
         assert_eq!(resp.status(), StatusCode::OK, "policy clear failed");
     }
 
-    /// Hand-write a registry row the public API refuses to create.
-    fn raw_policy_insert(&self, sql: &str) {
+    /// Run one statement straight against the tenant DB, for the registry
+    /// states no public API can produce: a clause-less row (the write face
+    /// refuses it) and a MISSING `_system_file_policy` table (the
+    /// `x-drust-boot-degraded` shape, where the v1.63 migration never landed).
+    fn raw_tenant_sql(&self, sql: &str) {
         let db = self
             .dir
             .path()
@@ -441,7 +447,7 @@ async fn a_clause_less_registry_row_denies_every_read() {
     let (alice, _aid) = c.user("alice@x.com").await;
     // The write face refuses this shape (FILE_POLICY_OPEN_REQUIRES_FLAG), so a
     // hand-written row is the only source — and it must fail CLOSED.
-    c.raw_policy_insert(
+    c.raw_tenant_sql(
         "INSERT INTO \"_system_file_policy\" (prefix, owner_scoped, public_read, \
          select_policy_json, delete_policy_json) VALUES ('x/', 0, 0, NULL, NULL)",
     );
@@ -501,6 +507,45 @@ async fn delete_inherits_select_and_a_stricter_delete_clause_still_binds() {
     );
 }
 
+/// The inheritance direction the test above CANNOT see. `pub/` is clause-less
+/// and open, so `delete_policy.or(select_policy)` is `None.or(None)` there —
+/// dropping the fallback entirely would leave that test green. A DENYING select
+/// clause with no delete clause is the shape that catches it, and it is the
+/// shape that matters: without the fallback a caller holding the `delete` file
+/// cap could destroy a file it is not allowed to read.
+#[tokio::test]
+async fn a_denying_select_clause_refuses_the_delete_it_never_mentions() {
+    let c = stack("rls-rd-del-inherit").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    let (bob, _bid) = c.user("bob@x.com").await;
+    // Registrable through the public API: `select` is present, so
+    // FILE_POLICY_OPEN_REQUIRES_FLAG does not fire.
+    c.put_policy(json!({"prefix": "docs/", "select": {"uploader": {"$auth": "id"}}}))
+        .await;
+    let key = c.upload(&alice, "d.bin", Some("docs/d.bin"), None).await;
+
+    assert_eq!(
+        c.get_one(&bob, &key).await,
+        StatusCode::NOT_FOUND,
+        "the select clause hides alice's file from bob"
+    );
+    assert_eq!(
+        c.delete(&bob, &key).await,
+        StatusCode::NOT_FOUND,
+        "…and the delete inherits it: unreadable ⇒ undeletable, even with the delete cap"
+    );
+    assert_eq!(
+        c.bytes(&alice, &key).await,
+        StatusCode::OK,
+        "the refused delete left the object alone"
+    );
+    assert_eq!(
+        c.delete(&alice, &key).await,
+        StatusCode::NO_CONTENT,
+        "the caller the select clause admits still deletes"
+    );
+}
+
 /// A refused delete must not have destroyed the object first: the gate runs
 /// BEFORE the Garage call, so the file is still readable afterwards.
 #[tokio::test]
@@ -517,6 +562,47 @@ async fn a_refused_delete_leaves_the_row_and_the_object_intact() {
         c.bytes(&alice, &key).await,
         StatusCode::OK,
         "the bytes must survive a refused delete — the gate precedes the S3 delete"
+    );
+}
+
+// ─── registry unreadable ⇒ refuse ────────────────────────────────────────────
+
+/// The branch that fires for a tenant whose `_system_file_policy` migration did
+/// not land — the `x-drust-boot-degraded` case. `load_file_policies` propagates
+/// rather than returning an empty list precisely so this cannot read as "no
+/// rules registered, therefore nothing restricted"; every data-plane caller
+/// must be refused until the registry can be read again.
+#[tokio::test]
+async fn an_unreadable_registry_refuses_every_data_plane_caller() {
+    let c = stack("rls-rd-noregistry").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    let key = c.upload(&alice, "a.bin", Some("any/a.bin"), None).await;
+    assert_eq!(
+        c.get_one(&alice, &key).await,
+        StatusCode::OK,
+        "readable while the seeded root is in place…"
+    );
+
+    c.raw_tenant_sql("DROP TABLE \"_system_file_policy\"");
+
+    for status in [
+        c.get_one(&alice, &key).await,
+        c.bytes(&alice, &key).await,
+        c.delete(&alice, &key).await,
+    ] {
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "…and refused once the registry cannot be read — a policy read \
+             failure must never be the reason a file becomes visible"
+        );
+    }
+    let svc = c.svc.clone();
+    assert_eq!(
+        c.get_one(&svc, &key).await,
+        StatusCode::OK,
+        "service bypasses BEFORE the registry read, so an unreadable registry \
+         does not lock the tenant out of its own recovery"
     );
 }
 
@@ -683,4 +769,63 @@ async fn edge_get_file_honours_a_registered_open_prefix() {
     .await
     .expect("an explicitly-open root lets an anon caller read");
     assert_eq!(bytes, b"hello");
+}
+
+/// The edge mirror of `an_unreadable_registry_refuses_every_data_plane_caller`:
+/// `file_read_allowed` maps a registry read failure to `Err`, never to "no
+/// rules, therefore allowed".
+#[tokio::test(flavor = "multi_thread")]
+async fn edge_get_file_refuses_when_the_registry_cannot_be_read() {
+    use drust::auth::middleware::AuthCtx;
+    let (mcp, _t) = edge_mcp("edge-read-noreg").await;
+    let caps = file_caps_all();
+    drust::functions::enforce::enforced_put_file(
+        &mcp,
+        TokenRole::User,
+        &caps,
+        "u-alice",
+        "n.bin",
+        b"hello".to_vec(),
+        "application/octet-stream",
+        "private",
+        0,
+    )
+    .await
+    .unwrap();
+    let alice = AuthCtx::User {
+        user_id: "u-alice".into(),
+        token_hash: String::new(),
+    };
+    assert!(
+        drust::functions::enforce::enforced_get_file_bytes(
+            &mcp,
+            &alice,
+            &caps,
+            "n.bin",
+            4 * 1024 * 1024,
+        )
+        .await
+        .is_ok(),
+        "the uploader reads their own file while the registry is intact"
+    );
+
+    mcp.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
+        .await
+        .unwrap();
+
+    let err = drust::functions::enforce::enforced_get_file_bytes(
+        &mcp,
+        &alice,
+        &caps,
+        "n.bin",
+        4 * 1024 * 1024,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("DB_ERROR"),
+        "an undecidable policy read is a refusal, not a grant — got {err:?}"
+    );
 }

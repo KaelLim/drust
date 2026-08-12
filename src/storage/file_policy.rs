@@ -826,6 +826,46 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_with_no_delete_clause_inherits_a_denying_select_clause() {
+        // The test above proves inheritance through a clause-LESS open prefix,
+        // where `.or(select)` is a no-op (both sides are None) — deleting the
+        // fallback would not change its answer. THIS is the direction that
+        // matters: a select clause that HIDES the row must also refuse the
+        // delete, or a caller holding the `delete` file cap can destroy a file
+        // it cannot read. The shape is API-creatable — `select` is Some, so
+        // `FILE_POLICY_OPEN_REQUIRES_FLAG` does not fire.
+        let mut p = row("docs/");
+        p.owner_scoped = false;
+        p.select_policy = Some(ast(serde_json::json!({"uploader": {"$auth": "id"}})));
+        assert!(
+            validate_file_policy(&p).is_ok(),
+            "the registry accepts this shape, so the read path must handle it"
+        );
+        let ps = vec![p];
+        let row_map = file_row(Some("docs/a.bin"), "u-alice");
+
+        assert!(!authorize_file(
+            &ps,
+            &row_map,
+            &user("u-bob"),
+            FileAccess::Read
+        ));
+        assert!(
+            !authorize_file(&ps, &row_map, &user("u-bob"), FileAccess::Delete),
+            "with no delete clause the SELECT clause governs the delete too — \
+             unreadable ⇒ undeletable"
+        );
+        assert!(
+            !authorize_file(&ps, &row_map, &AuthCtx::Anon, FileAccess::Delete),
+            "and anon, whose $auth is NULL, is Unknown ⇒ denied"
+        );
+        assert!(
+            authorize_file(&ps, &row_map, &user("u-alice"), FileAccess::Delete),
+            "the caller the select clause admits still deletes"
+        );
+    }
+
+    #[test]
     fn a_select_clause_and_composes_with_the_owner_clause() {
         // owner_scoped AND visibility='private': satisfying one is not enough.
         let mut p = row("both/");
