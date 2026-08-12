@@ -752,6 +752,50 @@ async fn list_denies_a_clause_less_prefix() {
     );
 }
 
+/// A stored prefix that breaks the grammar is the same class of corruption as
+/// an unparseable clause, and takes the same fail-CLOSED exit.
+///
+/// It matters because the two evaluators disagree about what an unvalidated
+/// prefix even means: `authorize_file` matches it with `starts_with` (so
+/// `'avatars'` would quietly claim `avatarss/…` as well), while the list face
+/// hands it to `prefix_upper_bound`, whose contract is a validated prefix
+/// ending in `/` — its debug_assert aborts the request in any debug build.
+/// `load_file_policies` refuses the read so neither evaluator ever sees the
+/// row, and the refusal names the prefix so the service face can clear it.
+#[tokio::test]
+async fn a_malformed_stored_prefix_refuses_instead_of_widening_or_panicking() {
+    let c = stack("rls-rd-badprefix").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    let sibling = c
+        .upload(&alice, "s.png", Some("avatarss/s.png"), None)
+        .await;
+    assert_eq!(c.list(&alice).await.0, StatusCode::OK);
+
+    // No CHECK constraint guards the column, so a hand-INSERT is the door.
+    c.raw_tenant_sql(
+        "INSERT INTO \"_system_file_policy\" (prefix, owner_scoped, public_read, \
+         select_policy_json, delete_policy_json) VALUES ('avatars', 0, 1, NULL, NULL)",
+    );
+
+    assert_eq!(
+        c.list(&alice).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "an undecidable registry is an error — never a panic, and never a \
+         `starts_with` rule that hands {sibling} to an unintended prefix"
+    );
+    assert_eq!(
+        c.get_one(&alice, &sibling).await,
+        StatusCode::NOT_FOUND,
+        "the single-file face takes the same exit as the list face"
+    );
+    let svc = c.svc.clone();
+    assert_eq!(
+        c.list(&svc).await.0,
+        StatusCode::OK,
+        "service bypasses the registry read, so recovery stays possible"
+    );
+}
+
 fn sorted<'a>(keys: impl IntoIterator<Item = &'a String>) -> Vec<String> {
     let mut v: Vec<String> = keys.into_iter().cloned().collect();
     v.sort();

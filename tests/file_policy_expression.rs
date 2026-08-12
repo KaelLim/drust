@@ -28,6 +28,19 @@
 //! * **Nesting and `$or`.** Three levels of override prove the exclusion chain,
 //!   and an `$or` policy under two prefixes proves each fragment is parenthesized
 //!   rather than trusting operator precedence.
+//! * **The composed arm — `owner_scoped` AND a select clause.** The only shape
+//!   whose decision has TWO sub-clauses, so the only one that can desynchronize
+//!   binds from placeholders: `decision_sql` emits the owner comparison first
+//!   and must push its bind first (CLAUDE.md invariant 12's "policies
+//!   AND-compose with the unchanged owner clause", carried to files). The
+//!   bind-COUNT assertion below cannot see an ORDER swap — only a differing row
+//!   SET can — so each composed registry binds a clause value that is NOT a
+//!   user id, and four of them place the shape where the pushes interleave
+//!   differently: alone, on the root behind other arms' range binds, under an
+//!   open root with a looser child, and on a CJK prefix. The uncompilable
+//!   variant is the other half: it is the only shape that can leave an ORPHAN
+//!   bind, since bailing out after pushing the owner bind would shift every
+//!   later arm's placeholders by one.
 
 use drust::auth::middleware::AuthCtx;
 use drust::query::vector_filter::FilterAst;
@@ -74,6 +87,17 @@ fn open(prefix: &str) -> FilePolicyRow {
 /// for, because the clause itself is the restriction).
 fn sel(prefix: &str, clause: Value) -> FilePolicyRow {
     FilePolicyRow {
+        select_policy: Some(ast(clause)),
+        ..rule(prefix)
+    }
+}
+
+/// `owner_scoped=1` AND a select clause — the composed shape. Both sub-clauses
+/// are emitted, owner first, so this is the only registry shape whose bind
+/// order can drift from its placeholder order.
+fn owner_sel(prefix: &str, clause: Value) -> FilePolicyRow {
+    FilePolicyRow {
+        owner_scoped: true,
         select_policy: Some(ast(clause)),
         ..rule(prefix)
     }
@@ -299,6 +323,47 @@ fn the_two_file_evaluators_agree_on_the_corpus() {
             "a not-clause, whose NULL handling is Kleene on both sides",
             vec![sel("", json!({"not": {"content_type": "text/plain"}}))],
         ),
+        // ── the composed arm: owner_scoped AND a select clause ───────────────
+        //
+        // Every clause below binds a value no caller id can equal, so a swapped
+        // bind pair degenerates to `uploader = 'public'` — a set difference the
+        // corpus sees, where a bind-count check sees nothing.
+        (
+            "owner-scoped AND a select clause on one prefix",
+            vec![owner_sel("docs/", json!({"visibility": "public"}))],
+        ),
+        (
+            "the composed shape on the ROOT, behind another arm's range binds",
+            vec![
+                owner_sel("", json!({"visibility": "private"})),
+                open("docs/"),
+            ],
+        ),
+        (
+            "the composed shape under an open root, with a looser child",
+            vec![
+                open(""),
+                owner_sel("avatars/", json!({"content_type": "text/plain"})),
+                open("avatars/alice/"),
+            ],
+        ),
+        (
+            "CJK: the composed shape with an open child",
+            vec![
+                owner_sel("照片/", json!({"visibility": "private"})),
+                open("照片/alice/"),
+            ],
+        ),
+        // The orphan-bind shape. Both evaluators deny every row under `x/`, by
+        // different routes — SQL because the clause will not compile (a column
+        // kept out of the synthetic schema), memory because `meta_json` is NULL
+        // on the row and `NULL = 'x'` is Unknown. Only shapes that agree belong
+        // in a set-equality corpus; the compile refusal itself is pinned
+        // directly in `an_uncompilable_clause_denies_its_prefix`.
+        (
+            "an uncompilable clause on an owner-scoped prefix, ahead of a root arm",
+            vec![owner_sel("x/", json!({"meta_json": "x"})), open("")],
+        ),
     ];
 
     let callers: Vec<(&str, AuthCtx)> = vec![
@@ -393,5 +458,60 @@ fn an_uncompilable_clause_denies_its_prefix() {
         sql.matches('?').count(),
         binds.len(),
         "the abandoned clause must not leave orphan binds: {sql}"
+    );
+
+    // The shape above cannot orphan anything: with `owner_scoped=0` no bind is
+    // pushed before the compile is attempted. THIS one can — the owner
+    // comparison is the first thing the composed arm emits, so a bail-out that
+    // pushed before compiling would leave a bind with no placeholder and read
+    // every later arm's binds one slot early. `owner_scoped` must also not
+    // survive as a lone surviving restriction: the arm denies outright.
+    let ps = vec![owner_sel("bad/", json!({"meta_json": "x"})), open("")];
+    let (sql, binds) = build_file_list_filter(&ps, &user("u-alice"));
+    assert!(sql.contains("0=1"), "the composed arm denies too: {sql}");
+    assert!(
+        !sql.contains("uploader"),
+        "the refused arm emits NO owner comparison, so it may push no owner \
+         bind either: {sql}"
+    );
+    assert_eq!(
+        sql.matches('?').count(),
+        binds.len(),
+        "an owner bind pushed before the refused compile would be an orphan: {sql}"
+    );
+}
+
+/// The composed arm's two sub-clauses are emitted owner-first, and their binds
+/// are pushed in that same order.
+///
+/// The corpus proves this by result set; this proves it by construction, so a
+/// desync is named rather than showing up as a puzzling row difference. It is
+/// deliberately position-relative, not an exact bind vector: how many binds a
+/// clause compiles to is `compile_policy_using`'s business, and the contract
+/// here is only "appearance order".
+#[test]
+fn the_composed_arm_pushes_the_owner_bind_before_the_clause_binds() {
+    let ps = vec![owner_sel("docs/", json!({"visibility": "public"}))];
+    let (sql, binds) = build_file_list_filter(&ps, &user("u-alice"));
+    assert!(
+        sql.contains("\"uploader\" = ?") && sql.contains("visibility"),
+        "both sub-clauses compose; neither replaces the other: {sql}"
+    );
+    let texts: Vec<String> = binds
+        .iter()
+        .map(|v| match v {
+            rusqlite::types::Value::Text(t) => t.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        &texts[..2],
+        &["docs/".to_string(), "docs0".to_string()],
+        "the arm opens with its half-open byte range ('/' + 1 == '0'): {texts:?}"
+    );
+    let pos = |needle: &str| texts.iter().position(|t| t == needle);
+    assert!(
+        pos("u-alice") < pos("public") && pos("public").is_some(),
+        "owner bind first, exactly as the SQL orders the two fragments: {texts:?}"
     );
 }

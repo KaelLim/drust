@@ -193,12 +193,26 @@ pub fn validate_file_policy(row: &FilePolicyRow) -> Result<(), FilePolicyError> 
 }
 
 /// Every registered prefix, ordered by prefix. Any failure — a missing table, a
-/// row whose stored JSON no longer parses — propagates, and every caller maps a
-/// propagated error to DENY (spec §授權語意: policy read failure ⇒ refuse).
+/// row whose stored JSON no longer parses, a stored prefix that is not a legal
+/// prefix — propagates, and every caller maps a propagated error to DENY
+/// (spec §授權語意: policy read failure ⇒ refuse).
 ///
 /// Plain `prepare`, not `prepare_cached`: the REST file handlers open a fresh
 /// connection per request so a cache would never be hit there, and this table
 /// is small enough that the parse is not the cost.
+///
+/// **This is the only door into either evaluator**, which is why the prefix
+/// grammar is re-checked HERE and not at the two decision sites: the table
+/// carries no CHECK constraint, [`validate_file_prefix`] runs on the write face
+/// only, and the two evaluators read a prefix differently — `authorize_file`
+/// with `starts_with`, `build_file_list_filter` through
+/// [`prefix_upper_bound`], whose documented contract is an already-validated
+/// non-empty prefix ending in `/`. A hand-INSERTed `'avatars'` would be a
+/// surprising-but-working rule on one side and a debug-build panic on the
+/// other. Refusing the whole read keeps the two in lockstep by making the row
+/// unreachable, exactly as an unparseable clause already does — and the error
+/// names the offending prefix so the service-only list face's 500 tells an
+/// operator which row to `clear_file_policy`.
 pub fn load_file_policies(conn: &Connection) -> rusqlite::Result<Vec<FilePolicyRow>> {
     let mut stmt = conn.prepare(
         "SELECT prefix, owner_scoped, public_read, select_policy_json, delete_policy_json \
@@ -206,7 +220,7 @@ pub fn load_file_policies(conn: &Connection) -> rusqlite::Result<Vec<FilePolicyR
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(FilePolicyRow {
-            prefix: r.get(0)?,
+            prefix: checked_prefix(r.get(0)?)?,
             owner_scoped: r.get::<_, i64>(1)? != 0,
             public_read: r.get::<_, i64>(2)? != 0,
             select_policy: parse_stored_ast(r.get::<_, Option<String>>(3)?, 3)?,
@@ -214,6 +228,21 @@ pub fn load_file_policies(conn: &Connection) -> rusqlite::Result<Vec<FilePolicyR
         })
     })?;
     rows.collect()
+}
+
+/// A stored prefix, or the fail-closed error. See [`load_file_policies`].
+fn checked_prefix(prefix: String) -> rusqlite::Result<String> {
+    match validate_file_prefix(&prefix) {
+        Ok(()) => Ok(prefix),
+        Err(why) => Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(FilePolicyError::PrefixInvalid(format!(
+                "stored file policy prefix {prefix:?} is not a valid prefix ({why}) — \
+                 clear it to restore file access"
+            ))),
+        )),
+    }
 }
 
 fn parse_stored_ast(raw: Option<String>, idx: usize) -> rusqlite::Result<Option<FilterAst>> {
@@ -813,6 +842,43 @@ mod tests {
             load_file_policies(&conn).is_err(),
             "an unparseable rule must surface as an error the caller turns into \
              a refusal, never as a rule that quietly does nothing"
+        );
+    }
+
+    #[test]
+    fn a_stored_prefix_that_breaks_the_grammar_fails_closed() {
+        // The table has no CHECK constraint and `validate_file_prefix` runs on
+        // the write face only, so this row is reachable by hand-INSERT — the
+        // same door the clause-less row comes through. It must not reach either
+        // evaluator: `authorize_file` would honour it as a loose `starts_with`
+        // rule (`avatars` claiming `avatarss/x.png`), while
+        // `build_file_list_filter` would hand it to `prefix_upper_bound`, whose
+        // contract says validated-and-slash-terminated and whose debug_assert
+        // would abort the request. Refusing the read keeps the two in lockstep.
+        for bad in ["avatars", "/a/", "a//", " "] {
+            let conn = memdb();
+            conn.execute(
+                "INSERT INTO \"_system_file_policy\" (prefix, public_read) VALUES (?1, 1)",
+                [bad],
+            )
+            .unwrap();
+            let err = load_file_policies(&conn).unwrap_err();
+            assert!(
+                err.to_string().contains(bad),
+                "the refusal must name the row to clear, or an operator cannot \
+                 recover through the service face: {err}"
+            );
+        }
+
+        // …and the two legal shapes still load.
+        let conn = memdb();
+        seed_root_policy(&conn).unwrap();
+        upsert_file_policy(&conn, &row("avatars/")).unwrap();
+        let loaded = load_file_policies(&conn).unwrap();
+        assert_eq!(
+            loaded.len(),
+            2,
+            "'' and a slash-terminated prefix are legal"
         );
     }
 
