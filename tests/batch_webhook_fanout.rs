@@ -22,8 +22,7 @@
 //! 4. subscribed upsert — ONE read per upsert CALL, with the per-row
 //!    Created/Updated granularity preserved.
 
-#[path = "webhooks_common/mod.rs"]
-mod webhooks_common;
+use crate::webhooks_common;
 
 use drust::mcp::server::McpRegistry;
 use drust::mcp::tools::batch::{batch_insert, batch_upsert};

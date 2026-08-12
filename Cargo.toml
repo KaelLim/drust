@@ -141,6 +141,18 @@ path = "tests/audit_retention_no_drop.rs"
 name = "g_auth"
 path = "tests/g_auth.rs"
 [[test]]
+name = "g_batch"
+path = "tests/g_batch.rs"
+[[test]]
+name = "g_cli"
+path = "tests/g_cli.rs"
+[[test]]
+name = "g_collection"
+path = "tests/g_collection.rs"
+[[test]]
+name = "g_cron"
+path = "tests/g_cron.rs"
+[[test]]
 name = "g_egress"
 path = "tests/g_egress.rs"
 [[test]]
@@ -163,11 +175,20 @@ path = "tests/g_functions.rs"
 name = "g_mcp"
 path = "tests/g_mcp.rs"
 [[test]]
+name = "g_member"
+path = "tests/g_member.rs"
+[[test]]
+name = "g_misc"
+path = "tests/g_misc.rs"
+[[test]]
 name = "g_policy"
 path = "tests/g_policy.rs"
 [[test]]
 name = "g_record"
 path = "tests/g_record.rs"
+[[test]]
+name = "g_rooms"
+path = "tests/g_rooms.rs"
 [[test]]
 name = "g_rpc"
 path = "tests/g_rpc.rs"
@@ -178,6 +199,9 @@ path = "tests/g_rpc.rs"
 # inside g_rpc.
 name = "rpc_v2_mutation"
 path = "tests/rpc_v2_mutation.rs"
+[[test]]
+name = "g_schema"
+path = "tests/g_schema.rs"
 [[test]]
 name = "g_storage"
 path = "tests/g_storage.rs"
@@ -191,281 +215,40 @@ path = "tests/g_tenant.rs"
 name = "tenant_quota_requests"
 path = "tests/tenant_quota_requests.rs"
 [[test]]
+name = "g_user"
+path = "tests/g_user.rs"
+[[test]]
+name = "g_vector"
+path = "tests/g_vector.rs"
+[[test]]
 name = "g_webhook"
 path = "tests/g_webhook.rs"
 [[test]]
+# Isolation exceptions (#925 spec §分組): these keep a binary to themselves
+# because they mutate process-global state — seven call std::env::set_var /
+# remove_var, and base_path_root drives the first-write-wins base-path
+# OnceLock. They are not group harnesses; run one with
+# `cargo test --test <name>`.
 name = "admin_theme"
 path = "tests/admin_theme.rs"
-[[test]]
-name = "aggregate"
-path = "tests/aggregate.rs"
-[[test]]
-name = "authorizer"
-path = "tests/authorizer.rs"
-[[test]]
-name = "authorizer_writable"
-path = "tests/authorizer_writable.rs"
-[[test]]
-name = "backup_roundtrip"
-path = "tests/backup_roundtrip.rs"
 [[test]]
 name = "base_path_root"
 path = "tests/base_path_root.rs"
 [[test]]
-name = "batch_insert_rest"
-path = "tests/batch_insert_rest.rs"
-[[test]]
-name = "batch_insert"
-path = "tests/batch_insert.rs"
-[[test]]
-name = "batch_webhook_fanout"
-path = "tests/batch_webhook_fanout.rs"
-[[test]]
-name = "bearer_token"
-path = "tests/bearer_token.rs"
-[[test]]
-name = "bench_ws_publish"
-path = "tests/bench_ws_publish.rs"
-[[test]]
-name = "check_constraints_meta"
-path = "tests/check_constraints_meta.rs"
-[[test]]
-name = "check_constraints_writepath"
-path = "tests/check_constraints_writepath.rs"
-[[test]]
-name = "cli_auth_endpoints"
-path = "tests/cli_auth_endpoints.rs"
-[[test]]
 name = "cli_device_approval"
 path = "tests/cli_device_approval.rs"
-[[test]]
-name = "cli_device_flow"
-path = "tests/cli_device_flow.rs"
-[[test]]
-name = "cli_device_reaper"
-path = "tests/cli_device_reaper.rs"
-[[test]]
-name = "codegen_golden"
-path = "tests/codegen_golden.rs"
-[[test]]
-name = "codegen_routes"
-path = "tests/codegen_routes.rs"
-[[test]]
-name = "collection_list_admin_errors"
-path = "tests/collection_list_admin_errors.rs"
-[[test]]
-name = "collection_list_admin_filter_ast"
-path = "tests/collection_list_admin_filter_ast.rs"
-[[test]]
-name = "collection_list_admin_protected"
-path = "tests/collection_list_admin_protected.rs"
-[[test]]
-name = "collection_page_back_compat"
-path = "tests/collection_page_back_compat.rs"
-[[test]]
-name = "collections_endpoints"
-path = "tests/collections_endpoints.rs"
 [[test]]
 name = "config"
 path = "tests/config.rs"
 [[test]]
-name = "connection_pool"
-path = "tests/connection_pool.rs"
-[[test]]
-name = "cron_admin_ui"
-path = "tests/cron_admin_ui.rs"
-[[test]]
-name = "cron_dispatch"
-path = "tests/cron_dispatch.rs"
-[[test]]
-name = "cron_rest"
-path = "tests/cron_rest.rs"
-[[test]]
-name = "dataplane_files_service_guard"
-path = "tests/dataplane_files_service_guard.rs"
-[[test]]
-name = "defensive_writer"
-path = "tests/defensive_writer.rs"
-[[test]]
 name = "deploy4_login_version"
 path = "tests/deploy4_login_version.rs"
-[[test]]
-name = "disk_check_root"
-path = "tests/disk_check_root.rs"
-[[test]]
-name = "end_to_end"
-path = "tests/end_to_end.rs"
-[[test]]
-name = "error_suggested_fix"
-path = "tests/error_suggested_fix.rs"
-[[test]]
-name = "explain_endpoint"
-path = "tests/explain_endpoint.rs"
-[[test]]
-name = "filter_composition"
-path = "tests/filter_composition.rs"
 [[test]]
 name = "fts_deadline"
 path = "tests/fts_deadline.rs"
 [[test]]
-name = "host_files_owner_only"
-path = "tests/host_files_owner_only.rs"
-[[test]]
-name = "index_tools"
-path = "tests/index_tools.rs"
-[[test]]
-name = "large_upload_tus"
-path = "tests/large_upload_tus.rs"
-[[test]]
-name = "member_tenant_cap_http"
-path = "tests/member_tenant_cap_http.rs"
-[[test]]
-name = "member_tenant_cap_requests"
-path = "tests/member_tenant_cap_requests.rs"
-[[test]]
-name = "member_tenant_cap"
-path = "tests/member_tenant_cap.rs"
-[[test]]
-name = "member_tenant_cap_ui"
-path = "tests/member_tenant_cap_ui.rs"
-[[test]]
-name = "meta_lock_contention"
-path = "tests/meta_lock_contention.rs"
-[[test]]
-name = "meta_sqlite"
-path = "tests/meta_sqlite.rs"
-[[test]]
-name = "mgmt_login"
-path = "tests/mgmt_login.rs"
-[[test]]
-name = "owner_field_records"
-path = "tests/owner_field_records.rs"
-[[test]]
-name = "owner_field"
-path = "tests/owner_field.rs"
-[[test]]
-name = "pragma_optimize_smoke"
-path = "tests/pragma_optimize_smoke.rs"
-[[test]]
-name = "prepare_cached_parity"
-path = "tests/prepare_cached_parity.rs"
-[[test]]
-name = "prepare_cached_staleness"
-path = "tests/prepare_cached_staleness.rs"
-[[test]]
-name = "query_endpoint"
-path = "tests/query_endpoint.rs"
-[[test]]
 name = "query_executor"
 path = "tests/query_executor.rs"
 [[test]]
-name = "quota_update_growth"
-path = "tests/quota_update_growth.rs"
-[[test]]
-name = "rate_limit_middleware"
-path = "tests/rate_limit_middleware.rs"
-[[test]]
-name = "rate_limit"
-path = "tests/rate_limit.rs"
-[[test]]
-name = "reconcile_pending"
-path = "tests/reconcile_pending.rs"
-[[test]]
-name = "returning_mcp_parity"
-path = "tests/returning_mcp_parity.rs"
-[[test]]
-name = "returning_rest_policy"
-path = "tests/returning_rest_policy.rs"
-[[test]]
-name = "rooms_policy"
-path = "tests/rooms_policy.rs"
-[[test]]
-name = "rooms_rest_publish"
-path = "tests/rooms_rest_publish.rs"
-[[test]]
-name = "rooms_ws"
-path = "tests/rooms_ws.rs"
-[[test]]
-name = "schema_description_read"
-path = "tests/schema_description_read.rs"
-[[test]]
-name = "schema_description_write"
-path = "tests/schema_description_write.rs"
-[[test]]
-name = "schema_read"
-path = "tests/schema_read.rs"
-[[test]]
-name = "session_middleware"
-path = "tests/session_middleware.rs"
-[[test]]
-name = "session"
-path = "tests/session.rs"
-[[test]]
-name = "set_admin_password_email"
-path = "tests/set_admin_password_email.rs"
-[[test]]
-name = "set_admin_role_cli"
-path = "tests/set_admin_role_cli.rs"
-[[test]]
-name = "soft_delete_no_resurrect"
-path = "tests/soft_delete_no_resurrect.rs"
-[[test]]
-name = "sqlite_internal_write_denied"
-path = "tests/sqlite_internal_write_denied.rs"
-[[test]]
-name = "sse_realtime_gating"
-path = "tests/sse_realtime_gating.rs"
-[[test]]
-name = "sse"
-path = "tests/sse.rs"
-[[test]]
-name = "strict_new_collection"
-path = "tests/strict_new_collection.rs"
-[[test]]
-name = "strict_rebuild"
-path = "tests/strict_rebuild.rs"
-[[test]]
-name = "tenants_api"
-path = "tests/tenants_api.rs"
-[[test]]
-name = "three_tier_roles"
-path = "tests/three_tier_roles.rs"
-[[test]]
-name = "token_roles"
-path = "tests/token_roles.rs"
-[[test]]
-name = "tokens_api"
-path = "tests/tokens_api.rs"
-[[test]]
-name = "upload_content_type_safety"
-path = "tests/upload_content_type_safety.rs"
-[[test]]
-name = "upsert_rest"
-path = "tests/upsert_rest.rs"
-[[test]]
-name = "upsert"
-path = "tests/upsert.rs"
-[[test]]
-name = "user_caps_admin"
-path = "tests/user_caps_admin.rs"
-[[test]]
-name = "user_caps_mcp"
-path = "tests/user_caps_mcp.rs"
-[[test]]
-name = "user_caps"
-path = "tests/user_caps.rs"
-[[test]]
-name = "vector_misc"
-path = "tests/vector_misc.rs"
-[[test]]
-name = "vector_search"
-path = "tests/vector_search.rs"
-[[test]]
-name = "vector_storage"
-path = "tests/vector_storage.rs"
-[[test]]
 name = "webhook_concurrency"
 path = "tests/webhook_concurrency.rs"
-[[test]]
-name = "x_drust_version_header"
-path = "tests/x_drust_version_header.rs"
