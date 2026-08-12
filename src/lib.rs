@@ -41,3 +41,10 @@ pub mod tenant;
 #[cfg(test)]
 #[path = "../build_support/ui_gates.rs"]
 mod ui_gates;
+
+/// Compile-time test-target coverage gate (#925) — the ninth build gate. Same
+/// arrangement as `ui_gates`: pure logic in `build_support/` so `build.rs` can
+/// `include!` it and the suite can still cover it.
+#[cfg(test)]
+#[path = "../build_support/test_targets_gate.rs"]
+mod test_targets_gate;

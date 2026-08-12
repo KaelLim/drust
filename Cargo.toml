@@ -3,6 +3,7 @@ name = "drust"
 version = "1.63.0"
 edition = "2024"
 rust-version = "1.93"
+autotests = false
 
 [[bin]]
 name = "drust"
@@ -96,3 +97,715 @@ debug = "line-tables-only"
 [workspace]
 members = ["cli"]
 resolver = "2"
+
+# --- Explicit test targets (#925) --------------------------------------------
+# `autotests = false` (top of file) turns off cargo's tests/*.rs auto-discovery,
+# so every test binary is listed below: the merged group harnesses
+# (tests/g_<group>.rs, each `#[path]`-including its member files unchanged) plus
+# the isolation exceptions that must keep a process to themselves. tests/
+# helpers.rs is deliberately not a target — it declares zero #[test] fns and
+# linking it as its own binary was pure waste.
+#
+# Forgetting an entry here would drop a whole suite with no error anywhere, so
+# build.rs's ninth gate (build_support/test_targets_gate.rs) fails the build on
+# any tests/*.rs that is neither a target here nor a `#[path]` member of one.
+# Spec: docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md
+[[test]]
+name = "g_mcp"
+path = "tests/g_mcp.rs"
+[[test]]
+name = "admin_api_audit"
+path = "tests/admin_api_audit.rs"
+[[test]]
+name = "admin_api_backups"
+path = "tests/admin_api_backups.rs"
+[[test]]
+name = "admin_api_tenants"
+path = "tests/admin_api_tenants.rs"
+[[test]]
+name = "admin_api_tokens"
+path = "tests/admin_api_tokens.rs"
+[[test]]
+name = "admin_broadcast_page"
+path = "tests/admin_broadcast_page.rs"
+[[test]]
+name = "admin_cap_switch_toggle"
+path = "tests/admin_cap_switch_toggle.rs"
+[[test]]
+name = "admin_description_write"
+path = "tests/admin_description_write.rs"
+[[test]]
+name = "admin_email_migration"
+path = "tests/admin_email_migration.rs"
+[[test]]
+name = "admin_files_routes"
+path = "tests/admin_files_routes.rs"
+[[test]]
+name = "admin_files_upgrade"
+path = "tests/admin_files_upgrade.rs"
+[[test]]
+name = "admin_frame_guard"
+path = "tests/admin_frame_guard.rs"
+[[test]]
+name = "admin_index_routes"
+path = "tests/admin_index_routes.rs"
+[[test]]
+name = "admin_login_rate_limit"
+path = "tests/admin_login_rate_limit.rs"
+[[test]]
+name = "admin_login_timing"
+path = "tests/admin_login_timing.rs"
+[[test]]
+name = "admin_metrics"
+path = "tests/admin_metrics.rs"
+[[test]]
+name = "admin_oauth_provider_handlers"
+path = "tests/admin_oauth_provider_handlers.rs"
+[[test]]
+name = "admin_oauth"
+path = "tests/admin_oauth.rs"
+[[test]]
+name = "admin_password"
+path = "tests/admin_password.rs"
+[[test]]
+name = "admin_pat_admin_plane"
+path = "tests/admin_pat_admin_plane.rs"
+[[test]]
+name = "admin_pat_bearer"
+path = "tests/admin_pat_bearer.rs"
+[[test]]
+name = "admin_pat_reroll_keeps_cli"
+path = "tests/admin_pat_reroll_keeps_cli.rs"
+[[test]]
+name = "admin_pat_reroll"
+path = "tests/admin_pat_reroll.rs"
+[[test]]
+name = "admin_policy_routes"
+path = "tests/admin_policy_routes.rs"
+[[test]]
+name = "admin_relocated_pages_smoke"
+path = "tests/admin_relocated_pages_smoke.rs"
+[[test]]
+name = "admin_session_pat_fallback"
+path = "tests/admin_session_pat_fallback.rs"
+[[test]]
+name = "admin_team_batch"
+path = "tests/admin_team_batch.rs"
+[[test]]
+name = "admin_team_crud"
+path = "tests/admin_team_crud.rs"
+[[test]]
+name = "admin_team_invariants"
+path = "tests/admin_team_invariants.rs"
+[[test]]
+name = "admin_theme"
+path = "tests/admin_theme.rs"
+[[test]]
+name = "admin_users"
+path = "tests/admin_users.rs"
+[[test]]
+name = "admin_webhook_handlers"
+path = "tests/admin_webhook_handlers.rs"
+[[test]]
+name = "aggregate"
+path = "tests/aggregate.rs"
+[[test]]
+name = "audit3_readscope_all_caps"
+path = "tests/audit3_readscope_all_caps.rs"
+[[test]]
+name = "audit3_sse_evict"
+path = "tests/audit3_sse_evict.rs"
+[[test]]
+name = "audit_middleware"
+path = "tests/audit_middleware.rs"
+[[test]]
+name = "audit_retention_no_drop"
+path = "tests/audit_retention_no_drop.rs"
+[[test]]
+name = "audit_sqlite"
+path = "tests/audit_sqlite.rs"
+[[test]]
+name = "audit_ui_routes"
+path = "tests/audit_ui_routes.rs"
+[[test]]
+name = "auth_admin_ui"
+path = "tests/auth_admin_ui.rs"
+[[test]]
+name = "auth_audit"
+path = "tests/auth_audit.rs"
+[[test]]
+name = "auth_bearer_resolution"
+path = "tests/auth_bearer_resolution.rs"
+[[test]]
+name = "auth_cache_change_password"
+path = "tests/auth_cache_change_password.rs"
+[[test]]
+name = "auth_cache_delete_user"
+path = "tests/auth_cache_delete_user.rs"
+[[test]]
+name = "auth_cache_hit"
+path = "tests/auth_cache_hit.rs"
+[[test]]
+name = "auth_cache_logout"
+path = "tests/auth_cache_logout.rs"
+[[test]]
+name = "auth_cache_mcp_publish_policy"
+path = "tests/auth_cache_mcp_publish_policy.rs"
+[[test]]
+name = "auth_cache_mcp_user"
+path = "tests/auth_cache_mcp_user.rs"
+[[test]]
+name = "auth_cache_missed_hook_ttl"
+path = "tests/auth_cache_missed_hook_ttl.rs"
+[[test]]
+name = "auth_cache_negative"
+path = "tests/auth_cache_negative.rs"
+[[test]]
+name = "auth_cache_pat_reroll"
+path = "tests/auth_cache_pat_reroll.rs"
+[[test]]
+name = "auth_cache_publish_policy"
+path = "tests/auth_cache_publish_policy.rs"
+[[test]]
+name = "auth_cache_revoke_all"
+path = "tests/auth_cache_revoke_all.rs"
+[[test]]
+name = "auth_cache_revoke_reroll"
+path = "tests/auth_cache_revoke_reroll.rs"
+[[test]]
+name = "auth_cache_set_file_caps"
+path = "tests/auth_cache_set_file_caps.rs"
+[[test]]
+name = "auth_cache_state"
+path = "tests/auth_cache_state.rs"
+[[test]]
+name = "auth_cache_tenant_lifecycle"
+path = "tests/auth_cache_tenant_lifecycle.rs"
+[[test]]
+name = "auth_cache_user_expiry"
+path = "tests/auth_cache_user_expiry.rs"
+[[test]]
+name = "auth_login"
+path = "tests/auth_login.rs"
+[[test]]
+name = "auth_mcp_blocked"
+path = "tests/auth_mcp_blocked.rs"
+[[test]]
+name = "auth_me"
+path = "tests/auth_me.rs"
+[[test]]
+name = "auth_migration"
+path = "tests/auth_migration.rs"
+[[test]]
+name = "authorizer"
+path = "tests/authorizer.rs"
+[[test]]
+name = "authorizer_writable"
+path = "tests/authorizer_writable.rs"
+[[test]]
+name = "auth_query_blocked"
+path = "tests/auth_query_blocked.rs"
+[[test]]
+name = "auth_register"
+path = "tests/auth_register.rs"
+[[test]]
+name = "auth_rpc"
+path = "tests/auth_rpc.rs"
+[[test]]
+name = "auth_session"
+path = "tests/auth_session.rs"
+[[test]]
+name = "auth_xff"
+path = "tests/auth_xff.rs"
+[[test]]
+name = "backup_roundtrip"
+path = "tests/backup_roundtrip.rs"
+[[test]]
+name = "base_path_root"
+path = "tests/base_path_root.rs"
+[[test]]
+name = "batch_insert_rest"
+path = "tests/batch_insert_rest.rs"
+[[test]]
+name = "batch_insert"
+path = "tests/batch_insert.rs"
+[[test]]
+name = "batch_webhook_fanout"
+path = "tests/batch_webhook_fanout.rs"
+[[test]]
+name = "bearer_token"
+path = "tests/bearer_token.rs"
+[[test]]
+name = "bench_ws_publish"
+path = "tests/bench_ws_publish.rs"
+[[test]]
+name = "check_constraints_meta"
+path = "tests/check_constraints_meta.rs"
+[[test]]
+name = "check_constraints_writepath"
+path = "tests/check_constraints_writepath.rs"
+[[test]]
+name = "cli_auth_endpoints"
+path = "tests/cli_auth_endpoints.rs"
+[[test]]
+name = "cli_device_approval"
+path = "tests/cli_device_approval.rs"
+[[test]]
+name = "cli_device_flow"
+path = "tests/cli_device_flow.rs"
+[[test]]
+name = "cli_device_reaper"
+path = "tests/cli_device_reaper.rs"
+[[test]]
+name = "codegen_golden"
+path = "tests/codegen_golden.rs"
+[[test]]
+name = "codegen_routes"
+path = "tests/codegen_routes.rs"
+[[test]]
+name = "collection_list_admin_errors"
+path = "tests/collection_list_admin_errors.rs"
+[[test]]
+name = "collection_list_admin_filter_ast"
+path = "tests/collection_list_admin_filter_ast.rs"
+[[test]]
+name = "collection_list_admin_protected"
+path = "tests/collection_list_admin_protected.rs"
+[[test]]
+name = "collection_page_back_compat"
+path = "tests/collection_page_back_compat.rs"
+[[test]]
+name = "collections_endpoints"
+path = "tests/collections_endpoints.rs"
+[[test]]
+name = "config"
+path = "tests/config.rs"
+[[test]]
+name = "connection_pool"
+path = "tests/connection_pool.rs"
+[[test]]
+name = "cron_admin_ui"
+path = "tests/cron_admin_ui.rs"
+[[test]]
+name = "cron_dispatch"
+path = "tests/cron_dispatch.rs"
+[[test]]
+name = "cron_rest"
+path = "tests/cron_rest.rs"
+[[test]]
+name = "dataplane_files_service_guard"
+path = "tests/dataplane_files_service_guard.rs"
+[[test]]
+name = "defensive_writer"
+path = "tests/defensive_writer.rs"
+[[test]]
+name = "deploy4_login_version"
+path = "tests/deploy4_login_version.rs"
+[[test]]
+name = "disk_check_root"
+path = "tests/disk_check_root.rs"
+[[test]]
+name = "egress_backfill"
+path = "tests/egress_backfill.rs"
+[[test]]
+name = "egress_column"
+path = "tests/egress_column.rs"
+[[test]]
+name = "egress_config"
+path = "tests/egress_config.rs"
+[[test]]
+name = "egress_http_fetch"
+path = "tests/egress_http_fetch.rs"
+[[test]]
+name = "egress_webhook_gate"
+path = "tests/egress_webhook_gate.rs"
+[[test]]
+name = "end_to_end"
+path = "tests/end_to_end.rs"
+[[test]]
+name = "error_suggested_fix"
+path = "tests/error_suggested_fix.rs"
+[[test]]
+name = "explain_endpoint"
+path = "tests/explain_endpoint.rs"
+[[test]]
+name = "file_policy_expression"
+path = "tests/file_policy_expression.rs"
+[[test]]
+name = "files_rls_admin_ui"
+path = "tests/files_rls_admin_ui.rs"
+[[test]]
+name = "files_rls_policy"
+path = "tests/files_rls_policy.rs"
+[[test]]
+name = "files_rls_read"
+path = "tests/files_rls_read.rs"
+[[test]]
+name = "files_rls_schema"
+path = "tests/files_rls_schema.rs"
+[[test]]
+name = "files_rls_upload"
+path = "tests/files_rls_upload.rs"
+[[test]]
+name = "file_visibility"
+path = "tests/file_visibility.rs"
+[[test]]
+name = "filter_composition"
+path = "tests/filter_composition.rs"
+[[test]]
+name = "fts_deadline"
+path = "tests/fts_deadline.rs"
+[[test]]
+name = "fts_index_lifecycle"
+path = "tests/fts_index_lifecycle.rs"
+[[test]]
+name = "fts_query"
+path = "tests/fts_query.rs"
+[[test]]
+name = "fts_surface"
+path = "tests/fts_surface.rs"
+[[test]]
+name = "fts_write_rpc"
+path = "tests/fts_write_rpc.rs"
+[[test]]
+name = "functions_caller_enforcement"
+path = "tests/functions_caller_enforcement.rs"
+[[test]]
+name = "functions_caller_escalation"
+path = "tests/functions_caller_escalation.rs"
+[[test]]
+name = "functions_dispatch"
+path = "tests/functions_dispatch.rs"
+[[test]]
+name = "functions_invoke_acl_config"
+path = "tests/functions_invoke_acl_config.rs"
+[[test]]
+name = "functions_invoke_gate"
+path = "tests/functions_invoke_gate.rs"
+[[test]]
+name = "functions_isolation"
+path = "tests/functions_isolation.rs"
+[[test]]
+name = "functions_mcp"
+path = "tests/functions_mcp.rs"
+[[test]]
+name = "functions_rest"
+path = "tests/functions_rest.rs"
+[[test]]
+name = "functions_schema"
+path = "tests/functions_schema.rs"
+[[test]]
+name = "functions_wasm_real"
+path = "tests/functions_wasm_real.rs"
+[[test]]
+name = "host_files_owner_only"
+path = "tests/host_files_owner_only.rs"
+[[test]]
+name = "index_tools"
+path = "tests/index_tools.rs"
+[[test]]
+name = "large_upload_tus"
+path = "tests/large_upload_tus.rs"
+[[test]]
+name = "member_tenant_cap_http"
+path = "tests/member_tenant_cap_http.rs"
+[[test]]
+name = "member_tenant_cap_requests"
+path = "tests/member_tenant_cap_requests.rs"
+[[test]]
+name = "member_tenant_cap"
+path = "tests/member_tenant_cap.rs"
+[[test]]
+name = "member_tenant_cap_ui"
+path = "tests/member_tenant_cap_ui.rs"
+[[test]]
+name = "meta_lock_contention"
+path = "tests/meta_lock_contention.rs"
+[[test]]
+name = "meta_sqlite"
+path = "tests/meta_sqlite.rs"
+[[test]]
+name = "mgmt_login"
+path = "tests/mgmt_login.rs"
+[[test]]
+name = "owner_field_records"
+path = "tests/owner_field_records.rs"
+[[test]]
+name = "owner_field"
+path = "tests/owner_field.rs"
+[[test]]
+name = "policy_backward_compat"
+path = "tests/policy_backward_compat.rs"
+[[test]]
+name = "policy_config_rest"
+path = "tests/policy_config_rest.rs"
+[[test]]
+name = "policy_deny_surfaces"
+path = "tests/policy_deny_surfaces.rs"
+[[test]]
+name = "policy_expression"
+path = "tests/policy_expression.rs"
+[[test]]
+name = "policy_mcp"
+path = "tests/policy_mcp.rs"
+[[test]]
+name = "policy_read_enforcement"
+path = "tests/policy_read_enforcement.rs"
+[[test]]
+name = "policy_sse"
+path = "tests/policy_sse.rs"
+[[test]]
+name = "policy_write_enforcement"
+path = "tests/policy_write_enforcement.rs"
+[[test]]
+name = "pragma_optimize_smoke"
+path = "tests/pragma_optimize_smoke.rs"
+[[test]]
+name = "prepare_cached_parity"
+path = "tests/prepare_cached_parity.rs"
+[[test]]
+name = "prepare_cached_staleness"
+path = "tests/prepare_cached_staleness.rs"
+[[test]]
+name = "query_endpoint"
+path = "tests/query_endpoint.rs"
+[[test]]
+name = "query_executor"
+path = "tests/query_executor.rs"
+[[test]]
+name = "quota_update_growth"
+path = "tests/quota_update_growth.rs"
+[[test]]
+name = "rate_limit_middleware"
+path = "tests/rate_limit_middleware.rs"
+[[test]]
+name = "rate_limit"
+path = "tests/rate_limit.rs"
+[[test]]
+name = "reconcile_pending"
+path = "tests/reconcile_pending.rs"
+[[test]]
+name = "record_history_capture"
+path = "tests/record_history_capture.rs"
+[[test]]
+name = "record_history_read"
+path = "tests/record_history_read.rs"
+[[test]]
+name = "record_history_retention"
+path = "tests/record_history_retention.rs"
+[[test]]
+name = "record_history_rpc"
+path = "tests/record_history_rpc.rs"
+[[test]]
+name = "records_body_limit"
+path = "tests/records_body_limit.rs"
+[[test]]
+name = "records_crud"
+path = "tests/records_crud.rs"
+[[test]]
+name = "records_list_structured"
+path = "tests/records_list_structured.rs"
+[[test]]
+name = "records_list_user_caps"
+path = "tests/records_list_user_caps.rs"
+[[test]]
+name = "records_user_filter_denied"
+path = "tests/records_user_filter_denied.rs"
+[[test]]
+name = "returning_mcp_parity"
+path = "tests/returning_mcp_parity.rs"
+[[test]]
+name = "returning_rest_policy"
+path = "tests/returning_rest_policy.rs"
+[[test]]
+name = "rooms_policy"
+path = "tests/rooms_policy.rs"
+[[test]]
+name = "rooms_rest_publish"
+path = "tests/rooms_rest_publish.rs"
+[[test]]
+name = "rooms_ws"
+path = "tests/rooms_ws.rs"
+[[test]]
+name = "rpc_prepare_cached_staleness"
+path = "tests/rpc_prepare_cached_staleness.rs"
+[[test]]
+name = "rpc_query_kind"
+path = "tests/rpc_query_kind.rs"
+[[test]]
+name = "rpc_user_id_spoof"
+path = "tests/rpc_user_id_spoof.rs"
+[[test]]
+name = "rpc_v2_create_validation"
+path = "tests/rpc_v2_create_validation.rs"
+[[test]]
+name = "rpc_v2_mutation"
+path = "tests/rpc_v2_mutation.rs"
+[[test]]
+name = "schema_description_read"
+path = "tests/schema_description_read.rs"
+[[test]]
+name = "schema_description_write"
+path = "tests/schema_description_write.rs"
+[[test]]
+name = "schema_read"
+path = "tests/schema_read.rs"
+[[test]]
+name = "session_middleware"
+path = "tests/session_middleware.rs"
+[[test]]
+name = "session"
+path = "tests/session.rs"
+[[test]]
+name = "set_admin_password_email"
+path = "tests/set_admin_password_email.rs"
+[[test]]
+name = "set_admin_role_cli"
+path = "tests/set_admin_role_cli.rs"
+[[test]]
+name = "soft_delete_no_resurrect"
+path = "tests/soft_delete_no_resurrect.rs"
+[[test]]
+name = "sqlite_internal_write_denied"
+path = "tests/sqlite_internal_write_denied.rs"
+[[test]]
+name = "sse_realtime_gating"
+path = "tests/sse_realtime_gating.rs"
+[[test]]
+name = "sse"
+path = "tests/sse.rs"
+[[test]]
+name = "storage_disk"
+path = "tests/storage_disk.rs"
+[[test]]
+name = "storage_files_helpers"
+path = "tests/storage_files_helpers.rs"
+[[test]]
+name = "storage_garage_admin"
+path = "tests/storage_garage_admin.rs"
+[[test]]
+name = "storage_garage_signing"
+path = "tests/storage_garage_signing.rs"
+[[test]]
+name = "storage_meta_migration"
+path = "tests/storage_meta_migration.rs"
+[[test]]
+name = "storage_tenant_db"
+path = "tests/storage_tenant_db.rs"
+[[test]]
+name = "strict_new_collection"
+path = "tests/strict_new_collection.rs"
+[[test]]
+name = "strict_rebuild"
+path = "tests/strict_rebuild.rs"
+[[test]]
+name = "tenant_auth"
+path = "tests/tenant_auth.rs"
+[[test]]
+name = "tenant_cap_request_limits"
+path = "tests/tenant_cap_request_limits.rs"
+[[test]]
+name = "tenant_db"
+path = "tests/tenant_db.rs"
+[[test]]
+name = "tenant_files_rest"
+path = "tests/tenant_files_rest.rs"
+[[test]]
+name = "tenant_id_recycle_keeps_trash"
+path = "tests/tenant_id_recycle_keeps_trash.rs"
+[[test]]
+name = "tenant_id_validation"
+path = "tests/tenant_id_validation.rs"
+[[test]]
+name = "tenant_oauth"
+path = "tests/tenant_oauth.rs"
+[[test]]
+name = "tenant_ownership_create"
+path = "tests/tenant_ownership_create.rs"
+[[test]]
+name = "tenant_ownership_guard"
+path = "tests/tenant_ownership_guard.rs"
+[[test]]
+name = "tenant_ownership_hostwide"
+path = "tests/tenant_ownership_hostwide.rs"
+[[test]]
+name = "tenant_ownership_pat"
+path = "tests/tenant_ownership_pat.rs"
+[[test]]
+name = "tenant_ownership_transfer"
+path = "tests/tenant_ownership_transfer.rs"
+[[test]]
+name = "tenant_ownership_visibility"
+path = "tests/tenant_ownership_visibility.rs"
+[[test]]
+name = "tenant_quota_db"
+path = "tests/tenant_quota_db.rs"
+[[test]]
+name = "tenant_quota_files"
+path = "tests/tenant_quota_files.rs"
+[[test]]
+name = "tenant_quota_requests"
+path = "tests/tenant_quota_requests.rs"
+[[test]]
+name = "tenants_api"
+path = "tests/tenants_api.rs"
+[[test]]
+name = "tenant_settings"
+path = "tests/tenant_settings.rs"
+[[test]]
+name = "three_tier_roles"
+path = "tests/three_tier_roles.rs"
+[[test]]
+name = "token_roles"
+path = "tests/token_roles.rs"
+[[test]]
+name = "tokens_api"
+path = "tests/tokens_api.rs"
+[[test]]
+name = "upload_content_type_safety"
+path = "tests/upload_content_type_safety.rs"
+[[test]]
+name = "upsert_rest"
+path = "tests/upsert_rest.rs"
+[[test]]
+name = "upsert"
+path = "tests/upsert.rs"
+[[test]]
+name = "user_caps_admin"
+path = "tests/user_caps_admin.rs"
+[[test]]
+name = "user_caps_mcp"
+path = "tests/user_caps_mcp.rs"
+[[test]]
+name = "user_caps"
+path = "tests/user_caps.rs"
+[[test]]
+name = "vector_misc"
+path = "tests/vector_misc.rs"
+[[test]]
+name = "vector_search"
+path = "tests/vector_search.rs"
+[[test]]
+name = "vector_storage"
+path = "tests/vector_storage.rs"
+[[test]]
+name = "webhook_concurrency"
+path = "tests/webhook_concurrency.rs"
+[[test]]
+name = "webhook_dns_rebind"
+path = "tests/webhook_dns_rebind.rs"
+[[test]]
+name = "webhook_egress_per_attempt"
+path = "tests/webhook_egress_per_attempt.rs"
+[[test]]
+name = "webhooks_migration"
+path = "tests/webhooks_migration.rs"
+[[test]]
+name = "webhooks"
+path = "tests/webhooks.rs"
+[[test]]
+name = "webhook_url_validation"
+path = "tests/webhook_url_validation.rs"
+[[test]]
+name = "x_drust_version_header"
+path = "tests/x_drust_version_header.rs"

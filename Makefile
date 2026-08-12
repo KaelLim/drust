@@ -1,30 +1,43 @@
 # drust test runner — grouped by the tests/<prefix>_*.rs filename convention.
 #
 # Why this exists: the cost of `cargo test` in this crate is COMPILE, not run.
-# Each tests/*.rs is its own binary that statically links the drust lib +
-# wasmtime (~142 binaries). A bare `cargo test <name>` still compiles ALL of
-# them and only filters what runs — the classic trap. Only `--test <name>`
-# limits what compiles. These recipes do that for you, globbed by prefix, so a
-# new tests/<prefix>_*.rs file is picked up with zero edits here.
+# Every test binary statically links the drust lib + wasmtime, and a bare
+# `cargo test <name>` compiles ALL of them and only filters what runs — the
+# classic trap. Only `--test <name>` limits what compiles.
+#
+# #925 (spec docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md)
+# cut the binary count from 253 to 32: 24 merged group harnesses
+# (tests/g_<group>.rs, each `#[path]`-including its former standalone files
+# unchanged) plus 8 isolation exceptions that must stay their own process.
+# Measured on the mcp group: 20 binaries → 1 is 189s → 15s build and 3.20GB →
+# 244MB of target/debug, with the same 137 tests.
+#
+# Because `[package] autotests = false` now drives that, every tests/*.rs must
+# be registered — either as a `#[path]` member of its group harness, or with its
+# own [[test]] entry in Cargo.toml. build.rs's ninth gate
+# (build_support/test_targets_gate.rs) fails the build on any file that is
+# neither, so a forgotten registration cannot silently go dark.
 #
 #   make test-lib          # in-lib unit tests only — fastest inner loop
-#   make test-functions    # lib + tests/functions_*.rs
-#   make test-auth         # lib + tests/auth_*.rs       (any prefix works)
+#   make test-mcp          # lib + the merged tests/g_mcp.rs harness
+#   make test-auth         # lib + tests/g_auth.rs      (any group works)
 #   make test-all          # full suite — the release / pre-merge gate
-#   make groups            # list available prefixes + file counts
+#   make groups            # list group harnesses + member counts
+#
+# An isolation exception is not a group; run it by its own name, e.g.
+# `cargo test --test webhook_concurrency`.
 #
 # Workflow note: per-task agents should run `make test-lib` + the relevant
 # `make test-<group>`; only the final whole-implementation review runs
-# `make test-all`. Running the full 142-binary suite on every task is what
-# balloons target/debug and slows iteration.
+# `make test-all`.
 
-.PHONY: help test test-lib test-all groups
+.PHONY: help test test-lib test-all test-shell groups
 
 help:
 	@echo "make test-lib        unit tests only (fast inner loop)"
-	@echo "make test-<prefix>   lib + tests/<prefix>_*.rs  (e.g. test-functions)"
+	@echo "make test-<group>    lib + the merged tests/g_<group>.rs harness"
 	@echo "make test-all        full integration suite (release gate)"
-	@echo "make groups          list test prefixes + counts"
+	@echo "make groups          list group harnesses + member counts"
 
 test: test-all
 
@@ -41,14 +54,32 @@ test-shell:
 	bash deploy/tests/backup_retention_test.sh
 
 groups:
-	@ls tests/*.rs | sed 's#tests/##; s/_.*//' | sort | uniq -c | sort -rn
+	@echo "group harnesses — make test-<group>  (= cargo test --lib --test g_<group>)"
+	@for f in tests/g_*.rs; do \
+	  [ -e "$$f" ] || continue; \
+	  n=$$(basename $$f .rs); \
+	  c=$$(grep -c '^#\[path' $$f); \
+	  printf "  %-12s %3d files\n" "$${n#g_}" "$$c"; \
+	done
+	@t=$$(grep -c '^\[\[test\]\]' Cargo.toml); \
+	 g=$$(ls tests/g_*.rs 2>/dev/null | wc -l); \
+	 echo "standalone [[test]] targets: $$((t - g))  — cargo test --test <name>"
 
-# Pattern rule: `make test-<prefix>` runs the in-lib unit tests plus every
-# integration binary named tests/<prefix>_*.rs. The explicit test-lib / test-all
-# rules above take precedence over this pattern for those two names.
+# Pattern rule: `make test-<group>` runs the in-lib unit tests plus the merged
+# group harness. The explicit test-lib / test-all / test-shell rules above take
+# precedence over this pattern for those names.
+#
+# While the #925 migration is in flight, a group whose harness does not exist
+# yet falls back to the pre-merge behaviour — one --test flag per
+# tests/<group>_*.rs file — so every group stays runnable at every step.
 test-%:
-	@files=$$(ls tests/$*_*.rs 2>/dev/null | sed 's#tests/##; s#\.rs$$##'); \
-	if [ -z "$$files" ]; then echo "no tests/$*_*.rs found (try: make groups)"; exit 1; fi; \
-	flags=$$(for f in $$files; do printf -- '--test %s ' "$$f"; done); \
-	echo "cargo test --lib $$flags"; \
-	cargo test --lib $$flags
+	@if [ -f tests/g_$*.rs ]; then \
+	  echo "cargo test --lib --test g_$*"; \
+	  cargo test --lib --test g_$*; \
+	else \
+	  files=$$(ls tests/$*_*.rs 2>/dev/null | sed 's#tests/##; s#\.rs$$##'); \
+	  if [ -z "$$files" ]; then echo "no tests/g_$*.rs and no tests/$*_*.rs (try: make groups)"; exit 1; fi; \
+	  flags=$$(for f in $$files; do printf -- '--test %s ' "$$f"; done); \
+	  echo "cargo test --lib $$flags"; \
+	  cargo test --lib $$flags; \
+	fi

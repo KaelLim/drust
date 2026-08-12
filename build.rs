@@ -26,6 +26,7 @@ use std::fs;
 use std::path::Path;
 
 include!("build_support/ui_gates.rs");
+include!("build_support/test_targets_gate.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=src/mgmt/templates");
@@ -264,6 +265,82 @@ fn main() {
     // cover them; this block does the I/O and turns violations into a build
     // failure. Fail-closed: any violation stops the build.
     run_ui_gates(template_dir);
+
+    // ── Test-target coverage gate (#925, spec 2026-08-13) ───────────────
+    // Ninth gate. Same arrangement, and the reason it exists is that
+    // `autotests = false` makes an unregistered tests/*.rs silently invisible.
+    run_test_target_gate();
+}
+
+/// Read Cargo.toml + every top-level `tests/*.rs`, run the coverage gate, and
+/// fail the build if any test file compiles into no test binary.
+///
+/// `autotests = false` (#925) traded cargo's auto-discovery for explicit
+/// `[[test]]` entries. The trade is only safe with this gate: without it,
+/// forgetting one Cargo.toml entry deletes a whole suite and the build, the
+/// test run and CI all stay green.
+fn run_test_target_gate() {
+    // The verdict depends on the *set* of files in tests/, but cargo can only
+    // watch whole paths: watching the directory means a test-body edit also
+    // re-runs this script, and a build-script re-run dirties the lib. Measured
+    // 2026-08-13 on this host: incremental `cargo test --test g_mcp` after
+    // touching any tests/*.rs goes 15s → 29s.
+    //
+    // Paid deliberately. The one case this gate exists for is "developer adds
+    // tests/foo.rs and changes nothing else"; watching only Cargo.toml would
+    // miss exactly that, leaving detection to whether CI happens to get a cache
+    // miss. A safety gate that fires by coincidence is the failure mode, not
+    // the fix.
+    println!("cargo:rerun-if-changed=tests");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+
+    let tests_dir = Path::new("tests");
+    if !tests_dir.is_dir() {
+        return; // packaged crate without the test tree — nothing to check
+    }
+
+    let manifest_src = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let manifest: toml::Value =
+        toml::from_str(&manifest_src).unwrap_or_else(|e| panic!("parse Cargo.toml: {e}"));
+
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for entry in fs::read_dir(tests_dir).expect("read tests dir") {
+        let path = entry.expect("tests dir entry").path();
+        if path.is_dir() {
+            continue; // shared module dirs (common/, webhooks_common/, fixtures/, codegen/)
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .expect("test file_name utf-8")
+            .to_string();
+        let body =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        sources.push((name, body));
+    }
+    sources.sort();
+
+    let violations = check_test_targets(&manifest, &sources);
+    if !violations.is_empty() {
+        let mut report = String::from("\n\nTest-target coverage gate failed:\n\n");
+        for v in &violations {
+            report.push_str(&format!(
+                "  tests/{}  [{}]\n      {}\n",
+                v.file, v.rule, v.message
+            ));
+        }
+        report.push_str(
+            "\nThis crate sets `autotests = false`, so every tests/*.rs needs an explicit\n\
+             home. Two ways to give it one — see .claude/rules/build-deploy.md §Tests:\n\
+             \x20 1. add `#[path = \"<file>.rs\"] mod <file>;` to the group harness \
+             tests/g_<group>.rs\n\
+             \x20 2. or add its own [[test]] entry to Cargo.toml (isolation exceptions only)\n",
+        );
+        panic!("{report}");
+    }
 }
 
 /// Returns map: key → [(file, line), ...] for every literal `t.s("key")`
