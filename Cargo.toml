@@ -87,8 +87,8 @@ strip = true
 # Full debug info is this repo's single largest disk cost: every test binary
 # statically links the lib plus wasmtime and carries ~176 MB of .debug_info.
 # Measured 2026-08-02, when tests/*.rs was 229 separate binaries, that came to
-# 55.9 GB of target/debug. #925 merges those into 32 targets (24 group
-# harnesses + 8 isolation exceptions), which cuts the binary COUNT but not the
+# 55.9 GB of target/debug. #925 merges those into 38 targets (24 group
+# harnesses + 14 standalone), which cuts the binary COUNT but not the
 # per-binary cost — so this setting still earns its place.
 # "line-tables-only" keeps file:line in panic backtraces — the part anyone
 # actually reads — and drops the type and variable DWARF nobody steps through
@@ -105,9 +105,11 @@ resolver = "2"
 # `autotests = false` (top of file) turns off cargo's tests/*.rs auto-discovery,
 # so every test binary is listed below: the merged group harnesses
 # (tests/g_<group>.rs, each `#[path]`-including its member files unchanged) plus
-# the isolation exceptions that must keep a process to themselves. tests/
-# helpers.rs is deliberately not a target — it declares zero #[test] fns and
-# linking it as its own binary was pure waste.
+# the 14 standalone targets that must keep a process to themselves — 8 isolation
+# exceptions, plus 6 backed out of a harness on a merge collision (each one's
+# reason is recorded below; a collision is resolved by backing the file out,
+# never by editing the test). tests/helpers.rs is deliberately not a target — it
+# declares zero #[test] fns and linking it as its own binary was pure waste.
 #
 # Forgetting an entry here would drop a whole suite with no error anywhere, so
 # build.rs's ninth gate (build_support/test_targets_gate.rs) fails the build on

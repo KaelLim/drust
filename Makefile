@@ -3,8 +3,9 @@
 # Group membership is declared, not inferred: each tests/g_<group>.rs lists its
 # members with `#[path]`, and Cargo.toml lists the harnesses. The old
 # tests/<prefix>_*.rs filename convention no longer decides anything (four group
-# names are not even prefixes of all their members) — it survives only in the
-# mid-migration fallback at the bottom of this file, which says so out loud.
+# names are not even prefixes of all their members), and since `autotests = false`
+# removed the per-file targets it can no longer even name one: `cargo test --test
+# admin_users` answers "no test target named".
 #
 # Why this exists: the cost of `cargo test` in this crate is COMPILE, not run.
 # Every test binary statically links the drust lib + wasmtime, and a bare
@@ -12,9 +13,15 @@
 # classic trap. Only `--test <name>` limits what compiles.
 #
 # #925 (spec docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md)
-# cut the binary count from 253 to 32: 24 merged group harnesses
+# cut the binary count from 253 to 38: 24 merged group harnesses
 # (tests/g_<group>.rs, each `#[path]`-including its former standalone files
-# unchanged) plus 8 isolation exceptions that must stay their own process.
+# unchanged) plus 14 standalone targets that must keep a process to themselves —
+# 8 isolation exceptions, plus 6 files backed out of a harness on a merge
+# collision. Those 6 are load-bearing, not leftovers: a collision is resolved by
+# backing the file out, NEVER by editing the test, and re-merging them brings
+# back a race-dependent failure (a first-write-wins global audit writer) that
+# can pass locally. `make groups` prints the live counts — 24 + 14; do not
+# reconcile that 14 against the spec's 8 by merging six binaries away.
 # Measured on the mcp group: 20 binaries → 1 is 189s → 15s build and 3.20GB →
 # 244MB of target/debug, with the same 137 tests.
 #
@@ -75,41 +82,20 @@ groups:
 # group harness. The explicit test-lib / test-all / test-shell rules above take
 # precedence over this pattern for those names.
 #
-# While the #925 migration is in flight, a group whose harness does not exist
-# yet falls back to one --test flag per tests/<group>_*.rs file. That glob is an
-# APPROXIMATION of the plan's group table, never the table itself, in both
-# directions:
-#
-#   - it MISSES members whose filename does not start with "<group>_" —
-#     audit skips audit3_*, file skips files_rls_*, record skips records_*,
-#     webhook skips webhooks.rs and webhooks_migration.rs;
-#   - it SWEEPS IN isolation-exception files that are not group members at all
-#     (admin_theme, cli_device_approval, fts_deadline, webhook_concurrency).
-#
-# So the fallback keeps a group runnable; it is not a baseline, and a green from
-# it does not mean the group is green. It prints that warning before and after
-# the run (last line wins the scrollback) rather than letting a partial green
-# pass for the whole group. The window closes per group the moment its
-# tests/g_<group>.rs lands.
+# All 24 harnesses exist, so there is no filename-glob fallback any more: an
+# unknown <group> is an error, not a best-effort `tests/<group>_*.rs` sweep. Two
+# reasons it could not survive T4. It never matched the group table in either
+# direction (it missed audit3_*, files_rls_*, records_*, webhooks*.rs, and swept
+# in isolation exceptions that are not group members), so its green never meant
+# the group was green; and `autotests = false` deleted the per-file [[test]]
+# targets it emitted --test flags for, so today it can only produce cargo's "no
+# test target named" on the first member it finds.
 test-%:
 	@if [ -f tests/g_$*.rs ]; then \
 	  echo "cargo test --lib --test g_$*"; \
 	  cargo test --lib --test g_$*; \
 	else \
-	  files=$$(ls tests/$*_*.rs 2>/dev/null | sed 's#tests/##; s#\.rs$$##'); \
-	  if [ -z "$$files" ]; then echo "no tests/g_$*.rs and no tests/$*_*.rs (try: make groups)"; exit 1; fi; \
-	  warn() { \
-	    echo "" >&2; \
-	    echo "WARNING: tests/g_$*.rs does not exist yet — running the tests/$*_*.rs prefix" >&2; \
-	    echo "WARNING: glob instead. That glob is an approximation of the #925 group table:" >&2; \
-	    echo "WARNING: it can miss members not named '$*_*' and can pull in non-members." >&2; \
-	    echo "WARNING: Do NOT read this result as a baseline for group '$*'." >&2; \
-	    echo "" >&2; \
-	  }; \
-	  warn; \
-	  flags=$$(for f in $$files; do printf -- '--test %s ' "$$f"; done); \
-	  echo "cargo test --lib $$flags"; \
-	  cargo test --lib $$flags; rc=$$?; \
-	  warn; \
-	  exit $$rc; \
+	  echo "no tests/g_$*.rs — '$*' is not a group (run: make groups)" >&2; \
+	  echo "an isolation exception runs by its own name: cargo test --test $*" >&2; \
+	  exit 1; \
 	fi
