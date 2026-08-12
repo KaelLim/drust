@@ -485,15 +485,18 @@ impl host::Host for StoreData {
                 .await
             }
             // Anon/User: the `file.read` cap gate (against the tenant's
-            // TenantFileCaps) runs before the raw path.
+            // TenantFileCaps) and then the per-file RLS gate run before the raw
+            // path. The IDENTITY — not just the role — is what crosses, because
+            // the default file rule is `uploader == $auth`.
             caller => {
                 debug_assert!(
                     !matches!(caller, CallerCtx::Privileged),
                     "non-privileged branch reached with Privileged caller"
                 );
+                let ctx = caller.to_auth_ctx();
                 crate::functions::enforce::enforced_get_file_bytes(
                     &self.host.mcp,
-                    caller.role(),
+                    &ctx,
                     &self.host.file_caps,
                     &key,
                     self.host.file_read_max,

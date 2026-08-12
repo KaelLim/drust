@@ -60,6 +60,51 @@ impl FileCaller {
     }
 }
 
+/// v1.63 (#950-B) — the per-file RLS gate for a single-file read or delete.
+///
+/// The INNER of the two gates: `file_caps_layer` has already decided the caller
+/// may perform this VERB at all, and this decides whether it may perform it on
+/// THIS ROW. Service (and the admin plane, which is the management face) bypass
+/// — the same bypass every other RLS surface gives a service key.
+///
+/// `conn` is the connection the handler ALREADY opened for the row: the policy
+/// read rides it rather than opening a second one (spec §連線紀律 — no
+/// `get_or_create` on a read path, since that resurrects a soft-deleted tenant,
+/// and no read-only authorizer, which would deny the `_system_*` read this
+/// needs).
+///
+/// Every failure is a refusal. A registry that cannot be read, or a row that
+/// cannot be serialized, must not be the reason a file becomes visible.
+fn file_access_allowed(
+    caller: &FileCaller,
+    conn: &rusqlite::Connection,
+    row: &FileRow,
+    access: crate::storage::file_policy::FileAccess,
+) -> bool {
+    let ctx = match caller {
+        FileCaller::AdminPlane => return true,
+        FileCaller::DataPlane(ctx) => ctx,
+    };
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return true;
+    }
+    let policies = match crate::storage::file_policy::load_file_policies(conn) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "file policy read failed — refusing the request");
+            return false;
+        }
+    };
+    let Some(row_map) = serde_json::to_value(row)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+    else {
+        tracing::error!(key = %row.key, "file row would not serialize — refusing the request");
+        return false;
+    };
+    crate::storage::file_policy::authorize_file(&policies, &row_map, ctx, access)
+}
+
 /// A REQUIRED `AuthCtx` extractor: a data-plane file handler that cannot see
 /// who is calling refuses the request instead of guessing.
 ///
@@ -216,9 +261,7 @@ pub async fn admin_tfiles_stream(
 
 async fn stream_bytes_inner(
     state: TenantFilesState,
-    // T4 (#950-B) reads this to run `authorize_file` on the row below. T2 only
-    // establishes that BOTH mounts can name their caller.
-    _caller: FileCaller,
+    caller: FileCaller,
     tenant_id: String,
     key: String,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
@@ -242,6 +285,19 @@ async fn stream_bytes_inner(
             rusqlite::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, "not found".into()),
             other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
         })?;
+
+    // v1.63 — the per-file gate, on the connection already open above. A file
+    // the caller may not read is reported as ABSENT: `not found` here is
+    // byte-identical to the no-such-key arm, so the response cannot be used to
+    // probe which keys exist.
+    if !file_access_allowed(
+        &caller,
+        &conn,
+        &row,
+        crate::storage::file_policy::FileAccess::Read,
+    ) {
+        return Err((StatusCode::NOT_FOUND, "not found".into()));
+    }
 
     let visibility = if row.visibility == "public" {
         Visibility::Public
@@ -737,8 +793,13 @@ pub async fn list(
 
 /// GET /drust/t/<tenant>/files/<key>
 /// Returns the _system_files row for a single key, or 404.
+///
+/// Data-plane only (unlike its three dual-mounted siblings), so the identity is
+/// taken directly and is REQUIRED — a metadata row carries `path`, `uploader`
+/// and `original_name`, so reading it is a read.
 pub async fn get_one(
     State(state): State<TenantFilesState>,
+    RequiredAuthCtx(ctx): RequiredAuthCtx,
     Path((tenant_id, key)): Path<(String, String)>,
 ) -> axum::response::Response {
     let conn = match crate::storage::tenant_db::open_read(&state.data_root, &tenant_id) {
@@ -753,7 +814,19 @@ pub async fn get_one(
         rusqlite::params![key],
         map_file_row,
     ) {
-        Ok(row) => axum::Json(row).into_response(),
+        Ok(row) => {
+            // Same 404 shape as the no-such-key arm below — a hidden file is
+            // indistinguishable from an absent one.
+            if !file_access_allowed(
+                &FileCaller::DataPlane(ctx),
+                &conn,
+                &row,
+                crate::storage::file_policy::FileAccess::Read,
+            ) {
+                return (StatusCode::NOT_FOUND, "not found").into_response();
+            }
+            axum::Json(row).into_response()
+        }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             (StatusCode::NOT_FOUND, "not found").into_response()
         }
@@ -782,9 +855,7 @@ pub async fn admin_tfiles_delete(
 
 async fn delete_one_inner(
     state: TenantFilesState,
-    // T4 (#950-B) evaluates the row's delete policy here, BEFORE the Garage
-    // delete below (an unauthorized delete must not destroy the object first).
-    _caller: FileCaller,
+    caller: FileCaller,
     tenant_id: String,
     key: String,
 ) -> axum::response::Response {
@@ -792,7 +863,9 @@ async fn delete_one_inner(
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
 
-    // Look up the row to find bucket (visibility-dependent).
+    // Look up the row to find bucket (visibility-dependent) AND to run the
+    // delete gate — the whole row, because a delete policy may reference any
+    // policy-visible column, not just the two this handler used to need.
     let (visibility_str, bucket) = {
         let conn = match crate::storage::tenant_db::open_read(&state.data_root, &tenant_id) {
             Ok(c) => c,
@@ -800,12 +873,12 @@ async fn delete_one_inner(
                 return (StatusCode::NOT_FOUND, format!("tenant: {e}")).into_response();
             }
         };
-        let vis: String = match conn.query_row(
-            "SELECT visibility FROM _system_files WHERE key = ?1",
+        let row = match conn.query_row(
+            "SELECT * FROM _system_files WHERE key = ?1",
             rusqlite::params![key],
-            |r| r.get(0),
+            map_file_row,
         ) {
-            Ok(v) => v,
+            Ok(r) => r,
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 return (StatusCode::NOT_FOUND, "not found").into_response();
             }
@@ -813,6 +886,17 @@ async fn delete_one_inner(
                 return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
             }
         };
+        // BEFORE the Garage call below: a refused delete must not have already
+        // destroyed the object. Same 404 as a missing key.
+        if !file_access_allowed(
+            &caller,
+            &conn,
+            &row,
+            crate::storage::file_policy::FileAccess::Delete,
+        ) {
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        }
+        let vis = row.visibility.clone();
         let visibility = if vis == "public" {
             Visibility::Public
         } else {

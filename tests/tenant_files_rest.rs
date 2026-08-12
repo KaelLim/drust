@@ -649,6 +649,12 @@ async fn get_one_returns_404_for_missing_key() {
 
     let response = get_one(
         State(state),
+        // v1.63 (#950-B) — `get_one` reads a metadata row (path, uploader,
+        // original_name), so it too takes a REQUIRED identity. It is
+        // data-plane-only, so there is no admin twin to exempt.
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
         Path((tenant_id.to_string(), "no-such-key.pdf".to_string())),
     )
     .await;
@@ -742,6 +748,12 @@ async fn get_one_returns_row_when_key_exists() {
 
     let response = get_one(
         State(state),
+        // A service identity: the per-file RLS gate (v1.63) bypasses for
+        // service exactly as every other RLS face does, so this stays a pure
+        // "does the row round-trip" test.
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
         Path((tenant_id.to_string(), file_key.to_string())),
     )
     .await;

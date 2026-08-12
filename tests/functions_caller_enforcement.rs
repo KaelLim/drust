@@ -450,7 +450,7 @@ async fn file_caps_gate_read_and_upload() {
     let no_caps = TenantFileCaps::default();
     let denied = enforce::enforced_get_file_bytes(
         &mcp,
-        drust::tenant::router::TokenRole::Anon,
+        &drust::auth::middleware::AuthCtx::Anon,
         &no_caps,
         "f.bin",
         4 * 1024 * 1024,
@@ -458,12 +458,23 @@ async fn file_caps_gate_read_and_upload() {
     .await;
     assert!(denied.unwrap_err().contains("FILE_READ_DENIED"));
 
+    // v1.63 (#950-B) — the cap is no longer the whole door: a per-file RLS gate
+    // sits under it. This test is about the CAP half, so give the tenant the
+    // root rule every real tenant is seeded with (`'' → public_read`), which is
+    // what keeps the pre-v1.63 "cap = access" behaviour after the upgrade.
+    // `tests/files_rls_read.rs` owns the other half.
+    mcp.inner()
+        .pool
+        .with_writer(|c| drust::storage::file_policy::seed_root_policy(c))
+        .await
+        .unwrap();
+
     // grant anon read → allowed.
     let mut anon_read = TenantFileCaps::default();
     anon_read.anon.insert(FileVerb::Read);
     let bytes = enforce::enforced_get_file_bytes(
         &mcp,
-        drust::tenant::router::TokenRole::Anon,
+        &drust::auth::middleware::AuthCtx::Anon,
         &anon_read,
         "f.bin",
         4 * 1024 * 1024,

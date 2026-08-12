@@ -647,22 +647,74 @@ fn put_file_cache_control(visibility: &str) -> &'static str {
     )
 }
 
-/// `get-file-bytes` under the caller's identity: file `read` cap gate, then the
-/// raw path. Service bypasses (Privileged maps to `TokenRole::Service`).
+/// `get-file-bytes` under the caller's identity: the file `read` cap gate, then
+/// the per-file RLS gate, then the raw path. Service bypasses both (Privileged
+/// does not reach here at all — it takes `get_file_bytes_raw` directly).
+///
+/// v1.63 (#950-B) takes an `AuthCtx` rather than a bare `TokenRole` because the
+/// RLS decision needs the caller's IDENTITY, not just its class: `TokenRole::User`
+/// carries no user id, and `uploader == $auth` is the whole default rule (G15).
+/// The cap gate still keys on the role, derived here via `role_of`, so the
+/// cap half of the decision is unchanged.
 pub async fn enforced_get_file_bytes(
     mcp: &DrustMcp,
-    role: TokenRole,
+    ctx: &AuthCtx,
     caps: &TenantFileCaps,
     key: &str,
     file_read_max: u64,
 ) -> Result<Vec<u8>, String> {
     if !matches!(
-        check_file_cap(role, caps, FileVerb::Read),
+        check_file_cap(role_of(ctx), caps, FileVerb::Read),
         FileCapGate::Allow
     ) {
         return Err("FILE_READ_DENIED: bearer lacks file.read capability".into());
     }
+    if !matches!(ctx, AuthCtx::Service { .. }) && !file_read_allowed(mcp, ctx, key).await? {
+        // The REST faces answer 404 for a policy-hidden file so the response is
+        // not an existence oracle; a host op has no status, so it reuses the
+        // same FILE_NOT_FOUND string the missing-key arm below returns.
+        return Err("FILE_NOT_FOUND: no such key".into());
+    }
     get_file_bytes_raw(mcp, key, file_read_max).await
+}
+
+/// The per-file RLS decision for the edge read path. Reads the whole row AND
+/// the prefix registry on ONE pooled reader (spec §連線紀律), then hands both
+/// to the single decision fn every face shares.
+///
+/// `Ok(false)` = the caller may not see this file; `Ok(true)` = it may; `Err` =
+/// the decision could not be made, which the caller reports rather than
+/// treating as permission. A missing row also returns `Ok(true)`, deliberately:
+/// there is nothing to authorize, and `get_file_bytes_raw` owns the
+/// `FILE_NOT_FOUND` answer so the two arms cannot disagree about which key
+/// exists.
+async fn file_read_allowed(mcp: &DrustMcp, ctx: &AuthCtx, key: &str) -> Result<bool, String> {
+    use crate::storage::file_policy::{FileAccess, authorize_file, load_file_policies};
+    let pool = mcp.inner().pool.clone();
+    let key = key.to_string();
+    let loaded = pool
+        .with_reader(move |c| {
+            let row = match c.query_row(
+                "SELECT * FROM _system_files WHERE key = ?1",
+                rusqlite::params![key],
+                crate::storage::files::map_file_row,
+            ) {
+                Ok(r) => Some(r),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e),
+            };
+            Ok((row, load_file_policies(c)?))
+        })
+        .await
+        .map_err(|e| format!("DB_ERROR: {e}"))?;
+    let (Some(row), policies) = loaded else {
+        return Ok(true);
+    };
+    let row_map = serde_json::to_value(&row)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+        .ok_or_else(|| "DB_ERROR: file row would not serialize".to_string())?;
+    Ok(authorize_file(&policies, &row_map, ctx, FileAccess::Read))
 }
 
 /// `put-file` under the caller's identity: file `upload` cap gate, then the
@@ -1062,13 +1114,31 @@ mod tests {
         .unwrap();
         let caps = TenantFileCaps::default(); // no anon read cap
         let r =
-            enforced_get_file_bytes(&mcp, TokenRole::Anon, &caps, "f.bin", 4 * 1024 * 1024).await;
+            enforced_get_file_bytes(&mcp, &AuthCtx::Anon, &caps, "f.bin", 4 * 1024 * 1024).await;
         assert!(r.unwrap_err().contains("FILE_READ_DENIED"));
-        // grant read → allowed.
+
+        // Grant the cap — and note that the cap alone is no longer the whole
+        // decision (v1.63). This pool was built bare, with no registry rows, so
+        // the unmatched default (owner-scoped) applies and a `function`-stamped
+        // row belongs to no end user.
         let mut caps2 = TenantFileCaps::default();
         caps2.anon.insert(FileVerb::Read);
+        let rls =
+            enforced_get_file_bytes(&mcp, &AuthCtx::Anon, &caps2, "f.bin", 4 * 1024 * 1024).await;
+        assert!(
+            rls.unwrap_err().contains("FILE_NOT_FOUND"),
+            "the inner RLS gate refuses even with the cap granted"
+        );
+
+        // A real tenant carries the seeded root rule, which is what keeps the
+        // pre-v1.63 behaviour (cap = the whole door) intact after the upgrade.
+        mcp.inner()
+            .pool
+            .with_writer(|c| crate::storage::file_policy::seed_root_policy(c))
+            .await
+            .unwrap();
         let ok =
-            enforced_get_file_bytes(&mcp, TokenRole::Anon, &caps2, "f.bin", 4 * 1024 * 1024).await;
+            enforced_get_file_bytes(&mcp, &AuthCtx::Anon, &caps2, "f.bin", 4 * 1024 * 1024).await;
         assert_eq!(ok.unwrap(), b"hi");
     }
 

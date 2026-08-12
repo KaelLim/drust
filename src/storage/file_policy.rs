@@ -290,6 +290,99 @@ pub fn delete_file_policy(conn: &Connection, prefix: &str) -> rusqlite::Result<b
     Ok(n > 0)
 }
 
+/// Which side of a rule a decision is being made against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAccess {
+    /// `GET /files/{key}`, `GET …/bytes`, edge `get-file`, and the list arm.
+    Read,
+    /// `DELETE /files/{key}`. Falls back to the select clause when the rule
+    /// carries no delete clause of its own.
+    Delete,
+}
+
+/// **The one per-file decision.** Every single-file face routes through it —
+/// `get_one`, `stream_bytes`, `delete_one`, edge `get-file` — and the list face
+/// (T5) compiles the SAME decision into SQL, so the two must be read together:
+/// a change here is a change to `build_file_list_filter`.
+///
+/// `row_map` is `serde_json::to_value(&FileRow)` as an object. It has to be the
+/// WHOLE row, system columns included: `eval_policy` reads the map by key and a
+/// missing key is not an error there — it reads as Null, so an `updated_at`
+/// `is_null` test on a row map lacking the key would be TRUE and open the whole
+/// tenant (see [`FileRow`](crate::storage::files::FileRow)'s field docs).
+///
+/// **Service and the admin plane never reach here** — their callers bypass
+/// before loading policies at all. Passing a `Service` ctx is therefore a
+/// caller bug; it evaluates as a non-owner (so an owner-scoped prefix denies),
+/// which is the fail-closed direction rather than a silent grant.
+///
+/// Fail-closed is the caller's job too: `load_file_policies` propagates a
+/// storage error rather than returning an empty list, and every caller maps
+/// that error to a refusal (spec §授權語意).
+pub fn authorize_file(
+    policies: &[FilePolicyRow],
+    row_map: &serde_json::Map<String, serde_json::Value>,
+    auth: &crate::auth::middleware::AuthCtx,
+    access: FileAccess,
+) -> bool {
+    let path = row_map.get("path").and_then(|v| v.as_str());
+    let Some(p) = longest_match(policies, path) else {
+        // Nothing registered for this path — the deny-by-default arm. A tenant
+        // reaches it by clearing the seeded root `''`.
+        return caller_is_uploader(row_map, auth);
+    };
+
+    // (a) The clause-less shape: `owner_scoped=0`, no select clause, no
+    // `public_read`. The write face refuses to create it, so this is a legacy
+    // or hand-INSERTed row — "restricted but unspecified" must mean DENY on
+    // reads AND deletes, never "unrestricted" (mirrors `select_read_access`'s
+    // legacy-row deny, CLAUDE.md invariant 12).
+    if !p.owner_scoped && p.select_policy.is_none() && !p.public_read {
+        return false;
+    }
+
+    // (b) The owner clause AND-composes; it is never replaced by the policy.
+    if p.owner_scoped && !caller_is_uploader(row_map, auth) {
+        return false;
+    }
+
+    // (c) A delete with no delete clause inherits the select semantics —
+    // "readable ⇒ possibly deletable", with the `Delete` file cap as the other
+    // half of the gate.
+    let ast = match access {
+        FileAccess::Read => p.select_policy.as_ref(),
+        FileAccess::Delete => p.delete_policy.as_ref().or(p.select_policy.as_ref()),
+    };
+    match ast {
+        // (d) Reaching here with no clause means `public_read=1` or
+        // `owner_scoped=1` already answered the question.
+        None => true,
+        // Strictly `true`: `eval_policy` collapses Kleene Unknown (an anon
+        // `$auth`, a NULL column) to false for us, and that is the direction
+        // this must round in.
+        Some(ast) => crate::query::policy::eval_policy(
+            ast,
+            row_map,
+            &crate::query::policy::PolicyCtx::from_auth(auth),
+        ),
+    }
+}
+
+/// `uploader == $auth`, with anon and service answering false.
+///
+/// The stamps drust writes (`service` / `anon` / `function` / `admin`) cannot
+/// collide with a real id: every user id is server-minted as `u-<uuid>` and no
+/// caller chooses its own (spec G16), so this comparison cannot be spoofed.
+fn caller_is_uploader(
+    row_map: &serde_json::Map<String, serde_json::Value>,
+    auth: &crate::auth::middleware::AuthCtx,
+) -> bool {
+    match auth.user_id() {
+        Some(uid) => row_map.get("uploader").and_then(|v| v.as_str()) == Some(uid),
+        None => false,
+    }
+}
+
 /// Seed the root policy `'' → public_read=1` if the tenant has no root rule.
 ///
 /// This is what makes v1.63 a non-event for an existing tenant: without it the
@@ -556,6 +649,265 @@ mod tests {
             load_file_policies(&conn).is_err(),
             "an unparseable rule must surface as an error the caller turns into \
              a refusal, never as a rule that quietly does nothing"
+        );
+    }
+
+    // ── authorize_file (T4) ──────────────────────────────────────────────
+    //
+    // The SQL half of these same decisions is T5's `build_file_list_filter`,
+    // and `tests/file_policy_expression.rs` proves the two agree on a shared
+    // corpus. What is pinned HERE is the decision itself.
+
+    use crate::auth::middleware::AuthCtx;
+
+    fn user(id: &str) -> AuthCtx {
+        AuthCtx::User {
+            user_id: id.to_string(),
+            token_hash: String::new(),
+        }
+    }
+
+    /// A file row map in the shape `serde_json::to_value(&FileRow)` produces.
+    fn file_row(path: Option<&str>, uploader: &str) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("id".into(), serde_json::json!(1));
+        m.insert("key".into(), serde_json::json!("abc.bin"));
+        m.insert("original_name".into(), serde_json::json!("abc.bin"));
+        m.insert("content_type".into(), serde_json::json!("text/plain"));
+        m.insert("size_bytes".into(), serde_json::json!(5));
+        m.insert("content_disposition".into(), serde_json::Value::Null);
+        m.insert("visibility".into(), serde_json::json!("private"));
+        m.insert("cache_control".into(), serde_json::Value::Null);
+        m.insert("meta_json".into(), serde_json::Value::Null);
+        m.insert(
+            "uploaded_at".into(),
+            serde_json::json!("2026-08-11 00:00:00"),
+        );
+        m.insert("uploader".into(), serde_json::json!(uploader));
+        m.insert(
+            "path".into(),
+            match path {
+                Some(p) => serde_json::json!(p),
+                None => serde_json::Value::Null,
+            },
+        );
+        m.insert(
+            "created_at".into(),
+            serde_json::json!("2026-08-11 00:00:00"),
+        );
+        m.insert(
+            "updated_at".into(),
+            serde_json::json!("2026-08-11 00:00:00"),
+        );
+        m
+    }
+
+    #[test]
+    fn the_unmatched_default_is_owner_scoped_for_everyone_but_the_uploader() {
+        let row = file_row(Some("misc/x.bin"), "u-alice");
+        for access in [FileAccess::Read, FileAccess::Delete] {
+            assert!(authorize_file(&[], &row, &user("u-alice"), access));
+            assert!(!authorize_file(&[], &row, &user("u-bob"), access));
+            assert!(
+                !authorize_file(&[], &row, &AuthCtx::Anon, access),
+                "anon has no id, so `uploader == $auth` can never hold"
+            );
+        }
+        // A legacy row stamped `service` (every pre-v1.63 Mode-A upload) is
+        // readable by NO end user once the root is cleared — which is exactly
+        // why the upgrade seeds `'' → public_read`. The comparison is plain
+        // string equality, deliberately, so the SQL arm can be `uploader =
+        // ?auth`; what keeps the `service`/`anon`/`function`/`admin` sentinels
+        // unclaimable is that every user id is server-minted as `u-<uuid>`
+        // (spec G16), never caller-chosen.
+        let legacy = file_row(None, "service");
+        assert!(!authorize_file(
+            &[],
+            &legacy,
+            &user("u-alice"),
+            FileAccess::Read
+        ));
+        assert!(!authorize_file(
+            &[],
+            &legacy,
+            &AuthCtx::Anon,
+            FileAccess::Read
+        ));
+    }
+
+    #[test]
+    fn a_clause_less_row_denies_reads_and_deletes() {
+        let mut ps = vec![row("x/")];
+        ps[0].owner_scoped = false; // 0 / 0 / NULL / NULL — the API cannot make this
+        let row_map = file_row(Some("x/mine.bin"), "u-alice");
+        for access in [FileAccess::Read, FileAccess::Delete] {
+            assert!(
+                !authorize_file(&ps, &row_map, &user("u-alice"), access),
+                "'restricted but unspecified' denies even the uploader"
+            );
+            assert!(!authorize_file(&ps, &row_map, &AuthCtx::Anon, access));
+        }
+    }
+
+    #[test]
+    fn public_read_opens_a_prefix_to_anon_and_the_longest_match_can_close_it_again() {
+        let mut open = row("shared/");
+        open.owner_scoped = false;
+        open.public_read = true;
+        let ps = vec![open, row("shared/hr/")]; // hr/ is owner_scoped
+
+        let shared = file_row(Some("shared/note.txt"), "service");
+        assert!(authorize_file(
+            &ps,
+            &shared,
+            &AuthCtx::Anon,
+            FileAccess::Read
+        ));
+        assert!(authorize_file(
+            &ps,
+            &shared,
+            &user("u-bob"),
+            FileAccess::Read
+        ));
+
+        let hr = file_row(Some("shared/hr/pay.csv"), "service");
+        assert!(
+            !authorize_file(&ps, &hr, &user("u-bob"), FileAccess::Read),
+            "the deeper owner-scoped rule overrides its open parent"
+        );
+    }
+
+    #[test]
+    fn an_unfiled_row_is_governed_by_the_root_rule() {
+        let mut root = row("");
+        root.owner_scoped = false;
+        root.public_read = true;
+        let ps = vec![root, row("avatars/")];
+        let unfiled = file_row(None, "service");
+        assert!(
+            authorize_file(&ps, &unfiled, &AuthCtx::Anon, FileAccess::Read),
+            "path NULL can only match '' — the seeded root is what keeps legacy \
+             files readable after the upgrade"
+        );
+    }
+
+    #[test]
+    fn delete_inherits_select_until_a_delete_clause_says_otherwise() {
+        let mut open = row("pub/");
+        open.owner_scoped = false;
+        open.public_read = true;
+        let row_map = file_row(Some("pub/x.bin"), "u-alice");
+        assert!(authorize_file(
+            std::slice::from_ref(&open),
+            &row_map,
+            &user("u-bob"),
+            FileAccess::Delete
+        ));
+
+        let mut strict = open.clone();
+        strict.delete_policy = Some(ast(serde_json::json!({"uploader": {"$auth": "id"}})));
+        let ps = vec![strict];
+        assert!(
+            authorize_file(&ps, &row_map, &user("u-bob"), FileAccess::Read),
+            "the select side is untouched by a delete clause"
+        );
+        assert!(!authorize_file(
+            &ps,
+            &row_map,
+            &user("u-bob"),
+            FileAccess::Delete
+        ));
+        assert!(authorize_file(
+            &ps,
+            &row_map,
+            &user("u-alice"),
+            FileAccess::Delete
+        ));
+    }
+
+    #[test]
+    fn a_select_clause_and_composes_with_the_owner_clause() {
+        // owner_scoped AND visibility='private': satisfying one is not enough.
+        let mut p = row("both/");
+        p.select_policy = Some(ast(serde_json::json!({"visibility": "private"})));
+        let ps = vec![p];
+        let private = file_row(Some("both/a.bin"), "u-alice");
+        let mut public = private.clone();
+        public.insert("visibility".into(), serde_json::json!("public"));
+
+        assert!(authorize_file(
+            &ps,
+            &private,
+            &user("u-alice"),
+            FileAccess::Read
+        ));
+        assert!(
+            !authorize_file(&ps, &public, &user("u-alice"), FileAccess::Read),
+            "the clause still applies to the owner"
+        );
+        assert!(
+            !authorize_file(&ps, &private, &user("u-bob"), FileAccess::Read),
+            "the owner clause still applies to a caller the clause would admit"
+        );
+    }
+
+    #[test]
+    fn an_unknown_comparison_is_a_refusal_not_a_pass() {
+        // `$auth` is NULL for anon, and NULL comparisons are Unknown on both
+        // evaluators — which must round to DENY, not to "no opinion".
+        let mut p = row("q/");
+        p.owner_scoped = false;
+        p.select_policy = Some(ast(serde_json::json!({"uploader": {"$auth": "id"}})));
+        let ps = vec![p];
+        let row_map = file_row(Some("q/x.bin"), "u-alice");
+        assert!(!authorize_file(
+            &ps,
+            &row_map,
+            &AuthCtx::Anon,
+            FileAccess::Read
+        ));
+        assert!(authorize_file(
+            &ps,
+            &row_map,
+            &user("u-alice"),
+            FileAccess::Read
+        ));
+
+        // A NULL column on the row side is Unknown too.
+        let mut null_ct = row_map.clone();
+        null_ct.insert("content_type".into(), serde_json::Value::Null);
+        let mut p2 = row("q/");
+        p2.owner_scoped = false;
+        p2.select_policy = Some(ast(serde_json::json!({"content_type": "text/plain"})));
+        assert!(!authorize_file(
+            std::slice::from_ref(&p2),
+            &null_ct,
+            &user("u-alice"),
+            FileAccess::Read
+        ));
+    }
+
+    #[test]
+    fn a_system_column_clause_reads_the_row_map_not_a_missing_key() {
+        // The whole reason `FileRow` carries created_at/updated_at: with the
+        // keys present these two answer honestly; with them missing, the
+        // `is_null` form would be TRUE and open every file in the tenant.
+        let mut p = row("sys/");
+        p.owner_scoped = false;
+        p.select_policy = Some(ast(serde_json::json!({"updated_at": {"$is_null": true}})));
+        let ps = vec![p];
+        let row_map = file_row(Some("sys/x.bin"), "u-alice");
+        assert!(
+            !authorize_file(&ps, &row_map, &user("u-alice"), FileAccess::Read),
+            "updated_at is present and non-null, so is_null is FALSE"
+        );
+
+        let mut without_key = row_map.clone();
+        without_key.remove("updated_at");
+        assert!(
+            authorize_file(&ps, &without_key, &user("u-alice"), FileAccess::Read),
+            "documents the fail-OPEN a missing key produces — which is why the \
+             row map is built from the full FileRow and never hand-assembled"
         );
     }
 
