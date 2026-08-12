@@ -333,8 +333,9 @@ fn run_test_target_gate() {
             ));
         }
         report.push_str(
-            "\nThis crate sets `autotests = false`, so every tests/*.rs needs an explicit\n\
-             home. Two ways to give it one — see .claude/rules/build-deploy.md §Tests:\n\
+            "\nThis crate sets `autotests = false`, so every tests/*.rs needs exactly one\n\
+             explicit home. Two ways to give it one — see \
+             .claude/rules/build-deploy.md §Tests:\n\
              \x20 1. add `#[path = \"<file>.rs\"] mod <file>;` to the group harness \
              tests/g_<group>.rs\n\
              \x20 2. or add its own [[test]] entry to Cargo.toml (isolation exceptions only)\n",

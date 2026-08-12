@@ -90,7 +90,7 @@ pub fn path_includes(source: &str) -> Vec<String> {
 /// The gate. `test_sources` is `(file name relative to tests/, source text)`
 /// for every top-level `tests/*.rs`; `manifest` is the parsed Cargo.toml.
 ///
-/// Two rules:
+/// Three rules:
 ///
 /// - `unregistered-test-file` — the file compiles into no test binary at all:
 ///   it is not a `[[test]]` target and no reachable harness `#[path]`-includes
@@ -99,6 +99,12 @@ pub fn path_includes(source: &str) -> Vec<String> {
 ///   and a member of a harness, so every one of its tests compiles twice and
 ///   runs twice. Harmless-looking, but it inflates the suite total that the
 ///   #925 acceptance check ("same number of tests as before the merge") reads.
+/// - `multi-harness-member` — the same file is a `#[path]` member of two
+///   different harnesses. Identical consequence (tests run twice, suite total
+///   inflated) reached by the other copy-paste slip: the 24 harnesses are
+///   transcribed by hand from the plan's group table, and landing one file in
+///   two groups compiles clean. Allowlisted shared modules (`helpers.rs`) are
+///   exempt — being included by everything is their job.
 ///
 /// Reachability is transitive: a harness that is itself unregistered does not
 /// launder its members, because nothing compiles any of them.
@@ -159,13 +165,21 @@ pub fn check_test_targets(
         });
     }
 
+    // Which reachable file first `#[path]`-included each member. `test_sources`
+    // is sorted by the caller, so "first" is deterministic and the second
+    // inclusion is the one reported.
+    let mut included_by: BTreeMap<String, String> = BTreeMap::new();
+
     for (name, src) in test_sources {
         if !reached.contains(name) {
             continue; // already reported as unregistered; its includes are dead too
         }
         for inc in path_includes(src) {
             let inc = tests_relative(&inc);
-            if inc != *name && roots.contains(&inc) && known.contains_key(inc.as_str()) {
+            if inc == *name || !known.contains_key(inc.as_str()) {
+                continue;
+            }
+            if roots.contains(&inc) {
                 out.push(TestTargetViolation {
                     file: inc.clone(),
                     rule: "double-registered-test-file",
@@ -175,6 +189,26 @@ pub fn check_test_targets(
                          a merged member keeps no [[test]] entry of its own"
                     ),
                 });
+            }
+            if TEST_TARGET_ALLOWLIST.contains(&inc.as_str()) {
+                continue; // shared module: included by everything, on purpose
+            }
+            match included_by.get(&inc) {
+                None => {
+                    included_by.insert(inc.clone(), name.clone());
+                }
+                Some(first) if first != name => {
+                    out.push(TestTargetViolation {
+                        file: inc.clone(),
+                        rule: "multi-harness-member",
+                        message: format!(
+                            "tests/{inc} is a `#[path]` member of BOTH tests/{first} and \
+                             tests/{name} — every test in it compiles and runs twice. A file \
+                             belongs to exactly one group harness; check the #925 group table"
+                        ),
+                    });
+                }
+                Some(_) => {}
             }
         }
     }
@@ -329,6 +363,66 @@ path = "tests/base_path_root.rs"
         assert_eq!(v[0].rule, "double-registered-test-file");
         assert_eq!(v[0].file, "mcp_read.rs");
         assert!(v[0].message.contains("tests/g_mcp.rs"));
+    }
+
+    /// The T2–T4 copy-paste slip: 24 harnesses are transcribed by hand from the
+    /// group table, and a file pasted into two of them compiles clean while its
+    /// tests run twice.
+    #[test]
+    fn multi_harness_membership_is_flagged() {
+        let (mut m, mut sources) = green_fixture();
+        let extra: toml::Value =
+            manifest("[[test]]\nname = \"g_two\"\npath = \"tests/g_two.rs\"\n");
+        let mut arr = m
+            .get("test")
+            .and_then(|v| v.as_array())
+            .expect("fixture has [[test]]")
+            .clone();
+        arr.extend(
+            extra
+                .get("test")
+                .and_then(|v| v.as_array())
+                .expect("extra has [[test]]")
+                .clone(),
+        );
+        m.as_table_mut()
+            .expect("manifest is a table")
+            .insert("test".to_string(), toml::Value::Array(arr));
+        // g_two claims mcp_read too — which g_mcp already owns.
+        sources.push(src(
+            "g_two.rs",
+            "#[path = \"mcp_read.rs\"]\nmod mcp_read;\n",
+        ));
+        sources.sort();
+
+        let v = check_test_targets(&m, &sources);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].rule, "multi-harness-member");
+        assert_eq!(v[0].file, "mcp_read.rs");
+        assert!(
+            v[0].message.contains("tests/g_mcp.rs") && v[0].message.contains("tests/g_two.rs"),
+            "message names both harnesses: {}",
+            v[0].message
+        );
+    }
+
+    /// The green half of the same rule: `helpers.rs` is `#[path]`-included by
+    /// all 30-odd test files on purpose, so the allowlist must exempt it —
+    /// otherwise the gate would fire on every harness in the tree.
+    #[test]
+    fn shared_helper_included_everywhere_is_not_multi_harness_membership() {
+        let (m, sources) = green_fixture();
+        let helper_includers = sources
+            .iter()
+            .filter(|(_, s)| s.contains("helpers.rs"))
+            .count();
+        assert!(helper_includers >= 3, "fixture must exercise the exemption");
+        assert!(
+            check_test_targets(&m, &sources)
+                .iter()
+                .all(|v| v.rule != "multi-harness-member"),
+            "allowlisted shared modules are exempt from the one-harness rule"
+        );
     }
 
     #[test]

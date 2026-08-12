@@ -1,5 +1,13 @@
 //! #925 — merged harness for the mcp test group.
 //! Each module is one former standalone integration-test binary, unchanged.
+//!
+//! `duplicate_mod` is inherent to the merge, not a defect: every member still
+//! carries its own `#[path = "helpers.rs"] mod helpers;`, and once they share a
+//! crate clippy sees helpers.rs loaded 20 times. Deduping it would mean editing
+//! test bodies (spec 鐵律 1 forbids that) for no gain — rustc compiles the file
+//! once per module path either way. Without this allow, CI's
+//! `cargo clippy --all-targets -- -D warnings` fails on every harness.
+#![allow(clippy::duplicate_mod)]
 
 #[path = "mcp_aggregate.rs"]
 mod mcp_aggregate;
