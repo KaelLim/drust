@@ -124,6 +124,14 @@ CREATE INDEX IF NOT EXISTS idx_system_upload_sessions_expires
 // `tenant_db::apply_schema` (runtime-created tenants, the v1.32.8 parity rule)
 // produce exactly the same schema forever — the
 // SQL_CREATE_SYSTEM_RECORD_HISTORY_IF_NOT_EXISTS precedent.
+//
+// v1.64 (#974) — `public_upload_roles` is the per-prefix PUBLISH grant: a JSON
+// array of role names ('["anon","user"]'), NULL = no grant. It is the inner
+// gate on the visibility dimension of an upload (the `upload` file cap remains
+// the outer one), and NULL meaning "deny" is what makes an un-configured prefix
+// fail closed. LAST column on purpose: `add_column_if_missing` APPENDS, so a
+// fresh database and an upgraded one only agree column-for-column while every
+// post-v1.63 column is listed here in the order it was added.
 pub const SQL_CREATE_SYSTEM_FILE_POLICY_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS "_system_file_policy" (
   prefix              TEXT PRIMARY KEY,
@@ -132,7 +140,8 @@ CREATE TABLE IF NOT EXISTS "_system_file_policy" (
   select_policy_json  TEXT,
   delete_policy_json  TEXT,
   created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  public_upload_roles TEXT
 );
 "#;
 
@@ -300,6 +309,14 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     // (v1.32.8 parity rule). Creates only; seeds nothing. The one-shot root
     // policy seed is a separate, marker-guarded step (tenants.file_policy_seeded).
     tx.execute_batch(SQL_CREATE_SYSTEM_FILE_POLICY_IF_NOT_EXISTS)?;
+    // v1.64 (#974) — the per-prefix PUBLISH grant. `CREATE TABLE IF NOT EXISTS`
+    // above is a no-op on a tenant that already has the v1.63 registry, so the
+    // new column only reaches live tenants through this add_column. Additive,
+    // nullable, no default: NULL = no grant = the deny-by-default arm of
+    // `files::enforce_upload_visibility`. The one-shot grandfather grant on the
+    // ROOT rule is a separate, marker-guarded step
+    // (tenants.public_upload_seeded — see `seed_public_upload_grant`).
+    add_column_if_missing(&tx, "_system_file_policy", "public_upload_roles", "TEXT")?;
     // ───────────────────────────────────────────────────────────────────────
     add_column_if_missing(&tx, "_system_collection_meta", "owner_field", "TEXT")?;
     add_column_if_missing(&tx, "_system_collection_meta", "read_scope", "TEXT")?;
@@ -637,6 +654,64 @@ fn seed_file_policy_root(meta: &Connection, tenants_dir: &Path, tid: &str) -> ru
     Ok(())
 }
 
+/// v1.64 (#974) — one-time, per-tenant GRANDFATHER grant of the per-prefix
+/// publish right on the ROOT rule (`'' → public_upload_roles = ["anon","user"]`).
+///
+/// v1.64 makes `visibility=public` from a non-service uploader conditional on a
+/// per-prefix grant, and the un-granted state is DENY. Every tenant that
+/// existed before the upgrade has been able to publish with nothing but the
+/// `upload` file cap, so without this the release would silently break their
+/// upload flows. Seeding the root reproduces yesterday exactly; a tenant
+/// narrows it afterwards by re-registering `''` or by granting a deeper prefix.
+///
+/// Three deliberate details:
+///
+/// * **Run-once by the `tenants.public_upload_seeded` marker**, for the reason
+///   the two backfills above have one: `run_migrations` runs on EVERY boot, so
+///   an unguarded UPDATE would resurrect a grant an operator revoked, once per
+///   restart (the v1.41.5 idempotency invariant). Tenants created after v1.64
+///   are stamped at create (`make_tenant_inner`) and are NEVER granted here —
+///   a new tenant is deny-by-default.
+/// * **A missing root row is SKIPPED, never INSERTed.** A tenant with no `''`
+///   rule cleared it deliberately, and an INSERT here would have to invent the
+///   read half of that row: a clause-less row (`owner_scoped=0`, no select
+///   clause, `public_read=0`) DENIES every read on both evaluators, so
+///   "granting publish" would break reading. The marker is still stamped, so
+///   the tenant is not re-probed on every later boot and a root rule created
+///   afterwards does not silently inherit a grant.
+/// * **`AND public_upload_roles IS NULL`** so the grant can only ever move a
+///   tenant from "no grant" to the legacy behaviour, never overwrite one.
+///
+/// Must run AFTER `migrate_tenant_db`, which is what adds the column. Same
+/// best-effort skip as its sibling for a tenant with no `data.sqlite`.
+fn seed_public_upload_grant(
+    meta: &Connection,
+    tenants_dir: &Path,
+    tid: &str,
+) -> rusqlite::Result<()> {
+    let done: i64 = meta
+        .query_row(
+            "SELECT COALESCE(public_upload_seeded, 0) FROM tenants WHERE id = ?1",
+            [tid],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
+    if done != 0 {
+        return Ok(());
+    }
+    let path = tenants_dir.join("tenants").join(tid).join("data.sqlite");
+    if !path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(&path)?;
+    crate::storage::file_policy::grant_root_public_upload(&conn)?;
+    meta.execute(
+        "UPDATE tenants SET public_upload_seeded = 1 WHERE id = ?1",
+        [tid],
+    )?;
+    Ok(())
+}
+
 fn make_strict_ddl(original_sql: &str, tmp: &str) -> Option<String> {
     let open = original_sql.find('(')?;
     let close = original_sql.rfind(')')?;
@@ -936,6 +1011,22 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
         meta,
         "tenants",
         "file_policy_seeded",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // v1.64 (#974) — per-tenant run-once marker for the GRANDFATHER grant of
+    // the per-prefix publish right (`'' → public_upload_roles = ["anon","user"]`),
+    // which reproduces the pre-v1.64 rule that any upload-capable caller could
+    // ask for `visibility=public`. Default 0 = not yet granted; tenants born
+    // after v1.64 are stamped 1 at create WITHOUT a grant (`make_tenant_inner`),
+    // because a new tenant is deny-by-default. Exactly the file_policy_seeded
+    // posture directly above and for the same v1.41.5 reason: without the
+    // marker, every boot would resurrect a grant an operator deliberately
+    // revoked. This step adds the column only — the grant itself lands in the
+    // per-tenant loop below.
+    add_column_if_missing(
+        meta,
+        "tenants",
+        "public_upload_seeded",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     // v1.15.0 — denormalized dashboard stats sampled in background.
@@ -1273,6 +1364,18 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
             report
                 .degraded
                 .push((tid.clone(), "file_policy_seed", e.to_string()));
+        }
+        // v1.64 (#974) — one-time grandfather grant of the per-prefix publish
+        // right on this tenant's ROOT rule, so an existing tenant's callers keep
+        // the publish they have today when the deny-by-default grant lands. Run
+        // -once by the public_upload_seeded marker (see fn doc). Same best-effort
+        // posture as the two backfills above: a miss is degraded maintenance
+        // retried next boot, never a serving-blocking failure.
+        if let Err(e) = seed_public_upload_grant(meta, tenants_root, &tid) {
+            tracing::error!(tenant = %tid, error = ?e, "public upload grant seed failed (tenant still serves; retries next boot)");
+            report
+                .degraded
+                .push((tid.clone(), "public_upload_seed", e.to_string()));
         }
         // v1.43 — boot-time STRICT rebuild of pre-STRICT tenant collections.
         // Runs AFTER migrate_tenant_db, on a dedicated bare connection (the

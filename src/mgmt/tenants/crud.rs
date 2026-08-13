@@ -428,9 +428,15 @@ pub fn make_tenant_inner(
     // fn seeds the root file policy itself a few lines below, so the boot pass
     // must never look at this tenant again — otherwise clearing the root
     // (`DELETE /file-policies?prefix=`) would be undone on the next restart.
+    // public_upload_seeded = 1 with NO grant (v1.64, #974): the marker exists to
+    // keep the boot GRANDFATHER pass away from this tenant forever, and a tenant
+    // born after v1.64 has nothing to grandfather — it is deny-by-default on
+    // publishing until its owner writes a `public_upload_roles` rule. Stamping
+    // and granting are separate facts here, unlike the file-policy seed above.
     conn.execute(
         "INSERT INTO tenants (id, name, quota_db_mb, quota_rows, egress_backfill_done, \
-         file_policy_seeded, owner_admin_id) VALUES (?1, ?2, ?3, ?4, 1, 1, ?5)",
+         file_policy_seeded, public_upload_seeded, owner_admin_id) \
+         VALUES (?1, ?2, ?3, ?4, 1, 1, 1, ?5)",
         rusqlite::params![id, name, quota_mb, quota_rows, owner_admin_id],
     )?;
     // Create directory + data.sqlite file (fresh DDL via apply_schema), then

@@ -933,6 +933,7 @@ async fn edge_get_file_honours_a_registered_open_prefix() {
                     public_read: true,
                     select_policy: None,
                     delete_policy: None,
+                    public_upload_roles: None,
                 },
             )
         })

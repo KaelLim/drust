@@ -238,7 +238,11 @@ pub async fn create(
         Some(_) => Some(Visibility::Private),
         None => None,
     };
-    let visibility = match crate::storage::files::enforce_upload_visibility(
+    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
+    // grant-aware `enforce_upload_visibility` (the declared `path` parsed just
+    // below becomes its prefix input, decided HERE at create and stored on the
+    // session, never re-checked at finalize).
+    let visibility = match crate::storage::files::enforce_upload_visibility_v1631(
         matches!(ctx, crate::auth::middleware::AuthCtx::Service { .. }),
         requested,
         Visibility::Private,

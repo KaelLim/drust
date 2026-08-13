@@ -600,6 +600,7 @@ mod tests {
                 public_read: true,
                 select_policy: None,
                 delete_policy: None,
+                public_upload_roles: None,
             },
             FilePolicyRow {
                 prefix: "avatars/".into(),
@@ -607,6 +608,7 @@ mod tests {
                 public_read: false,
                 select_policy: None,
                 delete_policy: None,
+                public_upload_roles: None,
             },
         ];
         let groups = group_into_folders(

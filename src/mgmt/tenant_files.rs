@@ -565,7 +565,10 @@ async fn upload_inner(
     // `files::enforce_upload_visibility`. Decided BEFORE the bucket /
     // cache-control derivation below, so every later use sees the same value.
     let requested = visibility_explicit.then_some(visibility);
-    let visibility = crate::storage::files::enforce_upload_visibility(
+    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
+    // grant-aware `enforce_upload_visibility`, passing the declared `path` and
+    // the caller's role.
+    let visibility = crate::storage::files::enforce_upload_visibility_v1631(
         caller.is_service(),
         requested,
         Visibility::Public,

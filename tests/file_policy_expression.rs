@@ -64,6 +64,10 @@ fn rule(prefix: &str) -> FilePolicyRow {
         public_read: false,
         select_policy: None,
         delete_policy: None,
+        // #974: the publish grant is an UPLOAD-side column. Neither evaluator
+        // in this corpus reads it, and that is the property being asserted by
+        // leaving it `None` on every rule here.
+        public_upload_roles: None,
     }
 }
 

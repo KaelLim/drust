@@ -113,6 +113,11 @@ pub async fn set_file_policy(
         public_read,
         select_policy: parse_clause("select", select)?,
         delete_policy: parse_clause("delete", delete)?,
+        // #974 T1: the MCP face does not accept the publish grant yet (T3 adds
+        // the parameter + codegen). `None` here is not a default — it is this
+        // tool REVOKING any grant the prefix had, exactly as it already clears
+        // a select clause it was not passed. T3 makes the field explicit.
+        public_upload_roles: None,
     };
     // `FilePolicyError: Display` is `CODE: why`, which `bail_mcp` splits into
     // `error_code` + message — the same code the REST face puts in its body.

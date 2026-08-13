@@ -30,7 +30,7 @@ fn object_exists(conn: &Connection, kind: &str, name: &str) -> bool {
         > 0
 }
 
-const FILE_POLICY_COLS: [&str; 7] = [
+const FILE_POLICY_COLS: [&str; 8] = [
     "prefix",
     "owner_scoped",
     "public_read",
@@ -38,6 +38,10 @@ const FILE_POLICY_COLS: [&str; 7] = [
     "delete_policy_json",
     "created_at",
     "updated_at",
+    // v1.64 (#974) — the per-prefix publish grant. LAST, because
+    // `add_column_if_missing` appends and this assertion is order-sensitive on
+    // purpose: fresh and migrated must agree on ORDER, not just on membership.
+    "public_upload_roles",
 ];
 
 /// Every tenant-side assertion, applied to whichever connection is handed in.
@@ -161,6 +165,58 @@ fn migrated_tenant_db_matches_fresh_and_is_idempotent() {
             "fresh vs migrated column drift on {table}"
         );
     }
+}
+
+/// v1.64 (#974) — the publish-grant column reaches a tenant that ALREADY has
+/// the v1.63 registry.
+///
+/// `migrated_tenant_db_matches_fresh_and_is_idempotent` above drops the whole
+/// table, so it exercises the `CREATE TABLE` const and says nothing about the
+/// upgrade door that every real v1.63 install takes: the table exists, so
+/// `CREATE TABLE IF NOT EXISTS` is a no-op and only `add_column_if_missing` can
+/// deliver the column. Existing rows must survive with a NULL grant — NULL is
+/// the deny state, and the grandfather grant is a separate marker-guarded step.
+#[test]
+fn a_v163_registry_gains_the_publish_grant_column_with_its_rows_intact() {
+    let dir = tempdir().unwrap();
+    let tid = "t-frls-grant";
+    let _ = drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
+    let db = dir.path().join("tenants").join(tid).join("data.sqlite");
+    {
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            r#"
+            ALTER TABLE "_system_file_policy" DROP COLUMN public_upload_roles;
+            INSERT INTO "_system_file_policy" (prefix, owner_scoped, public_read)
+              VALUES ('', 0, 1), ('avatars/', 1, 0);
+            "#,
+        )
+        .unwrap();
+    }
+
+    // Twice: run_migrations runs on every boot.
+    drust::db::migrations::migrate_tenant_db(dir.path(), tid).unwrap();
+    drust::db::migrations::migrate_tenant_db(dir.path(), tid).unwrap();
+
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(
+        cols(&conn, "_system_file_policy"),
+        FILE_POLICY_COLS.map(String::from).to_vec(),
+        "the upgraded registry must match the fresh one column for column"
+    );
+    let grants: Vec<(String, Option<String>)> = conn
+        .prepare("SELECT prefix, public_upload_roles FROM \"_system_file_policy\" ORDER BY prefix")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        grants,
+        vec![(String::new(), None), ("avatars/".to_string(), None)],
+        "existing rules survive the add, and every one of them lands in the \
+         DENY state — the migration must not grant anything by itself"
+    );
 }
 
 /// The tenant-side twin of `migrated_meta_gains_file_path_column`, and the
@@ -299,4 +355,35 @@ fn run_migrations_adds_file_policy_seeded_marker() {
     // Every boot re-runs this; the marker column must not be re-added or reset.
     drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
     assert!(cols(&conn, "tenants").contains(&"file_policy_seeded".to_string()));
+}
+
+/// v1.64 (#974) — the second marker, same shape and same reason as the first.
+#[test]
+fn run_migrations_adds_public_upload_seeded_marker() {
+    let dir = tempdir().unwrap();
+    let conn = drust::storage::meta::open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    let tenant_cols = cols(&conn, "tenants");
+    assert!(
+        tenant_cols.contains(&"public_upload_seeded".to_string()),
+        "tenants must gain public_upload_seeded (got {tenant_cols:?})"
+    );
+    let (notnull, dflt): (i64, Option<String>) = conn
+        .query_row(
+            "SELECT \"notnull\", dflt_value FROM pragma_table_info('tenants') \
+             WHERE name = 'public_upload_seeded'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(notnull, 1, "public_upload_seeded must be NOT NULL");
+    assert_eq!(
+        dflt.as_deref(),
+        Some("0"),
+        "it must default to 0, or an EXISTING tenant (whose row predates the \
+         column) would be stamped as already-grandfathered and lose the grant \
+         that keeps its uploads working"
+    );
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert!(cols(&conn, "tenants").contains(&"public_upload_seeded".to_string()));
 }

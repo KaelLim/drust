@@ -22,34 +22,183 @@ pub enum Disposition {
     Attachment,
 }
 
-/// v1.63.1 — the ONE publish decision, shared by every upload station that has
-/// a caller identity (Mode-A multipart, tus create, edge `put-file`).
+/// Error code for a non-service caller whose `visibility=public` is not
+/// covered by a `public_upload_roles` grant on the governing prefix (v1.64,
+/// #974). 403 on REST, a host-op `Err` on the edge station.
+pub const FILE_PUBLIC_UPLOAD_DENIED: &str = "FILE_PUBLIC_UPLOAD_DENIED";
+
+/// Which identity an upload station is deciding for.
 ///
-/// **An EXPLICIT visibility is honored for every caller, service or not.**
-/// v1.63.0 refused a non-service `public` outright
-/// (`FILE_VISIBILITY_SERVICE_ONLY`); that made publishing reachable only by a
-/// god-mode service key, so a tenant's own frontend had to embed one just to
-/// upload a public avatar. Reverted here.
+/// Deliberately its own three-state enum rather than `bool is_service`: the
+/// grant names ROLES, so the decision needs to tell `user` from `anon`, and a
+/// boolean would have collapsed exactly the distinction the registry draws.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum UploadCaller {
+    /// `AuthCtx::Service` — or the host-admin management plane, which is a
+    /// different plane with the same publish authority.
+    Service,
+    /// An end-user session token.
+    User,
+    /// An anonymous tenant token.
+    Anon,
+}
+
+impl UploadCaller {
+    /// The name this caller must find inside `public_upload_roles`.
+    ///
+    /// `Service` has none, and that is the point: a service caller never
+    /// consults the registry at all, so no grant can widen or narrow it.
+    pub fn grant_role(self) -> Option<&'static str> {
+        match self {
+            UploadCaller::Service => None,
+            UploadCaller::User => Some("user"),
+            UploadCaller::Anon => Some("anon"),
+        }
+    }
+
+    /// The data-plane classification. The admin plane has no `AuthCtx` and
+    /// passes [`UploadCaller::Service`] explicitly instead.
+    pub fn from_auth(auth: &crate::auth::middleware::AuthCtx) -> Self {
+        match auth {
+            crate::auth::middleware::AuthCtx::Service { .. } => UploadCaller::Service,
+            crate::auth::middleware::AuthCtx::User { .. } => UploadCaller::User,
+            crate::auth::middleware::AuthCtx::Anon => UploadCaller::Anon,
+        }
+    }
+}
+
+/// A publish refused for want of a grant. The station maps it to its own
+/// transport (HTTP 403 / host-op `Err`) with [`FILE_PUBLIC_UPLOAD_DENIED`].
 ///
-/// What v1.63 keeps is the safe SILENT default: a **non-service caller that
-/// says nothing gets `Private`**, never the station default. Pre-v1.63 Mode-A
-/// published every upload that omitted the field, including anonymous ones —
-/// that footgun must not come back.
+/// `detail` is for the SERVER LOG only. The registry is service-only readable
+/// on every face precisely because it is the tenant's access map, so the
+/// caller-facing [`message`](Self::message) must not say which prefix governs
+/// the upload or whether a rule exists there at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityRefused {
+    pub detail: String,
+}
+
+impl VisibilityRefused {
+    fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+
+    pub const fn code(&self) -> &'static str {
+        FILE_PUBLIC_UPLOAD_DENIED
+    }
+
+    /// The stable, non-revealing caller-facing message.
+    pub const fn message(&self) -> &'static str {
+        "publishing an upload requires a public_upload_roles grant on the \
+         governing file-policy prefix; ask the tenant's service owner to grant \
+         it (PUT /file-policies), or upload with visibility=private"
+    }
+}
+
+impl std::fmt::Display for VisibilityRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code(), self.message())
+    }
+}
+
+impl std::error::Error for VisibilityRefused {}
+
+/// v1.64 (#974) — the ONE publish decision, shared by every upload station that
+/// has a caller identity (Mode-A multipart, tus create, edge `put-file`).
 ///
-/// * `is_service` — the caller is `AuthCtx::Service` (or the admin plane).
+/// |             | asks for `public`                          | asks for `private` / says nothing |
+/// |-------------|--------------------------------------------|-----------------------------------|
+/// | service     | always granted                             | `service_default` / `Private`     |
+/// | user / anon | only with a grant on the governing prefix  | `Private`, always                 |
+///
+/// The grant is `_system_file_policy.public_upload_roles` on the LONGEST prefix
+/// matching this upload's declared `path` — the same `longest_match` the read
+/// side uses, so "which rule governs this file" has one answer across the whole
+/// feature. This REPLACES two earlier shapes: v1.63.0's blanket
+/// `FILE_VISIBILITY_SERVICE_ONLY` refusal (publishing reachable only with a
+/// god-mode key, so tenants embedded one in their frontends) and v1.63.1's
+/// "explicit is always honored" interim (no lever at all between "may upload"
+/// and "may publish"). Neither shipped.
+///
+/// * `caller` — see [`UploadCaller`]; `Service` short-circuits before the
+///   registry is read, exactly as service bypasses every other RLS gate.
 /// * `requested` — what the caller asked for; `None` = the field was absent.
-/// * `service_default` — what a service caller gets when it asks for nothing.
+/// * `service_default` — what a SERVICE caller gets when it asks for nothing.
 ///   **This differs per station on purpose**: Mode-A multipart has always
 ///   defaulted to `Public` and tus has always defaulted to `Private`. Do not
 ///   "unify" them — flipping tus to public would publish every existing
 ///   service upload that omits the field.
+/// * `path` — the caller-declared logical path of THIS upload, `None` when it
+///   declared none. An unfiled upload can only ever match the root rule `''`,
+///   the same rule `longest_match` gives a `path IS NULL` row on the read side.
+/// * `load_policies` — the registry, read LAZILY on the connection the station
+///   already holds. Lazy for two reasons: a service upload must not pay for a
+///   read it ignores, and a broken registry must not break service uploads,
+///   which are the recovery path. A load failure on the arm that DOES need it
+///   is a refusal (fail-closed: an unreadable rule cannot be shown to grant).
 ///
-/// Publishing is still a one-way escape from the per-file gate — a `public`
-/// object is served by Caddy straight out of Garage and never reaches drust —
-/// so the only lever over it today is the `upload` file cap, which is
-/// all-or-nothing. The finer control, a per-prefix "may publish" grant in
-/// `_system_file_policy`, is task #974.
+/// Deny-by-default is deliberate and is why the release ships a one-time
+/// grandfather grant for existing tenants
+/// (`db::migrations::seed_public_upload_grant`): the un-granted state has to
+/// mean "no", or `public_upload_roles` would be a suggestion. Silence from a
+/// non-service caller is `Private` on every station — pre-v1.63 Mode-A
+/// published every field-less upload, anonymous ones included, and that footgun
+/// must not come back.
+///
+/// Publishing remains a one-way escape from the per-file gate: a `public`
+/// object is served by Caddy straight out of Garage and never reaches drust
+/// again. That is why the grant is checked at MINT time here, and why `sign`
+/// and the set-visibility `PATCH` stay service-only (CLAUDE.md invariant 19).
 pub fn enforce_upload_visibility(
+    caller: UploadCaller,
+    requested: Option<Visibility>,
+    service_default: Visibility,
+    path: Option<&str>,
+    load_policies: impl FnOnce() -> Result<Vec<crate::storage::file_policy::FilePolicyRow>, String>,
+) -> Result<Visibility, VisibilityRefused> {
+    if matches!(caller, UploadCaller::Service) {
+        return Ok(requested.unwrap_or(service_default));
+    }
+    // Silence, and an explicit `private`, need no grant and no registry read.
+    if !matches!(requested, Some(Visibility::Public)) {
+        return Ok(Visibility::Private);
+    }
+    let Some(role) = caller.grant_role() else {
+        // Unreachable — `Service` returned above — but a future variant that
+        // forgets its role name must land on the closed side of the gate.
+        return Err(VisibilityRefused::new(
+            "caller kind has no publish-grant role name",
+        ));
+    };
+    let policies = load_policies()
+        .map_err(|e| VisibilityRefused::new(format!("file policy registry unreadable: {e}")))?;
+    let Some(rule) = crate::storage::file_policy::longest_match(&policies, path) else {
+        return Err(VisibilityRefused::new(format!(
+            "no file policy rule governs path {path:?} (role {role})"
+        )));
+    };
+    match rule.public_upload_roles.as_deref() {
+        Some(roles) if roles.iter().any(|r| r == role) => Ok(Visibility::Public),
+        _ => Err(VisibilityRefused::new(format!(
+            "prefix {:?} does not grant public upload to {role}",
+            rule.prefix
+        ))),
+    }
+}
+
+/// **TEMPORARY (#974 T1 → deleted by T2).** The v1.63.1 decision, unchanged,
+/// kept alive only so the four upload stations keep compiling and behaving
+/// EXACTLY as they do on this branch while T2 wires them to the grant-aware
+/// [`enforce_upload_visibility`] above one station at a time.
+///
+/// It is a copy of the old body rather than a delegation on purpose: routing it
+/// through the new function with an empty rule set would silently flip every
+/// station to deny, and routing it with a grant-ignoring shortcut would put a
+/// second publish rule in the codebase. Nothing new may call this.
+pub fn enforce_upload_visibility_v1631(
     is_service: bool,
     requested: Option<Visibility>,
     service_default: Visibility,
@@ -559,51 +708,325 @@ mod content_type_safety_tests {
         );
     }
 
-    /// The full v1.63.1 publish matrix: (caller × requested × station default).
-    /// The two station defaults are deliberately different and both are pinned
-    /// here — a "harmonising" edit that flips tus to public fails this test.
+    /// **TEMPORARY (#974 T1 → deleted with the shim in T2).** The four upload
+    /// stations still call `enforce_upload_visibility_v1631`, so its truth
+    /// table is still live behaviour and stays pinned until they move.
     #[test]
-    fn enforce_upload_visibility_matrix() {
+    fn the_v1631_shim_is_unchanged_until_the_stations_move() {
         use Visibility::{Private, Public};
-        // Service keeps its station's default and may ask for either.
+        assert_eq!(enforce_upload_visibility_v1631(true, None, Public), Public);
         assert_eq!(
-            enforce_upload_visibility(true, None, Public),
-            Public,
-            "Mode-A service default"
-        );
-        assert_eq!(
-            enforce_upload_visibility(true, None, Private),
-            Private,
-            "tus service default — must NOT become public"
-        );
-        assert_eq!(
-            enforce_upload_visibility(true, Some(Public), Private),
-            Public
-        );
-        assert_eq!(
-            enforce_upload_visibility(true, Some(Private), Public),
+            enforce_upload_visibility_v1631(true, None, Private),
             Private
         );
-
-        // Non-service: SILENCE means private on BOTH stations, whatever the
-        // station default is — that half of v1.63 stays. An EXPLICIT choice is
-        // honored either way (v1.63.1 reverted the `public` refusal).
         for station_default in [Public, Private] {
             assert_eq!(
-                enforce_upload_visibility(false, None, station_default),
-                Private,
-                "silence must never inherit the station default for a caller"
-            );
-            assert_eq!(
-                enforce_upload_visibility(false, Some(Private), station_default),
+                enforce_upload_visibility_v1631(false, None, station_default),
                 Private
             );
             assert_eq!(
-                enforce_upload_visibility(false, Some(Public), station_default),
+                enforce_upload_visibility_v1631(false, Some(Public), station_default),
                 Public,
-                "an explicit public from a tenant's own app is honored (#974 \
-                 will add the per-prefix grant that narrows it)"
+                "the interim 'explicit is always honored' rule, which the grant \
+                 matrix below REPLACES once the stations are wired"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod publish_grant_tests {
+    use super::*;
+    use crate::storage::file_policy::FilePolicyRow;
+    use Visibility::{Private, Public};
+
+    /// A rule granting `roles` the publish right on `prefix`. `owner_scoped` is
+    /// set so the row is a shape the write face would accept.
+    fn granting(prefix: &str, roles: &[&str]) -> FilePolicyRow {
+        FilePolicyRow {
+            prefix: prefix.to_string(),
+            owner_scoped: true,
+            public_read: false,
+            select_policy: None,
+            delete_policy: None,
+            public_upload_roles: Some(roles.iter().map(|r| r.to_string()).collect()),
+        }
+    }
+
+    /// The same rule with no grant at all — the state every prefix is in until
+    /// someone writes one.
+    fn ungranted(prefix: &str) -> FilePolicyRow {
+        FilePolicyRow {
+            public_upload_roles: None,
+            ..granting(prefix, &[])
+        }
+    }
+
+    /// The registry as a station would supply it.
+    fn registry(rows: Vec<FilePolicyRow>) -> impl FnOnce() -> Result<Vec<FilePolicyRow>, String> {
+        move || Ok(rows)
+    }
+
+    /// A registry read that fails, as an unreadable or corrupt one does.
+    fn broken() -> impl FnOnce() -> Result<Vec<FilePolicyRow>, String> {
+        || Err("no such table: _system_file_policy".to_string())
+    }
+
+    /// Service is decided before the registry is consulted at all — pinned by
+    /// handing it a registry that would PANIC if it were read. Both station
+    /// defaults are deliberately different and both are pinned here: a
+    /// "harmonising" edit that flips tus to public fails this test.
+    #[test]
+    fn service_is_unchanged_and_never_reads_the_registry() {
+        let unreadable = || -> Result<Vec<FilePolicyRow>, String> {
+            panic!("a service upload must not pay for, or depend on, a registry read")
+        };
+        assert_eq!(
+            enforce_upload_visibility(UploadCaller::Service, None, Public, None, unreadable),
+            Ok(Public),
+            "Mode-A service default"
+        );
+        assert_eq!(
+            enforce_upload_visibility(
+                UploadCaller::Service,
+                None,
+                Private,
+                Some("a/x.bin"),
+                registry(vec![])
+            ),
+            Ok(Private),
+            "tus service default — must NOT become public"
+        );
+        assert_eq!(
+            enforce_upload_visibility(
+                UploadCaller::Service,
+                Some(Public),
+                Private,
+                None,
+                registry(vec![])
+            ),
+            Ok(Public)
+        );
+        assert_eq!(
+            enforce_upload_visibility(
+                UploadCaller::Service,
+                Some(Private),
+                Public,
+                None,
+                registry(vec![])
+            ),
+            Ok(Private)
+        );
+    }
+
+    #[test]
+    fn a_granted_role_may_publish_into_the_granted_prefix() {
+        for (caller, role) in [(UploadCaller::User, "user"), (UploadCaller::Anon, "anon")] {
+            assert_eq!(
+                enforce_upload_visibility(
+                    caller,
+                    Some(Public),
+                    Private,
+                    Some("avatars/me.png"),
+                    registry(vec![granting("avatars/", &[role])])
+                ),
+                Ok(Public),
+                "{role} is granted on avatars/"
+            );
+            // …and the grant is per-ROLE: the other role is still refused by
+            // the very same rule.
+            let other = match caller {
+                UploadCaller::User => UploadCaller::Anon,
+                _ => UploadCaller::User,
+            };
+            assert!(
+                enforce_upload_visibility(
+                    other,
+                    Some(Public),
+                    Private,
+                    Some("avatars/me.png"),
+                    registry(vec![granting("avatars/", &[role])])
+                )
+                .is_err(),
+                "a grant naming only {role} must not cover the other role"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ungranted_prefix_refuses_and_the_refusal_names_the_public_code() {
+        let refusal = enforce_upload_visibility(
+            UploadCaller::User,
+            Some(Public),
+            Public,
+            Some("docs/a.pdf"),
+            registry(vec![ungranted("docs/"), granting("", &["user"])]),
+        )
+        .unwrap_err();
+        assert_eq!(refusal.code(), FILE_PUBLIC_UPLOAD_DENIED);
+        assert!(
+            !refusal.message().contains("docs/"),
+            "the caller-facing message must not disclose the registry's shape: \
+             {}",
+            refusal.message()
+        );
+        assert!(
+            refusal.detail.contains("docs/"),
+            "…while the server-side detail must, or an operator cannot debug it"
+        );
+    }
+
+    #[test]
+    fn the_longest_matching_prefix_decides_in_both_directions() {
+        // A deeper GRANT overrides an ungranted parent…
+        assert_eq!(
+            enforce_upload_visibility(
+                UploadCaller::User,
+                Some(Public),
+                Private,
+                Some("shared/pics/a.png"),
+                registry(vec![ungranted(""), granting("shared/pics/", &["user"])])
+            ),
+            Ok(Public)
+        );
+        // …and a deeper UNGRANTED rule overrides a granted root, which is the
+        // direction that would be a hole if longest-match were reversed.
+        assert!(
+            enforce_upload_visibility(
+                UploadCaller::User,
+                Some(Public),
+                Private,
+                Some("shared/hr/pay.csv"),
+                registry(vec![
+                    granting("", &["anon", "user"]),
+                    ungranted("shared/hr/")
+                ])
+            )
+            .is_err(),
+            "a deeper rule that grants nobody must close a prefix its parent opened"
+        );
+    }
+
+    #[test]
+    fn an_unfiled_upload_is_decided_by_the_root_rule_alone() {
+        // `path = None` can only ever match `''` — the same rule the read side
+        // applies to a `path IS NULL` row.
+        assert_eq!(
+            enforce_upload_visibility(
+                UploadCaller::Anon,
+                Some(Public),
+                Public,
+                None,
+                registry(vec![granting("", &["anon"])])
+            ),
+            Ok(Public),
+            "the grandfather grant lands on the root, and this is the upload it \
+             has to keep working"
+        );
+        assert!(
+            enforce_upload_visibility(
+                UploadCaller::Anon,
+                Some(Public),
+                Public,
+                None,
+                registry(vec![granting("uploads/", &["anon"])])
+            )
+            .is_err(),
+            "a deeper grant can never cover an unfiled upload"
+        );
+    }
+
+    #[test]
+    fn every_fail_closed_direction_refuses() {
+        // (a) empty registry — a tenant that cleared its root.
+        assert!(
+            enforce_upload_visibility(
+                UploadCaller::User,
+                Some(Public),
+                Public,
+                Some("x/y.bin"),
+                registry(vec![])
+            )
+            .is_err()
+        );
+        // (b) a matching rule with no grant column set.
+        assert!(
+            enforce_upload_visibility(
+                UploadCaller::User,
+                Some(Public),
+                Public,
+                Some("x/y.bin"),
+                registry(vec![ungranted("x/")])
+            )
+            .is_err()
+        );
+        // (c) an unreadable / corrupt registry. Deny, never "no rules ⇒ open",
+        // and never a silent downgrade to private: the caller is TOLD.
+        let refusal = enforce_upload_visibility(
+            UploadCaller::Anon,
+            Some(Public),
+            Public,
+            Some("x/y.bin"),
+            broken(),
+        )
+        .unwrap_err();
+        assert!(
+            refusal.detail.contains("unreadable"),
+            "got {}",
+            refusal.detail
+        );
+    }
+
+    /// The half of v1.63 that survives every revision: a non-service caller
+    /// that says NOTHING gets `Private`, on both stations, with or without a
+    /// grant. Pre-v1.63 Mode-A published every field-less upload.
+    #[test]
+    fn silence_is_private_for_a_caller_even_where_a_grant_exists() {
+        for station_default in [Public, Private] {
+            for caller in [UploadCaller::User, UploadCaller::Anon] {
+                assert_eq!(
+                    enforce_upload_visibility(
+                        caller,
+                        None,
+                        station_default,
+                        Some("open/a.bin"),
+                        registry(vec![granting("open/", &["anon", "user"])])
+                    ),
+                    Ok(Private),
+                    "silence must never inherit the station default, and a grant \
+                     is permission to publish — not an instruction to"
+                );
+                assert_eq!(
+                    enforce_upload_visibility(
+                        caller,
+                        Some(Private),
+                        station_default,
+                        Some("open/a.bin"),
+                        registry(vec![granting("open/", &["anon", "user"])])
+                    ),
+                    Ok(Private)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn caller_classification_maps_auth_to_the_grant_role_names() {
+        use crate::auth::middleware::AuthCtx;
+        assert_eq!(
+            UploadCaller::from_auth(&AuthCtx::Service { admin_id: None }),
+            UploadCaller::Service
+        );
+        assert_eq!(
+            UploadCaller::from_auth(&AuthCtx::User {
+                user_id: "u-1".into(),
+                token_hash: String::new()
+            }),
+            UploadCaller::User
+        );
+        assert_eq!(UploadCaller::from_auth(&AuthCtx::Anon), UploadCaller::Anon);
+        assert_eq!(UploadCaller::Service.grant_role(), None);
+        assert_eq!(UploadCaller::User.grant_role(), Some("user"));
+        assert_eq!(UploadCaller::Anon.grant_role(), Some("anon"));
     }
 }

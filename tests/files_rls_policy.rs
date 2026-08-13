@@ -534,3 +534,126 @@ async fn the_boot_seed_runs_once_and_never_resurrects_a_cleared_root() {
          INSERT OR IGNORE with no marker resurrects it on every boot"
     );
 }
+
+// ─── (g) v1.64 (#974): the one-time publish-grant grandfather ────────────────
+//
+// The grant column itself is deny-by-default, so the upgrade owes every
+// EXISTING tenant the root grant that reproduces what its callers could do
+// yesterday — once, and never again.
+
+/// Every prefix's stored grant, in prefix order.
+fn grant_rows(data_root: &std::path::Path, tenant: &str) -> Vec<(String, Option<String>)> {
+    let db = data_root.join("tenants").join(tenant).join("data.sqlite");
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT prefix, public_upload_roles FROM _system_file_policy ORDER BY prefix")
+        .unwrap();
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+}
+
+fn marker(conn: &rusqlite::Connection, tenant: &str) -> i64 {
+    conn.query_row(
+        "SELECT public_upload_seeded FROM tenants WHERE id = ?1",
+        [tenant],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_new_tenant_is_stamped_as_grandfathered_but_granted_nothing() {
+    let (mut conn, dir) = meta_with_owner();
+    drust::mgmt::tenants::crud::make_tenant_inner(&mut conn, dir.path(), "born", "Born", 500, 1, 1)
+        .unwrap();
+
+    assert_eq!(
+        grant_rows(dir.path(), "born"),
+        vec![(String::new(), None)],
+        "a tenant born after v1.64 is deny-by-default on publishing: it gets \
+         the open ROOT READ rule and NO publish grant"
+    );
+    assert_eq!(
+        marker(&conn, "born"),
+        1,
+        "…and it is stamped, or the boot grandfather pass would hand it the \
+         legacy grant it was never supposed to have"
+    );
+
+    // A boot with the new tenant present must leave it alone.
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert_eq!(grant_rows(dir.path(), "born"), vec![(String::new(), None)]);
+}
+
+#[tokio::test]
+async fn the_boot_grant_runs_once_and_never_resurrects_a_revoked_grant() {
+    let (conn, dir) = meta_with_owner();
+
+    // An UPGRADED tenant: its row predates v1.64, so the marker defaults to 0.
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('old', 'Old')", [])
+        .unwrap();
+    drust::storage::tenant_db::open_write(dir.path(), "old").unwrap();
+    assert_eq!(marker(&conn, "old"), 0);
+
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert_eq!(
+        grant_rows(dir.path(), "old"),
+        vec![(String::new(), Some(r#"["anon","user"]"#.to_string()))],
+        "the boot pass grandfathers the ROOT rule, so an existing tenant's \
+         anon/user uploads keep publishing exactly as they did on v1.62"
+    );
+    assert_eq!(marker(&conn, "old"), 1);
+
+    // The tenant then REVOKES the grant (tightening publishing to service).
+    rusqlite::Connection::open(dir.path().join("tenants").join("old").join("data.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE _system_file_policy SET public_upload_roles = NULL WHERE prefix = ''",
+            [],
+        )
+        .unwrap();
+
+    // Reboot. Twice, because "runs on every boot" is the whole hazard.
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert_eq!(
+        grant_rows(dir.path(), "old"),
+        vec![(String::new(), None)],
+        "a deliberately revoked grant must stay revoked across restarts — this \
+         is the v1.41.5 idempotency invariant, and the marker is what enforces it"
+    );
+}
+
+#[tokio::test]
+async fn a_tenant_with_no_root_rule_is_skipped_rather_than_given_one() {
+    let (conn, dir) = meta_with_owner();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES ('rootless', 'Rootless')",
+        [],
+    )
+    .unwrap();
+    drust::storage::tenant_db::open_write(dir.path(), "rootless").unwrap();
+    // This tenant already opted into deny-by-default reads on v1.63 and is
+    // stamped for the ROOT-POLICY seed, so that pass will not recreate it.
+    conn.execute(
+        "UPDATE tenants SET file_policy_seeded = 1 WHERE id = 'rootless'",
+        [],
+    )
+    .unwrap();
+
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+
+    assert!(
+        grant_rows(dir.path(), "rootless").is_empty(),
+        "the grandfather pass must NEVER INSERT a root row: the row it would \
+         have to invent is clause-less (owner_scoped=0, no select clause, \
+         public_read=0), which DENIES every read on both evaluators — granting \
+         publish would have broken reading"
+    );
+    assert_eq!(
+        marker(&conn, "rootless"),
+        1,
+        "it is still stamped, so a root rule created later is not silently \
+         granted the legacy publish right on some future boot"
+    );
+}

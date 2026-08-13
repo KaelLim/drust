@@ -763,7 +763,10 @@ pub async fn enforced_put_file(
         "public" => Some(crate::storage::files::Visibility::Public),
         _ => Some(crate::storage::files::Visibility::Private),
     };
-    let visibility = match crate::storage::files::enforce_upload_visibility(
+    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
+    // grant-aware `enforce_upload_visibility` (path is always NULL here, so it
+    // will be the ROOT rule's grant that decides).
+    let visibility = match crate::storage::files::enforce_upload_visibility_v1631(
         false,
         requested,
         crate::storage::files::Visibility::Private,

@@ -43,6 +43,24 @@ pub const FILE_POLICY_OPEN_REQUIRES_FLAG: &str = "FILE_POLICY_OPEN_REQUIRES_FLAG
 pub const FILE_POLICY_OPERAND_UNSUPPORTED: &str = "FILE_POLICY_OPERAND_UNSUPPORTED";
 /// `clear_file_policy` naming a prefix with no registry row.
 pub const FILE_POLICY_NOT_FOUND: &str = "FILE_POLICY_NOT_FOUND";
+/// A registry write whose `public_upload_roles` is not a non-empty subset of
+/// [`PUBLIC_UPLOAD_ROLES_ALLOWED`] (v1.64, #974).
+pub const FILE_POLICY_INVALID: &str = "FILE_POLICY_INVALID";
+
+/// The only role names a publish grant may name. `service` is deliberately
+/// absent: a service caller never consults the registry, so listing it would
+/// imply a grant could REVOKE service publishing, which it cannot.
+///
+/// Order is canonical — [`canonical_public_upload_roles`] emits stored arrays in
+/// it, so `["user","anon"]` and `["anon","user","anon"]` persist identically and
+/// a byte comparison of the stored JSON is meaningful.
+pub const PUBLIC_UPLOAD_ROLES_ALLOWED: [&str; 2] = ["anon", "user"];
+
+/// The grandfather grant a pre-v1.64 tenant's ROOT rule receives once at boot
+/// (`db::migrations::seed_public_upload_grant`) — "everyone who could publish
+/// yesterday still can". Canonical order, so it round-trips through
+/// [`canonical_public_upload_roles`] unchanged.
+pub const PUBLIC_UPLOAD_ROLES_ALL_JSON: &str = r#"["anon","user"]"#;
 
 /// One registered prefix rule. Serialized shape is the REST/MCP wire shape:
 /// the two AST columns are named `select` / `delete` there (the SQL columns
@@ -64,6 +82,20 @@ pub struct FilePolicyRow {
     /// the `Delete` file cap is still required on top).
     #[serde(rename = "delete", default)]
     pub delete_policy: Option<FilterAst>,
+    /// v1.64 (#974) — **the publish grant.** Which non-service roles may upload
+    /// a file into this prefix with `visibility=public`; `None` = nobody, which
+    /// is the deny-by-default arm and the state every un-configured prefix is
+    /// in. Values are a subset of [`PUBLIC_UPLOAD_ROLES_ALLOWED`].
+    ///
+    /// It governs the VISIBILITY dimension only: the `upload` file cap is still
+    /// the outer gate on uploading at all, and this column cannot grant a
+    /// caller that lacks the cap anything. It is also write-only from the read
+    /// path's point of view — neither `authorize_file` nor
+    /// `build_file_list_filter` looks at it, because publishing is decided once
+    /// at upload (`files::enforce_upload_visibility`) and a `public` object is
+    /// then served by Caddy straight out of Garage, never reaching drust again.
+    #[serde(default)]
+    pub public_upload_roles: Option<Vec<String>>,
 }
 
 /// A rejected registry write. Carries the stable error code every face reports
@@ -75,6 +107,7 @@ pub enum FilePolicyError {
     OpenRequiresFlag,
     OperandUnsupported(String),
     NotFound(String),
+    PublicUploadRolesInvalid(String),
 }
 
 impl FilePolicyError {
@@ -84,6 +117,7 @@ impl FilePolicyError {
             FilePolicyError::OpenRequiresFlag => FILE_POLICY_OPEN_REQUIRES_FLAG,
             FilePolicyError::OperandUnsupported(_) => FILE_POLICY_OPERAND_UNSUPPORTED,
             FilePolicyError::NotFound(_) => FILE_POLICY_NOT_FOUND,
+            FilePolicyError::PublicUploadRolesInvalid(_) => FILE_POLICY_INVALID,
         }
     }
 
@@ -98,6 +132,7 @@ impl FilePolicyError {
             FilePolicyError::NotFound(prefix) => {
                 format!("no file policy registered for prefix {prefix:?}")
             }
+            FilePolicyError::PublicUploadRolesInvalid(why) => why.clone(),
         }
     }
 }
@@ -160,10 +195,53 @@ pub fn file_policy_schema() -> CollectionSchema {
     }
 }
 
+/// The stored form of a publish grant: `None`, or a non-empty, de-duplicated
+/// subset of [`PUBLIC_UPLOAD_ROLES_ALLOWED`] in canonical order.
+///
+/// One function for three jobs — the write-face validation, the bytes
+/// [`upsert_file_policy`] persists, and the re-check
+/// [`load_file_policies`] runs on what it read back — so a grant that the API
+/// would refuse can never be honoured just because it reached the table by
+/// hand. Refusals:
+///
+/// * an EMPTY array — `[]` reads as "granted to nobody", which is what `None`
+///   already means; accepting both would give the same state two spellings and
+///   invite a caller to believe `[]` grants something;
+/// * any name outside the allowlist, `"service"` included (see the const's doc).
+pub fn canonical_public_upload_roles(
+    roles: Option<&[String]>,
+) -> Result<Option<Vec<String>>, FilePolicyError> {
+    let Some(roles) = roles else { return Ok(None) };
+    if roles.is_empty() {
+        return Err(FilePolicyError::PublicUploadRolesInvalid(
+            "public_upload_roles must name at least one of [\"anon\", \"user\"], \
+             or be omitted entirely to grant nobody"
+                .to_string(),
+        ));
+    }
+    if let Some(bad) = roles
+        .iter()
+        .find(|r| !PUBLIC_UPLOAD_ROLES_ALLOWED.contains(&r.as_str()))
+    {
+        return Err(FilePolicyError::PublicUploadRolesInvalid(format!(
+            "public_upload_roles may only contain \"anon\" or \"user\" (got {bad:?})"
+        )));
+    }
+    // Dedup by filtering the allowlist, which canonicalizes the ORDER too.
+    Ok(Some(
+        PUBLIC_UPLOAD_ROLES_ALLOWED
+            .iter()
+            .filter(|allowed| roles.iter().any(|r| r == *allowed))
+            .map(|allowed| allowed.to_string())
+            .collect(),
+    ))
+}
+
 /// Validate a registry write. Shared by every face (REST now, MCP in T6) so
 /// the three refusals are the same three refusals everywhere.
 pub fn validate_file_policy(row: &FilePolicyRow) -> Result<(), FilePolicyError> {
     validate_file_prefix(&row.prefix).map_err(FilePolicyError::PrefixInvalid)?;
+    canonical_public_upload_roles(row.public_upload_roles.as_deref())?;
     // The clause-less gate. `delete_policy` is deliberately NOT an escape
     // hatch: it governs deletes only, so a row carrying just a delete clause
     // still says nothing about who may READ the prefix.
@@ -215,7 +293,8 @@ pub fn validate_file_policy(row: &FilePolicyRow) -> Result<(), FilePolicyError> 
 /// operator which row to `clear_file_policy`.
 pub fn load_file_policies(conn: &Connection) -> rusqlite::Result<Vec<FilePolicyRow>> {
     let mut stmt = conn.prepare(
-        "SELECT prefix, owner_scoped, public_read, select_policy_json, delete_policy_json \
+        "SELECT prefix, owner_scoped, public_read, select_policy_json, delete_policy_json, \
+                public_upload_roles \
          FROM \"_system_file_policy\" ORDER BY prefix",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -225,9 +304,25 @@ pub fn load_file_policies(conn: &Connection) -> rusqlite::Result<Vec<FilePolicyR
             public_read: r.get::<_, i64>(2)? != 0,
             select_policy: parse_stored_ast(r.get::<_, Option<String>>(3)?, 3)?,
             delete_policy: parse_stored_ast(r.get::<_, Option<String>>(4)?, 4)?,
+            public_upload_roles: parse_stored_grant(r.get::<_, Option<String>>(5)?)?,
         })
     })?;
     rows.collect()
+}
+
+/// A stored publish grant, re-checked against the write-face rules. Unparseable
+/// JSON, a non-array, an empty array or an unknown role name all propagate as a
+/// load failure — which every caller turns into a refusal, so a hand-INSERTed
+/// `'["admin"]'` cannot publish anything. Same door, same fail-closed answer as
+/// [`checked_prefix`] and [`parse_stored_ast`].
+fn parse_stored_grant(raw: Option<String>) -> rusqlite::Result<Option<Vec<String>>> {
+    let Some(s) = raw else { return Ok(None) };
+    let parsed: Vec<String> = serde_json::from_str(&s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    canonical_public_upload_roles(Some(&parsed)).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+    })
 }
 
 /// A stored prefix, or the fail-closed error. See [`load_file_policies`].
@@ -286,22 +381,36 @@ pub fn upsert_file_policy(conn: &Connection, row: &FilePolicyRow) -> rusqlite::R
             })
             .transpose()
     };
+    // Canonicalized here as well as at the write face: this is the only
+    // INSERT, so a grant that reaches storage is a grant the API would accept.
+    // `None` is written as SQL NULL, which is how a re-register REVOKES a
+    // grant — the same replace-not-merge semantics the two clauses have.
+    let grant = canonical_public_upload_roles(row.public_upload_roles.as_deref())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+        .map(|roles| {
+            serde_json::to_string(&roles)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })
+        .transpose()?;
     conn.execute(
         "INSERT INTO \"_system_file_policy\" \
-           (prefix, owner_scoped, public_read, select_policy_json, delete_policy_json) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+           (prefix, owner_scoped, public_read, select_policy_json, delete_policy_json, \
+            public_upload_roles) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
          ON CONFLICT(prefix) DO UPDATE SET \
-           owner_scoped       = excluded.owner_scoped, \
-           public_read        = excluded.public_read, \
-           select_policy_json = excluded.select_policy_json, \
-           delete_policy_json = excluded.delete_policy_json, \
-           updated_at         = datetime('now')",
+           owner_scoped        = excluded.owner_scoped, \
+           public_read         = excluded.public_read, \
+           select_policy_json  = excluded.select_policy_json, \
+           delete_policy_json  = excluded.delete_policy_json, \
+           public_upload_roles = excluded.public_upload_roles, \
+           updated_at          = datetime('now')",
         rusqlite::params![
             row.prefix,
             row.owner_scoped as i64,
             row.public_read as i64,
             to_json(&row.select_policy)?,
             to_json(&row.delete_policy)?,
+            grant,
         ],
     )?;
     Ok(())
@@ -597,6 +706,30 @@ pub fn seed_root_policy(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v1.64 (#974) — grandfather the ROOT rule's publish grant to
+/// `["anon","user"]`. `Ok(false)` = there was no root row to grant on.
+///
+/// The storage half of `db::migrations::seed_public_upload_grant`, whose doc
+/// carries the reasoning. Two clauses do the load-bearing work:
+///
+/// * **`WHERE prefix = ''` with no INSERT.** A tenant with no root rule cleared
+///   it deliberately, and inserting one here would have to invent its READ
+///   half: a clause-less row denies every read on both evaluators, so
+///   "granting publish" would break reading. Skipping is the respectful and the
+///   fail-closed answer at once.
+/// * **`AND public_upload_roles IS NULL`.** The marker already makes this
+///   run-once; this makes it non-destructive even if it somehow ran twice.
+///   Never widens an existing grant, never narrows one.
+pub fn grant_root_public_upload(conn: &Connection) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE \"_system_file_policy\" \
+            SET public_upload_roles = ?1, updated_at = datetime('now') \
+          WHERE prefix = '' AND public_upload_roles IS NULL",
+        [PUBLIC_UPLOAD_ROLES_ALL_JSON],
+    )?;
+    Ok(n > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,6 +741,7 @@ mod tests {
             public_read: false,
             select_policy: None,
             delete_policy: None,
+            public_upload_roles: None,
         }
     }
 
@@ -1178,6 +1312,161 @@ mod tests {
             authorize_file(&ps, &without_key, &user("u-alice"), FileAccess::Read),
             "documents the fail-OPEN a missing key produces — which is why the \
              row map is built from the full FileRow and never hand-assembled"
+        );
+    }
+
+    // ── the publish grant (#974) ─────────────────────────────────────────
+    //
+    // The DECISION lives in `files::enforce_upload_visibility`; what is pinned
+    // here is the column's write face: what may be stored, what round-trips,
+    // and what a hand-INSERTed value does.
+
+    #[test]
+    fn a_publish_grant_is_validated_deduped_and_canonically_ordered() {
+        let mut r = row("up/");
+        for bad in [
+            vec![],
+            vec!["service".to_string()],
+            vec!["admin".to_string()],
+            vec!["User".to_string()],
+            vec!["user".to_string(), "root".to_string()],
+        ] {
+            r.public_upload_roles = Some(bad.clone());
+            assert_eq!(
+                validate_file_policy(&r).unwrap_err().code(),
+                FILE_POLICY_INVALID,
+                "{bad:?} must be refused — an empty array is not a grant to \
+                 nobody, it is a spelling of `None` that invites confusion, and \
+                 `service` never consults the registry at all"
+            );
+        }
+
+        r.public_upload_roles = None;
+        assert!(
+            validate_file_policy(&r).is_ok(),
+            "omission is the deny state"
+        );
+        for good in [vec!["anon"], vec!["user"], vec!["anon", "user"]] {
+            r.public_upload_roles = Some(good.iter().map(|s| s.to_string()).collect());
+            assert!(validate_file_policy(&r).is_ok(), "{good:?}");
+        }
+
+        // Dedup + canonical order, so two spellings of one grant persist
+        // identically and the seeded constant round-trips unchanged.
+        let messy: Vec<String> = ["user", "anon", "user"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            canonical_public_upload_roles(Some(&messy)).unwrap(),
+            Some(vec!["anon".to_string(), "user".to_string()])
+        );
+        let seeded: Vec<String> = serde_json::from_str(PUBLIC_UPLOAD_ROLES_ALL_JSON).unwrap();
+        assert_eq!(
+            serde_json::to_string(
+                &canonical_public_upload_roles(Some(&seeded))
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            PUBLIC_UPLOAD_ROLES_ALL_JSON,
+            "the boot grant must be its own canonical form, or every seeded \
+             tenant's row differs byte-wise from an API-written one"
+        );
+    }
+
+    #[test]
+    fn the_grant_column_round_trips_and_a_re_register_revokes_it() {
+        let conn = memdb();
+        let mut r = row("up/");
+        r.public_upload_roles = Some(vec!["user".to_string(), "anon".to_string()]);
+        upsert_file_policy(&conn, &r).unwrap();
+        assert_eq!(
+            load_file_policies(&conn).unwrap()[0].public_upload_roles,
+            Some(vec!["anon".to_string(), "user".to_string()]),
+            "stored canonically, not as the caller happened to order it"
+        );
+
+        // Replace WITHOUT the field: the grant is revoked, exactly as a stale
+        // select clause is dropped. Registry writes replace, never merge.
+        upsert_file_policy(&conn, &row("up/")).unwrap();
+        assert_eq!(
+            load_file_policies(&conn).unwrap()[0].public_upload_roles,
+            None,
+            "a re-register that omits the grant must REVOKE it — a merge would \
+             make a grant impossible to remove through the write face"
+        );
+
+        // Storage refuses a grant the API would refuse, so the only INSERT
+        // cannot become the door a bad value walks through.
+        let mut bad = row("up/");
+        bad.public_upload_roles = Some(vec!["service".to_string()]);
+        assert!(upsert_file_policy(&conn, &bad).is_err());
+    }
+
+    #[test]
+    fn a_hand_inserted_grant_that_the_api_would_refuse_fails_closed() {
+        for bad in [
+            "[\"admin\"]",
+            "[]",
+            "{\"user\":true}",
+            "not json",
+            "\"user\"",
+        ] {
+            let conn = memdb();
+            conn.execute(
+                "INSERT INTO \"_system_file_policy\" (prefix, public_read, public_upload_roles) \
+                 VALUES ('', 1, ?1)",
+                [bad],
+            )
+            .unwrap();
+            assert!(
+                load_file_policies(&conn).is_err(),
+                "{bad} must break the LOAD — every caller maps that to a \
+                 refusal, so a grant nobody could have written cannot publish"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grandfather_grant_lands_on_the_root_only_and_never_inserts_one() {
+        let conn = memdb();
+        // No root row: the tenant cleared it deliberately. Inserting one here
+        // would have to invent its read half, and a clause-less row DENIES
+        // every read — "granting publish" would break reading.
+        assert!(!grant_root_public_upload(&conn).unwrap());
+        assert!(load_file_policies(&conn).unwrap().is_empty());
+
+        seed_root_policy(&conn).unwrap();
+        upsert_file_policy(&conn, &row("deep/")).unwrap();
+        assert!(grant_root_public_upload(&conn).unwrap());
+        let loaded = load_file_policies(&conn).unwrap();
+        assert_eq!(
+            loaded[0].public_upload_roles,
+            Some(vec!["anon".to_string(), "user".to_string()]),
+            "the root reproduces the pre-v1.64 rule: anyone with the upload cap \
+             could publish"
+        );
+        assert_eq!(
+            loaded[1].public_upload_roles, None,
+            "a deeper prefix is NOT grandfathered — only the root is"
+        );
+        assert!(
+            !loaded[0].owner_scoped && loaded[0].public_read,
+            "the read half of the root rule is untouched by the grant"
+        );
+
+        // A second run cannot widen or overwrite an existing grant (the marker
+        // already makes it run-once; this makes it harmless if it were not).
+        let mut narrowed = row("");
+        narrowed.owner_scoped = false;
+        narrowed.public_read = true;
+        narrowed.public_upload_roles = Some(vec!["user".to_string()]);
+        upsert_file_policy(&conn, &narrowed).unwrap();
+        assert!(!grant_root_public_upload(&conn).unwrap());
+        assert_eq!(
+            load_file_policies(&conn).unwrap()[0].public_upload_roles,
+            Some(vec!["user".to_string()])
         );
     }
 
