@@ -546,8 +546,9 @@ pub async fn upload_submit(
         body,
         visibility,
         // The host-admin form is an owner-only management face: it has no
-        // bearer identity to gate, so the publish rule (service-only) is
-        // satisfied by the route guard, not by this field.
+        // bearer identity, so `enforce_upload_visibility`'s caller-vs-service
+        // split never applies here — the route guard is the gate, and this
+        // field only matters at the data-plane station.
         visibility_explicit: _,
         disposition,
         cache_control_override,

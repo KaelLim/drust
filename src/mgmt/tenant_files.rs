@@ -444,8 +444,10 @@ pub struct ListResponse {
 /// PUTs to Garage.  Content-Length pre-check and best-effort disk check mirror
 /// the admin handler (Task 15).
 ///
-/// v1.63 (#950-B): the row is stamped with the CALLER, and only a service
-/// caller may publish — see `upload_inner`.
+/// v1.63 (#950-B): the row is stamped with the CALLER. v1.63.1: an EXPLICIT
+/// `visibility` is honored for every caller, while a non-service caller that
+/// omits the field gets `private` rather than Mode-A's `public` service
+/// default — see `upload_inner`.
 pub async fn upload(
     State(state): State<TenantFilesState>,
     RequiredAuthCtx(ctx): RequiredAuthCtx,

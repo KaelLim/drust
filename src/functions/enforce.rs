@@ -488,8 +488,10 @@ pub async fn get_file_bytes_raw(
 /// cap at that site.
 ///
 /// A privileged put is service-authored code making a service decision, so it
-/// keeps BOTH of the things v1.63 took away from callers: it may publish, and
-/// it is stamped `function` (no end user owns it).
+/// is stamped `function` (no end user owns it) instead of the caller — the one
+/// thing v1.63 took away from the cap-gated door and v1.63.1 did NOT give back.
+/// Publishing WAS given back: `enforced_put_file` honors the guest's explicit
+/// `visibility` again, so that is no longer a privileged-only power.
 pub async fn put_file_raw(
     mcp: &DrustMcp,
     key: &str,

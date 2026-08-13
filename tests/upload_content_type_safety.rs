@@ -71,8 +71,10 @@ fn setup() -> (
         // v1.63 (#950-B) — the data-plane twins REQUIRE an identity, which
         // `bearer_auth_layer` supplies in production; without it they refuse
         // with 500 `AUTH_CTX_MISSING`. Service, because these tests upload
-        // `visibility=public` on purpose (the attacker's best case) and only a
-        // service key may publish.
+        // `visibility=public` on purpose (the attacker's best case) and a
+        // service caller lands in the public bucket under every version of the
+        // publish rule — this harness mounts no `file_caps_layer` to grant a
+        // non-service caller the `upload` cap v1.63.1 requires.
         .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
             admin_id: None,
         }))
