@@ -7,10 +7,14 @@
 //! 1. **uploader** — Mode-A stamped the literal `"service"` on every row, so a
 //!    user upload was owned by nobody. Per-file RLS defaults to owner-scoped,
 //!    which makes the stamp the identity the whole feature keys on.
-//! 2. **visibility** — Mode-A defaults to `public`, and a non-service caller
-//!    could ask for `public` outright. `public` bytes are served by Caddy
-//!    straight from Garage and never reach drust, so a publish decision is a
-//!    permanent RLS bypass for that object. Only service may publish.
+//! 2. **visibility** — Mode-A defaults to `public`, so before v1.63 a caller
+//!    that said nothing silently published. That half is fixed and stays
+//!    fixed: a non-service caller who omits the field gets `private`. v1.63.0
+//!    also refused a non-service EXPLICIT `public`; **v1.63.1 reverted that**,
+//!    because it put publishing behind the god-mode service key and pushed
+//!    tenants to embed one in their own frontend. An explicit choice is now
+//!    honored at every station; the per-prefix publish grant that will narrow
+//!    it again is task #974.
 //! 3. **path** — the caller-declared label a prefix policy attaches to.
 //!
 //! **The polarity trap this file exists to pin:** tus already defaults to
@@ -241,11 +245,16 @@ async fn user_mode_a_upload_is_private_and_stamped_with_the_user_id() {
     );
 }
 
+/// v1.63.1 revert: an EXPLICIT `visibility=public` from a non-service caller is
+/// honored. v1.63.0 answered 403 `FILE_VISIBILITY_SERVICE_ONLY` here, which
+/// meant a tenant's own frontend had to carry the god-mode service key to
+/// upload a public avatar. The narrower replacement (a per-prefix publish
+/// grant) is task #974; the `upload` file cap is the only lever until then.
 #[tokio::test]
-async fn user_mode_a_explicit_public_is_refused() {
+async fn user_mode_a_explicit_public_is_honored() {
     let tid = "rls-up-pub";
     let (app, _svc, dir) = mode_a_stack(tid).await;
-    let (user, _uid) = user_token_and_id(&app, tid, "alice@x.com").await;
+    let (user, uid) = user_token_and_id(&app, tid, "alice@x.com").await;
 
     let resp = app
         .clone()
@@ -259,20 +268,18 @@ async fn user_mode_a_explicit_public_is_refused() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        body_json(resp).await["error_code"],
-        "FILE_VISIBILITY_SERVICE_ONLY",
-        "publishing is a service decision — /public/* bypasses drust entirely"
-    );
+    assert_eq!(resp.status(), StatusCode::OK);
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
 
-    // …and nothing was written: the gate runs before the INSERT.
-    let db = dir.path().join("tenants").join(tid).join("data.sqlite");
-    let n: i64 = rusqlite::Connection::open(db)
-        .unwrap()
-        .query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(n, 0, "a refused upload must not leave a row behind");
+    let (visibility, uploader, _path) = file_row(&dir, tid, &key);
+    assert_eq!(
+        visibility, "public",
+        "an explicit choice is honored for every caller since v1.63.1"
+    );
+    assert_eq!(
+        uploader, uid,
+        "publishing does not change the uploader stamp — still the caller"
+    );
 }
 
 #[tokio::test]
@@ -569,8 +576,11 @@ async fn tus_service_default_visibility_stays_private() {
     assert_eq!(vis, "private", "tus service default must remain private");
 }
 
+/// v1.63.1 revert, tus half: an EXPLICIT `visibility public` in the create
+/// metadata is honored for an anon caller too (v1.63.0 answered 403
+/// `FILE_VISIBILITY_SERVICE_ONLY`). Per-prefix narrowing is #974.
 #[tokio::test]
-async fn tus_non_service_explicit_public_is_refused() {
+async fn tus_non_service_explicit_public_is_honored() {
     use axum::extract::{Path, State};
     use axum::response::IntoResponse;
     let (_d, state, mut tref) = tus_setup("tus-pub");
@@ -586,20 +596,49 @@ async fn tus_non_service_explicit_public_is_refused() {
     )
     .await
     .into_response();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        body_json(resp).await["error_code"],
-        "FILE_VISIBILITY_SERVICE_ONLY"
-    );
-    let n: i64 = pool
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let vis: String = pool
         .with_reader(|c| {
-            c.query_row("SELECT COUNT(*) FROM _system_upload_sessions", [], |r| {
+            c.query_row("SELECT visibility FROM _system_upload_sessions", [], |r| {
                 r.get(0)
             })
         })
         .await
         .unwrap();
-    assert_eq!(n, 0, "a refused create must not leave a session row");
+    assert_eq!(vis, "public", "the session carries the caller's choice");
+}
+
+/// The half of v1.63 that v1.63.1 KEEPS: silence from a non-service caller is
+/// `private`, decided by the caller-not-service arm rather than by the station
+/// default (which happens to agree here — the Mode-A twin above is where the
+/// two differ).
+#[tokio::test]
+async fn tus_non_service_silent_upload_stays_private() {
+    use axum::extract::{Path, State};
+    use axum::response::IntoResponse;
+    let (_d, state, mut tref) = tus_setup("tus-silent");
+    tref.role = TokenRole::Anon;
+    let pool = tref.pool.clone();
+    let resp = drust::tenant::uploads::create(
+        State(state),
+        axum::Extension(tref),
+        anon_upload_caps(),
+        axum::Extension(drust::auth::middleware::AuthCtx::Anon),
+        Path("tus-silent".to_string()),
+        tus_headers(5, &[("filename", "a.bin")]),
+    )
+    .await
+    .into_response();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let vis: String = pool
+        .with_reader(|c| {
+            c.query_row("SELECT visibility FROM _system_upload_sessions", [], |r| {
+                r.get(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(vis, "private");
 }
 
 #[tokio::test]
@@ -735,13 +774,15 @@ async fn edge_file_row(mcp: &drust::mcp::server::DrustMcp, key: &str) -> (String
         .unwrap()
 }
 
-/// G6: the WIT hands the guest's `visibility` straight through, so a user-invoked
-/// function could publish into the public bucket — a permanent RLS bypass. A
-/// non-privileged caller asking for `public` is refused outright.
+/// v1.63.1 revert, edge half: the WIT hands the guest's `visibility` straight
+/// through, and a caller-identity function may now publish with it (v1.63.0
+/// forced every non-privileged put to `private`). Reaching this door already
+/// requires the tenant to have granted the `upload` file cap; #974 narrows it
+/// to a per-prefix grant. The uploader stamp is unchanged — still the caller.
 #[tokio::test(flavor = "multi_thread")]
-async fn edge_non_privileged_public_put_is_refused() {
+async fn edge_non_privileged_public_put_is_honored() {
     let (mcp, _t) = edge_mcp("edge-pub").await;
-    let err = drust::functions::enforce::enforced_put_file(
+    drust::functions::enforce::enforced_put_file(
         &mcp,
         TokenRole::User,
         &upload_caps_for_user(),
@@ -753,10 +794,12 @@ async fn edge_non_privileged_public_put_is_refused() {
         0,
     )
     .await
-    .unwrap_err();
-    assert!(
-        err.contains("FILE_VISIBILITY_SERVICE_ONLY"),
-        "got {err:?} — a host op refuses with a code, not an HTTP status"
+    .unwrap();
+    let (vis, uploader) = edge_file_row(&mcp, "p.bin").await;
+    assert_eq!(vis, "public");
+    assert_eq!(
+        uploader, "u-1",
+        "publishing must not revert the stamp to 'function'"
     );
 }
 

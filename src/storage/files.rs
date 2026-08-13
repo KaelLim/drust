@@ -22,17 +22,19 @@ pub enum Disposition {
     Attachment,
 }
 
-/// Error code returned when a non-service caller asks to publish an upload.
-pub const FILE_VISIBILITY_SERVICE_ONLY: &str = "FILE_VISIBILITY_SERVICE_ONLY";
-
-/// v1.63 (#950-B) — the ONE publish decision, shared by every upload station
-/// that has a caller identity (Mode-A multipart, tus create, edge `put-file`).
+/// v1.63.1 — the ONE publish decision, shared by every upload station that has
+/// a caller identity (Mode-A multipart, tus create, edge `put-file`).
 ///
-/// `public` objects are served by Caddy straight out of Garage and never reach
-/// drust, so per-file RLS cannot gate them: publishing is a permanent,
-/// irreversible-by-policy escape from the read path. It therefore stays a
-/// service decision at every station, and set-visibility stays service-only,
-/// which together mean a user has NO path to the public bucket.
+/// **An EXPLICIT visibility is honored for every caller, service or not.**
+/// v1.63.0 refused a non-service `public` outright
+/// (`FILE_VISIBILITY_SERVICE_ONLY`); that made publishing reachable only by a
+/// god-mode service key, so a tenant's own frontend had to embed one just to
+/// upload a public avatar. Reverted here.
+///
+/// What v1.63 keeps is the safe SILENT default: a **non-service caller that
+/// says nothing gets `Private`**, never the station default. Pre-v1.63 Mode-A
+/// published every upload that omitted the field, including anonymous ones —
+/// that footgun must not come back.
 ///
 /// * `is_service` — the caller is `AuthCtx::Service` (or the admin plane).
 /// * `requested` — what the caller asked for; `None` = the field was absent.
@@ -42,28 +44,21 @@ pub const FILE_VISIBILITY_SERVICE_ONLY: &str = "FILE_VISIBILITY_SERVICE_ONLY";
 ///   "unify" them — flipping tus to public would publish every existing
 ///   service upload that omits the field.
 ///
-/// A non-service caller gets `Private` when it asks for nothing, and is
-/// REFUSED (never silently downgraded) when it asks for `Public`, so a client
-/// that believes it published something is told otherwise.
+/// Publishing is still a one-way escape from the per-file gate — a `public`
+/// object is served by Caddy straight out of Garage and never reaches drust —
+/// so the only lever over it today is the `upload` file cap, which is
+/// all-or-nothing. The finer control, a per-prefix "may publish" grant in
+/// `_system_file_policy`, is task #974.
 pub fn enforce_upload_visibility(
     is_service: bool,
     requested: Option<Visibility>,
     service_default: Visibility,
-) -> Result<Visibility, VisibilityRefused> {
+) -> Visibility {
     if is_service {
-        return Ok(requested.unwrap_or(service_default));
+        return requested.unwrap_or(service_default);
     }
-    match requested {
-        Some(Visibility::Public) => Err(VisibilityRefused),
-        Some(Visibility::Private) | None => Ok(Visibility::Private),
-    }
+    requested.unwrap_or(Visibility::Private)
 }
-
-/// A non-service caller asked to publish. Carries no data — the station maps it
-/// to its own transport (HTTP 403 / host-op `Err`) with
-/// [`FILE_VISIBILITY_SERVICE_ONLY`].
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct VisibilityRefused;
 
 /// Bucket for the given visibility. Only two buckets exist host-wide:
 /// `public` (website=on, anonymous read via Caddy) and `private` (drust-
@@ -564,7 +559,7 @@ mod content_type_safety_tests {
         );
     }
 
-    /// The full v1.63 publish matrix: (caller × requested × station default).
+    /// The full v1.63.1 publish matrix: (caller × requested × station default).
     /// The two station defaults are deliberately different and both are pinned
     /// here — a "harmonising" edit that flips tus to public fails this test.
     #[test]
@@ -573,38 +568,41 @@ mod content_type_safety_tests {
         // Service keeps its station's default and may ask for either.
         assert_eq!(
             enforce_upload_visibility(true, None, Public),
-            Ok(Public),
+            Public,
             "Mode-A service default"
         );
         assert_eq!(
             enforce_upload_visibility(true, None, Private),
-            Ok(Private),
+            Private,
             "tus service default — must NOT become public"
         );
         assert_eq!(
             enforce_upload_visibility(true, Some(Public), Private),
-            Ok(Public)
+            Public
         );
         assert_eq!(
             enforce_upload_visibility(true, Some(Private), Public),
-            Ok(Private)
+            Private
         );
 
-        // Non-service: silence means private on BOTH stations, whatever the
-        // station default is, and an explicit `public` is refused outright.
+        // Non-service: SILENCE means private on BOTH stations, whatever the
+        // station default is — that half of v1.63 stays. An EXPLICIT choice is
+        // honored either way (v1.63.1 reverted the `public` refusal).
         for station_default in [Public, Private] {
             assert_eq!(
                 enforce_upload_visibility(false, None, station_default),
-                Ok(Private)
+                Private,
+                "silence must never inherit the station default for a caller"
             );
             assert_eq!(
                 enforce_upload_visibility(false, Some(Private), station_default),
-                Ok(Private)
+                Private
             );
             assert_eq!(
                 enforce_upload_visibility(false, Some(Public), station_default),
-                Err(VisibilityRefused),
-                "a refusal, never a silent downgrade"
+                Public,
+                "an explicit public from a tenant's own app is honored (#974 \
+                 will add the per-prefix grant that narrows it)"
             );
         }
     }

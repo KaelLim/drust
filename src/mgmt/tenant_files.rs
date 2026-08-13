@@ -556,27 +556,18 @@ async fn upload_inner(
         path,
     } = fields;
 
-    // v1.63 (#950-B) — publishing is a service decision (see
-    // `files::enforce_upload_visibility`). Mode-A's service default stays
-    // `public`; a non-service caller gets `private` and is refused if it asked
-    // for `public`. Decided BEFORE the bucket/cache-control derivation below,
-    // so every later use sees the enforced value.
+    // v1.63.1 — an EXPLICIT `visibility` is honored for every caller (the
+    // v1.63.0 non-service `public` refusal is reverted; #974 will replace it
+    // with a per-prefix publish grant). SILENCE still means `private` for a
+    // non-service caller, while Mode-A's service default stays `public` — see
+    // `files::enforce_upload_visibility`. Decided BEFORE the bucket /
+    // cache-control derivation below, so every later use sees the same value.
     let requested = visibility_explicit.then_some(visibility);
-    let visibility = match crate::storage::files::enforce_upload_visibility(
+    let visibility = crate::storage::files::enforce_upload_visibility(
         caller.is_service(),
         requested,
         Visibility::Public,
-    ) {
-        Ok(v) => v,
-        Err(_) => {
-            return crate::error::json_error(
-                StatusCode::FORBIDDEN,
-                crate::storage::files::FILE_VISIBILITY_SERVICE_ONLY,
-                "only a service key may upload a public file; omit `visibility` \
-                 (or send `private`) and ask a service key to publish it",
-            );
-        }
-    };
+    );
     let uploader = caller.uploader();
 
     let size = body.len() as i64;

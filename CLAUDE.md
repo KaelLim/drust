@@ -312,19 +312,25 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     them. Head-vs-internal is decided by `pragma_table_list.type` (`virtual` vs `shadow`),
     never by name suffix.
 
-19. **No non-service caller has any path into the `public` bucket.** A public object is
-    served by Caddy straight out of Garage and never reaches drust, so publishing is a
-    permanent escape from every per-file gate — which makes it a service decision at **every
-    upload station**. The three stations with a caller identity share one decision
-    (`files::enforce_upload_visibility` — Mode-A multipart, tus `create`, and edge
-    `put-file` via `enforced_put_file`); the fourth, host-admin `/admin/files/upload`, is
-    owner-only management plane. On top sit the two after-the-fact doors, `PATCH`
-    set-visibility and `sign`, which stay **service-only** — `sign` because a signed URL is
-    redeemed with no caller at all (`signed_bytes.rs`), so authorization can only happen at
-    mint. A non-service caller asking for `public` is REFUSED
-    (`FILE_VISIBILITY_SERVICE_ONLY`), never silently downgraded. The per-station service
-    DEFAULT deliberately differs — Mode-A `public`, tus `private` — and "unifying" them
-    would publish every existing tus upload that omits the field; a test pins each direction.
+19. **Publishing is never SILENT, and every after-the-fact door into the `public` bucket
+    stays service-only.** A public object is served by Caddy straight out of Garage and never
+    reaches drust, so publishing is a permanent escape from every per-file gate. The three
+    stations with a caller identity share one decision (`files::enforce_upload_visibility` —
+    Mode-A multipart, tus `create`, and edge `put-file` via `enforced_put_file`); the fourth,
+    host-admin `/admin/files/upload`, is owner-only management plane. What the shared decision
+    enforces since v1.63.1 is that an **EXPLICIT** `visibility` is honored for every caller,
+    while a **non-service caller that says nothing gets `private`** — never the station
+    default. Pre-v1.63 Mode-A published every upload that omitted the field; v1.63.0
+    over-corrected by refusing a non-service explicit `public` too
+    (`FILE_VISIBILITY_SERVICE_ONLY`, now deleted), which put publishing behind the god-mode
+    service key and pushed tenants to embed one in their own frontend. The gate on an
+    explicit publish is therefore the `upload` file cap alone, which is all-or-nothing; the
+    per-prefix publish grant that narrows it is task #974. The two after-the-fact doors,
+    `PATCH` set-visibility and `sign`, remain **service-only** — `sign` because a signed URL
+    is redeemed with no caller at all (`signed_bytes.rs`), so authorization can only happen at
+    mint. The per-station service DEFAULT deliberately differs — Mode-A `public`, tus
+    `private` — and "unifying" them would publish every existing tus upload that omits the
+    field; a test pins each direction.
 
 20. **File reads are gated twice, and the two file evaluators stay in lockstep.** Outer gate
     = `file_caps_layer`'s per-verb cap; inner gate = the `_system_file_policy` prefix

@@ -229,9 +229,10 @@ pub async fn create(
         .unwrap_or_else(|| "upload.bin".to_string());
     // v1.63 (#950-B) — the tus default has ALWAYS been private (`_ =>
     // "private"`), and it stays private for service too: this is the station
-    // Mode-A was tightened TOWARD, never the other way round. The only new
-    // rule is that a non-service caller asking for `public` is refused rather
-    // than silently downgraded — see `files::enforce_upload_visibility`.
+    // Mode-A was tightened TOWARD, never the other way round. v1.63.1 honors an
+    // EXPLICIT `visibility` from a non-service caller as well (the v1.63.0
+    // refusal is reverted; #974 will add the per-prefix publish grant), while
+    // silence still means private — see `files::enforce_upload_visibility`.
     let requested = match meta.get("visibility").map(|s| s.as_str()) {
         Some("public") => Some(Visibility::Public),
         Some(_) => Some(Visibility::Private),
@@ -242,16 +243,8 @@ pub async fn create(
         requested,
         Visibility::Private,
     ) {
-        Ok(Visibility::Public) => "public",
-        Ok(Visibility::Private) => "private",
-        Err(_) => {
-            return json_error(
-                StatusCode::FORBIDDEN,
-                crate::storage::files::FILE_VISIBILITY_SERVICE_ONLY,
-                "only a service key may upload a public file; omit the `visibility` \
-                 metadata (or send `private`) and ask a service key to publish it",
-            );
-        }
+        Visibility::Public => "public",
+        Visibility::Private => "private",
     };
     // The caller-declared logical path (metadata only — the physical key is
     // still `derive_key`'s server-minted one). Validated here, at the same

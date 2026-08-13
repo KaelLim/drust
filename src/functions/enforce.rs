@@ -718,16 +718,20 @@ async fn file_read_allowed(mcp: &DrustMcp, ctx: &AuthCtx, key: &str) -> Result<b
 }
 
 /// `put-file` under the caller's identity: file `upload` cap gate, then the
-/// shared body — stamped with the CALLER, and never public.
+/// shared body — stamped with the CALLER, never with `function`.
 ///
-/// v1.63 (#950-B) closes the publish hole G6 found: the WIT passes the guest's
-/// `visibility` straight through, so before this an anon- or user-invoked
-/// function could write into the public bucket, where Caddy serves the object
-/// without drust ever seeing the request — an RLS bypass no policy can undo.
 /// `identity` is the caller's stamp (`anon` / `u-…`, from
 /// `uploads::session_identity` on `caller.to_auth_ctx()`), which is what makes
 /// a user-invoked upload readable by that user under the owner-scoped default
 /// instead of by nobody.
+///
+/// v1.63.0 additionally forced every upload here to `private`, since the WIT
+/// passes the guest's `visibility` straight through and a `public` object is
+/// served by Caddy without drust in the path. v1.63.1 reverts that: reaching
+/// this door at all already requires the tenant to have granted the `upload`
+/// file cap to anon/user, and refusing meant the tenant's own function could
+/// not publish without a god-mode service key. The per-prefix publish grant
+/// that replaces the blanket rule is task #974.
 pub async fn enforced_put_file(
     mcp: &DrustMcp,
     role: TokenRole,
@@ -746,35 +750,32 @@ pub async fn enforced_put_file(
         return Err("FILE_UPLOAD_DENIED: bearer lacks file.upload capability".into());
     }
     // Shared publish rule (`files::enforce_upload_visibility`), reached with
-    // `is_service = false`: this fn is the NON-privileged door by contract, so
-    // anything but `private` is a refusal — reported as a host-op error code,
-    // since a host op has no HTTP status to return. Junk strings are normalized
-    // to `private` rather than reaching `put_file_as`'s INVALID_VISIBILITY, so
-    // the stored value can never disagree with the bucket the object went to.
+    // `is_service = false`: this fn is the NON-privileged door by contract.
+    // v1.63.1 honors the guest's EXPLICIT choice here too, so a caller-identity
+    // function may publish (#974 will narrow that to a per-prefix grant). The
+    // WIT always sends a string, so there is no "said nothing" case to default;
+    // junk normalizes to `private` rather than reaching `put_file_as`'s
+    // INVALID_VISIBILITY, so the stored value can never disagree with the
+    // bucket the object went to.
     let requested = match visibility {
         "public" => Some(crate::storage::files::Visibility::Public),
         _ => Some(crate::storage::files::Visibility::Private),
     };
-    if crate::storage::files::enforce_upload_visibility(
+    let visibility = match crate::storage::files::enforce_upload_visibility(
         false,
         requested,
         crate::storage::files::Visibility::Private,
-    )
-    .is_err()
-    {
-        return Err(format!(
-            "{}: only a service key may publish a file; this function is running \
-             as its caller, so the upload must be private",
-            crate::storage::files::FILE_VISIBILITY_SERVICE_ONLY
-        ));
-    }
+    ) {
+        crate::storage::files::Visibility::Public => "public",
+        crate::storage::files::Visibility::Private => "private",
+    };
     put_file_as(
         mcp,
         identity,
         key,
         bytes,
         content_type,
-        "private",
+        visibility,
         disk_min_free_pct,
     )
     .await
@@ -1178,17 +1179,17 @@ mod tests {
         let _ = Visibility::Private; // keep import used
     }
 
-    /// v1.63 (#950-B) — the cap-gated door is the NON-privileged one, so it
-    /// refuses to publish even when the caller holds the upload cap, and it
-    /// stamps the caller rather than `function`. Without this, a user-invoked
-    /// function could write into the public bucket, which Caddy serves without
-    /// drust in the path — an RLS bypass nothing downstream can undo.
+    /// v1.63.1 — the cap-gated door stamps the CALLER rather than `function`,
+    /// and honors the guest's explicit `visibility` (the v1.63.0 blanket
+    /// `public` refusal is reverted; #974 adds the per-prefix grant). A junk
+    /// string still normalizes to `private` so the row can never disagree with
+    /// the bucket the bytes went to.
     #[tokio::test(flavor = "multi_thread")]
-    async fn enforced_put_file_refuses_public_and_stamps_the_caller() {
+    async fn enforced_put_file_honors_visibility_and_stamps_the_caller() {
         let (mcp, _t) = mcp_with_garage("t1").await;
         let mut caps = TenantFileCaps::default();
         caps.user.insert(FileVerb::Upload);
-        let err = enforced_put_file(
+        enforced_put_file(
             &mcp,
             TokenRole::User,
             &caps,
@@ -1200,8 +1201,20 @@ mod tests {
             0,
         )
         .await
-        .unwrap_err();
-        assert!(err.contains("FILE_VISIBILITY_SERVICE_ONLY"), "got {err:?}");
+        .unwrap();
+        let pubrow: (String, String) = mcp
+            .inner()
+            .pool
+            .with_reader(|c| {
+                c.query_row(
+                    "SELECT visibility, uploader FROM _system_files WHERE key = 'pub.bin'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(pubrow, ("public".to_string(), "u-alice".to_string()));
 
         enforced_put_file(
             &mcp,

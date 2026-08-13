@@ -72,7 +72,7 @@ async fn accepts_visibility_public_default() {
 /// v1.63 (#950-B) — `visibility` alone cannot tell the data-plane gate whether
 /// the caller ASKED for public or merely said nothing, because the default IS
 /// public. `visibility_explicit` carries that difference, and getting it wrong
-/// either refuses every silent upload or lets a user publish.
+/// re-opens the pre-v1.63 footgun: every silent non-service upload published.
 #[tokio::test]
 async fn reports_whether_visibility_was_sent() {
     let mp = extract_multipart(&[("file", "hello", Some("test.txt"))]).await;
