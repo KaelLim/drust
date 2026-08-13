@@ -489,9 +489,10 @@ pub async fn get_file_bytes_raw(
 ///
 /// A privileged put is service-authored code making a service decision, so it
 /// is stamped `function` (no end user owns it) instead of the caller — the one
-/// thing v1.63 took away from the cap-gated door and v1.63.1 did NOT give back.
-/// Publishing WAS given back: `enforced_put_file` honors the guest's explicit
-/// `visibility` again, so that is no longer a privileged-only power.
+/// thing v1.63 took away from the cap-gated door and never gave back. It also
+/// publishes UNCONDITIONALLY: `UploadCaller::Service` short-circuits the grant,
+/// while `enforced_put_file` needs a root-rule `public_upload_roles` grant to
+/// honor the same `visibility` string (v1.64, #974).
 pub async fn put_file_raw(
     mcp: &DrustMcp,
     key: &str,
@@ -729,11 +730,12 @@ async fn file_read_allowed(mcp: &DrustMcp, ctx: &AuthCtx, key: &str) -> Result<b
 ///
 /// v1.63.0 additionally forced every upload here to `private`, since the WIT
 /// passes the guest's `visibility` straight through and a `public` object is
-/// served by Caddy without drust in the path. v1.63.1 reverts that: reaching
-/// this door at all already requires the tenant to have granted the `upload`
-/// file cap to anon/user, and refusing meant the tenant's own function could
-/// not publish without a god-mode service key. The per-prefix publish grant
-/// that replaces the blanket rule is task #974.
+/// served by Caddy without drust in the path. v1.64 (#974) replaces that
+/// blanket rule with the per-prefix publish grant every station shares: the
+/// WIT accepts no `path`, so an edge upload is always UNFILED and only the
+/// tenant's ROOT rule (`''`) can grant it. Without that grant a guest asking
+/// for `public` gets `FILE_PUBLIC_UPLOAD_DENIED` — the host op fails rather
+/// than silently downgrading, so the function's own error handling sees it.
 pub async fn enforced_put_file(
     mcp: &DrustMcp,
     role: TokenRole,
@@ -751,28 +753,54 @@ pub async fn enforced_put_file(
     ) {
         return Err("FILE_UPLOAD_DENIED: bearer lacks file.upload capability".into());
     }
-    // Shared publish rule (`files::enforce_upload_visibility`), reached with
-    // `is_service = false`: this fn is the NON-privileged door by contract.
-    // v1.63.1 honors the guest's EXPLICIT choice here too, so a caller-identity
-    // function may publish (#974 will narrow that to a per-prefix grant). The
-    // WIT always sends a string, so there is no "said nothing" case to default;
-    // junk normalizes to `private` rather than reaching `put_file_as`'s
+    // Shared publish rule (`files::enforce_upload_visibility`). The WIT always
+    // sends a string, so there is no "said nothing" case to default; junk
+    // normalizes to `private` rather than reaching `put_file_as`'s
     // INVALID_VISIBILITY, so the stored value can never disagree with the
     // bucket the object went to.
     let requested = match visibility {
         "public" => Some(crate::storage::files::Visibility::Public),
         _ => Some(crate::storage::files::Visibility::Private),
     };
-    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
-    // grant-aware `enforce_upload_visibility` (path is always NULL here, so it
-    // will be the ROOT rule's grant that decides).
-    let visibility = match crate::storage::files::enforce_upload_visibility_v1631(
-        false,
+    // This fn is the NON-privileged door by contract (`runtime.rs` routes
+    // `CallerCtx::Privileged` to `put_file_raw`), so `Service` must never be
+    // synthesized here — a role that somehow arrived as service is classified
+    // `Anon`, the least-privileged role name, keeping a contract violation on
+    // the CLOSED side of the gate instead of handing it the service bypass.
+    let upload_caller = match role {
+        TokenRole::User => crate::storage::files::UploadCaller::User,
+        _ => crate::storage::files::UploadCaller::Anon,
+    };
+    // The WIT carries no `path`, so this upload is unfiled and only the ROOT
+    // rule can govern it (`longest_match` gives `None` a `''`-or-nothing
+    // answer). Registry pre-fetched on the pooled reader the tenant already
+    // has, and only when the decision will actually consult it.
+    let policies = if crate::storage::files::publish_grant_lookup_required(upload_caller, requested)
+    {
+        mcp.inner()
+            .pool
+            .with_reader(crate::storage::file_policy::load_file_policies)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(Vec::new())
+    };
+    let visibility = match crate::storage::files::enforce_upload_visibility(
+        upload_caller,
         requested,
         crate::storage::files::Visibility::Private,
+        None,
+        || policies,
     ) {
-        crate::storage::files::Visibility::Public => "public",
-        crate::storage::files::Visibility::Private => "private",
+        Ok(crate::storage::files::Visibility::Public) => "public",
+        Ok(crate::storage::files::Visibility::Private) => "private",
+        Err(refused) => {
+            tracing::warn!(
+                detail = %refused.detail,
+                "edge put-file refused: no public-upload grant"
+            );
+            return Err(format!("{}: {}", refused.code(), refused.message()));
+        }
     };
     put_file_as(
         mcp,
@@ -1184,16 +1212,62 @@ mod tests {
         let _ = Visibility::Private; // keep import used
     }
 
-    /// v1.63.1 — the cap-gated door stamps the CALLER rather than `function`,
-    /// and honors the guest's explicit `visibility` (the v1.63.0 blanket
-    /// `public` refusal is reverted; #974 adds the per-prefix grant). A junk
-    /// string still normalizes to `private` so the row can never disagree with
-    /// the bucket the bytes went to.
+    /// v1.64 (#974) — the cap-gated door stamps the CALLER rather than
+    /// `function`, and honors an explicit `public` only where the tenant's ROOT
+    /// rule grants this role the publish right (the WIT sends no `path`, so
+    /// every edge upload is unfiled and only `''` can govern it). A junk string
+    /// still normalizes to `private` so the row can never disagree with the
+    /// bucket the bytes went to.
     #[tokio::test(flavor = "multi_thread")]
     async fn enforced_put_file_honors_visibility_and_stamps_the_caller() {
         let (mcp, _t) = mcp_with_garage("t1").await;
         let mut caps = TenantFileCaps::default();
         caps.user.insert(FileVerb::Upload);
+
+        // Deny-by-default: the cap alone is NOT a publish right.
+        let refused = enforced_put_file(
+            &mcp,
+            TokenRole::User,
+            &caps,
+            "u-alice",
+            "pub.bin",
+            b"x".to_vec(),
+            "application/octet-stream",
+            "public",
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused.contains(crate::storage::files::FILE_PUBLIC_UPLOAD_DENIED),
+            "got {refused}"
+        );
+        let rows: i64 = mcp
+            .inner()
+            .pool
+            .with_reader(|c| c.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0)))
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "a refusal must not leave a row behind");
+
+        // Grant the root rule, and the very same call publishes.
+        mcp.inner()
+            .pool
+            .with_writer(|c| {
+                crate::storage::file_policy::upsert_file_policy(
+                    c,
+                    &crate::storage::file_policy::FilePolicyRow {
+                        prefix: String::new(),
+                        owner_scoped: false,
+                        public_read: true,
+                        select_policy: None,
+                        delete_policy: None,
+                        public_upload_roles: Some(vec!["user".to_string()]),
+                    },
+                )
+            })
+            .await
+            .unwrap();
         enforced_put_file(
             &mcp,
             TokenRole::User,
@@ -1250,5 +1324,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row, ("private".to_string(), "u-alice".to_string()));
+
+        // The grant names `user` only, so anon is refused by the very same
+        // rule — the role split is real at this station too.
+        let mut anon_caps = TenantFileCaps::default();
+        anon_caps.anon.insert(FileVerb::Upload);
+        let refused_anon = enforced_put_file(
+            &mcp,
+            TokenRole::Anon,
+            &anon_caps,
+            "anon",
+            "anon.bin",
+            b"x".to_vec(),
+            "application/octet-stream",
+            "public",
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused_anon.contains(crate::storage::files::FILE_PUBLIC_UPLOAD_DENIED),
+            "got {refused_anon}"
+        );
     }
 }

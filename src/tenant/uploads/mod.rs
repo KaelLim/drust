@@ -227,33 +227,11 @@ pub async fn create(
         .get("filename")
         .cloned()
         .unwrap_or_else(|| "upload.bin".to_string());
-    // v1.63 (#950-B) — the tus default has ALWAYS been private (`_ =>
-    // "private"`), and it stays private for service too: this is the station
-    // Mode-A was tightened TOWARD, never the other way round. v1.63.1 honors an
-    // EXPLICIT `visibility` from a non-service caller as well (the v1.63.0
-    // refusal is reverted; #974 will add the per-prefix publish grant), while
-    // silence still means private — see `files::enforce_upload_visibility`.
-    let requested = match meta.get("visibility").map(|s| s.as_str()) {
-        Some("public") => Some(Visibility::Public),
-        Some(_) => Some(Visibility::Private),
-        None => None,
-    };
-    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
-    // grant-aware `enforce_upload_visibility` (the declared `path` parsed just
-    // below becomes its prefix input, decided HERE at create and stored on the
-    // session, never re-checked at finalize).
-    let visibility = match crate::storage::files::enforce_upload_visibility_v1631(
-        matches!(ctx, crate::auth::middleware::AuthCtx::Service { .. }),
-        requested,
-        Visibility::Private,
-    ) {
-        Visibility::Public => "public",
-        Visibility::Private => "private",
-    };
     // The caller-declared logical path (metadata only — the physical key is
     // still `derive_key`'s server-minted one). Validated here, at the same
     // choke point Mode-A uses, and carried on the session so finalize can copy
-    // it onto the `_system_files` row.
+    // it onto the `_system_files` row. Parsed BEFORE the visibility decision
+    // because it is that decision's prefix input.
     let path = match meta.get("path").filter(|p| !p.is_empty()) {
         Some(p) => match crate::storage::file_path::validate_file_path(p) {
             Ok(()) => Some(p.clone()),
@@ -266,6 +244,58 @@ pub async fn create(
             }
         },
         None => None,
+    };
+    // v1.63 (#950-B) — the tus default has ALWAYS been private (`_ =>
+    // "private"`), and it stays private for service too: this is the station
+    // Mode-A was tightened TOWARD, never the other way round. v1.64 (#974)
+    // adds the per-prefix publish grant: an explicit `visibility public` from a
+    // non-service caller needs `public_upload_roles` on the rule governing the
+    // `path` above; silence still means private — see
+    // `files::enforce_upload_visibility`.
+    let requested = match meta.get("visibility").map(|s| s.as_str()) {
+        Some("public") => Some(Visibility::Public),
+        Some(_) => Some(Visibility::Private),
+        None => None,
+    };
+    let upload_caller = crate::storage::files::UploadCaller::from_auth(&ctx);
+    // Pre-fetched, not lazy: the decision's loader is synchronous and the
+    // pool's reader is not. The predicate is the decision's OWN, so the empty
+    // registry handed over on the `false` arm is provably never read. The read
+    // rides the pool the handler already holds — no second open.
+    let policies = if crate::storage::files::publish_grant_lookup_required(upload_caller, requested)
+    {
+        t.pool
+            .with_reader(crate::storage::file_policy::load_file_policies)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(Vec::new())
+    };
+    // **Decided HERE, at create, and frozen onto the session row** — finalize
+    // copies the stored string and never re-checks. So a grant revoked between
+    // create and finalize does NOT retroactively privatize an in-flight upload.
+    // That race is ACCEPTED, deliberately: it is the same timing tus already
+    // has for `visibility` itself (the caller declares it at create and every
+    // later PATCH honors it), the alternative is a registry read on the
+    // finalize path that could strand a fully-uploaded spool, and the exposure
+    // is bounded by the session TTL. Revoking a grant stops the NEXT create.
+    let visibility = match crate::storage::files::enforce_upload_visibility(
+        upload_caller,
+        requested,
+        Visibility::Private,
+        path.as_deref(),
+        || policies,
+    ) {
+        Ok(Visibility::Public) => "public",
+        Ok(Visibility::Private) => "private",
+        Err(refused) => {
+            tracing::warn!(
+                tenant = %tenant,
+                detail = %refused.detail,
+                "tus create refused: no public-upload grant"
+            );
+            return json_error(StatusCode::FORBIDDEN, refused.code(), refused.message());
+        }
     };
     let content_type = meta.get("filetype").cloned().or_else(|| {
         mime_guess::from_path(&original_name)

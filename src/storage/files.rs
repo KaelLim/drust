@@ -106,6 +106,23 @@ impl std::fmt::Display for VisibilityRefused {
 
 impl std::error::Error for VisibilityRefused {}
 
+/// Whether [`enforce_upload_visibility`] will consult the registry for this
+/// `(caller, requested)` pair — `true` for exactly one combination: a
+/// non-service caller asking for `public`.
+///
+/// It exists because the decision's laziness cannot be expressed as a closure
+/// at the stations. `enforce_upload_visibility` takes a **synchronous**
+/// `FnOnce` loader, while every station reads SQLite through an `async` pool
+/// handle, so a station has to materialize the rows BEFORE the call and decide
+/// for itself whether the read is worth doing. Exporting the predicate — and
+/// making the decision function itself the only other caller — keeps that from
+/// becoming a second, drifting copy of "when does publishing need a grant":
+/// a station that asks this and gets `false` may pass an empty registry safely,
+/// because the decision will not look at it.
+pub fn publish_grant_lookup_required(caller: UploadCaller, requested: Option<Visibility>) -> bool {
+    !matches!(caller, UploadCaller::Service) && matches!(requested, Some(Visibility::Public))
+}
+
 /// v1.64 (#974) — the ONE publish decision, shared by every upload station that
 /// has a caller identity (Mode-A multipart, tus create, edge `put-file`).
 ///
@@ -163,7 +180,7 @@ pub fn enforce_upload_visibility(
         return Ok(requested.unwrap_or(service_default));
     }
     // Silence, and an explicit `private`, need no grant and no registry read.
-    if !matches!(requested, Some(Visibility::Public)) {
+    if !publish_grant_lookup_required(caller, requested) {
         return Ok(Visibility::Private);
     }
     let Some(role) = caller.grant_role() else {
@@ -187,26 +204,6 @@ pub fn enforce_upload_visibility(
             rule.prefix
         ))),
     }
-}
-
-/// **TEMPORARY (#974 T1 → deleted by T2).** The v1.63.1 decision, unchanged,
-/// kept alive only so the four upload stations keep compiling and behaving
-/// EXACTLY as they do on this branch while T2 wires them to the grant-aware
-/// [`enforce_upload_visibility`] above one station at a time.
-///
-/// It is a copy of the old body rather than a delegation on purpose: routing it
-/// through the new function with an empty rule set would silently flip every
-/// station to deny, and routing it with a grant-ignoring shortcut would put a
-/// second publish rule in the codebase. Nothing new may call this.
-pub fn enforce_upload_visibility_v1631(
-    is_service: bool,
-    requested: Option<Visibility>,
-    service_default: Visibility,
-) -> Visibility {
-    if is_service {
-        return requested.unwrap_or(service_default);
-    }
-    requested.unwrap_or(Visibility::Private)
 }
 
 /// Bucket for the given visibility. Only two buckets exist host-wide:
@@ -707,31 +704,6 @@ mod content_type_safety_tests {
             "application/rss+xml"
         );
     }
-
-    /// **TEMPORARY (#974 T1 → deleted with the shim in T2).** The four upload
-    /// stations still call `enforce_upload_visibility_v1631`, so its truth
-    /// table is still live behaviour and stays pinned until they move.
-    #[test]
-    fn the_v1631_shim_is_unchanged_until_the_stations_move() {
-        use Visibility::{Private, Public};
-        assert_eq!(enforce_upload_visibility_v1631(true, None, Public), Public);
-        assert_eq!(
-            enforce_upload_visibility_v1631(true, None, Private),
-            Private
-        );
-        for station_default in [Public, Private] {
-            assert_eq!(
-                enforce_upload_visibility_v1631(false, None, station_default),
-                Private
-            );
-            assert_eq!(
-                enforce_upload_visibility_v1631(false, Some(Public), station_default),
-                Public,
-                "the interim 'explicit is always honored' rule, which the grant \
-                 matrix below REPLACES once the stations are wired"
-            );
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1008,6 +980,53 @@ mod publish_grant_tests {
                 );
             }
         }
+    }
+
+    /// The station contract (#974 T2). Every station pre-loads the registry
+    /// only when `publish_grant_lookup_required` says so and passes an EMPTY
+    /// one otherwise, so the two must agree on every input: wherever the
+    /// predicate is `false`, the decision must reach its answer without reading
+    /// the loader at all. A drift here is a fail-OPEN at three call sites at
+    /// once (a station skipping a read the decision then needs would see an
+    /// empty registry and refuse — noisy), or a pointless SQLite read per
+    /// upload (silent). Pinned with a loader that panics if touched.
+    #[test]
+    fn the_station_prefetch_predicate_agrees_with_the_decision() {
+        for caller in [
+            UploadCaller::Service,
+            UploadCaller::User,
+            UploadCaller::Anon,
+        ] {
+            for requested in [None, Some(Public), Some(Private)] {
+                for station_default in [Public, Private] {
+                    if publish_grant_lookup_required(caller, requested) {
+                        continue;
+                    }
+                    let untouched = || -> Result<Vec<FilePolicyRow>, String> {
+                        panic!(
+                            "{caller:?} requesting {requested:?} must decide without the registry"
+                        )
+                    };
+                    assert!(
+                        enforce_upload_visibility(
+                            caller,
+                            requested,
+                            station_default,
+                            Some("any/path.bin"),
+                            untouched
+                        )
+                        .is_ok(),
+                        "a decision that needs no grant can never refuse"
+                    );
+                }
+            }
+        }
+        assert!(
+            publish_grant_lookup_required(UploadCaller::User, Some(Public))
+                && publish_grant_lookup_required(UploadCaller::Anon, Some(Public)),
+            "…and the one combination that DOES need the read is not accidentally \
+             excluded, which would make the loop above vacuous"
+        );
     }
 
     #[test]

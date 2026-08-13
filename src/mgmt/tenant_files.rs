@@ -39,13 +39,19 @@ pub enum FileCaller {
 }
 
 impl FileCaller {
-    /// Whether this caller has service power: the admin plane always, and a
-    /// data-plane `AuthCtx::Service` (shared service token, admin PAT, or
-    /// OAuth-issued token — all three are service-equivalent).
-    pub fn is_service(&self) -> bool {
+    /// This caller as the publish decision sees it
+    /// (`files::enforce_upload_visibility`).
+    ///
+    /// The admin plane is `Service`: it is the management face, reached behind
+    /// an admin session, and has the same publish authority a service bearer
+    /// has. A data-plane `AuthCtx::Service` (shared service token, admin PAT,
+    /// or OAuth-issued token — all three are service-equivalent) is the other
+    /// `Service` arm; `User` and `Anon` map to the two role names a
+    /// `public_upload_roles` grant can carry.
+    pub fn upload_caller(&self) -> crate::storage::files::UploadCaller {
         match self {
-            FileCaller::AdminPlane => true,
-            FileCaller::DataPlane(ctx) => matches!(ctx, AuthCtx::Service { .. }),
+            FileCaller::AdminPlane => crate::storage::files::UploadCaller::Service,
+            FileCaller::DataPlane(ctx) => crate::storage::files::UploadCaller::from_auth(ctx),
         }
     }
 
@@ -444,10 +450,12 @@ pub struct ListResponse {
 /// PUTs to Garage.  Content-Length pre-check and best-effort disk check mirror
 /// the admin handler (Task 15).
 ///
-/// v1.63 (#950-B): the row is stamped with the CALLER. v1.63.1: an EXPLICIT
-/// `visibility` is honored for every caller, while a non-service caller that
-/// omits the field gets `private` rather than Mode-A's `public` service
-/// default — see `upload_inner`.
+/// v1.63 (#950-B): the row is stamped with the CALLER. v1.64 (#974): an
+/// explicit `visibility=public` from a non-service caller needs a
+/// `public_upload_roles` grant on the prefix rule governing the declared
+/// `path` (403 `FILE_PUBLIC_UPLOAD_DENIED` without one), while a non-service
+/// caller that omits the field gets `private` rather than Mode-A's `public`
+/// service default — see `upload_inner`.
 pub async fn upload(
     State(state): State<TenantFilesState>,
     RequiredAuthCtx(ctx): RequiredAuthCtx,
@@ -558,21 +566,62 @@ async fn upload_inner(
         path,
     } = fields;
 
-    // v1.63.1 — an EXPLICIT `visibility` is honored for every caller (the
-    // v1.63.0 non-service `public` refusal is reverted; #974 will replace it
-    // with a per-prefix publish grant). SILENCE still means `private` for a
-    // non-service caller, while Mode-A's service default stays `public` — see
-    // `files::enforce_upload_visibility`. Decided BEFORE the bucket /
-    // cache-control derivation below, so every later use sees the same value.
+    // SQLite-first: the tenant pool is opened HERE rather than just before the
+    // INSERT, because the publish decision below needs a connection to read the
+    // prefix registry on and must not open a second one (CLAUDE.md invariant
+    // 20 §connection discipline). This is the write path, so `get_or_create` is
+    // the same call it has always made — only its position moved.
+    let pool = match state.tenants.get_or_create(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "tenant pool open failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}")).into_response();
+        }
+    };
+
+    // v1.64 (#974) — the shared publish decision. Service keeps Mode-A's
+    // historical `public` default; a non-service caller that says NOTHING gets
+    // `private`, and one that explicitly asks for `public` needs a
+    // `public_upload_roles` grant on the longest prefix rule matching THIS
+    // upload's declared `path`. Decided BEFORE the bucket / cache-control
+    // derivation below, so every later use sees the same value.
     let requested = visibility_explicit.then_some(visibility);
-    // #974 T1: still the v1.63.1 shim — T2 swaps this station onto the
-    // grant-aware `enforce_upload_visibility`, passing the declared `path` and
-    // the caller's role.
-    let visibility = crate::storage::files::enforce_upload_visibility_v1631(
-        caller.is_service(),
+    let upload_caller = caller.upload_caller();
+    // The registry read is pre-fetched rather than lazy: the decision's loader
+    // is synchronous and the pool's reader is not. `publish_grant_lookup_required`
+    // is the decision's OWN predicate, so the empty registry handed over on the
+    // `false` arm is provably never read (`files.rs` pins the agreement).
+    let policies = if crate::storage::files::publish_grant_lookup_required(upload_caller, requested)
+    {
+        pool.with_reader(crate::storage::file_policy::load_file_policies)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(Vec::new())
+    };
+    let visibility = match crate::storage::files::enforce_upload_visibility(
+        upload_caller,
         requested,
         Visibility::Public,
-    );
+        path.as_deref(),
+        || policies,
+    ) {
+        Ok(v) => v,
+        Err(refused) => {
+            // The detail names the governing prefix; the response deliberately
+            // does not — the registry is service-only readable on every face.
+            tracing::warn!(
+                tenant = %tenant_id,
+                detail = %refused.detail,
+                "mode-A upload refused: no public-upload grant"
+            );
+            return crate::error::json_error(
+                StatusCode::FORBIDDEN,
+                refused.code(),
+                refused.message(),
+            );
+        }
+    };
     let uploader = caller.uploader();
 
     let size = body.len() as i64;
@@ -619,14 +668,8 @@ async fn upload_inner(
     let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
     let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
-    // SQLite-first INSERT into tenant DB — through the writer mutex.
-    let pool = match state.tenants.get_or_create(&tenant_id) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(error = %e, "tenant pool open failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("tenant db: {e}")).into_response();
-        }
-    };
+    // SQLite-first INSERT into tenant DB — through the writer mutex of the pool
+    // opened above.
     // v1.50 (Spec B §5.3) — per-tenant hard quota tier (default 1 → 10 GiB).
     // Read once before the writer tx; the in-tx `usage_on_conn` probe below is
     // what actually gates, measured on the same writer conn as the INSERT

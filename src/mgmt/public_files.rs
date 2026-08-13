@@ -330,8 +330,8 @@ pub struct UploadFields {
     /// silent upload and an explicit `visibility=public` are indistinguishable
     /// once parsed. The data-plane gate needs the difference — a non-service
     /// caller who says nothing gets `private`, while one who explicitly asks
-    /// for `public` is honored (v1.63.1; see
-    /// `storage::files::enforce_upload_visibility`).
+    /// for `public` is put through the per-prefix publish grant (v1.64, #974;
+    /// see `storage::files::enforce_upload_visibility`).
     pub visibility_explicit: bool,
     pub disposition: Disposition,
     pub cache_control_override: Option<String>,

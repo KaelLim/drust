@@ -318,14 +318,21 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     stations with a caller identity share one decision (`files::enforce_upload_visibility` —
     Mode-A multipart, tus `create`, and edge `put-file` via `enforced_put_file`); the fourth,
     host-admin `/admin/files/upload`, is owner-only management plane. What the shared decision
-    enforces since v1.63.1 is that an **EXPLICIT** `visibility` is honored for every caller,
-    while a **non-service caller that says nothing gets `private`** — never the station
-    default. Pre-v1.63 Mode-A published every upload that omitted the field; v1.63.0
-    over-corrected by refusing a non-service explicit `public` too
-    (`FILE_VISIBILITY_SERVICE_ONLY`, now deleted), which put publishing behind the god-mode
-    service key and pushed tenants to embed one in their own frontend. The gate on an
-    explicit publish is therefore the `upload` file cap alone, which is all-or-nothing; the
-    per-prefix publish grant that narrows it is task #974. The two after-the-fact doors,
+    enforces since v1.64 (#974) is **two gates on an explicit publish**: the tenant-wide
+    `upload` file cap (outer, unchanged) AND a per-prefix `public_upload_roles` grant on the
+    LONGEST `_system_file_policy` rule matching the upload's declared `path` (inner) — the
+    same `longest_match` the read side uses, so "which rule governs this file" has one answer.
+    A **non-service caller that says nothing gets `private`**, never the station default, and
+    one asking for `public` without a grant is REFUSED with `FILE_PUBLIC_UPLOAD_DENIED`,
+    never silently downgraded. Deny-by-default in all four directions (no matching rule, no
+    grant on the matching rule, an unreadable registry, an unfiled upload with no root grant),
+    which is why the release ships a one-time grandfather grant on each existing tenant's root
+    rule. The edge station declares no `path`, so only the ROOT rule can ever grant it. Two
+    earlier shapes were replaced and neither shipped: v1.63.0's blanket refusal
+    (`FILE_VISIBILITY_SERVICE_ONLY`, deleted — it put publishing behind the god-mode service
+    key) and v1.63.1's "explicit is always honored" (no lever between "may upload" and "may
+    publish"). Service short-circuits before the registry is read, so a broken registry never
+    blocks the recovery path. The two after-the-fact doors,
     `PATCH` set-visibility and `sign`, remain **service-only** — `sign` because a signed URL
     is redeemed with no caller at all (`signed_bytes.rs`), so authorization can only happen at
     mint. The per-station service DEFAULT deliberately differs — Mode-A `public`, tus
