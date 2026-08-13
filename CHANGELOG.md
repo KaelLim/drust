@@ -1,3 +1,39 @@
+## v1.63.1 — 2026-08-13
+
+Hotfix reverting one v1.63.0 decision: **a non-service caller asking explicitly for
+`visibility=public` at upload is honored again.** v1.63.0 refused it
+(`FILE_VISIBILITY_SERVICE_ONLY`), which in practice put the public bucket behind the
+god-mode service key — a tenant's own frontend or backoffice had to embed a full-tenant
+credential just to upload a public avatar, a worse posture than the thing the refusal was
+protecting. Nothing else in the Files RLS release moves.
+
+### Changed
+
+- **Explicit visibility is honored for every caller** at the three upload stations that have
+  a caller identity (Mode-A multipart, tus `create`, edge `put-file` via `enforced_put_file`),
+  restoring v1.62 semantics for that one arm. `files::enforce_upload_visibility` returns a
+  plain `Visibility` again; `VisibilityRefused` and the `FILE_VISIBILITY_SERVICE_ONLY` error
+  code introduced in v1.63.0 are **deleted**, along with the four arms that mapped them.
+- **The v1.63 safe SILENT default stays.** A non-service caller that says nothing still gets
+  `private`, never the station default — pre-v1.63 Mode-A published every field-less upload,
+  including anonymous ones, and that footgun does not come back. (Edge `put-file` has no
+  silent case: the WIT always sends a visibility string.)
+- **Service callers are unchanged**, `requested.unwrap_or(station_default)`, and both station
+  defaults keep their existing pins (Mode-A `public`, tus `private`).
+- **Untouched**: host-admin `/admin/files/upload` (owner-only management plane), `PATCH`
+  set-visibility and `sign` — the two after-the-fact doors into the `public` bucket remain
+  **service-only**, `sign` because a signed URL is redeemed with no caller at all. Uploader
+  stamping, `path` intake and the per-file prefix policy registry are not touched either;
+  only the visibility arm moved.
+
+The gate on an explicit publish is therefore the `upload` file cap alone, which is
+all-or-nothing. The durable model — a per-prefix "may publish" grant in `_system_file_policy`,
+so a tenant can open `avatars/` to its own users without opening the whole bucket — is
+**task #974**. CLAUDE.md invariant 19 and `.claude/rules/storage-files.md` are rewritten to
+the v1.63.1 truth; the `enforce_upload_visibility` unit matrix and the three station tests
+now pin admission plus the landed `visibility='public'` row, and a tus non-service
+silent-upload pin was added so both new directions have per-station coverage.
+
 ## v1.63.0 — 2026-08-12
 
 **Files RLS — per-file access control for tenant objects (#950-B, Supabase-Storage-aligned).**
