@@ -63,7 +63,7 @@ Every station that writes a `_system_files` row makes the same three decisions, 
 |---|---|---|---|
 | Mode-A multipart (data plane) | optional field, validated at the choke point | caller, via `session_identity` | `public` (historical, unchanged) |
 | tus (`create` → finalize) | optional `Upload-Metadata: path`, carried on the session row | caller (already correct pre-v1.63) | **`private`** (historical, unchanged) |
-| edge `put-file` | not accepted (WIT unchanged) ⇒ NULL | `function` when Privileged, else the caller | Privileged only |
+| edge `put-file` | not accepted (WIT unchanged) ⇒ NULL | `function` when Privileged, else the caller | n/a — the WIT always sends a value, so there is no silent case; since v1.63.1 the explicit choice is honored at BOTH doors, `put_file_raw` (Privileged) and `enforced_put_file` |
 | host-admin `/admin/files/upload` → meta | optional, shared parser | `admin` | unchanged (management plane) |
 
 - **The two service defaults differ on purpose.** Flipping tus to Mode-A's `public` would publish every existing service upload that omits the field; `tus_service_default_visibility_stays_private` exists to stop exactly that tidy-up.
