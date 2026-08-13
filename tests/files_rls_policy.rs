@@ -804,3 +804,133 @@ async fn a_tenant_with_no_root_rule_is_skipped_rather_than_given_one() {
          granted the legacy publish right on some future boot"
     );
 }
+
+/// codex review 2026-08-13 (LOW): the marker and the grant live in different
+/// databases, so one of them can fail alone. The pass stamps the marker FIRST,
+/// so a marker write that fails leaves the grant UNAPPLIED — this is the pin
+/// that distinguishes the orders. Grant-first left a granted tenant with
+/// marker 0 here, and after an operator revoked the grant, the still-armed
+/// next boot resurrected it through the `IS NULL` guard.
+#[tokio::test]
+async fn a_failed_marker_write_leaves_the_grant_unapplied() {
+    let (conn, dir) = meta_with_owner();
+    conn.execute(
+        "INSERT INTO tenants (id, name, file_policy_seeded) VALUES ('hurt2', 'Hurt2', 1)",
+        [],
+    )
+    .unwrap();
+    drust::storage::tenant_db::open_write(dir.path(), "hurt2").unwrap();
+    let db = dir.path().join("tenants").join("hurt2").join("data.sqlite");
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO _system_file_policy (prefix, owner_scoped, public_read) \
+             VALUES ('', 0, 1)",
+            [],
+        )
+        .unwrap();
+
+    // Injected fault: the META-side marker stamp fails for this tenant.
+    conn.execute_batch(
+        "CREATE TRIGGER fault_marker BEFORE UPDATE OF public_upload_seeded ON tenants \
+         WHEN NEW.public_upload_seeded = 1 AND NEW.id = 'hurt2' \
+         BEGIN SELECT RAISE(ABORT, 'injected fault'); END;",
+    )
+    .unwrap();
+
+    let report = drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert!(
+        report
+            .degraded
+            .iter()
+            .any(|(t, job, _)| t == "hurt2" && *job == "public_upload_seed"),
+        "the failed marker write must surface as degraded maintenance (got {:?})",
+        report.degraded
+    );
+    assert_eq!(
+        grant_rows(dir.path(), "hurt2"),
+        vec![(String::new(), None)],
+        "THE order pin: when the marker write fails, the grant must NOT have \
+         been applied. Grant-first would leave it granted here with the marker \
+         still 0 — the armed state that resurrects a later revoke"
+    );
+    assert_eq!(marker(&conn, "hurt2"), 0);
+
+    // Heal: next boot completes the grandfather normally.
+    conn.execute_batch("DROP TRIGGER fault_marker;").unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert_eq!(
+        grant_rows(dir.path(), "hurt2"),
+        vec![(String::new(), Some(r#"["anon","user"]"#.to_string()))],
+    );
+    assert_eq!(marker(&conn, "hurt2"), 1);
+}
+
+/// The sibling failure shape: the grant itself fails AFTER the marker was
+/// stamped. The compensation must re-arm the marker so the grandfather
+/// retries, instead of stranding the tenant as "done" with nothing granted.
+#[tokio::test]
+async fn a_failed_grant_re_arms_the_marker_instead_of_stranding_it() {
+    let (conn, dir) = meta_with_owner();
+    // file_policy_seeded=1 + a hand-planted root row: the v1.63 root-policy
+    // seed is out of the picture, so the ONLY write the boot pass owes this
+    // tenant is the publish grant — the step under test.
+    conn.execute(
+        "INSERT INTO tenants (id, name, file_policy_seeded) VALUES ('hurt', 'Hurt', 1)",
+        [],
+    )
+    .unwrap();
+    drust::storage::tenant_db::open_write(dir.path(), "hurt").unwrap();
+    let db = dir.path().join("tenants").join("hurt").join("data.sqlite");
+    {
+        let t = rusqlite::Connection::open(&db).unwrap();
+        t.execute(
+            "INSERT INTO _system_file_policy (prefix, owner_scoped, public_read) \
+             VALUES ('', 0, 1)",
+            [],
+        )
+        .unwrap();
+        // Injected fault: the FIRST write the boot pass owes this tenant is the
+        // grant UPDATE, and this trigger aborts exactly that statement while
+        // leaving every no-op of the additive migration untouched. (Tenant SQL
+        // cannot create triggers — this is the test harness talking straight to
+        // the file, standing in for any mid-boot write failure.)
+        t.execute_batch(
+            "CREATE TRIGGER fault_inject BEFORE UPDATE ON _system_file_policy \
+             WHEN NEW.public_upload_roles IS NOT NULL \
+             BEGIN SELECT RAISE(ABORT, 'injected fault'); END;",
+        )
+        .unwrap();
+    }
+
+    let report = drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert!(
+        report
+            .degraded
+            .iter()
+            .any(|(t, job, _)| t == "hurt" && *job == "public_upload_seed"),
+        "the failed grant must surface as degraded maintenance (got {:?})",
+        report.degraded
+    );
+    assert_eq!(
+        marker(&conn, "hurt"),
+        0,
+        "the marker must be compensated back to 0 so the grandfather retries — \
+         a marker left at 1 here silently costs the tenant its legacy publish, \
+         and the OLD grant-first order left it at 0 with the grant applied, \
+         which is what resurrected a later revoke"
+    );
+
+    // Heal the fault: next boot must complete the grandfather normally.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("DROP TRIGGER fault_inject;")
+        .unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    assert_eq!(
+        grant_rows(dir.path(), "hurt"),
+        vec![(String::new(), Some(r#"["anon","user"]"#.to_string()))],
+        "after the fault clears, the re-armed marker lets the grandfather land"
+    );
+    assert_eq!(marker(&conn, "hurt"), 1);
+}

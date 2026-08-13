@@ -681,6 +681,12 @@ fn seed_file_policy_root(meta: &Connection, tenants_dir: &Path, tid: &str) -> ru
 ///   afterwards does not silently inherit a grant.
 /// * **`AND public_upload_roles IS NULL`** so the grant can only ever move a
 ///   tenant from "no grant" to the legacy behaviour, never overwrite one.
+/// * **The marker is stamped BEFORE the grant is applied** — the two live in
+///   different databases (meta vs the tenant file), so no transaction spans
+///   them, and one side must be allowed to fail. Grant-first risked
+///   resurrecting an operator's later revoke whenever the marker write
+///   failed; mark-first only ever risks a MISSED grandfather, which the
+///   compensation below re-arms and the degraded report surfaces.
 ///
 /// Must run AFTER `migrate_tenant_db`, which is what adds the column. Same
 /// best-effort skip as its sibling for a tenant with no `data.sqlite`.
@@ -703,12 +709,32 @@ fn seed_public_upload_grant(
     if !path.exists() {
         return Ok(());
     }
-    let conn = Connection::open(&path)?;
-    crate::storage::file_policy::grant_root_public_upload(&conn)?;
+    // Marker FIRST, grant second (codex review 2026-08-13, LOW). The old
+    // grant-then-mark order left a resurrect window: grant lands, the marker
+    // UPDATE fails (degraded boot), an operator later REVOKES the root grant
+    // (back to NULL) — and the next boot, still seeing marker 0, re-applies it
+    // through the `IS NULL` guard. That is the exact v1.41.5 resurrect this
+    // marker exists to prevent. Mark-first turns every failure shape into the
+    // closed side: a failed marker write leaves the grant unapplied (plain
+    // retry next boot); a failed grant after marking is compensated below; and
+    // if even the compensation fails, the tenant is merely NOT grandfathered —
+    // surfaced as degraded maintenance, fixed with one `set_file_policy` call,
+    // never a resurrected grant.
     meta.execute(
         "UPDATE tenants SET public_upload_seeded = 1 WHERE id = ?1",
         [tid],
     )?;
+    let granted = Connection::open(&path)
+        .and_then(|conn| crate::storage::file_policy::grant_root_public_upload(&conn));
+    if let Err(e) = granted {
+        // Best-effort re-arm so the grandfather retries next boot. Failure
+        // here still lands closed (missed grant, no resurrect).
+        let _ = meta.execute(
+            "UPDATE tenants SET public_upload_seeded = 0 WHERE id = ?1",
+            [tid],
+        );
+        return Err(e);
+    }
     Ok(())
 }
 
