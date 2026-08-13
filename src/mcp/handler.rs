@@ -3210,7 +3210,11 @@ CAPABILITY GROUPS
      Header: Authorization: Bearer $DRUST_TOKEN
      Body:   multipart/form-data
        file          (required — bytes)
-       visibility    (required — 'public' | 'private')
+       visibility    (optional — 'public' | 'private'; service omitting it gets 'public',
+                      any other bearer gets 'private'. A non-service bearer may send
+                      'public' only where a file-policy prefix grants its role
+                      (public_upload_roles) — else 403 FILE_PUBLIC_UPLOAD_DENIED.
+                      Full model: files-guide.md resource.)
        disposition   (optional — 'inline' | 'attachment', default 'inline')
        cache_control (optional — default 'public, max-age=86400' (public) / 'private, no-store' (private))
        meta          (optional — JSON object)
@@ -3220,7 +3224,9 @@ CAPABILITY GROUPS
        Header: Upload-Length, Upload-Metadata (tus); Authorization: Bearer $DRUST_TOKEN
      then PATCH each chunk per tus 1.0; HEAD to resume from the server offset.
      Send OPTIONS {base}{bp}/t/{tenant_id}/uploads to discover Tus-Max-Size
-     and the per-chunk limit. Service token only (same as small upload).
+     and the per-chunk limit. Both upload paths accept any bearer holding the
+     file.upload cap; the same public-visibility grant rule as the small
+     upload applies (visibility is fixed at session create).
 
 4. IDENTITY + INTEGRATIONS
    Users:    create_user, list_users, get_user, update_user, delete_user, revoke_user_sessions

@@ -758,6 +758,9 @@ REPLACES its whole rule**, so re-send the fields you want to keep — omitting
 3. If no rule matches, register one. It also needs a read shape — `owner_scoped`,
    a `select` clause, or `public_read: true` — because a rule that restricts
    nothing and says nothing denies every read (`FILE_POLICY_OPEN_REQUIRES_FLAG`).
+   Mind that the new rule REPLACES the read shape for everything under its
+   prefix (longest match wins): files readable through the shallower rule
+   stay readable only if you restate that access here.
 4. Or leave the grant closed: upload privately, then let a service key flip the
    file with `set_file_visibility`.
 

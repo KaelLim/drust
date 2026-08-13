@@ -52,6 +52,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Anon/user bearer lacks file.list. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
     ),
     (
+        "FILE_PUBLIC_UPLOAD_DENIED",
+        "Non-service upload asked for visibility=public, but no file-policy prefix grants that role. Grant public_upload_roles on the folder via set_file_policy (MCP) or PUT /t/<id>/file-policies, or read the files-guide.md MCP resource for the full model.",
+    ),
+    (
         "FILE_READ_DENIED",
         "Anon/user bearer lacks file.read. Enable file_anon_caps/file_user_caps via set_file_caps (MCP) or /admin/tenants/<id>/file-caps, or use a service key.",
     ),

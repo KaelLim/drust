@@ -443,8 +443,9 @@ fn policy_error_response(e: &FilePolicyError) -> Response {
 ///
 /// The body is `FilePolicyRow` itself — the identical JSON the REST face
 /// accepts — so a clause authored over REST round-trips through this endpoint
-/// unchanged. The card's own form sends only `prefix` + the two flags; that is
-/// a UI limitation, not a second wire shape.
+/// unchanged. The card's own form sends `prefix`, the two flags and the
+/// `public_upload_roles` grant; the `select` / `delete` clauses remain
+/// REST/MCP-only — a UI limitation, not a second wire shape.
 pub async fn file_policy_save(
     State(state): State<TenantsState>,
     axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
