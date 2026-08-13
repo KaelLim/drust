@@ -25,9 +25,21 @@ pub fn resource_max_bytes() -> usize {
         .unwrap_or(262_144)
 }
 
-/// The parsed, tenant-checked resource identity. The first nine are static
-/// (M2); the last four are the M4 templates (parsed + validated here so
-/// `render_resource` only ever sees an already-authorized shape).
+/// The path segment of the Markdown files handbook (v1.64, #974), and the one
+/// place its name is spelled. `whoami` points at it, two tool descriptions name
+/// it, and the parser matches it — all through this const, so the URI cannot
+/// drift between the sign and the door.
+pub const FILES_GUIDE_PATH: &str = "files-guide.md";
+
+/// The handbook's full URI for one tenant.
+pub fn files_guide_uri(tenant_id: &str) -> String {
+    format!("drust://{tenant_id}/{FILES_GUIDE_PATH}")
+}
+
+/// The parsed, tenant-checked resource identity. The first ten are static
+/// (M2 + the v1.64 files handbook); the last four are the M4 templates (parsed
+/// + validated here so `render_resource` only ever sees an already-authorized
+/// shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceUri {
     /// `drust://<t>/schema` — the `get_schema_overview` payload (bootstrap first stop).
@@ -48,6 +60,10 @@ pub enum ResourceUri {
     Rpcs,
     /// `drust://<t>/cron` — cron-job inventory.
     Cron,
+    /// `drust://<t>/files-guide.md` — the Markdown files handbook: upload
+    /// stations, the visibility model, the per-prefix publish grant, and this
+    /// tenant's LIVE grant list. Carries no credentials by design.
+    FilesGuide,
     // ── M4 templates ──
     /// `drust://<t>/collections/{c}/schema` — one collection's full schema.
     CollectionSchema { collection: String },
@@ -220,6 +236,7 @@ pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, Mcp
         ["functions"] if !has_query => Ok(ResourceUri::Functions),
         ["rpcs"] if !has_query => Ok(ResourceUri::Rpcs),
         ["cron"] if !has_query => Ok(ResourceUri::Cron),
+        [p] if *p == FILES_GUIDE_PATH && !has_query => Ok(ResourceUri::FilesGuide),
         // ── M4 templates ──
         ["collections", c, "schema"] if !has_query => {
             valid_collection(c, raw)?;
@@ -346,6 +363,16 @@ pub fn static_resource_list(t: &str) -> Vec<Resource> {
         ),
         e("rpcs", "rpcs", "Stored-RPC inventory.", "application/json"),
         e("cron", "cron", "Cron-job inventory.", "application/json"),
+        e(
+            FILES_GUIDE_PATH,
+            "files guide",
+            "How this tenant's file storage works: the two upload endpoints, the \
+             public/private visibility model, the per-prefix publish grant \
+             (public_upload_roles) that decides which non-service roles may upload \
+             with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the \
+             tenant's live grant list. Carries no credentials — call whoami for tokens.",
+            "text/markdown",
+        ),
     ]
 }
 
@@ -560,6 +587,7 @@ pub async fn render_resource(
             redact_cron(&mut v);
             json(&v)
         }
+        ResourceUri::FilesGuide => Ok((render_files_guide(s).await, "text/markdown")),
         ResourceUri::CollectionSchema { collection } => {
             let v = exploration::describe_collection(s, collection)
                 .await
@@ -644,6 +672,158 @@ pub async fn render_resource(
             }
         }
     }
+}
+
+/// The files handbook (v1.64, #974) — the static half.
+///
+/// Model-facing prose, so it states the RULE and the REMEDY, not the
+/// implementation. It is deliberately credential-free: a resource can be pulled
+/// into model context without an explicit call (spec §3), so tokens stay behind
+/// the `whoami` TOOL and this page only says where to get them.
+fn files_guide_static(tenant_id: &str, base: &str) -> String {
+    let bp = crate::base_path::base_path();
+    format!(
+        r#"# Files — tenant `{tenant_id}`
+
+Two upload endpoints, two buckets, and ONE rule about who may publish. Tokens are
+not on this page: call the `whoami` tool for the service / anon bearer.
+
+## 1. Upload endpoints
+
+MCP has no upload tool by design — uploads are HTTP.
+
+**Small file (Mode A, one request)** — `POST {base}{bp}/t/{tenant_id}/files`,
+`multipart/form-data`:
+
+| field | required | meaning |
+|---|---|---|
+| `file` | yes | the bytes |
+| `visibility` | no | `public` \| `private` — see §2. Omitted by a non-service caller ⇒ `private` |
+| `path` | no | the caller-DECLARED logical path, e.g. `avatars/alice/me.png`. Metadata only — never the object key — and it is what the prefix rules match |
+| `disposition` | no | `inline` \| `attachment` (default `inline`) |
+| `cache_control`, `meta` | no | cache header / free-form JSON |
+
+**Large or resumable (Mode B, tus 1.0)** — `POST {base}{bp}/t/{tenant_id}/uploads`
+creates a session (`Upload-Length`, `Upload-Metadata` carries `path`, `visibility`,
+`filename`, `filetype`), then `PATCH` each chunk, `HEAD` to resume. Visibility is
+decided at CREATE and frozen on the session; finalize does not re-check.
+
+`path` is immutable after upload — there is no rename or move API.
+
+## 2. The visibility model
+
+* `private` — the bytes live in the private bucket. Every read goes through drust
+  and is gated TWICE: the per-verb file cap (`read`/`list`/`upload`/`delete`) AND
+  the per-prefix rule in the file-policy registry.
+* `public` — the bytes live in the public bucket and are served straight from the
+  object store by the reverse proxy. They never reach drust again, so **publishing
+  is a permanent escape from every per-file gate**. That is why it needs a grant.
+
+A service key may always publish. `sign` (pre-signed URL) and the after-the-fact
+set-visibility PATCH stay service-only in every configuration.
+
+## 3. The publish grant (`public_upload_roles`)
+
+Each rule in the file-policy registry carries `public_upload_roles`: a JSON array
+naming which NON-service roles may upload into that prefix with
+`visibility=public`. Legal values are `"anon"` and `"user"`; absent/`null` grants
+nobody, which is the deny-by-default state of every un-configured prefix.
+
+How one upload is decided:
+
+1. `service` ⇒ honored as asked (station default when the field is omitted:
+   `public` for Mode A, `private` for tus).
+2. `anon` / `user` that says nothing, or says `private` ⇒ `private`. Always.
+3. `anon` / `user` asking for `public` ⇒ take the upload's declared `path`, find
+   the LONGEST registered prefix matching it (a file with NO path matches only the
+   root rule `""`), and publish only if that rule's `public_upload_roles` names the
+   caller's role. Otherwise the upload is REFUSED with `FILE_PUBLIC_UPLOAD_DENIED`
+   — never silently downgraded to private.
+
+The grant unlocks the VISIBILITY dimension only. The `upload` file cap is still the
+outer gate: a role without it cannot upload at all, granted prefix or not.
+
+Grant it with the `set_file_policy` MCP tool, `PUT {bp}/t/{tenant_id}/file-policies`
+(service bearer), or the admin UI's folder-rule card. **Registering a prefix
+REPLACES its whole rule**, so re-send the fields you want to keep — omitting
+`public_upload_roles` REVOKES the grant.
+
+## 4. Fixing `FILE_PUBLIC_UPLOAD_DENIED`
+
+1. Call `list_file_policies` and find the longest registered prefix that matches
+   the upload's `path` (or `""` when it has none).
+2. Re-register THAT prefix with `public_upload_roles` including the caller's role,
+   carrying its existing `owner_scoped` / `public_read` / `select` / `delete`
+   fields through unchanged.
+3. If no rule matches, register one. It also needs a read shape — `owner_scoped`,
+   a `select` clause, or `public_read: true` — because a rule that restricts
+   nothing and says nothing denies every read (`FILE_POLICY_OPEN_REQUIRES_FLAG`).
+4. Or leave the grant closed: upload privately, then let a service key flip the
+   file with `set_file_visibility`.
+
+A refusal is also correct when the registry cannot be read or its JSON is corrupt:
+publishing fails CLOSED in every direction.
+
+## 5. curl
+
+```sh
+# grant "user" the right to publish under avatars/ (service bearer)
+curl -X PUT "{base}{bp}/t/{tenant_id}/file-policies" \
+  -H "Authorization: Bearer $DRUST_SERVICE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{{"prefix":"avatars/","owner_scoped":true,"public_upload_roles":["user"]}}'
+
+# a user token then publishes into it
+curl -X POST "{base}{bp}/t/{tenant_id}/files" \
+  -H "Authorization: Bearer $DRUST_USER_TOKEN" \
+  -F file=@me.png -F path=avatars/alice/me.png -F visibility=public
+
+# read the whole map back
+curl "{base}{bp}/t/{tenant_id}/file-policies" \
+  -H "Authorization: Bearer $DRUST_SERVICE_TOKEN"
+```
+"#
+    )
+}
+
+/// The handbook plus this tenant's LIVE grant list, so one read answers both
+/// "what is the model" and "what is currently true here".
+///
+/// A registry failure is REPORTED, not swallowed and not fatal: the same failure
+/// makes every non-service publish refuse, so an operator reading the guide to
+/// debug a `FILE_PUBLIC_UPLOAD_DENIED` needs to see it. MCP is service-only, so
+/// the detail is not caller-facing disclosure.
+async fn render_files_guide(s: &DrustMcp) -> String {
+    let mut out = files_guide_static(s.tenant_id(), s.public_base_url());
+    out.push_str("\n## 6. This tenant's publish grants (live)\n\n");
+    match crate::mcp::tools::file_policy::public_upload_grants(s).await {
+        Ok(grants) if grants.is_empty() => out.push_str(
+            "No prefix grants public upload. Only a service key can publish here \
+             today; every anon/user request for `visibility=public` is refused with \
+             `FILE_PUBLIC_UPLOAD_DENIED` (see §4).\n",
+        ),
+        Ok(grants) => {
+            out.push_str("| prefix | may publish |\n|---|---|\n");
+            for (prefix, roles) in grants {
+                let shown = if prefix.is_empty() {
+                    "\"\" (tenant root — also every file uploaded with no path)".to_string()
+                } else {
+                    format!("`{prefix}`")
+                };
+                out.push_str(&format!("| {shown} | {} |\n", roles.join(", ")));
+            }
+            out.push_str(
+                "\nAny prefix not listed grants nobody: the longest matching rule decides, \
+                 so a deeper ungranted rule overrides a granted parent.\n",
+            );
+        }
+        Err(e) => out.push_str(&format!(
+            "The file-policy registry could not be read, so EVERY non-service publish is \
+             currently refused (fail-closed) — and so is every non-service file READ. \
+             Fix this first: `{e}`\n"
+        )),
+    }
+    out
 }
 
 /// Dedicated single-row reader for the `Record{c,id}` template. The `/list`
@@ -744,6 +924,7 @@ mod tests {
             ("functions", Functions),
             ("rpcs", Rpcs),
             ("cron", Cron),
+            ("files-guide.md", FilesGuide),
         ] {
             let uri = format!("drust://t-abc/{path}");
             assert_eq!(parse_resource_uri(&uri, "t-abc").unwrap(), want, "{path}");

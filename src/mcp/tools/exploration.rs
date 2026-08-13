@@ -34,6 +34,14 @@ pub async fn describe_collection(s: &DrustMcp, name: &str) -> anyhow::Result<ser
 /// Tokens minted before v1.1c stored only the hash; the corresponding
 /// `plaintext` field is `null` and the operator must reroll via the
 /// admin UI to recover it.
+///
+/// v1.64 (#974) adds a deliberately SMALL `file_upload` block: the URI of the
+/// `files-guide.md` resource plus this tenant's live publish grants. It is a
+/// signpost, not a manual — the rules live in the guide, which is one read away
+/// and cannot go stale against this string. `granted_prefixes` is `null` (never
+/// `[]`) when the registry could not be read: "nobody may publish" and "I could
+/// not find out" are different facts, and the second one also means every
+/// non-service file READ is currently denied.
 pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let inner = s.inner();
     let tenant_id = inner.tenant_id.clone();
@@ -42,41 +50,48 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
         anyhow::bail!("META_UNAVAILABLE: this drust process was started without a meta connection");
     };
 
-    let conn = meta.lock().await;
-    let row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT name, created_at FROM tenants \
-             WHERE id = ?1 AND deleted_at IS NULL",
-            rusqlite::params![&tenant_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let (tenant_name, tenant_created_at) = match row {
-        Some(t) => t,
-        None => anyhow::bail!("tenant {tenant_id} not found in meta.sqlite"),
-    };
-
-    let read_token = |role: &str| -> Option<serde_json::Value> {
-        let r: Option<(i64, String, Option<String>)> = conn
+    // Scoped so the meta guard AND the closure that borrows it are both gone
+    // before the tenant-pool read below: the `#[tool]` wrapper requires a `Send`
+    // future, and a live `rusqlite::Connection` borrow held across an `.await`
+    // is what breaks that (a bare `drop(conn)` is not enough — the closure is
+    // still in scope).
+    let (tenant_name, tenant_created_at, anon, service) = {
+        let conn = meta.lock().await;
+        let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT id, created_at, plaintext FROM tokens \
-                 WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL \
-                 ORDER BY created_at DESC LIMIT 1",
-                rusqlite::params![&tenant_id, role],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT name, created_at FROM tenants \
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![&tenant_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok();
-        r.map(|(id, created_at, plaintext)| {
-            json!({
-                "id": id,
-                "created_at": created_at,
-                "plaintext": plaintext,
+        let (tenant_name, tenant_created_at) = match row {
+            Some(t) => t,
+            None => anyhow::bail!("tenant {tenant_id} not found in meta.sqlite"),
+        };
+
+        let read_token = |role: &str| -> Option<serde_json::Value> {
+            let r: Option<(i64, String, Option<String>)> = conn
+                .query_row(
+                    "SELECT id, created_at, plaintext FROM tokens \
+                     WHERE tenant_id = ?1 AND role = ?2 AND revoked_at IS NULL \
+                     ORDER BY created_at DESC LIMIT 1",
+                    rusqlite::params![&tenant_id, role],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+            r.map(|(id, created_at, plaintext)| {
+                json!({
+                    "id": id,
+                    "created_at": created_at,
+                    "plaintext": plaintext,
+                })
             })
-        })
+        };
+        let anon = read_token("anon");
+        let service = read_token("service");
+        (tenant_name, tenant_created_at, anon, service)
     };
-    let anon = read_token("anon");
-    let service = read_token("service");
-    drop(conn);
 
     let rest_base = crate::base_path::base(&format!("/t/{tenant_id}/"));
     let mcp_path = crate::base_path::base(&format!("/t/{tenant_id}/mcp"));
@@ -89,6 +104,19 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let realtime_ws = crate::base_path::base(&format!("/t/{tenant_id}/realtime?token=<bearer>"));
     let rooms_publish_rest = crate::base_path::base(&format!("/t/{tenant_id}/rooms/<room>"));
     let rooms_cfg = &inner.rooms_cfg;
+
+    // Outside the meta scope above: this is a TENANT-pool read and must not run
+    // while the process-wide meta mutex is held.
+    let files_guide_resource = crate::mcp::resources::files_guide_uri(&tenant_id);
+    let granted_prefixes = match crate::mcp::tools::file_policy::public_upload_grants(s).await {
+        Ok(grants) => serde_json::Value::Array(
+            grants
+                .into_iter()
+                .map(|(prefix, roles)| json!({ "prefix": prefix, "roles": roles }))
+                .collect(),
+        ),
+        Err(_) => serde_json::Value::Null,
+    };
 
     Ok(json!({
         "tenant_id": tenant_id,
@@ -113,6 +141,10 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
             "broadcast_publish_qps": rooms_cfg.publish_qps,
             "broadcast_room_subscriber_max": rooms_cfg.room_subscriber_max,
             "broadcast_client_room_max": rooms_cfg.client_room_max,
+        },
+        "file_upload": {
+            "guide_resource": files_guide_resource,
+            "granted_prefixes": granted_prefixes,
         },
         "broadcast": {
             "note": "v1.31: publish via MCP tool `broadcast` or REST POST rooms_publish_rest \

@@ -254,6 +254,11 @@
                     {% if p.owner_scoped %}<span class="pill lilac"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.owner_scoped") }}</span>{% endif %}
                     {% if p.public_read %}<span class="pill mint"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.public_read") }}</span>{% endif %}
                     {% if !p.owner_scoped && !p.public_read && p.select_json.is_none() %}<span class="pill danger"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.deny_all") }}</span>{% endif %}
+                    {# v1.64 (issue 974): the publish grant is a DIFFERENT axis from the three read
+                       shapes above — it decides who may upload here with visibility=public,
+                       which is a permanent escape from every per-file read gate. `warn` rather
+                       than `mint` for exactly that reason. No pill = grants nobody. #}
+                    {% if let Some(g) = p.public_upload_roles %}<span class="pill warn" data-policy-grant="{{ g }}"><span class="dot"></span>{{ t.s("tenant_files_admin.policy.public_upload") }}: {{ g }}</span>{% endif %}
                   </td>
                   <td class="mono-cell">
                     {% if let Some(s) = p.select_json %}<div class="trunc-inner" title="{{ s }}">select {{ s }}</div>{% endif %}
@@ -280,10 +285,16 @@
                 <label class="check"><input type="checkbox" id="fp-owner-scoped" checked> {{ t.s("tenant_files_admin.policy.owner_scoped") }}</label>
                 <label class="check"><input type="checkbox" id="fp-public-read"> {{ t.s("tenant_files_admin.policy.public_read") }}</label>
               </div>
+              <div class="field">
+                <span class="field-label">{{ t.s("tenant_files_admin.policy.public_upload") }}</span>
+                <label class="check"><input type="checkbox" id="fp-grant-anon"> {{ t.s("tenant_files_admin.policy.grant_anon") }}</label>
+                <label class="check"><input type="checkbox" id="fp-grant-user"> {{ t.s("tenant_files_admin.policy.grant_user") }}</label>
+              </div>
               <button type="submit" class="btn sm primary" id="fp-save">{{ t.s("tenant_files_admin.policy.save_btn") }}</button>
             {% endcall %}
           </form>
           <p class="hint">{{ t.s("tenant_files_admin.policy.form_hint") }}</p>
+          <p class="hint">{{ t.s("tenant_files_admin.policy.grant_hint") }}</p>
         </div>
       {% endcall %}
       </div>
@@ -432,11 +443,19 @@
         okText: '{{ t.s("tenant_files_admin.policy.save_btn")|safe }}',
       });
       if (!ok) return;
-      await post(base, {
+      // The grant is OMITTED when neither box is ticked, never sent as `[]`:
+      // the registry refuses an empty array (FILE_POLICY_INVALID) because
+      // "granted to nobody" already has a spelling, and absent is it.
+      var grant = [];
+      if (document.getElementById('fp-grant-anon').checked) grant.push('anon');
+      if (document.getElementById('fp-grant-user').checked) grant.push('user');
+      var payload = {
         prefix: prefix,
         owner_scoped: document.getElementById('fp-owner-scoped').checked,
         public_read: document.getElementById('fp-public-read').checked,
-      }, "{{ t.s("tenant_files_admin.policy.save_failed_title") }}");
+      };
+      if (grant.length) payload.public_upload_roles = grant;
+      await post(base, payload, "{{ t.s("tenant_files_admin.policy.save_failed_title") }}");
     });
 
     document.querySelectorAll('[data-policy-clear]').forEach(function (btn) {

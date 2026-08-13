@@ -57,7 +57,7 @@ async fn set_list_clear_round_trip_and_a_second_clear_is_not_found() {
     // `make_tenant_inner` / the boot migration), so the registry starts empty.
     assert!(policies(&mcp).await.is_empty());
 
-    let v = fp::set_file_policy(&mcp, "avatars/", true, false, None, None)
+    let v = fp::set_file_policy(&mcp, "avatars/", true, false, None, None, None)
         .await
         .unwrap();
     assert_eq!(v["ok"], true);
@@ -72,9 +72,17 @@ async fn set_list_clear_round_trip_and_a_second_clear_is_not_found() {
     // A re-register REPLACES rather than duplicating, and the stored clause
     // round-trips under its wire name (`select`, not `select_policy_json`).
     let select = json!({ "visibility": "private" });
-    fp::set_file_policy(&mcp, "avatars/", true, false, Some(select.clone()), None)
-        .await
-        .unwrap();
+    fp::set_file_policy(
+        &mcp,
+        "avatars/",
+        true,
+        false,
+        Some(select.clone()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let listed = policies(&mcp).await;
     assert_eq!(listed.len(), 1, "re-register must replace, never duplicate");
     assert_eq!(listed[0]["select"], select);
@@ -101,7 +109,7 @@ async fn the_tenant_root_is_addressable_as_the_empty_prefix() {
     let d = tempfile::tempdir().unwrap();
     let mcp = svc(&d, "mcpfp-root").await;
 
-    fp::set_file_policy(&mcp, "", false, true, None, None)
+    fp::set_file_policy(&mcp, "", false, true, None, None, None)
         .await
         .unwrap();
     let listed = policies(&mcp).await;
@@ -118,7 +126,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
     let mcp = svc(&d, "mcpfp-err").await;
 
     // (a) clause-less: neither owner-scoped, nor filtered, nor explicitly open.
-    let err = fp::set_file_policy(&mcp, "open/", false, false, None, None)
+    let err = fp::set_file_policy(&mcp, "open/", false, false, None, None, None)
         .await
         .unwrap_err();
     assert_eq!(code_of(&err), "FILE_POLICY_OPEN_REQUIRES_FLAG");
@@ -131,6 +139,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
         false,
         None,
         Some(json!({ "uploader": { "$auth": "id" } })),
+        None,
     )
     .await
     .unwrap_err();
@@ -139,7 +148,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
     // (b) prefix grammar: a non-empty prefix must end in '/', and no segment
     // may be a dot-segment.
     for bad in ["avatars", "a/../", "/a/", "a//"] {
-        let err = fp::set_file_policy(&mcp, bad, true, false, None, None)
+        let err = fp::set_file_policy(&mcp, bad, true, false, None, None, None)
             .await
             .unwrap_err();
         assert_eq!(code_of(&err), "FILE_POLICY_PREFIX_INVALID", "{bad:?}");
@@ -154,6 +163,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
         false,
         Some(json!({ "size_bytes": { "$lt": { "$auth": "id" } } })),
         None,
+        None,
     )
     .await
     .unwrap_err();
@@ -166,6 +176,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
         true,
         false,
         Some(json!({ "meta_json": "x" })),
+        None,
         None,
     )
     .await
@@ -180,6 +191,7 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
         false,
         None,
         Some(json!({ "size_bytes": { "$gt": { "$auth": "id" } } })),
+        None,
     )
     .await
     .unwrap_err();
@@ -192,6 +204,128 @@ async fn the_four_registry_refusals_travel_over_mcp_with_their_codes() {
     );
 }
 
+// ── v1.64 (#974): the publish grant on the MCP face ──────────────────────────
+
+#[tokio::test]
+async fn the_publish_grant_round_trips_and_an_omitted_field_revokes_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "mcpfp-grant").await;
+
+    // Stored canonically: deduped, and in the allowlist's own order, so
+    // ["user","anon","user"] and ["anon","user"] are one state with one spelling.
+    fp::set_file_policy(
+        &mcp,
+        "avatars/",
+        true,
+        false,
+        None,
+        None,
+        Some(vec!["user".into(), "anon".into(), "user".into()]),
+    )
+    .await
+    .unwrap();
+    let listed = policies(&mcp).await;
+    assert_eq!(
+        listed[0]["public_upload_roles"],
+        json!(["anon", "user"]),
+        "the grant must round-trip through list, canonicalized: {listed:?}"
+    );
+
+    // Replace-not-merge: the same rule re-registered WITHOUT the field revokes
+    // the grant, exactly as it clears a clause it was not passed. Anything else
+    // would make "tighten this rule" a call that silently keeps publishing open.
+    fp::set_file_policy(&mcp, "avatars/", true, false, None, None, None)
+        .await
+        .unwrap();
+    let listed = policies(&mcp).await;
+    assert!(
+        listed[0]["public_upload_roles"].is_null(),
+        "omitting the grant on a re-register must REVOKE it: {listed:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_illegal_grant_is_refused_with_the_shared_code_and_writes_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "mcpfp-grant-bad").await;
+
+    // "service" is the trap: a caller reasoning by analogy with the three token
+    // roles would expect it, but a service key never consults the registry, so
+    // accepting it would imply a rule could REVOKE service publishing.
+    for bad in [
+        vec!["service".to_string()],
+        vec!["admin".to_string()],
+        vec!["User".to_string()],
+        vec![],
+    ] {
+        let err = fp::set_file_policy(&mcp, "avatars/", true, false, None, None, Some(bad.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&err), "FILE_POLICY_INVALID", "{bad:?}");
+    }
+    assert!(
+        policies(&mcp).await.is_empty(),
+        "a refused grant must leave no rule behind — validation runs before the \
+         writer lock, same as every other refusal"
+    );
+}
+
+#[tokio::test]
+async fn the_grant_argument_advertises_a_string_array_not_any() {
+    // Same anti-drift rule the clause args carry (v1.58.6): an argument whose
+    // published schema is untyped invites clients to stringify it. This one is a
+    // plain Vec<String>, so schemars must render an array of strings.
+    let schema = serde_json::to_value(schemars::schema_for!(fp::SetFilePolicyArgs)).unwrap();
+    let g = &schema["properties"]["public_upload_roles"];
+    let rendered = g.to_string();
+    assert!(
+        rendered.contains("array"),
+        "public_upload_roles must advertise an array: {rendered}"
+    );
+    assert!(rendered.contains("string"), "…of strings: {rendered}");
+}
+
+#[tokio::test]
+async fn public_upload_grants_reports_only_granted_prefixes() {
+    // The ONE answer behind both the whoami block and the files-guide resource:
+    // if these two computed it separately they would eventually disagree about
+    // what "granted" means.
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "mcpfp-grants-list").await;
+
+    fp::set_file_policy(&mcp, "", false, true, None, None, None)
+        .await
+        .unwrap();
+    fp::set_file_policy(
+        &mcp,
+        "drop/",
+        false,
+        true,
+        None,
+        None,
+        Some(vec!["anon".into()]),
+    )
+    .await
+    .unwrap();
+
+    let grants = fp::public_upload_grants(&mcp).await.unwrap();
+    assert_eq!(
+        grants,
+        vec![("drop/".to_string(), vec!["anon".to_string()])],
+        "an ungranted rule must NOT appear — a listing that includes it reads as \
+         'these prefixes may publish'"
+    );
+
+    // An unreadable registry PROPAGATES rather than reading as "no grants":
+    // deny-everything and cannot-tell are different facts for a caller to render.
+    mcp.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
+        .await
+        .unwrap();
+    assert!(fp::public_upload_grants(&mcp).await.is_err());
+}
+
 #[tokio::test]
 async fn a_double_encoded_clause_string_is_accepted_like_the_object() {
     // v1.58.6: many MCP clients JSON-encode object-typed arguments. The clause
@@ -202,7 +336,7 @@ async fn a_double_encoded_clause_string_is_accepted_like_the_object() {
     let mcp = svc(&d, "mcpfp-str").await;
 
     let as_string = json!("{\"uploader\":{\"$auth\":\"id\"}}");
-    fp::set_file_policy(&mcp, "docs/", false, false, Some(as_string), None)
+    fp::set_file_policy(&mcp, "docs/", false, false, Some(as_string), None, None)
         .await
         .unwrap();
     let listed = policies(&mcp).await;
@@ -214,7 +348,7 @@ async fn a_double_encoded_clause_string_is_accepted_like_the_object() {
 
     // A clause that is neither an object nor a decodable string is refused,
     // with the hint rather than an opaque serde error.
-    let err = fp::set_file_policy(&mcp, "docs/", false, false, Some(json!(7)), None)
+    let err = fp::set_file_policy(&mcp, "docs/", false, false, Some(json!(7)), None, None)
         .await
         .unwrap_err();
     assert!(

@@ -208,6 +208,70 @@ async fn register_then_clear_a_prefix_rule() {
     assert_eq!(json["error_code"], "FILE_POLICY_NOT_FOUND");
 }
 
+/// v1.64 (#974) — the publish grant is admin-editable, and the card SHOWS it.
+///
+/// An operator who cannot see which prefixes may publish has no way to answer
+/// "why did this upload get refused / why is this file public", and the card is
+/// the only face an admin session can reach.
+#[tokio::test]
+async fn the_publish_grant_round_trips_through_the_card() {
+    let (app, tok, _d) = app().await;
+    create_tenant(&app, &tok, "fp5").await;
+
+    let (status, json) = post_json(
+        &app,
+        Some(&tok),
+        "/admin/tenants/fp5/_files/policies".into(),
+        serde_json::json!({
+            "prefix": "avatars/",
+            "owner_scoped": true,
+            "public_upload_roles": ["user", "anon"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register failed: {json}");
+
+    let (_, body) = page(&app, &tok, "fp5").await;
+    assert!(
+        body.contains(r#"data-policy-grant="anon, user""#),
+        "the card must render the grant, canonicalized: it is the only place an \
+         admin session can see who may publish"
+    );
+
+    // Re-register WITHOUT the field (what the card's own form sends when neither
+    // box is ticked) — the grant is revoked and the pill disappears.
+    let (status, _) = post_json(
+        &app,
+        Some(&tok),
+        "/admin/tenants/fp5/_files/policies".into(),
+        serde_json::json!({"prefix": "avatars/", "owner_scoped": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = page(&app, &tok, "fp5").await;
+    assert!(
+        body.contains(r#"data-policy-prefix="avatars/""#),
+        "the rule itself survives"
+    );
+    assert!(
+        !body.contains("data-policy-grant"),
+        "…but no prefix shows a grant pill once the grant is revoked"
+    );
+
+    // The admin face shares the one validator, so an illegal role is the same
+    // refusal here as over REST and MCP.
+    let (status, json) = post_json(
+        &app,
+        Some(&tok),
+        "/admin/tenants/fp5/_files/policies".into(),
+        serde_json::json!({"prefix": "avatars/", "owner_scoped": true,
+                           "public_upload_roles": ["service"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error_code"], "FILE_POLICY_INVALID");
+}
+
 /// The admin face reuses T3's `validate_file_policy` — it does not re-implement
 /// it. Both refusals therefore arrive with the registry's own codes.
 #[tokio::test]

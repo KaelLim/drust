@@ -55,9 +55,10 @@ async fn schema_resource_renders_via_reader_fn() {
 }
 
 #[tokio::test]
-async fn static_list_advertises_all_nine_resources() {
+async fn static_list_advertises_all_ten_resources() {
     let list = static_resource_list("blog");
-    assert_eq!(list.len(), 9, "9 static resources advertised");
+    // 9 (v1.56 M2) + the v1.64 files handbook.
+    assert_eq!(list.len(), 10, "10 static resources advertised");
     let json = serde_json::to_string(&list).unwrap();
     for path in [
         "schema",
@@ -69,6 +70,7 @@ async fn static_list_advertises_all_nine_resources() {
         "functions",
         "rpcs",
         "cron",
+        "files-guide.md",
     ] {
         assert!(
             json.contains(&format!("drust://blog/{path}")),
@@ -95,6 +97,7 @@ async fn all_static_resources_render_with_correct_mime() {
         ("drust://blog/functions", "application/json"),
         ("drust://blog/rpcs", "application/json"),
         ("drust://blog/cron", "application/json"),
+        ("drust://blog/files-guide.md", "text/markdown"),
     ] {
         let parsed = parse_resource_uri(uri, "blog").unwrap();
         let (body, m) = render_resource(&s, &parsed).await.unwrap();
@@ -119,6 +122,170 @@ async fn all_static_resources_render_with_correct_mime() {
             &body[..body.len().min(160)]
         );
     }
+}
+
+// ── v1.64 (#974): the files handbook ──────────────────────────────────────
+//
+// The user asked for the file rules to live in a DOCUMENT rather than in an
+// ever-fattening `whoami`, so what is pinned here is that the document really
+// carries the model (an agent that reads it needs no other source) and that its
+// live section reflects THIS tenant's registry — a handbook whose grant list is
+// stale or absent would send the reader back to guessing.
+
+/// Write one prefix rule straight through the registry kernel — the same
+/// function every write face calls, so the fixture cannot drift from what a
+/// real `set_file_policy` would store.
+async fn grant(s: &drust::mcp::server::DrustMcp, prefix: &str, roles: &[&str]) {
+    let row = drust::storage::file_policy::FilePolicyRow {
+        prefix: prefix.to_string(),
+        owner_scoped: false,
+        public_read: true,
+        select_policy: None,
+        delete_policy: None,
+        public_upload_roles: Some(roles.iter().map(|r| r.to_string()).collect()),
+    };
+    s.inner()
+        .pool
+        .with_writer(move |c| drust::storage::file_policy::upsert_file_policy(c, &row))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn files_guide_carries_the_grant_model_and_no_credentials() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let uri = parse_resource_uri("drust://blog/files-guide.md", "blog").unwrap();
+    assert_eq!(uri, ResourceUri::FilesGuide);
+    let (body, mime) = render_resource(&s, &uri).await.unwrap();
+    assert_eq!(mime, "text/markdown");
+
+    // (a) The grant model itself: the column, both role names, the longest-prefix
+    // rule, the outer cap gate, and the fact that absence denies.
+    for needle in [
+        "public_upload_roles",
+        "\"anon\"",
+        "\"user\"",
+        "LONGEST",
+        "upload` file cap",
+        "deny-by-default",
+    ] {
+        assert!(
+            body.contains(needle),
+            "the guide must explain the grant model — missing {needle:?}"
+        );
+    }
+    // (b) The two upload stations and the two buckets.
+    for needle in [
+        "multipart/form-data",
+        "tus 1.0",
+        "private bucket",
+        "public bucket",
+    ] {
+        assert!(
+            body.contains(needle),
+            "missing upload/visibility text {needle:?}"
+        );
+    }
+    // (c) The remediation the error code sends a reader here for, plus curl.
+    assert!(
+        body.contains("FILE_PUBLIC_UPLOAD_DENIED"),
+        "the guide must name the error it remedies"
+    );
+    assert!(
+        body.contains("list_file_policies") && body.contains("set_file_visibility"),
+        "remediation must name the tools that fix it: {body}"
+    );
+    assert!(
+        body.contains("curl -X PUT"),
+        "curl examples must be present"
+    );
+
+    // (d) NO credentials. A resource can be auto-pulled into model context, so
+    // tokens stay behind the whoami TOOL (mcp-surface rule) — the guide may only
+    // name the env-var placeholder and point at whoami.
+    assert!(
+        body.contains("whoami"),
+        "the guide must point at whoami for tokens"
+    );
+    assert!(
+        !body.contains("drust_svc_")
+            && !body.contains("drust_user_")
+            && !body.contains("Bearer dr"),
+        "the guide must never embed a real token: {body}"
+    );
+}
+
+#[tokio::test]
+async fn files_guide_lists_this_tenants_live_grants() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let uri = parse_resource_uri("drust://blog/files-guide.md", "blog").unwrap();
+
+    // A tenant with no grant is told so explicitly, not left with an empty table
+    // that reads like "the section failed to render".
+    let (body, _) = render_resource(&s, &uri).await.unwrap();
+    assert!(
+        body.contains("No prefix grants public upload"),
+        "an ungranted tenant must say so: {body}"
+    );
+
+    grant(&s, "avatars/", &["user"]).await;
+    grant(&s, "drop/", &["anon", "user"]).await;
+    let (body, _) = render_resource(&s, &uri).await.unwrap();
+    let live = body
+        .split("publish grants (live)")
+        .nth(1)
+        .expect("live section present");
+    assert!(
+        live.contains("`avatars/`") && live.contains("`drop/`"),
+        "both granted prefixes must be listed: {live}"
+    );
+    assert!(
+        live.contains("| user |") && live.contains("| anon, user |"),
+        "each prefix must show WHICH roles it grants: {live}"
+    );
+    assert!(
+        !live.contains("No prefix grants public upload"),
+        "the empty-state line must not survive alongside real rows: {live}"
+    );
+
+    // Revoking is visible in the same read — the point of a live section.
+    s.inner()
+        .pool
+        .with_writer(|c| drust::storage::file_policy::delete_file_policy(c, "avatars/").map(|_| ()))
+        .await
+        .unwrap();
+    let (body, _) = render_resource(&s, &uri).await.unwrap();
+    let live = body.split("publish grants (live)").nth(1).unwrap();
+    assert!(
+        !live.contains("`avatars/`") && live.contains("`drop/`"),
+        "a cleared rule must leave the guide's live list: {live}"
+    );
+}
+
+#[tokio::test]
+async fn files_guide_reports_an_unreadable_registry_instead_of_looking_ungranted() {
+    // Fail-closed is invisible in a document: "no grants" and "I could not read
+    // the registry" render the same unless the render says so — and the second
+    // one also means every non-service file READ is being denied.
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    s.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
+        .await
+        .unwrap();
+    let uri = parse_resource_uri("drust://blog/files-guide.md", "blog").unwrap();
+    let (body, _) = render_resource(&s, &uri).await.unwrap();
+    assert!(
+        body.contains("could not be read"),
+        "an unreadable registry must be reported, not rendered as 'no grants': {body}"
+    );
+    assert!(
+        !body.contains("No prefix grants public upload"),
+        "…and must NOT be reported as the ungranted-but-healthy state: {body}"
+    );
 }
 
 #[tokio::test]

@@ -766,7 +766,10 @@ impl DrustMcpService {
         to surface credentials needed for surfaces with no MCP tool — \
         most importantly the multipart file upload endpoint. Tokens \
         minted before v1.1c only stored the hash; their `plaintext` \
-        field is null and require an admin reroll to recover."
+        field is null and require an admin reroll to recover. \
+        `file_upload` names the `drust://<tenant>/files-guide.md` resource — \
+        read it before uploading files, it is where the upload endpoints, the \
+        visibility model and the publish grant are explained."
     )]
     async fn whoami(
         &self,
@@ -1690,9 +1693,15 @@ impl DrustMcpService {
         (FILE_POLICY_OPEN_REQUIRES_FLAG). `delete` defaults to the `select` \
         semantics. This is a SECOND gate under the per-verb file caps \
         (`set_file_caps`), never a replacement, and service keys bypass it. \
+        v1.64 — the same rule carries `public_upload_roles`, the PUBLISH GRANT: \
+        which non-service roles (\"anon\" / \"user\") may upload into this \
+        prefix with visibility=public. Absent grants nobody, and re-registering \
+        without it REVOKES an existing grant; read the \
+        `drust://<tenant>/files-guide.md` resource for the model and the \
+        FILE_PUBLIC_UPLOAD_DENIED remedy. \
         Errors: FILE_POLICY_PREFIX_INVALID, FILE_POLICY_OPEN_REQUIRES_FLAG, \
-        FILE_POLICY_OPERAND_UNSUPPORTED. EXAMPLE: \
-        {\"prefix\":\"avatars/\",\"owner_scoped\":true}."
+        FILE_POLICY_OPERAND_UNSUPPORTED, FILE_POLICY_INVALID. EXAMPLE: \
+        {\"prefix\":\"avatars/\",\"owner_scoped\":true,\"public_upload_roles\":[\"user\"]}."
     )]
     async fn set_file_policy(
         &self,
@@ -1702,6 +1711,7 @@ impl DrustMcpService {
             public_read,
             select,
             delete,
+            public_upload_roles,
         }): Parameters<file_policy_tools::SetFilePolicyArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_policy_tools::set_file_policy(
@@ -1711,6 +1721,7 @@ impl DrustMcpService {
             public_read,
             select,
             delete,
+            public_upload_roles,
         )
         .await
         {
@@ -1723,12 +1734,16 @@ impl DrustMcpService {
         annotations(read_only_hint = true),
         description = "v1.63 — List every registered file-access rule for this \
         tenant, ordered by prefix: {policies:[{prefix, owner_scoped, \
-        public_read, select?, delete?}]}. This is the tenant's file-access map — \
-        read it before changing one rule, since the LONGEST matching prefix \
-        decides a file and a deeper rule may already override the one you are \
-        editing. A tenant created on v1.63+ starts with a single seeded root \
-        rule (\"\" → public_read), which preserves pre-v1.63 behaviour until it \
-        is cleared or overridden."
+        public_read, select?, delete?, public_upload_roles?}]}. This is the \
+        tenant's file-access map — read it before changing one rule, since the \
+        LONGEST matching prefix decides a file and a deeper rule may already \
+        override the one you are editing. `public_upload_roles` is the v1.64 \
+        PUBLISH GRANT (which non-service roles may upload into that prefix with \
+        visibility=public; absent = nobody) — the \
+        `drust://<tenant>/files-guide.md` resource explains the model and how to \
+        clear FILE_PUBLIC_UPLOAD_DENIED. A tenant created on v1.63+ starts with \
+        a single seeded root rule (\"\" → public_read), which preserves \
+        pre-v1.63 behaviour until it is cleared or overridden."
     )]
     async fn list_file_policies(
         &self,
@@ -3186,6 +3201,10 @@ CAPABILITY GROUPS
      wins; owner_scoped / select FilterAst / public_read compose. Second gate UNDER the
      per-verb file caps; service keys bypass. A rule that restricts nothing is refused
      (FILE_POLICY_OPEN_REQUIRES_FLAG) — say public_read: true to mean "open".
+   HANDBOOK: read the resource drust://{tenant_id}/files-guide.md before uploading —
+     upload endpoints, the public/private model, the per-prefix publish grant
+     (public_upload_roles: which of anon/user may upload with visibility=public), the
+     FILE_PUBLIC_UPLOAD_DENIED remedy, and this tenant's live grants.
    Upload (small): single request — MCP has no upload tool by design. Use REST:
      POST {base}{bp}/t/{tenant_id}/files
      Header: Authorization: Bearer $DRUST_TOKEN

@@ -70,6 +70,17 @@ pub struct SetFilePolicyArgs {
     #[serde(default)]
     #[schemars(schema_with = "crate::query::vector_filter::filter_arg_json_schema")]
     pub delete: Option<Value>,
+    /// v1.64 — the PUBLISH GRANT: which non-service roles may upload a file
+    /// into this prefix with `visibility=public`. A subset of
+    /// `["anon","user"]`; omit it to grant nobody, which is the deny-by-default
+    /// state of every un-configured prefix. `"service"` is not a legal value —
+    /// a service key always publishes and no rule can revoke that.
+    /// Registering a prefix REPLACES its whole rule, so omitting this field on
+    /// a prefix that had a grant REVOKES the grant, exactly as it clears a
+    /// clause it was not passed. Read `drust://<tenant>/files-guide.md` for the
+    /// model and the `FILE_PUBLIC_UPLOAD_DENIED` remedy.
+    #[serde(default)]
+    pub public_upload_roles: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -106,6 +117,7 @@ pub async fn set_file_policy(
     public_read: bool,
     select: Option<Value>,
     delete: Option<Value>,
+    public_upload_roles: Option<Vec<String>>,
 ) -> anyhow::Result<Value> {
     let row = FilePolicyRow {
         prefix: prefix.to_string(),
@@ -113,11 +125,10 @@ pub async fn set_file_policy(
         public_read,
         select_policy: parse_clause("select", select)?,
         delete_policy: parse_clause("delete", delete)?,
-        // #974 T1: the MCP face does not accept the publish grant yet (T3 adds
-        // the parameter + codegen). `None` here is not a default — it is this
-        // tool REVOKING any grant the prefix had, exactly as it already clears
-        // a select clause it was not passed. T3 makes the field explicit.
-        public_upload_roles: None,
+        // #974 T3: absent is not a default — it REVOKES any grant the prefix
+        // had, exactly as an unpassed clause is cleared. Replace-not-merge is
+        // the semantics every field of this row already has.
+        public_upload_roles,
     };
     // `FilePolicyError: Display` is `CODE: why`, which `bail_mcp` splits into
     // `error_code` + message — the same code the REST face puts in its body.
@@ -143,6 +154,29 @@ pub async fn list_file_policies(s: &DrustMcp) -> anyhow::Result<Value> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(json!({ "policies": policies }))
+}
+
+/// Every prefix that currently grants public upload to a non-service role, as
+/// `(prefix, roles)` in prefix order (v1.64, #974).
+///
+/// ONE answer to "who may publish here", shared by the `files-guide.md`
+/// resource's live section and the `whoami` tool's `file_upload` block — two
+/// surfaces the user asked for precisely so an agent can see the current state,
+/// and two places that must therefore not compute it differently. Reads on the
+/// pooled reader like the `list` tool; a storage failure PROPAGATES (each caller
+/// decides how to render it) rather than reading as "no grants", which is the
+/// same fact as a fully revoked tenant.
+pub async fn public_upload_grants(s: &DrustMcp) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+    let policies = s
+        .inner()
+        .pool
+        .with_reader(load_file_policies)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(policies
+        .into_iter()
+        .filter_map(|p| p.public_upload_roles.map(|roles| (p.prefix, roles)))
+        .collect())
 }
 
 /// Remove one prefix rule. Clearing a prefix that has no rule is

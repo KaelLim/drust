@@ -11,6 +11,13 @@
 //! registry IS the tenant's file-access map, and handing it to an end user is a
 //! reconnaissance gift even where they cannot write it.
 //!
+//! The body of `PUT` is [`FilePolicyRow`] itself, so the wire shape grows with
+//! the row: v1.64 (#974) added the optional `public_upload_roles` publish grant
+//! (a subset of `["anon","user"]`, absent = nobody), which `validate_file_policy`
+//! checks here exactly as it does on the MCP and admin faces and `GET` reads
+//! back. There is no per-field handling to write — and there must not be, or
+//! this face would be the one that forgets a future column.
+//!
 //! The prefix travels as a QUERY parameter on DELETE, not a path segment,
 //! because a prefix contains `/` and the tenant root is the EMPTY string —
 //! neither survives a path segment. An absent `prefix` parameter is refused

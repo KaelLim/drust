@@ -72,6 +72,10 @@ struct AdminFilePolicyView {
     /// still be legible here rather than silently summarized as "no rule".
     select_json: Option<String>,
     delete_json: Option<String>,
+    /// v1.64 (#974) — the publish grant, pre-joined for display (`"anon, user"`).
+    /// `None` = the prefix grants nobody, which is the deny-by-default state and
+    /// renders as no pill at all.
+    public_upload_roles: Option<String>,
 }
 
 #[derive(Template)]
@@ -181,6 +185,7 @@ fn policy_views(policies: &[FilePolicyRow]) -> Vec<AdminFilePolicyView> {
                 .delete_policy
                 .as_ref()
                 .and_then(|a| serde_json::to_string(a).ok()),
+            public_upload_roles: p.public_upload_roles.as_ref().map(|r| r.join(", ")),
         })
         .collect()
 }

@@ -113,6 +113,22 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
     );
     let svc = reg.get_or_create("blog").await.unwrap();
 
+    // v1.64 (#974): one granted prefix, so the `file_upload` block has something
+    // live to report.
+    let row = drust::storage::file_policy::FilePolicyRow {
+        prefix: "avatars/".to_string(),
+        owner_scoped: true,
+        public_read: false,
+        select_policy: None,
+        delete_policy: None,
+        public_upload_roles: Some(vec!["user".to_string()]),
+    };
+    svc.inner()
+        .pool
+        .with_writer(move |c| drust::storage::file_policy::upsert_file_policy(c, &row))
+        .await
+        .unwrap();
+
     let v = whoami(&svc).await.unwrap();
     assert_eq!(v["tenant_id"], "blog");
     assert_eq!(v["tenant_name"], "Blog Tenant");
@@ -127,6 +143,56 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
     assert_eq!(v["endpoints"]["rest_base"], "/drust/t/blog/");
     assert_eq!(v["endpoints"]["rpc"], "/drust/t/blog/rpc/<name>");
     assert_eq!(v["limits"]["max_upload_bytes"], 12_345);
+
+    // v1.64 (#974) — a SIGNPOST, not a manual. The user rejected a whoami that
+    // grows a paragraph per feature: this block may only name the guide resource
+    // and this tenant's live grants, and the rules stay in the guide.
+    let fu = &v["file_upload"];
+    assert_eq!(
+        fu["guide_resource"], "drust://blog/files-guide.md",
+        "whoami must point at the files handbook: {fu}"
+    );
+    assert_eq!(
+        fu["granted_prefixes"],
+        serde_json::json!([{ "prefix": "avatars/", "roles": ["user"] }]),
+        "the live grant list is the other half of the signpost: {fu}"
+    );
+    let keys: Vec<&String> = fu.as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys.len(),
+        2,
+        "the block stays two keys — rules belong in the guide, not here: {keys:?}"
+    );
+    // Prose-heaviness is what was rejected, so pin it as a size: the whole block
+    // must stay far smaller than one paragraph of rules.
+    let rendered = fu.to_string();
+    assert!(
+        rendered.len() < 300,
+        "file_upload must stay lean ({} bytes): {rendered}",
+        rendered.len()
+    );
+
+    // An unreadable registry reports `null`, never `[]`: "nobody may publish"
+    // and "I could not find out" are different facts, and the second one also
+    // means every non-service file READ is currently being denied.
+    svc.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
+        .await
+        .unwrap();
+    let v = whoami(&svc).await.unwrap();
+    assert!(
+        v["file_upload"]["granted_prefixes"].is_null(),
+        "an unreadable registry must not render as the empty (healthy) list: {v}"
+    );
+    assert_eq!(
+        v["file_upload"]["guide_resource"], "drust://blog/files-guide.md",
+        "…and the signpost still points somewhere useful"
+    );
+    assert_eq!(
+        v["tokens"]["service"]["plaintext"], "drust_svc_plain",
+        "whoami's own job must survive a broken file registry"
+    );
 }
 
 #[tokio::test]

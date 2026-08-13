@@ -279,6 +279,153 @@ async fn service_registers_lists_and_clears_a_prefix_policy() {
     assert_eq!(body["error_code"], "FILE_POLICY_NOT_FOUND");
 }
 
+// ─── (a2) v1.64 (#974): the publish grant on the REST face ───────────────────
+//
+// The registry is the tenant's file-access map, and from v1.64 it is also its
+// PUBLISH map — the config face has to carry the new column or the enforcement
+// T2 wired has no door an operator can reach over HTTP.
+
+#[tokio::test]
+async fn the_publish_grant_round_trips_through_put_and_get() {
+    let tid = "fp-grant";
+    let s = stack(tid).await;
+
+    // Deliberately messy input: duplicated and in the wrong order. It must come
+    // back canonical, because the stored bytes are what the upload station
+    // compares against and two spellings of one state is how the two drift.
+    let (status, body) = put_policy(
+        &s.app,
+        tid,
+        &s.service,
+        json!({
+            "prefix": "avatars/",
+            "owner_scoped": true,
+            "public_upload_roles": ["user", "anon", "user"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registering with a grant: {body}");
+
+    let (_, body) = list_policies(&s.app, tid, &s.service).await;
+    let avatars = body["policies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["prefix"] == "avatars/")
+        .unwrap_or_else(|| panic!("avatars/ must be listed, got {body}"))
+        .clone();
+    assert_eq!(
+        avatars["public_upload_roles"],
+        json!(["anon", "user"]),
+        "GET must read the grant back, canonicalized: {body}"
+    );
+
+    // An un-granted rule reports the field as null, never as an empty array or
+    // an absent key: "grants nobody" is a state a reader must be able to SEE.
+    put_policy(
+        &s.app,
+        tid,
+        &s.service,
+        json!({"prefix": "docs/", "public_read": true}),
+    )
+    .await;
+    let (_, body) = list_policies(&s.app, tid, &s.service).await;
+    let docs = body["policies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["prefix"] == "docs/")
+        .unwrap()
+        .clone();
+    assert!(
+        docs.get("public_upload_roles").is_some() && docs["public_upload_roles"].is_null(),
+        "an ungranted rule reports null, with the key present: {docs}"
+    );
+
+    // Replace-not-merge: re-registering the same prefix without the field is a
+    // REVOKE. Any other reading would make "tighten this rule" silently keep
+    // publishing open.
+    let (status, _) = put_policy(
+        &s.app,
+        tid,
+        &s.service,
+        json!({"prefix": "avatars/", "owner_scoped": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = list_policies(&s.app, tid, &s.service).await;
+    let avatars = body["policies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["prefix"] == "avatars/")
+        .unwrap()
+        .clone();
+    assert!(
+        avatars["public_upload_roles"].is_null(),
+        "omitting the grant on a re-register REVOKES it: {avatars}"
+    );
+}
+
+#[tokio::test]
+async fn an_illegal_grant_is_a_400_and_writes_nothing() {
+    let tid = "fp-grant-bad";
+    let s = stack(tid).await;
+
+    for bad in [
+        json!(["service"]), // the trap: service never consults the registry
+        json!(["admin"]),
+        json!(["User"]), // role names are exact, not case-folded
+        json!([]),       // "granted to nobody" already has a spelling: absent
+    ] {
+        let (status, body) = put_policy(
+            &s.app,
+            tid,
+            &s.service,
+            json!({"prefix": "avatars/", "owner_scoped": true, "public_upload_roles": bad}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} must be refused");
+        assert_eq!(body["error_code"], "FILE_POLICY_INVALID", "{bad}");
+    }
+    assert!(
+        policy_rows(s.dir.path(), tid)
+            .iter()
+            .all(|(p, _, _)| p != "avatars/"),
+        "a refused grant must leave no rule behind — validation runs before the \
+         writer lock, exactly like the other refusals"
+    );
+}
+
+#[tokio::test]
+async fn the_grant_face_is_service_only_like_every_other_verb() {
+    // The grant decides who may put bytes in the PUBLIC bucket, which is a
+    // permanent escape from every per-file gate — so a non-service caller able
+    // to set it would be handing itself the escape.
+    let tid = "fp-grant-authz";
+    let s = stack(tid).await;
+    let user = user_token(&s.app, tid).await;
+
+    for token in [&s.anon, &user] {
+        let (status, body) = put_policy(
+            &s.app,
+            tid,
+            token,
+            json!({"prefix": "avatars/", "owner_scoped": true,
+                   "public_upload_roles": ["anon", "user"]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error_code"], "WRITE_DENIED");
+    }
+    assert!(
+        policy_rows(s.dir.path(), tid)
+            .iter()
+            .all(|(p, _, _)| p != "avatars/"),
+        "no rule may exist after a refused non-service write"
+    );
+}
+
 // ─── (b) the clause-less shape needs the explicit flag ───────────────────────
 
 #[tokio::test]
