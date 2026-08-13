@@ -1138,7 +1138,7 @@ async fn tus_granted_public_survives_create_through_finalize() {
     assert_eq!(path.as_deref(), Some("drop/a.bin"));
 }
 
-/// The half of v1.63 that v1.63.1 KEEPS: silence from a non-service caller is
+/// The half of v1.63 that v1.64 KEEPS: silence from a non-service caller is
 /// `private`, decided by the caller-not-service arm rather than by the station
 /// default (which happens to agree here — the Mode-A twin above is where the
 /// two differ).

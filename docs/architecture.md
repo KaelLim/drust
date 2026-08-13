@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-08-12
+updated: 2026-08-13
 generated_by: docs/gen-architecture.py
 ---
 
@@ -22,19 +22,19 @@ generated_by: docs/gen-architecture.py
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
 | [`(root)/`](#srcroot) | 6 | 34 | 3 | 30 |
-| [`auth/`](#srcauth) | 10 | 53 | 3 | 45 |
+| [`auth/`](#srcauth) | 10 | 53 | 3 | 46 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 26 | 203 | 83 | 43 |
-| [`mgmt/`](#srcmgmt) | 42 | 375 | 116 | 53 |
+| [`mcp/`](#srcmcp) | 26 | 206 | 83 | 43 |
+| [`mgmt/`](#srcmgmt) | 42 | 376 | 116 | 53 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 65 | 14 | 39 |
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
-| [`storage/`](#srcstorage) | 18 | 182 | 22 | 106 |
+| [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
 | [`tenant/`](#srctenant) | 37 | 273 | 116 | 69 |
 
 ## Group dependency graph
@@ -188,13 +188,13 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 6 pub
 - [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
-- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 10 pub
+- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 12 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
 - [`tools/batch.rs`](../src/mcp/tools/batch.rs) — M2 — batch insert (+ upsert, next task), service-only on both faces. · 8 pub
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
-- [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 5 pub
+- [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 6 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
 - [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
@@ -229,7 +229,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`format.rs`](../src/mgmt/format.rs) — Small formatting helpers shared across the admin UI. · 1 pub
 - [`frame_guard.rs`](../src/mgmt/frame_guard.rs) — v1.58 P1-11 — deny framing of the admin plane. · 1 pub
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
-- [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 9 pub
+- [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
 - [`mod.rs`](../src/mgmt/mod.rs) — 35 pub
@@ -317,8 +317,8 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`blast_radius.rs`](../src/storage/blast_radius.rs) — v1.26 — Pure read helpers that compute the side effects of a · 8 pub
 - [`disk.rs`](../src/storage/disk.rs) — Filesystem statistics helper used by upload handlers to enforce the · 4 pub
 - [`file_path.rs`](../src/storage/file_path.rs) — Logical file-path grammar for Files RLS (#950-B). · 6 pub
-- [`file_policy.rs`](../src/storage/file_policy.rs) — Files-RLS prefix policy registry (#950-B, v1.63) — the `_system_file_policy` · 16 pub
-- [`files.rs`](../src/storage/files.rs) — Shared file-storage helpers used by both admin and tenant upload flows. · 20 pub
+- [`file_policy.rs`](../src/storage/file_policy.rs) — Files-RLS prefix policy registry (#950-B, v1.63) — the `_system_file_policy` · 21 pub
+- [`files.rs`](../src/storage/files.rs) — Shared file-storage helpers used by both admin and tenant upload flows. · 22 pub
 - [`garage.rs`](../src/storage/garage.rs) — Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the · 5 pub
 - [`janitor.rs`](../src/storage/janitor.rs) — 7 pub
 - [`meta.rs`](../src/storage/meta.rs) — 3 pub
