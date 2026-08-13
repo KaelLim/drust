@@ -148,6 +148,7 @@ storage = "儲存"
 disabled = "已停用"
 [common.unit]
 # REVIEW (low confidence): unit suffix, context-dependent
+row = "筆"
 rows = "筆"
 tables = "資料表"
 
@@ -1267,6 +1268,7 @@ write_warning = "這支 RPC 一旦 commit 會修改資料。"
 columns_unit = "欄"
 error_title = "查詢錯誤"
 heading = "結果"
+row_unit = "列"
 rows_unit = "列"
 total_unit = "總計"
 truncated = "已截斷"

@@ -495,14 +495,55 @@ pub fn authorize_file(
         // (d) Reaching here with no clause means `public_read=1` or
         // `owner_scoped=1` already answered the question.
         None => true,
-        // Strictly `true`: `eval_policy` collapses Kleene Unknown (an anon
-        // `$auth`, a NULL column) to false for us, and that is the direction
-        // this must round in.
-        Some(ast) => crate::query::policy::eval_policy(
-            ast,
-            row_map,
-            &crate::query::policy::PolicyCtx::from_auth(auth),
-        ),
+        Some(ast) => {
+            let ctx = crate::query::policy::PolicyCtx::from_auth(auth);
+            // (e) The compile gate — the SAME predicate `decision_sql` applies
+            // (#973). A clause the compiler refuses denies the prefix over
+            // there; `eval_policy` has no field allowlist and answers from the
+            // row map BY KEY, so without this the two faces disagreed on a
+            // hand-INSERTed clause naming a column outside the synthetic
+            // schema: `{"meta_json":{"$is_null":true}}` reads as TRUE in memory
+            // (the key is present and NULL) while the list SQL hides the row —
+            // a single-file fail-OPEN. Running the compile here and throwing
+            // the SQL away costs one pass over a tiny AST and buys lockstep BY
+            // CONSTRUCTION rather than by two matching enumerations. It cannot
+            // refuse a clause the write face accepted: `validate_policy`
+            // compiles every `using` clause before storing it, and compile
+            // failures do not depend on the caller (`$auth` resolves to NULL
+            // for anon, never an error).
+            if compile_file_clause(&p.prefix, ast, &ctx).is_none() {
+                return false;
+            }
+            // Strictly `true`: `eval_policy` collapses Kleene Unknown (an anon
+            // `$auth`, a NULL column) to false for us, and that is the
+            // direction this must round in.
+            crate::query::policy::eval_policy(ast, row_map, &ctx)
+        }
+    }
+}
+
+/// Compile one stored clause against the synthetic file schema, or `None` when
+/// the compiler refuses it — the shared refusal both evaluators route through.
+///
+/// A refusal means "this prefix denies", never "drop the clause and keep the
+/// arm": the only rows that can carry an uncompilable clause are legacy or
+/// hand-INSERTed ones (the write face compiles every clause before storing it),
+/// and honouring half of such a rule is the fail-OPEN direction.
+fn compile_file_clause(
+    prefix: &str,
+    ast: &FilterAst,
+    ctx: &crate::query::policy::PolicyCtx,
+) -> Option<(String, Vec<rusqlite::types::Value>)> {
+    match compile_policy_using(&file_policy_schema(), ast, ctx) {
+        Ok(compiled) => Some(compiled),
+        Err(e) => {
+            tracing::error!(
+                prefix = %prefix,
+                error = %e,
+                "file policy clause would not compile — denying the prefix"
+            );
+            None
+        }
     }
 }
 
@@ -633,7 +674,7 @@ fn owner_sql(
     "(\"uploader\" = ?)".to_string()
 }
 
-/// The per-prefix verdict — step (a)–(d) of [`authorize_file`] as SQL.
+/// The per-prefix verdict — steps (a)–(e) of [`authorize_file`] as SQL.
 fn decision_sql(
     p: &FilePolicyRow,
     auth: &crate::auth::middleware::AuthCtx,
@@ -644,28 +685,18 @@ fn decision_sql(
         return "(0=1)".to_string();
     }
     // Compile BEFORE pushing anything: a mid-arm bail-out after a push would
-    // desynchronize binds from placeholders for the whole statement.
+    // desynchronize binds from placeholders for the whole statement. A stored
+    // clause the compiler refuses (a hand-INSERTed row naming a column outside
+    // the synthetic schema) denies the prefix — dropping the clause and keeping
+    // the arm would publish it, and `authorize_file` step (e) refuses the same
+    // clause through the same helper.
     let compiled = match &p.select_policy {
         None => None,
         Some(ast) => {
-            match compile_policy_using(
-                &file_policy_schema(),
-                ast,
-                &crate::query::policy::PolicyCtx::from_auth(auth),
-            ) {
-                Ok(c) => Some(c),
-                // A stored clause the compiler refuses (a hand-INSERTed row
-                // naming a column outside the synthetic schema). Denying the
-                // prefix is the fail-closed direction; dropping the clause and
-                // keeping the arm would publish it.
-                Err(e) => {
-                    tracing::error!(
-                        prefix = %p.prefix,
-                        error = %e,
-                        "file policy clause would not compile — denying the prefix"
-                    );
-                    return "(0=1)".to_string();
-                }
+            let ctx = crate::query::policy::PolicyCtx::from_auth(auth);
+            match compile_file_clause(&p.prefix, ast, &ctx) {
+                Some(c) => Some(c),
+                None => return "(0=1)".to_string(),
             }
         }
     };
@@ -1312,6 +1343,62 @@ mod tests {
             authorize_file(&ps, &without_key, &user("u-alice"), FileAccess::Read),
             "documents the fail-OPEN a missing key produces — which is why the \
              row map is built from the full FileRow and never hand-assembled"
+        );
+    }
+
+    #[test]
+    fn a_clause_the_compiler_refuses_denies_the_single_file_face_too() {
+        // #973. The list face collapses such an arm to `0=1`
+        // (`an_uncompilable_clause_denies_its_prefix` in
+        // tests/file_policy_expression.rs); this is the other evaluator. Both
+        // clauses below name a column deliberately kept OUT of the synthetic
+        // schema, so neither can reach the table through the write face — but
+        // both used to ADMIT here, because `eval_policy` has no field
+        // allowlist and answers from the row map by key:
+        //   * `meta_json` is present-and-NULL on every row map ⇒ `$is_null`
+        //     was TRUE,
+        //   * an entirely unknown key is missing ⇒ reads as Null ⇒ TRUE.
+        // Either one was a single-file read the list face hid — a fail-OPEN.
+        for clause in [
+            serde_json::json!({"meta_json": {"$is_null": true}}),
+            serde_json::json!({"no_such_column": {"$is_null": true}}),
+            serde_json::json!({"content_disposition": {"$is_null": true}}),
+        ] {
+            let mut p = row("x/");
+            p.owner_scoped = false;
+            p.select_policy = Some(ast(clause.clone()));
+            assert!(
+                validate_file_policy(&p).is_err(),
+                "{clause} must be unreachable through the write face, or this \
+                 test is pinning a shape operators can legitimately create"
+            );
+            let ps = vec![p];
+            let row_map = file_row(Some("x/secret.bin"), "u-alice");
+            for access in [FileAccess::Read, FileAccess::Delete] {
+                assert!(
+                    !authorize_file(&ps, &row_map, &user("u-alice"), access),
+                    "{clause} must deny — the uploader included, exactly as the \
+                     compiled arm's `0=1` denies every row under the prefix"
+                );
+                assert!(!authorize_file(&ps, &row_map, &AuthCtx::Anon, access));
+            }
+        }
+
+        // The delete side inherits the select clause when it has none of its
+        // own, so the refusal must travel with it rather than being skipped.
+        let mut p = row("x/");
+        p.owner_scoped = false;
+        p.public_read = true;
+        p.delete_policy = Some(ast(serde_json::json!({"meta_json": "x"})));
+        let ps = vec![p];
+        let row_map = file_row(Some("x/secret.bin"), "u-alice");
+        assert!(
+            authorize_file(&ps, &row_map, &user("u-alice"), FileAccess::Read),
+            "the read side is governed by public_read and is untouched"
+        );
+        assert!(
+            !authorize_file(&ps, &row_map, &user("u-alice"), FileAccess::Delete),
+            "an uncompilable DELETE clause denies the delete"
         );
     }
 

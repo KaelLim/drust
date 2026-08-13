@@ -104,7 +104,7 @@ reachable by an untrusted caller.
 | `/t/<id>/records:batch`, `records:upsert` | **service only** on both REST and MCP |
 | `/t/<id>/collections/<c>/subscribe` (SSE) | anon, gated on `realtime_enabled` AND `anon_caps[select]` AND any select policy |
 | `/t/<id>/realtime` (WS rooms) | subscribe: anyone with a tenant token. publish: service, unless the per-tenant publish flags are on |
-| `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer` **AND** per-file gated by the prefix policy registry (`authorize_file` on read/delete, `build_file_list_filter` on list) — the two AND; `sign` and set-visibility stay service-only |
+| `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer` **AND** per-file gated by the prefix policy registry (`authorize_file` on read/delete, `build_file_list_filter` on list) — the two AND. Uploading with `visibility=public` needs a third thing on top: the matching prefix rule's `public_upload_roles` grant (invariant 19). `sign` and set-visibility stay service-only |
 | `/t/<id>/file-policies` (PUT / GET / DELETE) | **service only** on every verb, list included — the registry IS the tenant's file-access map |
 | `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
 | `/t/<id>/rpc/<name>` (`kind='query'`) | service; anon/user when `anon_callable` — runs a stored `FilterAst` template through the `/list` pipeline under the **caller's** identity, so owner-scope + RLS policy apply by construction (the structured camp; `RPC_ANON_OWNER_SCOPED` does not apply) |
@@ -326,12 +326,18 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     one asking for `public` without a grant is REFUSED with `FILE_PUBLIC_UPLOAD_DENIED`,
     never silently downgraded. Deny-by-default in all four directions (no matching rule, no
     grant on the matching rule, an unreadable registry, an unfiled upload with no root grant),
-    which is why the release ships a one-time grandfather grant on each existing tenant's root
-    rule. The edge station declares no `path`, so only the ROOT rule can ever grant it. Two
-    earlier shapes were replaced and neither shipped: v1.63.0's blanket refusal
-    (`FILE_VISIBILITY_SERVICE_ONLY`, deleted — it put publishing behind the god-mode service
-    key) and v1.63.1's "explicit is always honored" (no lever between "may upload" and "may
-    publish"). Service short-circuits before the registry is read, so a broken registry never
+    which is why v1.64 ships a one-time grandfather grant (`seed_public_upload_grant`, marker
+    `tenants.public_upload_seeded`) putting `["anon","user"]` on each EXISTING tenant's root
+    rule — an upgrade is a non-event for callers publishing today, while a tenant created
+    after v1.64 is stamped seeded with NO grant and is therefore deny-by-default. A tenant
+    that cleared its root rule is SKIPPED, never re-INSERTed: the row that would have to be
+    invented is clause-less, and a clause-less row DENIES every READ on both evaluators, so
+    granting publish would have broken reading. The edge station declares no `path`, so only
+    the ROOT rule can ever grant it. Two
+    earlier shapes were replaced: v1.63.0's blanket refusal (`FILE_VISIBILITY_SERVICE_ONLY`,
+    tagged and then deleted — it put publishing behind the god-mode service key) and
+    v1.63.1's "explicit is always honored" (never tagged; folded into the v1.64.0 CHANGELOG
+    entry — it left no lever between "may upload" and "may publish"). Service short-circuits before the registry is read, so a broken registry never
     blocks the recovery path. The two after-the-fact doors,
     `PATCH` set-visibility and `sign`, remain **service-only** — `sign` because a signed URL
     is redeemed with no caller at all (`signed_bytes.rs`), so authorization can only happen at
@@ -345,6 +351,11 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     wins. `authorize_file` (single file: `get_one`, bytes, `delete_one`, edge `get-file`)
     and `build_file_list_filter` (the `list` SQL) must admit exactly the same rows — the
     invariant-12 rule, second pair — pinned by the `tests/file_policy_expression.rs` corpus.
+    Both run the SAME `compile_file_clause` before deciding, and a clause the compiler
+    refuses DENIES its prefix on both: `eval_policy` has no field allowlist and answers from
+    the row map by key, so a hand-INSERTed clause over a column outside the synthetic schema
+    (`meta_json` is present-and-NULL on every row map) used to read as TRUE in memory while
+    the list SQL hid the row — a single-file fail-OPEN (#973).
     Four things fail CLOSED and must stay that way: no matching prefix ⇒ owner-scoped
     (`uploader == $auth`); a clause-less row (`owner_scoped=0`, no select clause,
     `public_read=0`) DENIES rather than meaning "unrestricted"; an unreadable registry or an

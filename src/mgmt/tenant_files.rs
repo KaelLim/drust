@@ -861,8 +861,20 @@ pub async fn list(
     };
 
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    // Collected through `Result`, never `filter_map(|r| r.ok())` (#973): a
+    // decode failure is an OUTAGE, and silently dropping the row would answer
+    // a 200 that is indistinguishable from "you may see fewer files" — the
+    // same reasoning the registry-read failure above is a 500 for, and the
+    // reason `file_count` / `used_bytes` (derived from these rows) would
+    // otherwise be quietly wrong.
     let rows: Vec<FileRow> = match stmt.query_map(&refs[..], map_file_row) {
-        Ok(it) => it.filter_map(|r| r.ok()).collect(),
+        Ok(it) => match it.collect::<rusqlite::Result<Vec<FileRow>>>() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "file row decode failed — refusing to list");
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("db row: {e}")).into_response();
+            }
+        },
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("db query: {e}")).into_response();
         }

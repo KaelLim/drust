@@ -357,6 +357,20 @@ fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
     let re =
         regex_lite::Regex::new(r#"t\s*\.\s*(?:s|fmt[0-9]*(?:_html)?)\s*\(\s*"([A-Za-z0-9_.]+)""#)
             .expect("compile i18n scan regex");
+    // `t.plural(<count>, "one", "other")` (#973) — the count comes FIRST, so
+    // neither key is the first argument and the surface regex above cannot see
+    // either half. Both are checked and both count as used; without this arm
+    // the singular form would be a missing-key build failure waiting for
+    // whoever adds the next one, and the plural form a phantom orphan.
+    //
+    // The gap between `(` and the first key is `[^"]*?`, NOT `[^)]*?`: a count
+    // expression routinely contains parentheses (`o.explain_rows.len()`), and
+    // that call site silently stopped matching — its keys only survived because
+    // another line on the same page happened to reference them.
+    let re_plural = regex_lite::Regex::new(
+        r#"t\s*\.\s*plural\s*\([^"]*?"([A-Za-z0-9_.]+)"\s*,\s*"([A-Za-z0-9_.]+)""#,
+    )
+    .expect("compile i18n plural scan regex");
 
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -383,6 +397,14 @@ fn scan_template_keys(dir: &Path) -> BTreeMap<String, Vec<(String, usize)>> {
                 out.entry(key)
                     .or_default()
                     .push((path.display().to_string(), line_idx + 1));
+            }
+            for cap in re_plural.captures_iter(line) {
+                for idx in [1, 2] {
+                    let key = cap.get(idx).unwrap().as_str().to_string();
+                    out.entry(key)
+                        .or_default()
+                        .push((path.display().to_string(), line_idx + 1));
+                }
             }
         }
     }

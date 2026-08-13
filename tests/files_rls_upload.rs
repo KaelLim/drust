@@ -11,7 +11,9 @@
 //!    that said nothing silently published. That half is fixed and stays
 //!    fixed: a non-service caller who omits the field gets `private`. What an
 //!    EXPLICIT `public` from a non-service caller means went through three
-//!    shapes and only the third shipped: v1.63.0 refused it outright
+//!    shapes, and the third is the one that stands (the first was tagged as
+//!    v1.63.0 and reverted; the second was never tagged): v1.63.0 refused it
+//!    outright
 //!    (`FILE_VISIBILITY_SERVICE_ONLY` — publishing reachable only with the
 //!    god-mode service key), v1.63.1 honored it always (no lever between "may
 //!    upload" and "may publish"), and **v1.64 (#974) makes it a per-prefix

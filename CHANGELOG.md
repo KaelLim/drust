@@ -1,38 +1,118 @@
-## v1.63.1 — 2026-08-13
+## v1.64.0 — 2026-08-13
 
-Hotfix reverting one v1.63.0 decision: **a non-service caller asking explicitly for
-`visibility=public` at upload is honored again.** v1.63.0 refused it
-(`FILE_VISIBILITY_SERVICE_ONLY`), which in practice put the public bucket behind the
-god-mode service key — a tenant's own frontend or backoffice had to embed a full-tenant
-credential just to upload a public avatar, a worse posture than the thing the refusal was
-protecting. Nothing else in the Files RLS release moves.
+**Publishing becomes a per-prefix grant (#974).** v1.63.0 made "may this caller upload a
+`public` object" a hardcoded role check — service only (`FILE_VISIBILITY_SERVICE_ONLY`) —
+which put the public bucket behind the god-mode key: a tenant's own frontend had to embed a
+full-tenant credential to upload an avatar. This release replaces that decision with the
+shape the READ side already uses: a rule an operator writes. `_system_file_policy` gains
+`public_upload_roles`, and the longest prefix rule matching the upload's declared `path`
+decides which non-service roles may publish into it. Supabase's model — an INSERT policy's
+`TO <roles>`, with the path condition carried by the prefix — rather than a constant in the
+binary. Publishing therefore AND-composes two gates exactly as reading does: the tenant-wide
+`upload` cap outside, the per-prefix rule inside.
+
+**Existing tenants see no behaviour change**: a one-time boot backfill grants each one's
+ROOT rule `["anon","user"]`, which is precisely the v1.62 rule ("the upload cap is the only
+door"). Tenants created after v1.64 start with no grant at all — deny-by-default, one `PUT`
+away from opening a folder.
+
+*(This entry absorbs the unreleased v1.63.1 hotfix, which reverted v1.63.0's refusal to
+"an explicit `public` is always honored". It was never tagged or deployed; its one durable
+half — a non-service caller that says NOTHING gets `private` — is described under Changed
+below, and its interim "explicit is always honored" arm is superseded by the grant.)*
+
+### Added
+
+- **`_system_file_policy.public_upload_roles`** (nullable TEXT, JSON array of `"anon"` /
+  `"user"`; NULL = nobody). Landed in both DDL copies — the shared `CREATE` const for new
+  tenants and an `add_column_if_missing` in `migrate_tenant_db` for tenants that already
+  carry the v1.63 registry. One canonicalizer (`canonical_public_upload_roles`) serves the
+  write face, the `upsert`, and the re-check `load_file_policies` runs on what it read back,
+  so a grant the API would refuse — an empty array, `"service"`, `"admin"`, any unknown name
+  — cannot be honoured just because it reached the table by hand: a bad stored value fails
+  the LOAD, which every caller maps to a refusal. New error code `FILE_POLICY_INVALID`.
+- **`FILE_PUBLIC_UPLOAD_DENIED`** (403 on REST, host-op `Err` on the edge station) — a
+  non-service caller asking for `public` without a grant is REFUSED, never silently
+  downgraded to `private`. The message points at the file-policies face without disclosing
+  the registry's shape.
+- **`tenants.public_upload_seeded`** (meta) — the run-once marker for the grandfather grant,
+  same pattern as `file_policy_seeded`.
+- **MCP resource `drust://<tenant>/files-guide.md`** (9 static resources → 10, tool count
+  unchanged at 76): a Markdown handbook covering the upload stations, the public/private
+  model, the grant model, the `FILE_PUBLIC_UPLOAD_DENIED` remedy and curl examples — with
+  the tenant's currently-granted prefixes appended AT READ TIME, so one read answers both
+  "what is the rule" and "what is true here". An unreadable registry is reported in the
+  document rather than rendered as "no grants". It carries no credentials by construction (a
+  resource is auto-fetchable into model context; tokens stay behind the `whoami` tool).
+- **`whoami.file_upload`** — exactly two keys, `guide_resource` and `granted_prefixes`,
+  pointing at the handbook instead of restating it. `granted_prefixes` is `null`, never
+  `[]`, when the registry cannot be read: "nobody may publish" and "I could not find out"
+  are different facts.
+- **Admin UI**: the folder-rule card renders the grant as its own pill on a separate axis
+  from the three read shapes, and the form offers anon / logged-in-user checkboxes. It omits
+  the field when neither is ticked rather than sending `[]`. Both locale bundles updated.
 
 ### Changed
 
-- **Explicit visibility is honored for every caller** at the three upload stations that have
-  a caller identity (Mode-A multipart, tus `create`, edge `put-file` via `enforced_put_file`),
-  restoring v1.62 semantics for that one arm. `files::enforce_upload_visibility` returns a
-  plain `Visibility` again; `VisibilityRefused` and the `FILE_VISIBILITY_SERVICE_ONLY` error
-  code introduced in v1.63.0 are **deleted**, along with the four arms that mapped them.
-- **The v1.63 safe SILENT default stays.** A non-service caller that says nothing still gets
-  `private`, never the station default — pre-v1.63 Mode-A published every field-less upload,
-  including anonymous ones, and that footgun does not come back. (Edge `put-file` has no
-  silent case: the WIT always sends a visibility string.)
-- **Service callers are unchanged**, `requested.unwrap_or(station_default)`, and both station
-  defaults keep their existing pins (Mode-A `public`, tus `private`).
-- **Untouched**: host-admin `/admin/files/upload` (owner-only management plane), `PATCH`
-  set-visibility and `sign` — the two after-the-fact doors into the `public` bucket remain
-  **service-only**, `sign` because a signed URL is redeemed with no caller at all. Uploader
-  stamping, `path` intake and the per-file prefix policy registry are not touched either;
-  only the visibility arm moved.
+- **`files::enforce_upload_visibility` is once again the ONE publish rule**, and all four
+  stations run it: Mode-A multipart and tus `create` pass the declared `path`, edge
+  `put-file` declares none (the WIT accepts no path, so only the ROOT rule can grant it),
+  and host-admin `/admin/files/upload` stays the owner-only management plane. tus decides at
+  **create** and freezes the result on the session row — finalize never re-checks, the same
+  timing `visibility` itself has had, with the bounded create→finalize race now documented
+  in the handler. Service is unchanged (`requested.unwrap_or(station_default)`) and
+  short-circuits BEFORE the registry is read, so a broken registry never blocks recovery.
+- **A non-service caller that says NOTHING still gets `private`** — the durable half of the
+  unreleased v1.63.1. Pre-v1.63 Mode-A published every field-less upload, anonymous ones
+  included, and that footgun does not come back. Both service station defaults keep their
+  existing pins (Mode-A `public`, tus `private`).
+- **`FILE_VISIBILITY_SERVICE_ONLY` is deleted.** The `VisibilityRefused` error v1.63.0
+  introduced stays, now carrying `FILE_PUBLIC_UPLOAD_DENIED`: its caller-facing message is
+  deliberately non-revealing (it names neither the governing prefix nor whether a rule exists
+  there — the registry is service-only readable for that reason) and the diagnostic `detail`
+  goes to the server log.
+- **Existing tenants are grandfathered** by `seed_public_upload_grant`: `'' →
+  ["anon","user"]`, once, marker-guarded because `run_migrations` runs on every boot and an
+  unguarded UPDATE would resurrect a grant an operator revoked. A tenant that cleared its
+  root rule is SKIPPED, never re-INSERTed — the row that would have to be invented is
+  clause-less, and a clause-less row DENIES every READ on both evaluators, so granting
+  publish would have broken reading. New tenants are stamped seeded with no grant.
+- **`sign` and `PATCH` set-visibility remain service-only.** A signed URL is redeemed with
+  no caller at all, so authorization can only happen at mint; opening the after-the-fact
+  door is a different question from opening the upload one and would get its own column, not
+  this one.
+- **REST `PUT` / `GET /t/<id>/file-policies` carry the new field with no per-field code** —
+  the body IS the policy row. MCP `set_file_policy` takes it as a typed
+  `Option<Vec<String>>` (array-of-string in the published schema, so no client is invited to
+  stringify it) and `list_file_policies` reads it back. Omitting the field on a re-register
+  REVOKES the grant on every face, matching the replace-not-merge semantics the two clauses
+  already have.
 
-The gate on an explicit publish is therefore the `upload` file cap alone, which is
-all-or-nothing. The durable model — a per-prefix "may publish" grant in `_system_file_policy`,
-so a tenant can open `avatars/` to its own users without opening the whole bucket — is
-**task #974**. CLAUDE.md invariant 19 and `.claude/rules/storage-files.md` are rewritten to
-the v1.63.1 truth; the `enforce_upload_visibility` unit matrix and the three station tests
-now pin admission plus the landed `visibility='public'` row, and a tus non-service
-silent-upload pin was added so both new directions have per-station coverage.
+### Fixed
+
+- **The two file evaluators now share one clause gate (#973).** `authorize_file` runs the
+  same `compile_file_clause` the list SQL does and denies the prefix when it refuses.
+  `eval_policy` has no field allowlist and answers from the row map BY KEY, so a
+  hand-INSERTed clause over a column kept out of the synthetic schema —
+  `{"meta_json":{"$is_null":true}}`, where the key is present and NULL — evaluated TRUE for
+  the single-file faces while the list arm was already `0=1`: a fail-OPEN reachable only by
+  direct SQL, but a divergence between two evaluators that must agree. The corpus in
+  `tests/file_policy_expression.rs` gains the two shapes whose agreement used to be
+  accidental.
+- **`GET /t/<id>/files` no longer swallows an undecodable row (#973).** The handler collected
+  through `filter_map(|r| r.ok())`, so a decode failure produced a 200 with a silently short
+  `files` / `file_count` / `used_bytes` — indistinguishable, under Files RLS, from "the
+  policy hides those rows from you". It is now a 500, like the registry-read failure beside
+  it.
+- **"· 1 rows" in the admin UI (#973)** — `Translator::plural` picks a singular or plural key
+  from the bundle (both keys literal at the call site, so `build.rs`'s scanner checks them
+  like any other), applied to the collection sidebar tooltip and the RPC playground's three
+  row counts. Locales without the distinction point both keys at one string, which is what
+  zh-TW does.
+- **README overstatement (#973)**: `owner_field` + RLS policies compose on every **record**
+  surface; files are gated by the per-verb cap and the per-prefix registry, and an object
+  published to the public bucket is served straight from the object store — the deliberate
+  exception, which is why publishing is now a grant rather than a per-request check.
 
 ## v1.63.0 — 2026-08-12
 

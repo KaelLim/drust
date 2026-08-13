@@ -112,7 +112,7 @@
     {% for c in collections %}
     <a class="nav-collection{% if c.name == active_coll %} on{% endif %}"
        href="{{ crate::base_path::base_path() }}/admin/tenants/{{ tenant_id }}/collections/{{ c.name }}"
-       title="{{ c.name }} · {{ c.row_count }} {{ t.s("common.unit.rows") }}">
+       title="{{ c.name }} · {{ c.row_count }} {{ t.plural(c.row_count, "common.unit.row", "common.unit.rows") }}">
       <span class="dot"></span>
       <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ c.name }}</span>
       <span class="count">{{ c.row_count }}</span>

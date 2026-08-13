@@ -33,7 +33,7 @@
 | :bricks: **SaaS / CRUD 後端** | 在後台定義 collection，立刻拿到 REST + 型別化 TypeScript/Zod client。不必跑 DB 伺服器、不必 migration 工具。 |
 | :robot: **AI-agent 原生資料層** | 任何 MCP client 指向 `/t/<id>/mcp` —— agent 透過型別化工具檢視 schema、CRUD、向量搜尋、管理檔案。錯誤帶 `suggested_fix`、破壞性操作支援 `dry_run`。 |
 | :office: **多租戶平台** | 單一程序、多個完全隔離的租戶。跨租戶存取由 authorizer 在 **SQL 層**就擋掉，不只是應用層。 |
-| :lock: **per-user 受保護資料** | 宣告 `owner_field`，或寫 PocketBase 風格的 row-level policy —— 每次讀、寫、realtime 事件都自動過濾。 |
+| :lock: **per-user 受保護資料** | 宣告 `owner_field`，或寫 PocketBase 風格的 row-level policy —— 每次 **record** 讀、寫、realtime 事件都自動過濾。上傳的檔案走同形狀的另一道閘：逐 verb cap 外加依檔案邏輯路徑前綴的 policy。 |
 | :zap: **Realtime 應用** | 用 SSE 訂閱，或在單一 WebSocket 上多工多個 room 並廣播 JSON。 |
 | :brain: **語意搜尋** | 加一個 `vector` 欄位，對結構化 filter 做 cosine / L2 / L1 top-k。 |
 | :mag: **全文搜尋** | 對 TEXT 欄位建立 trigram（對中文友善、預設）或 `unicode61` FTS5 索引，再於任何 `/list` / `/search` / `/aggregate` filter 加上 `{"$fts":{"index":"…","query":"…"}}` —— 命中結果與其他讀取一樣受 owner / RLS 範圍限制。 |
@@ -43,7 +43,7 @@
 
 - **:robot: AI 原生，不是事後外掛。** 每個租戶都有一個 Streamable-HTTP MCP 伺服器，其 `instructions` 開場白是結構化的 *intent → tool* 地圖，讓 agent 連上第一次就能上手 —— 不需 prompt engineering、不需自製 tool wrapper。
 - **:ice_cube: 單一 binary、一租戶一檔。** SQLite 內嵌，不必另跑或另備份資料庫伺服器。跨租戶 `ATTACH` 不可能 —— 由 SQLite authorizer 在唯讀連線上強制。
-- **:closed_lock_with_key: 會疊加的安全。** `owner_field` + per-operation RLS policy（結構化 Filter AST → `?`-bound SQL）在每個讀/寫/realtime 面 AND 疊加。寫入路徑**永不**吃 raw SQL。
+- **:closed_lock_with_key: 會疊加的安全。** `owner_field` + per-operation RLS policy（結構化 Filter AST → `?`-bound SQL）在每個 record 讀/寫/realtime 面 AND 疊加；檔案同樣兩道閘疊加——外層逐 verb cap、內層 per-prefix policy。寫入路徑**永不**吃 raw SQL。發佈到 public 桶的物件是刻意的例外：它由物件儲存直接送出，所以「可否公開」是 per-prefix 授權，而非每次請求的檢查。
 - **:feather: 最快又最密。** idle 約 15 MB、筆電上約 13k req/s、256 MB 的機器塞數十個租戶。以 Rust 建構於 [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)。
 - **:battery: 電池全附。** Realtime（SSE + WS rooms）、向量搜尋、wasm edge functions、stored RPC、per-tenant OAuth、outbound webhooks（含 SSRF 防護）、S3 檔案儲存含可續傳上傳、型別化 client codegen（OpenAPI / TS / Zod）、Prometheus metrics、每日備份，以及 Supabase 風格後台。
 - **:computer: gh 風 CLI。** `drust` 命令列工具以瀏覽器 **device flow** 登入（`drust auth login`，不貼 token），操作 host admin-plane（`drust admin tenants|keys|team|audit|backups`)與 per-tenant CRUD，全走同一套 HTTP 介面。每次 release 附 Linux（x86_64 / aarch64）、macOS（Apple Silicon）、Windows 預編 binary。

@@ -95,7 +95,7 @@
 
           {% if let Some(r) = o.result %}
           <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--font-mono);font-size:13px;color:var(--muted);">
-            <span><b style="color:var(--fg);">{{ r.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
+            <span><b style="color:var(--fg);">{{ r.row_count }}</b> {{ t.plural(r.row_count, "tenant_rpc_test.result.row_unit", "tenant_rpc_test.result.rows_unit") }}</span>
             <span><b style="color:var(--fg);">{{ r.column_names.len() }}</b> {{ t.s("tenant_rpc_test.result.columns_unit") }}</span>
             {% if r.truncated %}<span class="pill warn"><span class="dot"></span>{{ t.s("tenant_rpc_test.result.truncated") }}</span>{% endif %}
           </div>
@@ -123,7 +123,7 @@
 
           {% if let Some(q) = o.query_result %}
           <div style="padding:0 18px 14px;display:flex;gap:14px;flex-wrap:wrap;font-family:var(--font-mono);font-size:13px;color:var(--muted);">
-            <span><b style="color:var(--fg);">{{ q.row_count }}</b> {{ t.s("tenant_rpc_test.result.rows_unit") }}</span>
+            <span><b style="color:var(--fg);">{{ q.row_count }}</b> {{ t.plural(q.row_count, "tenant_rpc_test.result.row_unit", "tenant_rpc_test.result.rows_unit") }}</span>
             <span><b style="color:var(--fg);">{{ q.total }}</b> {{ t.s("tenant_rpc_test.result.total_unit") }}</span>
           </div>
           <div class="records-scroll" style="max-height:480px;">
@@ -141,7 +141,7 @@
 
         {% if !o.explain_rows.is_empty() %}
         <details class="card" style="margin-top:14px;" open>
-          <summary class="card-head" style="cursor:pointer;list-style:none;">{{ t.s("tenant_rpc_test.explain.heading") }} <span class="count">· {{ o.explain_rows.len() }} {{ t.s("tenant_rpc_test.result.rows_unit") }}</span></summary>
+          <summary class="card-head" style="cursor:pointer;list-style:none;">{{ t.s("tenant_rpc_test.explain.heading") }} <span class="count">· {{ o.explain_rows.len() }} {{ t.plural(o.explain_rows.len(), "tenant_rpc_test.result.row_unit", "tenant_rpc_test.result.rows_unit") }}</span></summary>
           <pre class="code code-sm">{% for line in o.explain_rows %}{{ line }}
 {% endfor %}</pre>
         </details>

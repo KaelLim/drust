@@ -138,7 +138,9 @@ pub fn publish_grant_lookup_required(caller: UploadCaller, requested: Option<Vis
 /// `FILE_VISIBILITY_SERVICE_ONLY` refusal (publishing reachable only with a
 /// god-mode key, so tenants embedded one in their frontends) and v1.63.1's
 /// "explicit is always honored" interim (no lever at all between "may upload"
-/// and "may publish"). Neither shipped.
+/// and "may publish"). v1.63.0 was TAGGED (a released artifact carries it, and
+/// its error code is in that release's docs); v1.63.1 never was, which is why
+/// the CHANGELOG folds it into v1.64.0 instead of listing it.
 ///
 /// * `caller` — see [`UploadCaller`]; `Service` short-circuits before the
 ///   registry is read, exactly as service bypasses every other RLS gate.

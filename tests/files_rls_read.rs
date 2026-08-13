@@ -731,6 +731,39 @@ async fn list_refuses_when_the_registry_cannot_be_read() {
     );
 }
 
+/// A row the mapper cannot decode is an OUTAGE, not a shorter page (#973).
+///
+/// The list handler used to `filter_map(|r| r.ok())`, which turns a decode
+/// failure into a 200 whose `files` / `file_count` / `used_bytes` are all
+/// quietly short — indistinguishable, to a caller under Files RLS, from "the
+/// policy hides those rows from you". It is the same reasoning that makes an
+/// unreadable registry a 500 one test above: the failure modes a caller cannot
+/// tell apart from a correct answer are the ones that must be loud.
+#[tokio::test]
+async fn list_refuses_when_a_file_row_cannot_be_decoded() {
+    let c = stack("rls-rd-list-baddecode").await;
+    let (alice, _aid) = c.user("alice@x.com").await;
+    let good = c.upload(&alice, "a.bin", Some("any/a.bin"), None).await;
+    assert_eq!(c.list(&alice).await.1, sorted([&good]));
+
+    // `_system_files` is not STRICT, so TEXT in the INTEGER `size_bytes` is a
+    // reachable corruption; `map_file_row`'s `row.get::<i64>` refuses it.
+    c.raw_tenant_sql("UPDATE \"_system_files\" SET size_bytes = 'not-a-number'");
+
+    assert_eq!(
+        c.list(&alice).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a row that will not decode must surface, never vanish into an empty page"
+    );
+    let svc = c.svc.clone();
+    assert_eq!(
+        c.list(&svc).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "service bypasses the REGISTRY, not the decode — a corrupt row is an \
+         outage on every face, and the management view must not under-report it"
+    );
+}
+
 /// A clause-less row denies its prefix on the list face too — the SQL arm
 /// collapses to `0=1` rather than falling through to "no restriction".
 #[tokio::test]

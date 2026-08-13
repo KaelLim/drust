@@ -97,6 +97,32 @@ pub struct Translator {
     fallback: &'static Bundle,
 }
 
+/// A count [`Translator::plural`] can branch on.
+///
+/// A trait rather than a generic bound because Askama hands a template
+/// expression to a method BY REFERENCE (`&i64` for a loop variable's field),
+/// while a `.len()` call arrives as an owned `usize` — one call site shape must
+/// accept both, and the blanket reference impl below is what does it. Adding an
+/// integer width here is the whole cost of using the helper on a new page.
+pub trait PluralCount {
+    fn is_one(&self) -> bool;
+}
+
+macro_rules! impl_plural_count {
+    ($($t:ty),* $(,)?) => {
+        $(impl PluralCount for $t {
+            fn is_one(&self) -> bool { *self == 1 }
+        })*
+    };
+}
+impl_plural_count!(i32, u32, i64, u64, usize);
+
+impl<T: PluralCount + ?Sized> PluralCount for &T {
+    fn is_one(&self) -> bool {
+        (**self).is_one()
+    }
+}
+
 impl Translator {
     pub fn new(locale: Locale) -> Self {
         // v1.22 — defensive idempotent init so any test that builds an admin
@@ -144,6 +170,23 @@ impl Translator {
             tracing::warn!(key, "i18n: key missing in EVERY bundle");
         }
         Cow::Owned(format!("!!{key}!!"))
+    }
+
+    /// Count-aware unit: the `one_key` string when `n == 1`, the `other_key`
+    /// string otherwise (#973 — the admin sidebar rendered "· 1 rows").
+    ///
+    /// Both keys are LITERALS at the call site on purpose: `build.rs`'s
+    /// scanner has a `t.plural(…, "one", "other")` arm, so the pair is checked
+    /// against `en.toml` at compile time exactly like a `t.s(…)` key, and
+    /// neither shows up as a false orphan. Composing the key in Rust
+    /// (`format!("{base}.one")`) would defeat both.
+    ///
+    /// Two forms, which is English's shape, not a universal one. A locale
+    /// without the distinction points both keys at the same string (zh-TW's
+    /// measure word does), so the choice lives in the BUNDLE rather than in an
+    /// `{% if n == 1 %}` at each call site.
+    pub fn plural(&self, n: impl PluralCount, one_key: &str, other_key: &str) -> Cow<'static, str> {
+        self.s(if n.is_one() { one_key } else { other_key })
     }
 
     /// Placeholder format: `{name}` patterns replaced with `args[i].1` where
@@ -458,6 +501,36 @@ mod tests {
         // sentinel: stub locales/en.toml has _meta.sentinel,
         // stub locales/zh-TW.toml ALSO has it. To exercise fallback we
         // need a key present only in en — covered after Theme E.
+    }
+
+    #[test]
+    fn plural_picks_the_singular_form_at_exactly_one() {
+        // #973 — the admin sidebar's tooltip said "· 1 rows".
+        init_bundles();
+        let t = Translator::new(Locale::En);
+        for (n, want) in [(0i64, "rows"), (1, "row"), (2, "rows")] {
+            assert_eq!(
+                t.plural(n, "common.unit.row", "common.unit.rows").as_ref(),
+                want,
+                "n={n}"
+            );
+        }
+        // Askama hands a struct field to a method BY REFERENCE and a `.len()`
+        // call by value, so both shapes must resolve — a compile-time
+        // assertion as much as a runtime one.
+        let owned: usize = 1;
+        let by_ref: &i64 = &1;
+        assert_eq!(
+            t.plural(owned, "common.unit.row", "common.unit.rows"),
+            t.plural(by_ref, "common.unit.row", "common.unit.rows")
+        );
+        // zh-TW has one measure word for both counts: the two-form choice is a
+        // BUNDLE fact, which is why it is not an `if n == 1` in the template.
+        let zh = Translator::new(Locale::ZhTw);
+        assert_eq!(
+            zh.plural(1i64, "common.unit.row", "common.unit.rows"),
+            zh.plural(7i64, "common.unit.row", "common.unit.rows")
+        );
     }
 
     #[test]

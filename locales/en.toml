@@ -143,6 +143,7 @@ storage = "Storage"
 [common.state]
 disabled = "disabled"
 [common.unit]
+row = "row"
 rows = "rows"
 tables = "tables"
 
@@ -1245,6 +1246,7 @@ write_warning = "This RPC will modify data on commit."
 columns_unit = "columns"
 error_title = "Query error"
 heading = "result"
+row_unit = "row"
 rows_unit = "rows"
 total_unit = "total"
 truncated = "truncated"

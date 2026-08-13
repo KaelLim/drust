@@ -358,15 +358,36 @@ fn the_two_file_evaluators_agree_on_the_corpus() {
                 open("照片/alice/"),
             ],
         ),
-        // The orphan-bind shape. Both evaluators deny every row under `x/`, by
-        // different routes — SQL because the clause will not compile (a column
-        // kept out of the synthetic schema), memory because `meta_json` is NULL
-        // on the row and `NULL = 'x'` is Unknown. Only shapes that agree belong
-        // in a set-equality corpus; the compile refusal itself is pinned
-        // directly in `an_uncompilable_clause_denies_its_prefix`.
+        // The orphan-bind shape. Both evaluators deny every row under `x/` —
+        // SQL because the clause will not compile (a column kept out of the
+        // synthetic schema), memory because `authorize_file` runs the SAME
+        // compile as its gate before evaluating. The compile refusal itself is
+        // pinned directly in `an_uncompilable_clause_denies_its_prefix`.
         (
             "an uncompilable clause on an owner-scoped prefix, ahead of a root arm",
             vec![owner_sel("x/", json!({"meta_json": "x"})), open("")],
+        ),
+        // …and the same shape in the direction that used to DIVERGE (#973).
+        // `meta_json` is deliberately absent from the synthetic schema, so the
+        // SQL face collapses the arm to `0=1`; the in-memory face reads the row
+        // map BY KEY, where `meta_json` is present-and-NULL, so `$is_null` was
+        // TRUE and the single-file face ADMITTED a row the list face hid. The
+        // agreement in the case above was accidental — it held only because
+        // that clause's operand happened to compare against NULL. Both of the
+        // shapes below are in-memory ADMITs on the pre-fix code.
+        (
+            "an uncompilable clause whose in-memory answer would be ADMIT",
+            vec![
+                sel("x/", json!({"meta_json": {"$is_null": true}})),
+                open(""),
+            ],
+        ),
+        (
+            "…and one naming a column that exists in NEITHER the schema nor the row",
+            vec![
+                sel("x/", json!({"no_such_column": {"$is_null": true}})),
+                open(""),
+            ],
         ),
     ];
 
