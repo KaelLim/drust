@@ -17,6 +17,31 @@ pub fn test_mcp_http(tenants: Arc<TenantRegistry>, bus: EventBus) -> Arc<McpHttp
     ))))
 }
 
+/// #955 — mint the ONE `RoomBus` a test stack must share between its
+/// `TenantAuthState` and its `TenantStack`, and wire it into the state.
+///
+/// **Call this at every `TenantStack` construction site; never build a stack's
+/// `bus_rooms` inline.** `TenantAuthState::test_default` creates its OWN
+/// `RoomBus::default()` (`src/tenant/router.rs`), so a stack that also passes a
+/// fresh `RoomBus::new()` ends up with TWO buses: the #952
+/// `revoke_user_realtime` funnel (logout, logout-all, password change, OAuth
+/// account-claim, admin revoke-sessions, admin delete-user) and the #955 token
+/// reroll / tenant-delete paths evict the state's bus, while the WS handler and
+/// SSE subscribers live on the stack's. Production wires one instance into both
+/// (`src/main.rs`), so a split-bus test evicts a bus no socket is on: the
+/// failure mode is a test that goes GREEN while proving nothing, and no
+/// assertion or gate fires. Every helper here shared the split until the #955
+/// T2 review; `every_test_stack_shares_one_room_bus_with_its_auth_state`
+/// (`tests/rooms_ws.rs`) now fails the build-out of a new one.
+///
+/// Returns the bus so the caller can pass `bus_rooms: bus_rooms.clone()` into
+/// the stack and hand a handle back to the test.
+pub fn shared_bus_rooms(state: &mut TenantAuthState) -> drust::tenant::rooms::RoomBus {
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    state.bus_rooms = bus_rooms.clone();
+    bus_rooms
+}
+
 pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
@@ -38,12 +63,13 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -88,7 +114,8 @@ pub async fn spin_up_tenant_with_fn_runner(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
 
     // Manual dispatcher + executor build with the injected runner — same
     // shape as `drust::functions::test_stack_parts` minus the noop runner.
@@ -162,7 +189,7 @@ pub async fn spin_up_tenant_with_fn_runner(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -214,7 +241,8 @@ pub async fn spin_up_tenant_with_fn_seed(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Seed one function row `f1`, then refresh the binding cache.
@@ -252,7 +280,7 @@ pub async fn spin_up_tenant_with_fn_seed(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -314,7 +342,8 @@ pub async fn spin_up_cron_stack(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Seed one function row `f1` — the function-target the create tests use.
@@ -351,7 +380,7 @@ pub async fn spin_up_cron_stack(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -485,6 +514,11 @@ pub async fn spin_up_isolation_stack(
         audit_meta_read: Arc::new(Mutex::new(
             drust::safety::audit_db::open_audit_db_memory().unwrap(),
         )),
+        // The one inline `RoomBus` left in this file, deliberately: this is a
+        // `HostStateSeed`, not a `TenantStack`, and this helper builds no
+        // `TenantAuthState` — so there is no second bus for it to diverge
+        // from, and nothing for `shared_bus_rooms` to wire it into. If this
+        // helper ever grows an auth state, route it through that helper.
         bus_rooms: drust::tenant::rooms::RoomBus::new(),
         bucket,
         rooms_cfg,
@@ -563,7 +597,8 @@ pub async fn spin_up_functions_route_stack(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
 
     // (dispatcher, executor, cfg) with the small cap. `test_stack_parts`
     // hardwires max_per_tenant=10, so build the triple inline with a patched
@@ -603,7 +638,7 @@ pub async fn spin_up_functions_route_stack(
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -729,13 +764,14 @@ pub async fn spin_up_tenant_with_role_cached(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
     let cache = state.auth_cache.clone();
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),
@@ -775,13 +811,13 @@ pub struct RoomsHarness {
 /// #955 rooms WS harness — like `spin_up_tenant_with_role_cached`, plus three
 /// things eviction tests cannot work without:
 ///
-/// 1. **ONE `RoomBus` shared** between `TenantAuthState` (the #952
-///    `revoke_user_realtime` path, and anything else that evicts through the
-///    auth state) and `TenantStack.bus_rooms` (what the WS handler publishes
-///    and subscribes on). The plain helpers give each its own instance —
-///    `TenantAuthState::test_default` builds a fresh `RoomBus::default()` —
-///    so a cross-surface eviction test would evict a bus no socket is on and
-///    pass while proving nothing. Production wires one instance to both.
+/// 1. **The shared `RoomBus` handed BACK to the caller**, so a test can evict
+///    the very bus its socket is on (or watch a real revocation surface move
+///    it). The sharing itself is no longer special: [`shared_bus_rooms`] does
+///    it for every helper in this file, because the split it prevents produced
+///    a silently vacuous green rather than a failure. It is listed here only
+///    because the returned handle is what makes an eviction test writable at
+///    all.
 /// 2. **Caller-supplied `rooms_cfg`**, because the idle-close test needs
 ///    `keepalive_secs = 1` (`test_defaults` must stay 30: a 1 s tick makes
 ///    every other WS test's recv loop eat Ping frames).
@@ -821,10 +857,9 @@ pub async fn spin_up_tenant_rooms(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
-    // The whole point of this harness — one bus on both sides.
-    state.bus_rooms = bus_rooms.clone();
+    // One bus on both sides — see `shared_bus_rooms`.
+    let bus_rooms = shared_bus_rooms(&mut state);
     let auth_cache = state.auth_cache.clone();
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
@@ -885,11 +920,12 @@ pub async fn spin_up_tenant_with_threshold(
     let meta = Arc::new(Mutex::new(conn));
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
     state.index_large_table_rows = index_large_table_rows;
+    let bus_rooms = shared_bus_rooms(&mut state);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: test_mcp_http(tenants, bus),

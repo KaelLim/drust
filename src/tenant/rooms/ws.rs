@@ -15,8 +15,8 @@
 //!
 //! #955 — that upgrade-time identity is captured ONCE and never
 //! re-resolved, so revocation reaches a LIVE socket only through the
-//! tenant eviction epoch: `ws_handler` captures
-//! `RoomBus::tenant_epoch_handle` + its value BEFORE the upgrade and hands
+//! tenant eviction epoch: `ws_handler` takes `connect_baseline` (the tenant's
+//! shared epoch handle + its value) BEFORE the upgrade and hands
 //! both to `handle_socket`, which compares on branch (a) — on EVERY inbound
 //! frame, before the `match` that dispatches it — and on branch (c) every
 //! tick. A mismatch sends [`codes::CONN_EVICTED`] and closes 1008.
@@ -46,7 +46,7 @@
 
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
-use crate::tenant::rooms::bus::RoomMessage;
+use crate::tenant::rooms::bus::{RoomBus, RoomMessage};
 use crate::tenant::rooms::envelope::{ClientOp, ServerMessage, codes};
 use crate::tenant::rooms::policy::{
     PublishGate, TenantPublishPolicy, check_publish_allowed, validate_room_name,
@@ -64,6 +64,29 @@ use tokio::time::interval;
 use tokio_stream::StreamMap;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+
+/// #955 — this connection's eviction baseline: the tenant's SHARED epoch
+/// atomic plus the value it held at connect.
+///
+/// A named function rather than two inline lines in [`ws_handler`], for the
+/// same reason as [`keepalive_interval`]: `ws_handler` cannot be called from a
+/// test (a `WebSocketUpgrade` needs a real upgrading request), so anything
+/// living only in its body has source-text pins as its ONLY defence — and the
+/// T2 review measured two one-line mutants there that left every executed gate
+/// green while turning #955 off in production: synthesizing a private
+/// `Arc<AtomicU64>` instead of asking the bus (nothing ever closes), and
+/// reading the baseline inside the `on_upgrade` closure (an evict landing in
+/// the 101-write + task-hand-off window is adopted as the baseline, i.e.
+/// permanent immunity to THAT revocation). Both properties are now executed
+/// contract, pinned by
+/// `connect_baseline_is_the_bus_handle_and_the_live_epoch`; the structural pin
+/// is left with the one thing a test cannot reach — that `ws_handler` calls
+/// this BEFORE `.on_upgrade`.
+fn connect_baseline(bus: &RoomBus, tenant: &str) -> (Arc<AtomicU64>, u64) {
+    let epoch = bus.tenant_epoch_handle(tenant);
+    let epoch0 = epoch.load(SeqCst);
+    (epoch, epoch0)
+}
 
 /// GET /t/{tenant}/realtime — WS multiplex upgrade.
 pub async fn ws_handler(
@@ -104,8 +127,11 @@ pub async fn ws_handler(
     // (`handle_taken_after_evict_reads_current_epoch_no_false_eviction`).
     // The residual is now the handler hop itself, which is the smallest this
     // design can make it without re-resolving identity per frame.
-    let epoch = pc.bus.tenant_epoch_handle(&tenant);
-    let epoch0 = epoch.load(SeqCst);
+    //
+    // WHAT is captured is `connect_baseline`'s executed contract; WHERE it is
+    // captured is all this line still decides, and all the structural pin
+    // still has to check.
+    let (epoch, epoch0) = connect_baseline(&pc.bus, &tenant);
 
     ws.max_message_size(cap)
         .max_frame_size(cap)
@@ -605,6 +631,85 @@ mod tests {
         assert_eq!(keepalive_interval(&cfg).period(), Duration::from_secs(1));
     }
 
+    /// #955, EXECUTED — the eviction baseline itself, at the hop that
+    /// PRODUCES it.
+    ///
+    /// Round 3 of the T2 review measured that `ws_handler` — where the handle
+    /// and the baseline are actually taken — had zero executed coverage: the
+    /// duplex tests below call `handle_socket` directly, so two one-line
+    /// mutants in `ws_handler` (synthesize a private `Arc<AtomicU64>` instead
+    /// of asking the bus; read the baseline inside the `on_upgrade` closure)
+    /// turned #955 into a no-op with `cargo test --lib rooms::` fully green.
+    /// The structural pin below is one half of the answer; this is the other:
+    /// the two lines are now a named function whose CONTRACT is executed here,
+    /// leaving the pin only to prove `ws_handler` calls it before the upgrade.
+    ///
+    /// Four properties, each a mutant this must kill:
+    ///
+    /// 1. the handle ALIASES the bus's atomic (`Arc::ptr_eq`) — a private
+    ///    `Arc::new(AtomicU64::new(0))` never observes a bump, so no socket
+    ///    ever closes;
+    /// 2. a bump landing AFTER the capture is visible through it;
+    /// 3. a baseline taken after an evict equals the bus's CURRENT epoch —
+    ///    both directions: not stale (no immunity) and not a literal `0`
+    ///    (which would kill every socket on a tenant that has ever been
+    ///    evicted — the fail-CLOSED mutant a source-text pin cannot see);
+    /// 4. it is tenant-scoped.
+    #[tokio::test]
+    async fn connect_baseline_is_the_bus_handle_and_the_live_epoch() {
+        use crate::tenant::rooms::bus::RoomBus;
+        const T: &str = "t_baseline";
+        const OTHER: &str = "t_baseline_other";
+
+        let bus = RoomBus::new();
+
+        // 1 — the handle is the tenant's SHARED atomic, not a private copy.
+        let (epoch, epoch0) = connect_baseline(&bus, T);
+        assert!(
+            Arc::ptr_eq(&epoch, &bus.tenant_epoch_handle(T)),
+            "the baseline must alias the bus's own atomic: a locally synthesized one never \
+             observes a bump, which makes #955 a total no-op",
+        );
+        assert_eq!(epoch0, 0, "a tenant never evicted starts at 0");
+
+        // 2 — an evict AFTER the capture is visible through the captured handle.
+        bus.evict_tenant(T);
+        assert_eq!(
+            epoch.load(SeqCst),
+            epoch0 + 1,
+            "a socket that captured its baseline before the evict must be able to SEE it",
+        );
+
+        // 3 — a baseline captured after an evict is the LIVE epoch.
+        let (epoch2, epoch2_0) = connect_baseline(&bus, T);
+        assert_eq!(
+            epoch2_0,
+            bus.tenant_epoch_handle(T).load(SeqCst),
+            "the returned value must be the bus's current epoch",
+        );
+        assert_eq!(
+            epoch2.load(SeqCst),
+            epoch2_0,
+            "no sticky kill: a reconnecting client must not start out already evicted",
+        );
+        assert_eq!(
+            epoch2_0, 1,
+            "the baseline must be READ, not hardcoded — `let epoch0 = 0;` would close every \
+             socket on any tenant that has ever been evicted",
+        );
+
+        // 4 — tenant-scoped.
+        let (other, other0) = connect_baseline(&bus, OTHER);
+        assert_eq!(
+            other0, 0,
+            "one tenant's evict must not move another's epoch"
+        );
+        assert!(
+            !Arc::ptr_eq(&other, &epoch),
+            "each tenant must get its own atomic",
+        );
+    }
+
     /// #955 — the wire behaviour of the eviction checkpoint, pinned at the
     /// LIB level.
     ///
@@ -729,6 +834,32 @@ mod tests {
     /// two checkpoints exist where an idle socket and a busy socket
     /// respectively reach them.
     ///
+    /// Round 4 turned the same lens on the OTHER hop. Rounds 1–3 hardened
+    /// `handle_socket` — the consumer — and left the producer, `ws_handler`,
+    /// behind a single needle (`tenant_epoch_handle(` appears once before
+    /// `.on_upgrade(`) with NO executed coverage at all, because the duplex
+    /// tests call `handle_socket` directly and `ws_handler` cannot be called
+    /// from a test at all. Two measured one-line mutants there were green
+    /// across `cargo test --lib rooms::`:
+    ///
+    /// 1. `let _unused = pc.bus.tenant_epoch_handle(&tenant);` followed by a
+    ///    private `Arc::new(AtomicU64::new(0))` — the needle was satisfied by
+    ///    the discarded call, and #955 was off in production.
+    /// 2. moving the `epoch0` read INSIDE the `on_upgrade` closure — caught by
+    ///    nothing whatsoever, and it re-opens the round-1 HIGH (baseline read
+    ///    after the 101 write and the task hand-off, so an evict landing in
+    ///    that measured-starvable window becomes the socket's baseline =
+    ///    permanent immunity to that revocation). The old pin's own failure
+    ///    message claimed to prevent exactly this — a verifier that lied.
+    ///
+    /// Neither is fixed by a better needle alone, so the two lines became
+    /// [`connect_baseline`], whose contract is EXECUTED in
+    /// `connect_baseline_is_the_bus_handle_and_the_live_epoch` (including the
+    /// fail-CLOSED direction, `let epoch0 = 0;`, which no source-text pin can
+    /// see). What is left here is the irreducibly un-executable part: that
+    /// `ws_handler` calls it exactly once, before the upgrade, and hands the
+    /// pair through untouched.
+    ///
     /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
@@ -738,6 +869,9 @@ mod tests {
         let src = stripped.as_str();
 
         // ---- the capture: in `ws_handler`, BEFORE the upgrade ----
+        const CAPTURE: &str = "let (epoch, epoch0) = connect_baseline(&pc.bus, &tenant);";
+        const HANDOFF: &str = "handle_socket(sink, stream, ctx, pc, tenant, policy, epoch, epoch0)";
+
         let h_start = src
             .find("pub async fn ws_handler(")
             .expect("ws_handler's signature changed — update this structural pin");
@@ -748,11 +882,21 @@ mod tests {
         let handler = &h_rest[..h_end];
 
         assert_eq!(
-            handler.matches("tenant_epoch_handle(").count(),
+            handler.matches(CAPTURE).count(),
             1,
-            "ws_handler must capture the tenant eviction baseline EXACTLY once",
+            "ws_handler must take its eviction baseline EXACTLY once, as `{CAPTURE}`. WHAT that \
+             call returns is executed contract \
+             (`connect_baseline_is_the_bus_handle_and_the_live_epoch`); this pin exists for the \
+             one thing no test can reach — the call site itself, which cannot be exercised \
+             because `WebSocketUpgrade` needs a real upgrading request",
         );
-        let capture = handler.find("tenant_epoch_handle(").unwrap();
+        assert_eq!(
+            handler.matches("connect_baseline(").count(),
+            1,
+            "exactly ONE baseline per connection: a second call would let the checkpoints \
+             compare a handle against some other capture's value",
+        );
+        let capture = handler.find(CAPTURE).unwrap();
         let upgrade = handler
             .find(".on_upgrade(")
             .expect("ws_handler must still upgrade through .on_upgrade");
@@ -763,6 +907,47 @@ mod tests {
              window would be adopted as this socket's baseline — permanent immunity to that \
              revocation",
         );
+
+        // The hand-off. Pinning the whole argument tuple is what ties the
+        // captured pair to the loop that consumes it: `handle_socket`'s own
+        // body is already forbidden from taking a second handle, so if what
+        // reaches it here is the pair `connect_baseline` produced, the
+        // comparison provably runs against the bus.
+        assert_eq!(
+            handler.matches(HANDOFF).count(),
+            1,
+            "ws_handler must hand the captured pair straight to the conn loop — `{HANDOFF}`. \
+             Anything else (a fresh atomic, a literal 0, a re-read) decouples the checkpoints \
+             from the bus while every other assertion here still passes",
+        );
+        assert!(
+            handler.find(HANDOFF).unwrap() > upgrade,
+            "the hand-off belongs inside the on_upgrade closure",
+        );
+
+        // Exactly four mentions of `epoch` in the whole (comment-stripped)
+        // handler: two in CAPTURE, two in HANDOFF. Any third statement that
+        // touches either name — `let epoch0 = 0;` (the fail-CLOSED mutant:
+        // every socket on a previously-evicted tenant dies at once), a second
+        // binding, an arithmetic tweak — is a mutant, and counting is the only
+        // form of this assertion that does not have to enumerate them.
+        assert_eq!(
+            handler.matches("epoch").count(),
+            4,
+            "ws_handler must mention `epoch`/`epoch0` in EXACTLY the two pinned statements \
+             (2 + 2). A third mention means something else is producing, rebinding or \
+             adjusting this connection's baseline:\n{handler}",
+        );
+        for needle in ["AtomicU64", "Arc::new(", "tenant_epoch_handle(", ".load("] {
+            assert_eq!(
+                handler.matches(needle).count(),
+                0,
+                "ws_handler must not contain `{needle}`: the baseline comes from \
+                 `connect_baseline` and nothing else. Synthesizing the atomic here, or \
+                 re-reading it, is exactly the mutant that left `cargo test --lib rooms::` \
+                 green with #955 disabled in production",
+            );
+        }
 
         // ---- the checkpoints: inside `handle_socket` ----
         let start = src

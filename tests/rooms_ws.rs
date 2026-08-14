@@ -110,6 +110,69 @@ async fn send_op(ws: &mut WsClient, v: serde_json::Value) {
     ws.send(TM::Text(v.to_string())).await.unwrap();
 }
 
+/// #955 (T2 review round 3) — the split-`RoomBus` trap, disarmed for good.
+///
+/// `TenantAuthState::test_default` builds its OWN `RoomBus::default()`
+/// (`src/tenant/router.rs`), so a `TenantStack` that ALSO passes a fresh
+/// `RoomBus::new()` runs two buses where production runs one
+/// (`src/main.rs` threads a single instance into both). Every eviction surface
+/// then splits: the #952 `revoke_user_realtime` funnel and the #955 token
+/// reroll / tenant-delete paths move the state's bus, while the WS handler's
+/// sockets and the SSE subscribers sit on the stack's. A test written against
+/// a split stack evicts a bus no socket is on and **passes while proving
+/// nothing** — a vacuous green, which is the failure mode no assertion in the
+/// test itself can catch.
+///
+/// `spin_up_tenant_rooms` was created with the correct wiring, and its doc
+/// named the trap — but the warning lived on the NEW harness, which is not
+/// where the next author reaching for `spin_up_tenant_with_role_cached` would
+/// look. So every helper now shares one bus via `helpers::shared_bus_rooms`,
+/// and this pins it: a new stack built the old way fails here rather than
+/// producing a test that lies.
+///
+/// This is the only NON-ignored test in this file (everything else needs a
+/// real socket — see the module doc), so it runs in `cargo test --test
+/// g_rooms` and in `make test-all`.
+#[test]
+fn every_test_stack_shares_one_room_bus_with_its_auth_state() {
+    const SRC: &str = include_str!("helpers.rs");
+    const WIRE: &str = "let bus_rooms = shared_bus_rooms(&mut state);";
+
+    let mut stacks = 0usize;
+    for (at, _) in SRC.match_indices("TenantStack {") {
+        // The struct has no `Default`, so the first `bus_rooms:` line after the
+        // literal opens is always that literal's own field.
+        let field = SRC[at..]
+            .lines()
+            .find(|l| l.trim_start().starts_with("bus_rooms:"))
+            .expect("every TenantStack literal must set bus_rooms")
+            .trim();
+        assert!(
+            matches!(field, "bus_rooms: bus_rooms.clone()," | "bus_rooms,"),
+            "TenantStack literal #{} in tests/helpers.rs sets `{field}`. It must take the bus \
+             from `{WIRE}` instead: a stack that mints its own leaves the auth state on a \
+             DIFFERENT bus than the WS handler, so every revoke-then-assert test on it goes \
+             green without exercising anything. See `helpers::shared_bus_rooms`.",
+            stacks + 1,
+        );
+        stacks += 1;
+    }
+
+    assert!(
+        stacks >= 8,
+        "expected to scan at least the 8 known TenantStack literals in tests/helpers.rs, found \
+         {stacks} — the scanner's anchor (`TenantStack {{`) probably stopped matching, which \
+         would make this pin silently vacuous",
+    );
+    assert_eq!(
+        SRC.matches(WIRE).count(),
+        stacks,
+        "one `{WIRE}` per TenantStack literal ({stacks}). A stack that reuses another's \
+         variable would satisfy the field check above while still leaving ITS auth state on a \
+         private bus",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
 async fn subscribe_then_receive_publish_from_rest() {
