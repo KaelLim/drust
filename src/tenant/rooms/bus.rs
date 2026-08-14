@@ -148,19 +148,40 @@ impl RoomBus {
     /// Drop every channel for `tenant`. Existing subscribers get
     /// `RecvError::Closed` on next recv.
     ///
-    /// **Called from five production sites** (verified against the router,
-    /// 2026-08-14 — an earlier version of this line named a
-    /// `DELETE …/realtime/rooms` route that does not exist):
+    /// **Called from eight production sites.** Re-derive the list rather than
+    /// trusting it — it has drifted twice already: it once named a
+    /// `DELETE …/realtime/rooms` route that does not exist, and it said
+    /// "five" for one commit after #955 T3 added the publish-policy faces.
+    /// The recipe that returns exactly these eight and nothing else, verified
+    /// 2026-08-14, is `grep -rn 'bus_rooms\.evict_tenant(' src/` — every
+    /// production caller reaches this method through a field or parameter so
+    /// named, while the in-file tests bind the bus as `bus`. Do NOT grep the
+    /// bare method name: [`crate::tenant::events::EventBus`] has an
+    /// `evict_tenant` of its own (the SSE side), and two of these sites evict
+    /// both buses on adjacent lines.
     ///
     /// - [`crate::tenant::router::TenantAuthState::revoke_user_realtime`],
     ///   which the six #952 REST revoke sites all funnel through (logout,
     ///   logout-all, password change, OAuth account-claim, admin
     ///   revoke-sessions, admin delete-user);
     /// - the two MCP tools `delete_user` / `revoke_user_sessions`;
+    /// - the MCP tool `set_publish_policy`
+    ///   (`mcp::tools::owner_field::set_publish_policy`) — same
+    ///   evicts-only-on-a-real-change rule as its REST twin below;
     /// - token reroll (`mgmt::tokens`);
     /// - tenant soft-delete (`mgmt::tenants::crud`);
+    /// - the publish-policy PATCH
+    ///   (`mgmt::tenants::crud::patch_publish_policy`) — evicts only when the
+    ///   effective `(user, anon)` pair MOVES; a no-op PATCH does not, so an
+    ///   admin page re-submitting unchanged checkboxes cannot thunder-herd
+    ///   the tenant's subscribers;
     /// - admin `POST /admin/tenants/{id}/realtime/evict-all`
     ///   (`mgmt::admin_rooms::evict_all_rooms_handler`).
+    ///
+    /// The two publish-policy faces are one station with two doors, and both
+    /// must evict: a live WS connection captures its `TenantPublishPolicy`
+    /// once at upgrade, so whichever door turns a flag off has to close the
+    /// sockets still holding the old one.
     ///
     /// The sibling admin route `POST
     /// /admin/tenants/{id}/realtime/rooms/{room}/evict` calls

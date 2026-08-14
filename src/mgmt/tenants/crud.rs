@@ -807,10 +807,17 @@ pub async fn patch_publish_policy(
     let conn = state.session.meta.lock().await;
     // #955 — the pre-image, read under the SAME meta lock the UPDATEs below
     // hold, so no concurrent writer can slip between the read and the write
-    // and make the change-detection lie. A pre-image we cannot read fails
-    // CLOSED (404, nothing updated): the alternative — update first, then
-    // guess whether anything moved — either evicts on every PATCH or never.
-    let Some(old) = conn
+    // and make the change-detection lie. Reading it first means a missing or
+    // soft-deleted tenant now 404s BEFORE either UPDATE runs, rather than
+    // after two no-op UPDATEs; nothing is updated either way.
+    //
+    // Three-way on purpose. Collapsing the `Err` arm into `None` would make a
+    // meta READ fault report an existing tenant as missing AND silently
+    // discard a valid PATCH — a 404/500 regression this hunk would otherwise
+    // have introduced, since before #955 there was no pre-image read at all
+    // and a meta fault surfaced from the UPDATE as a 500 carrying the error
+    // text. So the fault arm mirrors the two UPDATE arms below.
+    let old: (i64, i64) = match conn
         .query_row(
             "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
              FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
@@ -818,9 +825,10 @@ pub async fn patch_publish_policy(
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )
         .optional()
-        .unwrap_or(None)
-    else {
-        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    {
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such tenant").into_response(),
+        Ok(Some(pair)) => pair,
     };
     if let Some(v) = body.allow_user_publish
         && let Err(e) = conn.execute(

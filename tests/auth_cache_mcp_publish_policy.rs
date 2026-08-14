@@ -1,4 +1,5 @@
-// tests/auth_cache_mcp_publish_policy.rs — hook 11 (MCP face).
+// tests/auth_cache_mcp_publish_policy.rs — hook 11 (MCP face) + the #955
+// rooms eviction on that same face.
 //
 // `patch_publish_policy` (REST admin) fires a tenant-scoped clear (hook 11),
 // but the publish-policy flags have a SECOND production writer: the MCP
@@ -7,11 +8,20 @@
 // inside the fn, so the wiring is exercised directly here. Without the clear,
 // a model flipping `allow_user_publish` via MCP leaves every cached entry
 // serving the OLD policy for up to the safety TTL.
+//
+// #955 gave the SAME station a second obligation, and this file pins it on
+// this face for the same reason it pins hook 11 here: a live rooms WS socket
+// captures its `TenantPublishPolicy` once at upgrade, so turning
+// `allow_anon_publish` OFF over `/t/<id>/mcp` — the natural way for a tenant
+// to stop publish abuse — must close those sockets, exactly as the REST PATCH
+// does (`tests/auth_cache_publish_policy.rs`).
 mod helpers;
 
 use drust::storage::meta::open_meta;
 use drust::tenant::auth_cache::{AuthCache, CachedAuth, CachedRole};
+use drust::tenant::rooms::RoomBus;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -62,6 +72,7 @@ async fn mcp_set_publish_policy_clears_tenant_scoped_entries() {
         Some(true),
         None,
         Some(&*cache),
+        &RoomBus::new(),
     )
     .await
     .unwrap();
@@ -98,11 +109,80 @@ async fn mcp_set_publish_policy_noop_call_still_clears_nothing_foreign() {
         None,
         None,
         Some(&*cache),
+        &RoomBus::new(),
     )
     .await
     .unwrap();
     assert!(
         cache.get("svc").is_some(),
         "a no-op policy call (no flag supplied) must not evict cached entries"
+    );
+}
+
+/// #955 — the rooms half of this station, on the MCP face.
+///
+/// The REST PATCH's twin lives in `tests/auth_cache_publish_policy.rs`; both
+/// are non-`#[ignore]`d and need no socket, because the whole behaviour is
+/// visible as a per-tenant epoch bump. The evict lives in the TOOL FN rather
+/// than in the `#[tool]` wrapper (where the #952 `delete_user` /
+/// `revoke_user_sessions` evicts sit) for two reasons: the change detection it
+/// is conditional on can only be done under the meta lock the tool fn holds,
+/// and a `#[tool]` method is a private `impl DrustMcp` fn that no integration
+/// test can reach — an evict placed there would have no gate at all.
+#[tokio::test]
+async fn mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    drust::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('t-pp', 'x')", [])
+        .unwrap();
+    conn.execute("INSERT INTO tenants (id, name) VALUES ('t-other', 'y')", [])
+        .unwrap();
+    let meta = Arc::new(Mutex::new(conn));
+
+    let bus = RoomBus::new();
+    // Captured BEFORE the first call — the same handle a live WS socket holds
+    // from its upgrade until it closes.
+    let epoch = bus.tenant_epoch_handle("t-pp");
+    let other = bus.tenant_epoch_handle("t-other");
+    let e0 = epoch.load(SeqCst);
+
+    let call =
+        |u, a| drust::mcp::tools::owner_field::set_publish_policy(&meta, "t-pp", u, a, None, &bus);
+
+    // false → true: a REAL change closes every socket holding the old policy.
+    call(None, Some(true)).await.unwrap();
+    assert_eq!(
+        epoch.load(SeqCst),
+        e0 + 1,
+        "a real flag change over MCP must evict the tenant's rooms (epoch +1)"
+    );
+
+    // Same value again — a model re-asserting the current policy must not
+    // thunder-herd the tenant's subscribers.
+    call(None, Some(true)).await.unwrap();
+    assert_eq!(
+        epoch.load(SeqCst),
+        e0 + 1,
+        "a no-op MCP call must NOT evict (epoch unmoved)"
+    );
+
+    // A call supplying neither flag writes nothing at all.
+    call(None, None).await.unwrap();
+    assert_eq!(epoch.load(SeqCst), e0 + 1, "an empty call must not evict");
+
+    // The OTHER flag moving is a real change too — the comparison is on the
+    // effective (user, anon) PAIR, not on the field the args mention.
+    call(Some(true), None).await.unwrap();
+    assert_eq!(
+        epoch.load(SeqCst),
+        e0 + 2,
+        "moving the user flag is a real change as well"
+    );
+
+    assert_eq!(
+        other.load(SeqCst),
+        0,
+        "eviction must stay scoped to the tenant that changed"
     );
 }

@@ -2486,6 +2486,15 @@ impl DrustMcpService {
         let tenant_id = self.state.tenant_id().to_string();
         // v1.35 hook 11 (MCP face) — pass the cache so a flag change drops
         // the tenant's cached auth entries synchronously.
+        //
+        // #955 — and the rooms bus, so a REAL flag change also closes the
+        // live WS sockets still holding the old `TenantPublishPolicy` (they
+        // capture it once at upgrade). Unlike `delete_user` /
+        // `revoke_user_sessions` above, the evict is NOT in this arm: it is
+        // conditional on a pre-image only readable under the meta lock the
+        // tool fn holds, and this `#[tool]` method is private, so an evict
+        // here could not be pinned by any integration test. See the tool fn's
+        // doc comment; pinned by `tests/auth_cache_mcp_publish_policy.rs`.
         let inner = self.state.inner();
         match owner_field_tools::set_publish_policy(
             &meta,
@@ -2493,6 +2502,7 @@ impl DrustMcpService {
             allow_user_publish,
             allow_anon_publish,
             inner.auth_cache.as_deref(),
+            &inner.bus_rooms,
         )
         .await
         {

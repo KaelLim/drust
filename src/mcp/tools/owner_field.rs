@@ -161,26 +161,59 @@ pub async fn set_self_register(
 /// is dropped so the next request re-reads the new policy from the CTE
 /// (otherwise cached `publish_*_allowed` values would serve the OLD policy
 /// for up to the safety TTL).
+///
+/// #955 — the SECOND obligation of this station, in lockstep with its REST
+/// twin `mgmt::tenants::crud::patch_publish_policy`. A live rooms WS
+/// connection captures its `TenantPublishPolicy` ONCE at upgrade and never
+/// re-reads it, so a tenant turning `allow_anon_publish` off over
+/// `/t/<id>/mcp` — the natural way to stop publish abuse — would otherwise
+/// leave every existing socket publishing under the OLD flag until it
+/// disconnected on its own. A call that MOVES the effective `(user, anon)`
+/// pair therefore evicts `bus_rooms`, which bumps the eviction epoch and
+/// closes each socket (`CONN_EVICTED` + Close 1008) at its next frame or
+/// keepalive tick. A **no-op** call does NOT evict.
+///
+/// The evict lives HERE rather than in the `#[tool]` wrapper (where the #952
+/// `delete_user` / `revoke_user_sessions` evicts sit) because it is
+/// conditional on a pre-image only readable under the meta lock this fn
+/// holds — and because a `#[tool]` method is a private `impl DrustMcp` fn no
+/// integration test can call, so an evict placed there would have no gate.
+/// `bus_rooms` is a REQUIRED parameter, not an `Option` like `auth_cache`:
+/// `DrustMcpInner.bus_rooms` is always present, and #955 made the same choice
+/// for `McpRegistry::with_bus` — a defaulted bus is a silently detached one.
+/// Precedent in this file: `set_owner_field` takes the `EventBus` and calls
+/// `evict_collection` itself.
 pub async fn set_publish_policy(
     meta: &std::sync::Arc<Mutex<Connection>>,
     tenant_id: &str,
     allow_user: Option<bool>,
     allow_anon: Option<bool>,
     auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
+    bus_rooms: &crate::tenant::rooms::RoomBus,
 ) -> anyhow::Result<serde_json::Value> {
+    use rusqlite::OptionalExtension;
     let tid = tenant_id.to_string();
     let conn = meta.lock().await;
-    // Verify tenant exists up-front so a no-op call still surfaces NOT_FOUND.
-    let exists: i64 = conn
+    // The pre-image, read under the SAME meta lock the UPDATEs below hold, so
+    // no concurrent writer can slip between the read and the write and make
+    // the change detection lie. It doubles as the existence check the flags'
+    // NOT_FOUND contract needs, so a no-op call still surfaces NOT_FOUND.
+    // Three-way on purpose (mirrors the REST twin): a read FAULT is a DB
+    // error, not a missing tenant — collapsing it into `None` would report an
+    // existing tenant as gone and silently discard a valid call.
+    let old: (i64, i64) = match conn
         .query_row(
-            "SELECT COUNT(*) FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
+             FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tid],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .map_err(|e| anyhow::anyhow!("DB: {e}"))?;
-    if exists == 0 {
-        anyhow::bail!("NOT_FOUND: tenant not found");
-    }
+        .optional()
+    {
+        Err(e) => return Err(anyhow::anyhow!("DB: {e}")),
+        Ok(None) => anyhow::bail!("NOT_FOUND: tenant not found"),
+        Ok(Some(pair)) => pair,
+    };
     if let Some(v) = allow_user {
         conn.execute(
             "UPDATE tenants SET allow_user_publish = ?1 WHERE id = ?2",
@@ -210,6 +243,17 @@ pub async fn set_publish_policy(
         && let Some(cache) = auth_cache
     {
         cache.clear_tenant(&tid);
+    }
+    // #955 — and only on a REAL change, close the live sockets still holding
+    // the OLD policy. AFTER the cache clear, never before — same ordering as
+    // the REST twin and the same reason: evicting first opens a window where
+    // the closed client reconnects, hits the not-yet-cleared cache entry and
+    // captures the STALE flags for the whole life of the new socket, with no
+    // further bump coming to correct it. No test separates the two statements
+    // (swapping them stays green), so this comment is the only thing holding
+    // the order.
+    if (u, a) != old {
+        bus_rooms.evict_tenant(&tid);
     }
     Ok(json!({
         "allow_user_publish": u != 0,
