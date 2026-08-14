@@ -132,9 +132,40 @@ impl RoomBus {
             .clone()
     }
 
+    /// #955 — bump this tenant's eviction epoch. Private on purpose: the
+    /// ONLY caller is [`RoomBus::evict_tenant`], which must call it BEFORE
+    /// its teardown (spec §隔離與資安不變量 item 3, pinned by
+    /// `evict_tenant_bumps_epoch_before_dropping_channels`). Exposing it
+    /// would let a caller close every socket on a tenant without dropping
+    /// the channels, which is not a state this design has a meaning for.
+    fn bump_epoch(&self, tenant: &str) {
+        self.epochs
+            .entry(Arc::<str>::from(tenant))
+            .or_default()
+            .fetch_add(1, SeqCst);
+    }
+
     /// Drop every channel for `tenant`. Existing subscribers get
-    /// `RecvError::Closed` on next recv. Called from `soft_delete_tenant`
-    /// + admin `DELETE …/realtime/rooms`.
+    /// `RecvError::Closed` on next recv.
+    ///
+    /// **Called from five production sites** (verified against the router,
+    /// 2026-08-14 — an earlier version of this line named a
+    /// `DELETE …/realtime/rooms` route that does not exist):
+    ///
+    /// - [`crate::tenant::router::TenantAuthState::revoke_user_realtime`],
+    ///   which the six #952 REST revoke sites all funnel through (logout,
+    ///   logout-all, password change, OAuth account-claim, admin
+    ///   revoke-sessions, admin delete-user);
+    /// - the two MCP tools `delete_user` / `revoke_user_sessions`;
+    /// - token reroll (`mgmt::tokens`);
+    /// - tenant soft-delete (`mgmt::tenants::crud`);
+    /// - admin `POST /admin/tenants/{id}/realtime/evict-all`
+    ///   (`mgmt::admin_rooms::evict_all_rooms_handler`).
+    ///
+    /// The sibling admin route `POST
+    /// /admin/tenants/{id}/realtime/rooms/{room}/evict` calls
+    /// [`RoomBus::evict_room`], which by design does NOT bump — per-room
+    /// eviction is a data-plane op, not an identity event.
     ///
     /// #955 — also bumps the tenant's eviction epoch, so live WS sockets
     /// close themselves (`CONN_EVICTED` + Close 1008) at their next
@@ -178,20 +209,21 @@ impl RoomBus {
     /// surface to open; narrowing the blast radius to one user needs a
     /// per-user room index, explicitly out of scope (spec §不做的事).
     pub fn evict_tenant(&self, tenant: &str) {
-        // #955 — bump BEFORE the teardown. What the ordering actually
-        // buys is narrow, so state it exactly: the window in which a
-        // concurrent checkpoint can still read a STALE epoch ends at the
-        // bump, i.e. before the channel teardown rather than after it.
-        // It does NOT close the re-subscribe race — a socket whose epoch
-        // load happened before the bump still proceeds, and its
-        // `subscribe()` can land after `channels.remove`, creating a
-        // fresh channel that lives until that socket's NEXT checkpoint
-        // (≤1 keepalive). That residual is the accepted micro-race, same
-        // family as spec §隔離與資安不變量 item 4.
-        self.epochs
-            .entry(Arc::<str>::from(tenant))
-            .or_default()
-            .fetch_add(1, SeqCst);
+        // ORDER LOAD-BEARING (spec §隔離與資安不變量 3) — bump BEFORE the
+        // teardown, pinned structurally by
+        // `evict_tenant_bumps_epoch_before_dropping_channels` because no
+        // behavioural test can see the difference.
+        //
+        // What the ordering actually buys is narrow, so state it exactly:
+        // the window in which a concurrent checkpoint can still read a
+        // STALE epoch ends at the bump, i.e. before the channel teardown
+        // rather than after it. It does NOT close the re-subscribe race —
+        // a socket whose epoch load happened before the bump still
+        // proceeds, and its `subscribe()` can land after `channels.remove`,
+        // creating a fresh channel that lives until that socket's NEXT
+        // checkpoint (≤1 keepalive). That residual is the accepted
+        // micro-race, same family as spec §隔離與資安不變量 item 4.
+        self.bump_epoch(tenant);
         self.channels.remove(tenant);
     }
 
@@ -447,6 +479,47 @@ mod tests {
             h.load(SeqCst),
             2,
             "sweep_empty must not reclaim epoch entries — the old handle would go stale"
+        );
+    }
+
+    /// #955 (quality review round 3) — the bump-before-teardown ordering
+    /// inside `evict_tenant` is a stated invariant (spec §隔離與資安不變量
+    /// item 3) that NOTHING pinned: a reviewer swapped the two statements
+    /// and both `cargo test --lib rooms::` and `cargo test --test g_rooms`
+    /// stayed green, so a future refactor could silently invert it.
+    ///
+    /// A behavioural test is not available — the difference is a race
+    /// window measured in instructions, and any test that tried to observe
+    /// it would be a flake generator. So this pins the ordering
+    /// STRUCTURALLY, at the only place it is decidable: the source text of
+    /// `evict_tenant`'s own body. Same tool as
+    /// `handler.rs::tool_count_matches_source_annotations`. It reads the
+    /// FUNCTION BODY only, so the needles in this test's own source cannot
+    /// satisfy it.
+    #[test]
+    fn evict_tenant_bumps_epoch_before_dropping_channels() {
+        const FN_HEAD: &str = "pub fn evict_tenant(&self, tenant: &str) {";
+        let src = include_str!("bus.rs");
+        let start = src
+            .find(FN_HEAD)
+            .expect("evict_tenant's signature changed — update this structural pin");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n    }\n")
+            .expect("could not find the end of evict_tenant's body");
+        let body = &rest[..end];
+
+        let bump = body
+            .find("self.bump_epoch(tenant);")
+            .expect("evict_tenant must bump the epoch via the named bump_epoch helper");
+        let teardown = body
+            .find("self.channels.remove(tenant);")
+            .expect("evict_tenant must still drop the tenant's channels");
+        assert!(
+            bump < teardown,
+            "ORDER LOAD-BEARING (spec §隔離與資安不變量 3): evict_tenant must bump the \
+             eviction epoch BEFORE dropping the channels, so the stale-epoch window ends \
+             before the teardown rather than after it",
         );
     }
 
