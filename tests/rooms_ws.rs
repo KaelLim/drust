@@ -758,6 +758,145 @@ async fn rest_logout_closes_that_users_live_ws_socket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn publish_policy_change_evicts_live_socket_noop_does_not() {
+    // #955 T3 — the second same-root-cause site. A rooms connection captures
+    // its `TenantPublishPolicy` once at upgrade and never re-reads it, so an
+    // admin turning `allow_anon_publish` OFF used to leave every live socket
+    // publishing under the old flag until it disconnected on its own. The
+    // PATCH handler now evicts on a REAL change — and, just as load-bearing,
+    // does NOT evict on a no-op, because an admin page that re-submits
+    // unchanged checkboxes must not kick every subscriber the tenant has.
+    //
+    // The handler is called DIRECTLY (axum handlers are plain async fns)
+    // against admin-plane state built over the harness's OWN meta, auth cache
+    // and RoomBus — going through the admin router would need an admin
+    // session and would prove nothing extra. Sharing all three is what makes
+    // the assertions real: a `TenantsState` with a private bus or a private
+    // cache would evict something no socket is on and go green.
+    //
+    // Spec sketched this with `allow_user_publish`; anon exercises the
+    // identical mechanism (pre-image → change detection → evict) without
+    // minting an end-user session, which `rest_logout_closes_that_users_live_ws_socket`
+    // already covers.
+    use axum::extract::{Path as AxPath, State as AxState};
+    use drust::auth::middleware::AdminId;
+    use drust::mgmt::tenants::{PublishPolicyPatch, TenantsState};
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "anon",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+
+    // Admin-plane state over the SAME meta + RoomBus + auth cache as the WS
+    // stack. `test_default` mints its own cache, hence the overwrite.
+    let mut ts = TenantsState::test_default(
+        h.meta.clone(),
+        h.data_dir.clone(),
+        h.tenants.clone(),
+        helpers::test_mcp_http(
+            h.tenants.clone(),
+            drust::tenant::events::EventBus::new(),
+            h.bus_rooms.clone(),
+        ),
+        drust::tenant::events::EventBus::new(),
+        h.bus_rooms.clone(),
+    );
+    ts.auth_cache = h.auth_cache.clone();
+
+    let patch = |ts: TenantsState, allow_anon: bool| async move {
+        drust::mgmt::tenants::patch_publish_policy(
+            AxState(ts),
+            AxPath(TENANT.to_string()),
+            axum::Extension(AdminId(1)),
+            axum::Json(PublishPolicyPatch {
+                allow_user_publish: None,
+                allow_anon_publish: Some(allow_anon),
+            }),
+        )
+        .await
+    };
+
+    // Turn anon publish ON. A real change, but no sockets exist yet, so the
+    // eviction it triggers is a no-op in practice.
+    assert!(
+        patch(ts.clone(), true).await.status().is_success(),
+        "enabling anon publish should succeed"
+    );
+
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+    send_op(
+        &mut ws,
+        json!({"op":"publish","room":"chat","payload":{"x":1},"ref":"p1"}),
+    )
+    .await;
+    assert_eq!(
+        recv_json(&mut ws).await["kind"],
+        "ack",
+        "anon publish must be allowed under the policy this socket connected with"
+    );
+
+    // The epoch this socket is comparing against. Asserting on it directly
+    // makes the no-op half deterministic: "the socket still answers" proves
+    // no eviction was DELIVERED, this proves none was ISSUED.
+    let epoch = h.bus_rooms.tenant_epoch_handle(TENANT);
+    let before_noop = epoch.load(SeqCst);
+
+    // NO-OP PATCH: same value → no evict, socket stays alive.
+    assert!(
+        patch(ts.clone(), true).await.status().is_success(),
+        "the no-op PATCH should still return 200"
+    );
+    assert_eq!(
+        epoch.load(SeqCst),
+        before_noop,
+        "a PATCH that changes nothing must not bump the epoch"
+    );
+    send_op(&mut ws, json!({"op":"ping","ref":"k1"})).await;
+    let pong = recv_json(&mut ws).await;
+    assert_eq!(pong["kind"], "pong", "no-op PATCH must not evict: {pong}");
+    assert_eq!(pong["ref"], "k1");
+
+    // REAL change: anon publish OFF → this socket's captured policy is now
+    // wrong, so it must die at its next frame.
+    assert!(
+        patch(ts.clone(), false).await.status().is_success(),
+        "disabling anon publish should succeed"
+    );
+    assert_eq!(
+        epoch.load(SeqCst),
+        before_noop + 1,
+        "a real flag change must bump the epoch exactly once"
+    );
+    send_op(&mut ws, json!({"op":"ping","ref":"k2"})).await;
+    expect_conn_evicted_then_close(&mut ws).await;
+
+    // Reconnect: the token was never revoked, so the socket comes back — but
+    // under the NEW policy, which is the whole point of closing it. This also
+    // pins hook 11 (the auth-cache clear), measured: with `clear_tenant`
+    // deleted from the handler the reconnect resolves through the CACHED
+    // entry, publishes under the old flags and answers `ack`. It does NOT pin
+    // the clear-before-evict ORDER — by the time the client reconnects both
+    // statements have long since run, and no test here can separate them.
+    let (mut ws2, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+    send_op(
+        &mut ws2,
+        json!({"op":"publish","room":"chat","payload":{"x":2},"ref":"p2"}),
+    )
+    .await;
+    let denied = recv_json(&mut ws2).await;
+    assert_eq!(denied["kind"], "error", "got {denied}");
+    assert_eq!(
+        denied["code"], "WS_PUBLISH_ANON_DENIED",
+        "the reconnect must see the NEW policy: {denied}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
 async fn unauth_ws_upgrade_returns_failure_pre_handshake() {
     let (app, _tok, _dir) = helpers::spin_up_tenant_with_role(TENANT, "anon").await;
     let addr = serve(app).await;

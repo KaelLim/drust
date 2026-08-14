@@ -786,13 +786,42 @@ pub struct PublishPolicyView {
 ///
 /// MCP `broadcast` is service-only by MCP dispatch and is NOT affected
 /// by these flags.
+///
+/// #955 — a live rooms WS connection captures its `TenantPublishPolicy`
+/// ONCE at upgrade and never re-reads it, so before this a socket kept
+/// publishing under the flags it connected with long after an admin turned
+/// them off. A PATCH that actually MOVES the effective `(user, anon)` pair
+/// therefore evicts the tenant's rooms bus, which bumps the eviction epoch
+/// and closes every live socket (`CONN_EVICTED` + Close 1008) at its next
+/// frame or keepalive tick; the reconnect re-reads the new policy through
+/// the bearer CTE. A **no-op** PATCH (same values, or an empty body) does
+/// NOT evict — a policy page that re-submits unchanged checkboxes must not
+/// thunder-herd every subscriber the tenant has.
 pub async fn patch_publish_policy(
     State(state): State<TenantsState>,
     Path(tid): Path<String>,
     axum::Extension(_admin): axum::Extension<crate::auth::middleware::AdminId>,
     axum::Json(body): axum::Json<PublishPolicyPatch>,
 ) -> Response {
+    use rusqlite::OptionalExtension;
     let conn = state.session.meta.lock().await;
+    // #955 — the pre-image, read under the SAME meta lock the UPDATEs below
+    // hold, so no concurrent writer can slip between the read and the write
+    // and make the change-detection lie. A pre-image we cannot read fails
+    // CLOSED (404, nothing updated): the alternative — update first, then
+    // guess whether anything moved — either evicts on every PATCH or never.
+    let Some(old) = conn
+        .query_row(
+            "SELECT COALESCE(allow_user_publish, 0), COALESCE(allow_anon_publish, 0) \
+             FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![tid],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .unwrap_or(None)
+    else {
+        return (StatusCode::NOT_FOUND, "no such tenant").into_response();
+    };
     if let Some(v) = body.allow_user_publish
         && let Err(e) = conn.execute(
             "UPDATE tenants SET allow_user_publish = ?1 \
@@ -819,8 +848,27 @@ pub async fn patch_publish_policy(
     ) {
         Ok((u, a)) => {
             // v1.35 hook 11 — drop cached Bearers for this tenant so the new
-            // publish flags are re-read on the next request.
+            // publish flags are re-read on the next request. Unconditional,
+            // unchanged: clearing a cache is cheap and always correct.
             state.auth_cache.clear_tenant(&tid);
+            // #955 — and only on a REAL change, close the live sockets that
+            // are still holding the OLD policy. `evict_tenant` bumps the
+            // rooms epoch, so each socket sees the mismatch at its next frame
+            // or keepalive tick.
+            //
+            // ORDER: after `clear_tenant`, never before — same shape as the
+            // invariant-5 rule that `schema_cache.invalidate` precedes
+            // `bus.evict_collection`. Evicting first opens a window where the
+            // closed client reconnects, hits the not-yet-cleared cache entry
+            // and captures the STALE flags for the whole life of the new
+            // socket, with no further bump coming to correct it. The window
+            // is nanoseconds wide here, but the ordering costs nothing and
+            // the failure it prevents is permanent for that connection.
+            // No test separates the two statements — swapping them stays
+            // green — so this comment is the only thing holding the order.
+            if (u, a) != old {
+                state.bus_rooms.evict_tenant(&tid);
+            }
             (
                 StatusCode::OK,
                 axum::Json(PublishPolicyView {

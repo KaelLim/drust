@@ -11,7 +11,24 @@
 //!
 //! Eviction drops the broadcast channel sender; every subscriber's
 //! `BroadcastStream` yields `None` on the next poll and the WS handler's
-//! select loop terminates the connection cleanly.
+//! select loop drops that room's fan-in arm.
+//!
+//! #955 — the two endpoints are no longer the same kind of operation, and
+//! the difference is deliberate:
+//!
+//! * `evict-all` calls `RoomBus::evict_tenant`, which **also bumps the
+//!   tenant's eviction epoch**. Every live WS connection compares its
+//!   connect-time baseline before each inbound frame and on each keepalive
+//!   tick, so the sockets themselves are closed (`CONN_EVICTED` + Close
+//!   1008) within one tick — the admin now truly KICKS subscribers. Before
+//!   #955 the connection survived with the `AuthCtx` and publish policy it
+//!   captured at upgrade and could simply re-subscribe, so this endpoint
+//!   amounted to "force a re-subscribe" rather than "drop them".
+//! * `…/rooms/{room}/evict` calls `evict_room`, which does **not** bump.
+//!   Per-room eviction is a data-plane operation (same family as a LAGGED
+//!   recovery), not an identity event, so its semantics are unchanged:
+//!   that room's subscribers lose the channel and may re-subscribe on the
+//!   same connection.
 //!
 //! v1.31.3 — F14 validate_tenant_id at handler entry (400 on malformed
 //! id rather than silent zero-count). F15 emit admin.broadcast.evict_*
@@ -29,9 +46,22 @@ use axum::{Extension, Json};
 use serde_json::json;
 
 /// `POST /admin/tenants/{id}/realtime/evict-all` — drop every broadcast
-/// channel currently owned by this tenant. Returns the channel + subscriber
-/// counts at eviction time. Idempotent: a tenant with no active rooms
-/// returns zero/zero.
+/// channel currently owned by this tenant AND close every live WS
+/// connection on it. Returns the channel + subscriber counts at eviction
+/// time. Idempotent: a tenant with no active rooms returns zero/zero.
+///
+/// #955 — the close is lazy, not immediate: `evict_tenant` bumps the
+/// tenant's eviction epoch and each connection acts on the mismatch at its
+/// next inbound frame or keepalive tick (`DRUST_BROADCAST_KEEPALIVE_SECS`,
+/// default 30 s), sending `CONN_EVICTED` and then Close 1008. So the
+/// returned `subscribers_dropped` is the count at eviction time, and the
+/// sockets behind it are gone within ≤1 keepalive period rather than
+/// synchronously with this response. Clients are expected to reconnect,
+/// which re-runs the full bearer authentication — a revoked holder gets
+/// 401 there and cannot come back.
+///
+/// The counts are read BEFORE the evict on purpose: afterwards the
+/// channels are gone and both would report zero.
 pub async fn evict_all_rooms_handler(
     State(s): State<TenantsState>,
     Extension(AdminId(caller_id)): Extension<AdminId>,
@@ -80,6 +110,13 @@ pub async fn evict_all_rooms_handler(
 /// non-existent room returns `subscribers_dropped: 0` (idempotent).
 /// Refuses invalid room names with the same `ROOM_NAME_INVALID` /
 /// `PROTECTED_ROOM` shape as the publish surface for consistency.
+///
+/// #955 — unlike `evict-all`, this does **not** touch the tenant's
+/// eviction epoch and therefore does not close any connection: a socket
+/// subscribed to other rooms keeps them, and a client may re-subscribe to
+/// this room immediately. That is the intended semantic — per-room
+/// eviction is a data-plane operation, not an identity event. Use
+/// `evict-all` when the point is to kick the holders.
 pub async fn evict_room_handler(
     State(s): State<TenantsState>,
     Extension(AdminId(caller_id)): Extension<AdminId>,
