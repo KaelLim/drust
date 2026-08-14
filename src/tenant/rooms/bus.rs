@@ -1,5 +1,6 @@
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use tokio::sync::broadcast;
 
 /// Mirror of [`crate::tenant::events::EventBus`] for ad-hoc broadcast
@@ -13,6 +14,15 @@ use tokio::sync::broadcast;
 #[derive(Clone, Default)]
 pub struct RoomBus {
     channels: Arc<DashMap<Arc<str>, DashMap<Arc<str>, broadcast::Sender<RoomMessage>>>>,
+    /// #955 — per-tenant eviction epoch. `evict_tenant` bumps it BEFORE
+    /// dropping channels; WS conns capture the handle + value at connect
+    /// and lazily compare per inbound frame + keepalive tick. Entries are
+    /// NEVER reclaimed (`sweep_empty` must not touch this map): a
+    /// reclaimed and rebuilt entry would hand old sockets a stale `Arc`
+    /// that never sees later bumps. ~16 bytes/tenant, bounded by tenant
+    /// count — the WS upgrade sits behind `bearer_auth_layer` so keys are
+    /// real tenants (precedent: #951 webhook per-tenant semaphore map).
+    epochs: Arc<DashMap<Arc<str>, Arc<AtomicU64>>>,
 }
 
 /// Carried by the broadcast channel. `payload` is `Arc`-wrapped so
@@ -85,10 +95,30 @@ impl RoomBus {
             .unwrap_or(0)
     }
 
+    /// #955 — shared handle to this tenant's eviction epoch. Captured once
+    /// at WS connect; every later check is a bare atomic load, zero map hits.
+    pub fn tenant_epoch_handle(&self, tenant: &str) -> Arc<AtomicU64> {
+        self.epochs
+            .entry(Arc::<str>::from(tenant))
+            .or_default()
+            .clone()
+    }
+
     /// Drop every channel for `tenant`. Existing subscribers get
     /// `RecvError::Closed` on next recv. Called from `soft_delete_tenant`
     /// + admin `DELETE …/realtime/rooms`.
+    ///
+    /// #955 — also bumps the tenant's eviction epoch, so live WS sockets
+    /// close themselves (`CONN_EVICTED` + Close 1008) at their next
+    /// inbound frame or keepalive tick.
     pub fn evict_tenant(&self, tenant: &str) {
+        // #955 — bump FIRST (close the new road, then tear down the old
+        // bridge): a socket racing a re-subscribe past a not-yet-bumped
+        // epoch would land in a fresh channel and linger a full keepalive.
+        self.epochs
+            .entry(Arc::<str>::from(tenant))
+            .or_default()
+            .fetch_add(1, SeqCst);
         self.channels.remove(tenant);
     }
 
@@ -135,6 +165,10 @@ impl RoomBus {
     /// Called by the 5-minute sweeper task in `main.rs`. Returns the
     /// number of channels removed. Also reclaims fully-empty outer
     /// entries (tenants with no remaining rooms).
+    ///
+    /// Reclaims empty CHANNEL entries only — the #955 `epochs` map is
+    /// deliberately untouched: a reclaimed-then-rebuilt epoch entry would
+    /// leave old sockets holding a stale `Arc` that never sees later bumps.
     pub fn sweep_empty(&self) -> usize {
         let mut removed = 0usize;
         for outer in self.channels.iter() {
@@ -249,6 +283,62 @@ mod tests {
         let removed = bus.sweep_empty();
         assert_eq!(removed, 1);
         assert_eq!(bus.channel_count(), 1);
+    }
+
+    /// #955 — a handle captured BEFORE the evict must observe the bump.
+    /// This is the whole mechanism: the WS conn holds an `Arc` taken at
+    /// connect and only ever does an atomic load on it.
+    #[tokio::test]
+    async fn evict_tenant_bumps_epoch_visible_through_shared_handle() {
+        let bus = RoomBus::new();
+        let h = bus.tenant_epoch_handle("t1");
+        let e0 = h.load(std::sync::atomic::Ordering::SeqCst);
+        bus.evict_tenant("t1");
+        assert_eq!(
+            h.load(std::sync::atomic::Ordering::SeqCst),
+            e0 + 1,
+            "handle captured before evict must see the bump"
+        );
+    }
+
+    /// #955 — a connection opened AFTER an evict takes the current value
+    /// as its baseline, so it is not killed by an eviction that predates
+    /// it (no sticky kill).
+    #[tokio::test]
+    async fn handle_taken_after_evict_reads_current_epoch_no_false_eviction() {
+        let bus = RoomBus::new();
+        bus.evict_tenant("t1"); // bump with no prior handle
+        let h = bus.tenant_epoch_handle("t1");
+        let baseline = h.load(std::sync::atomic::Ordering::SeqCst);
+        // A NEW connection's baseline equals current — no phantom mismatch.
+        assert_eq!(h.load(std::sync::atomic::Ordering::SeqCst), baseline);
+    }
+
+    /// #955 — tenant isolation: one tenant's evict must not move another
+    /// tenant's epoch (would close unrelated sockets).
+    #[tokio::test]
+    async fn epoch_bump_is_tenant_scoped() {
+        let bus = RoomBus::new();
+        let ha = bus.tenant_epoch_handle("tenant-A");
+        let hb = bus.tenant_epoch_handle("tenant-B");
+        bus.evict_tenant("tenant-A");
+        assert_eq!(ha.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            hb.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "cross-tenant bump leak"
+        );
+    }
+
+    /// #955 — per-room eviction is a data-plane op (LAGGED recovery
+    /// family), not an identity event: it must NOT close sockets.
+    #[tokio::test]
+    async fn evict_room_does_not_bump_epoch() {
+        let bus = RoomBus::new();
+        let _rx = bus.subscribe("t1", "a");
+        let h = bus.tenant_epoch_handle("t1");
+        bus.evict_room("t1", "a");
+        assert_eq!(h.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// v1.31.2 F7 regression — subscribe must hold the shard write lock

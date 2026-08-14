@@ -5,6 +5,7 @@
 //! - `DRUST_BROADCAST_ROOM_SUBSCRIBER_MAX` — WS subscribe gate (default 1000)
 //! - `DRUST_BROADCAST_CLIENT_ROOM_MAX`     — WS per-conn rooms cap (default 100)
 //! - `DRUST_BROADCAST_SWEEPER_INTERVAL_SECS` — empty-channel GC (default 300; 0 disables)
+//! - `DRUST_BROADCAST_KEEPALIVE_SECS`       — WS keepalive tick (default 30)
 
 use super::policy::PublishBucket;
 use std::sync::Arc;
@@ -16,6 +17,10 @@ pub struct RoomsConfig {
     pub room_subscriber_max: usize,
     pub client_room_max: usize,
     pub sweeper_interval_secs: u64,
+    /// #955 — WS keepalive Ping period. Also the upper bound on how long
+    /// an IDLE socket survives a tenant eviction: the keepalive branch is
+    /// one of the two epoch checkpoints.
+    pub keepalive_secs: u64,
 }
 
 impl RoomsConfig {
@@ -32,6 +37,7 @@ impl RoomsConfig {
             room_subscriber_max: pos("DRUST_BROADCAST_ROOM_SUBSCRIBER_MAX", 1_000usize),
             client_room_max: pos("DRUST_BROADCAST_CLIENT_ROOM_MAX", 100usize),
             sweeper_interval_secs: pos("DRUST_BROADCAST_SWEEPER_INTERVAL_SECS", 300u64),
+            keepalive_secs: pos("DRUST_BROADCAST_KEEPALIVE_SECS", 30u64),
         }
     }
 
@@ -44,6 +50,10 @@ impl RoomsConfig {
             room_subscriber_max: 10_000,
             client_room_max: 1_000,
             sweeper_interval_secs: 0,
+            // MUST stay 30: a 1 s tick would make every existing WS
+            // test's recv loop eat extra Ping frames. The idle-close
+            // test overrides this field itself.
+            keepalive_secs: 30,
         }
     }
 

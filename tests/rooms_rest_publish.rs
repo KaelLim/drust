@@ -116,6 +116,7 @@ async fn publish_zero_qps_rate_limited() {
             room_subscriber_max: 1_000,
             client_room_max: 100,
             sweeper_interval_secs: 0,
+            keepalive_secs: 30,
         },
     };
     // First publish OK.
@@ -141,6 +142,7 @@ async fn publish_payload_too_large_at_helper_layer() {
             room_subscriber_max: 1_000,
             client_room_max: 100,
             sweeper_interval_secs: 0,
+            keepalive_secs: 30,
         },
     };
     let huge = serde_json::json!({"big": "x".repeat(500)});
