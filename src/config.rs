@@ -178,9 +178,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // Env mutation is serialised with `#[serial_test::serial]` (default key),
+    // NOT a module-private Mutex. `cargo test --lib` is ONE binary running
+    // every test in parallel and it holds three env-mutating domains — this
+    // one, `crate::oauth::config::tests` and
+    // `crate::tenant::rooms::state::tests`. Three independent locks are no
+    // mutual exclusion at all, and `set_var` is unsound against ANY
+    // concurrent `getenv`, not just a second writer of the same variable.
+    // The default serial key is the only mechanism here that spans modules.
 
     fn clear_storage_env() {
         for k in [
@@ -197,15 +203,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
     fn storage_config_disabled_when_endpoint_unset() {
-        let _g = ENV_LOCK.lock().unwrap();
         clear_storage_env();
         assert!(StorageConfig::from_env().unwrap().is_none());
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
     fn storage_config_requires_full_set_when_endpoint_set() {
-        let _g = ENV_LOCK.lock().unwrap();
         clear_storage_env();
         unsafe { std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830") };
         let err = StorageConfig::from_env().unwrap_err();
@@ -214,8 +220,8 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
     fn storage_config_defaults_bucket_and_size() {
-        let _g = ENV_LOCK.lock().unwrap();
         clear_storage_env();
         unsafe {
             std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830");
@@ -232,8 +238,8 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
     fn storage_config_large_upload_defaults() {
-        let _g = ENV_LOCK.lock().unwrap();
         clear_storage_env();
         for k in [
             "DRUST_LARGE_UPLOAD_MAX_BYTES",

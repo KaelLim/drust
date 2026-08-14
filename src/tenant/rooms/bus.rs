@@ -112,6 +112,20 @@ impl RoomBus {
     /// #955 — shared handle to this tenant's eviction epoch. Captured once
     /// at WS connect; every later check is a bare atomic load, zero map hits.
     pub fn tenant_epoch_handle(&self, tenant: &str) -> Arc<AtomicU64> {
+        // Read fast path first. `entry().or_default()` takes the DashMap
+        // shard's WRITE lock unconditionally — including the overwhelmingly
+        // common case where the entry already exists — so concurrent WS
+        // connects for one tenant would serialise on one shard just to clone
+        // an `Arc` they only need to read (and would pay an `Arc<str>` key
+        // allocation each time). `get` takes the read half instead.
+        //
+        // Both arms return a clone of the SAME `Arc`, which is the whole
+        // contract: `handle_taken_after_evict_reads_current_epoch_no_false_eviction`
+        // pins it with `Arc::ptr_eq`, so a fast path that ever handed back a
+        // second atomic would fail there.
+        if let Some(existing) = self.epochs.get(tenant) {
+            return existing.value().clone();
+        }
         self.epochs
             .entry(Arc::<str>::from(tenant))
             .or_default()
@@ -125,6 +139,44 @@ impl RoomBus {
     /// #955 — also bumps the tenant's eviction epoch, so live WS sockets
     /// close themselves (`CONN_EVICTED` + Close 1008) at their next
     /// inbound frame or keepalive tick.
+    ///
+    /// **Reconnect cost, measured against the code rather than asserted.**
+    /// This turns "drop the channels, the client silently re-subscribes on
+    /// its live socket" into "every WS socket on the tenant closes", so every
+    /// evict now produces a reconnect herd. The design note originally
+    /// claimed a per-token rate limiter "absorbs" it; the limiter is what
+    /// REJECTS it. Grounded:
+    ///
+    /// - `bearer_auth_layer` probes `state.limiter.try_acquire(&hash)`
+    ///   (`src/tenant/router.rs`) BEFORE the auth-cache consult — the in-tree
+    ///   comment says so explicitly — so an auth-cache hit cannot skip it.
+    /// - The bucket is keyed on the token HASH, i.e. every browser client
+    ///   sharing one anon token shares ONE bucket, and that same bucket
+    ///   carries the token's ordinary REST traffic.
+    /// - `RateLimiter` is a sliding window (`src/safety/rate_limit.rs`):
+    ///   `DRUST_RATE_LIMIT_PER_TOKEN` (default 60) hits per
+    ///   `DRUST_RATE_LIMIT_WINDOW_SECS` (default 10 s) ⇒ **6 reconnects/s per
+    ///   token**.
+    ///
+    /// So, with defaults: **≤ 60 sockets on one token reconnect untouched;
+    /// above that the herd drains at ~6/s** (N sockets ⇒ ~N/6 s), the excess
+    /// getting 429 + `Retry-After`, and that token's REST calls queue behind
+    /// the same budget for the drain. A rejected attempt is NOT pushed into
+    /// the window (`try_acquire` returns before `push_back`), so retries do
+    /// not extend the throttle — but a client without backoff will still spin
+    /// on 429s. An operator expecting more than `DRUST_RATE_LIMIT_PER_TOKEN`
+    /// concurrent sockets on a SHARED token should raise that knob or issue
+    /// per-user tokens.
+    ///
+    /// The security direction is unaffected: a throttled reconnect fails
+    /// CLOSED (no data), and the eviction's purpose — the revoked holder's
+    /// socket is gone — is done by the close itself. The three mitigations
+    /// weighed and rejected: jittering the close delays revocation (at the
+    /// FRAME checkpoint it would let an evicted socket keep subscribing and
+    /// publishing during the jitter — the very hole #955 closes); exempting
+    /// the WS upgrade from the bucket removes the DoS gate from the cheapest
+    /// surface to open; narrowing the blast radius to one user needs a
+    /// per-user room index, explicitly out of scope (spec §不做的事).
     pub fn evict_tenant(&self, tenant: &str) {
         // #955 — bump BEFORE the teardown. What the ordering actually
         // buys is narrow, so state it exactly: the window in which a

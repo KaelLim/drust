@@ -3,7 +3,8 @@
 //! One WS conn ⇒ N rooms. Per-conn task drives `tokio::select!` over:
 //!   (a) upstream `WebSocket::recv()` — demux client op
 //!   (b) `StreamMap<String, BroadcastStream<RoomMessage>>` — fan-in
-//!   (c) keepalive ticker (30s)
+//!   (c) keepalive ticker (`RoomsConfig.keepalive_secs`, default 30 s,
+//!       clamped into 1..=300 — see `keepalive_interval`)
 //!
 //! Auth at upgrade: bearer resolved by `bearer_auth_layer` upstream
 //! (which itself reads the Authorization header rewritten from
@@ -70,6 +71,23 @@ impl Drop for WsConnGuard {
     }
 }
 
+/// #955 — the keepalive ticker actually installed on a connection.
+///
+/// A named function rather than an inline `interval(...)` so the WIRING is
+/// testable: the knob's producer (`RoomsConfig::from_env`) had unit tests
+/// while this consumer had none, and reverting the period to the pre-#955
+/// hardcoded 30 s left every targeted gate green — a documented env var that
+/// did nothing, which is the exact defect this change set exists to fix.
+/// `keepalive_interval_tracks_config_not_a_hardcoded_period` goes red on that
+/// revert.
+///
+/// `from_env` already clamps into `1..=300`; the `.max(1)` covers any OTHER
+/// `RoomsConfig` constructor (test literals build the struct directly)
+/// because `tokio::time::interval` panics on a zero period.
+fn keepalive_interval(cfg: &crate::tenant::rooms::state::RoomsConfig) -> tokio::time::Interval {
+    interval(Duration::from_secs(cfg.keepalive_secs.max(1)))
+}
+
 /// Per-connection event loop. Returns when the conn closes for any
 /// reason (client disconnect / LAGGED / send error).
 async fn handle_socket(
@@ -88,11 +106,7 @@ async fn handle_socket(
     // StreamMap entry while the HashSet still claimed it, making
     // re-Subscribe a silent no-op.
     let mut stream_map: StreamMap<String, BroadcastStream<RoomMessage>> = StreamMap::new();
-    // #955 — honour the configured keepalive period. `from_env` already
-    // clamps 0 up to 1; `.max(1)` here is belt-and-braces for any other
-    // `RoomsConfig` constructor (test literals), because `interval`
-    // panics on a zero period.
-    let mut ka = interval(Duration::from_secs(pc.cfg.keepalive_secs.max(1)));
+    let mut ka = keepalive_interval(&pc.cfg);
     ka.tick().await; // consume immediate first tick
 
     let token_hint = match &ctx {
@@ -387,4 +401,49 @@ async fn send_error(
         room,
     };
     send_json(sink, &env).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tenant::rooms::state::RoomsConfig;
+
+    /// #955 — pin the CONSUMER of `RoomsConfig.keepalive_secs`.
+    ///
+    /// Round 1 of this change set shipped the env var with the WS loop still
+    /// on a hardcoded 30 s; round 2's tests then covered only the producer
+    /// (`from_env`), so the same mutant — `interval(Duration::from_secs(30))`
+    /// — was still green across `cargo test --lib rooms::` and
+    /// `cargo test --test g_rooms`. This asserts the period the loop actually
+    /// installs, so that revert now fails here.
+    ///
+    /// Scope, stated honestly: this pins the period SELECTION, not the
+    /// end-to-end behaviour. Only the T2 integration test (`keepalive_secs =
+    /// 1`, evict, expect Close well inside 30 s) proves an evicted idle socket
+    /// really closes on that tick.
+    #[tokio::test]
+    async fn keepalive_interval_tracks_config_not_a_hardcoded_period() {
+        let mut cfg = RoomsConfig::test_defaults();
+        assert_eq!(cfg.keepalive_secs, 30, "test_defaults must stay 30");
+        assert_eq!(
+            keepalive_interval(&cfg).period(),
+            Duration::from_secs(30),
+            "default path"
+        );
+
+        // The values the #955 tests and a chatter-averse operator actually use.
+        for secs in [1u64, 5, 7, 300] {
+            cfg.keepalive_secs = secs;
+            assert_eq!(
+                keepalive_interval(&cfg).period(),
+                Duration::from_secs(secs),
+                "keepalive period must follow the config, not a literal",
+            );
+        }
+
+        // A 0 from a hand-built `RoomsConfig` (only `from_env` clamps) must
+        // not panic `tokio::time::interval`.
+        cfg.keepalive_secs = 0;
+        assert_eq!(keepalive_interval(&cfg).period(), Duration::from_secs(1));
+    }
 }
