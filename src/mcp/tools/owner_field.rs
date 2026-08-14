@@ -189,13 +189,17 @@ pub async fn set_self_register(
 /// author a wrapper-arm evict is ungateable and push a conditional somewhere
 /// worse.
 ///
-/// Measured caveat, so nobody re-derives it the hard way: over the TEST harness
-/// this particular tool still stops inside the wrapper, because
-/// `McpRegistry::with_bus` passes `meta: None` — `tools/call
+/// Measured caveat, so nobody re-derives it the hard way: under every
+/// `helpers::spin_up_*` stack this particular tool stops inside the wrapper,
+/// because `McpRegistry::with_bus` passes `meta: None` — `tools/call
 /// set_publish_policy` returns "meta connection not available in this context"
 /// and never reaches this fn, leaving the epoch untouched. That is a harness
-/// gap, not a design constraint, and it is why this station's tests call this
-/// fn directly.
+/// gap, not a design constraint: a fixture that builds its registry with
+/// `Some(meta)` drives the wrapper fine, which is what
+/// `mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus`
+/// (`tests/auth_cache_mcp_publish_policy.rs`) does to pin WHICH bus the wrapper
+/// forwards. The rest of this station's tests call this fn directly, and
+/// therefore say nothing about that argument.
 ///
 /// `bus_rooms` is a REQUIRED parameter, not an `Option` like `auth_cache`:
 /// `DrustMcpInner.bus_rooms` is always present, and #955 made the same choice

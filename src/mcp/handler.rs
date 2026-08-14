@@ -2499,8 +2499,22 @@ impl DrustMcpService {
         // Testability is NOT a reason. Until the #955 T3 round-2 review this
         // comment also claimed a `#[tool]` method is unreachable from an
         // integration test; that is false (`tools/call` reaches these
-        // wrappers — see the tool fn's doc comment). Pinned by
-        // `tests/auth_cache_mcp_publish_policy.rs`.
+        // wrappers — see the tool fn's doc comment).
+        //
+        // Two DIFFERENT things need pinning here, and round 3 found the second
+        // one unpinned while this comment claimed otherwise:
+        //   * the fn's own decision (evict on a real change, not on a no-op) —
+        //     `mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not`,
+        //     which calls the fn directly with a bus it owns;
+        //   * WHICH bus this line forwards —
+        //     `mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus`,
+        //     which drives `tools/call` against a stack whose registry, auth
+        //     state and WS handler share one bus, and fails if this expression
+        //     becomes a private `RoomBus`. Both live in
+        //     `tests/auth_cache_mcp_publish_policy.rs`. The second is the only
+        //     test that executes this argument: measured, replacing it with
+        //     `RoomBus::new()` left the whole suite green before that test
+        //     existed, i.e. it silently turned this face of #955 off.
         let inner = self.state.inner();
         match owner_field_tools::set_publish_policy(
             &meta,
