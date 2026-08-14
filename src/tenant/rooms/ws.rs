@@ -517,6 +517,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tenant::rooms::srcpin;
     use crate::tenant::rooms::state::RoomsConfig;
 
     /// #955 — pin the CONSUMER of `RoomsConfig.keepalive_secs`.
@@ -649,11 +650,21 @@ mod tests {
     ///    while the op runs behind the close frame. Killed here by requiring a
     ///    `break` between each `check_epoch_evicted` and the work it guards.
     ///
+    /// Round 2 then measured that round 1's OWN fix let mutant 2 back in: the
+    /// reviewer had written it as `{ /* no break */ }`, and `contains("break")`
+    /// matched the word inside that comment. Commenting checkpoint (a) out
+    /// whole (`// if check_epoch_evicted(…) { break; }`) was green for the same
+    /// reason — `find` anchored on a call that no longer ran. Every needle
+    /// below is therefore matched against [`srcpin::code_only`], which blanks
+    /// comments, so a mutant can no longer leave its own alibi in one.
+    ///
     /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
     fn epoch_checkpoints_sit_before_dispatch_and_on_the_keepalive_tick() {
-        let src = include_str!("ws.rs");
+        // Comments blanked FIRST — see the round-2 note above.
+        let stripped = srcpin::code_only(include_str!("ws.rs"));
+        let src = stripped.as_str();
 
         // ---- the capture: in `ws_handler`, BEFORE the upgrade ----
         let h_start = src

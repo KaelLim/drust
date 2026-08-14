@@ -496,10 +496,19 @@ mod tests {
     /// `handler.rs::tool_count_matches_source_annotations`. It reads the
     /// FUNCTION BODY only, so the needles in this test's own source cannot
     /// satisfy it.
+    ///
+    /// T2 review round 2 MEASURED that reading raw source was not enough: with
+    /// `// self.bump_epoch(tenant);` left in place above the teardown and the
+    /// real call moved BELOW it, this test stayed green — `find` returns the
+    /// first occurrence, and that was the comment. The invariant was inverted
+    /// with every gate passing. Needles are matched against
+    /// [`srcpin::code_only`] (comments blanked) for that reason; the same
+    /// mutant shape had defeated the sibling pin in `ws.rs` twice.
     #[test]
     fn evict_tenant_bumps_epoch_before_dropping_channels() {
         const FN_HEAD: &str = "pub fn evict_tenant(&self, tenant: &str) {";
-        let src = include_str!("bus.rs");
+        let stripped = crate::tenant::rooms::srcpin::code_only(include_str!("bus.rs"));
+        let src = stripped.as_str();
         let start = src
             .find(FN_HEAD)
             .expect("evict_tenant's signature changed — update this structural pin");

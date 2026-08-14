@@ -16,6 +16,9 @@ pub mod bus;
 pub mod envelope;
 pub mod policy;
 pub mod rest;
+/// Test-only: the source scanner both #955 structural pins read through.
+#[cfg(test)]
+pub(crate) mod srcpin;
 pub mod state;
 pub mod ws;
 pub mod ws_auth;

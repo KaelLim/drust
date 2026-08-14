@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-08-13
+updated: 2026-08-14
 generated_by: docs/gen-architecture.py
 ---
 
@@ -35,7 +35,7 @@ generated_by: docs/gen-architecture.py
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
-| [`tenant/`](#srctenant) | 37 | 273 | 116 | 69 |
+| [`tenant/`](#srctenant) | 38 | 281 | 118 | 71 |
 
 ## Group dependency graph
 
@@ -360,10 +360,11 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
 - [`rooms/envelope.rs`](../src/tenant/rooms/envelope.rs) — v1.31 wire envelope. Client → Server uses `op`-tagged objects; · 3 pub
-- [`rooms/mod.rs`](../src/tenant/rooms/mod.rs) — v1.31 — broadcast rooms (WebSocket multiplex). · 8 pub
+- [`rooms/mod.rs`](../src/tenant/rooms/mod.rs) — v1.31 — broadcast rooms (WebSocket multiplex). · 9 pub
 - [`rooms/policy.rs`](../src/tenant/rooms/policy.rs) — v1.31 policy gates: room-name validation, per-tenant publish · 6 pub
 - [`rooms/rest.rs`](../src/tenant/rooms/rest.rs) — v1.31 REST publish handler — POST /t/{tenant}/rooms/{room}. · 4 pub
-- [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 1 pub
+- [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the rooms STRUCTURAL PINS (#955). · 1 pub
+- [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 7 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
 - [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 1 pub
 - [`router.rs`](../src/tenant/router.rs) — 7 pub
