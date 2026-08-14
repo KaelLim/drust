@@ -149,9 +149,19 @@ impl RoomBus {
     /// `RecvError::Closed` on next recv.
     ///
     /// **Called from eight production sites.** Re-derive the list rather than
-    /// trusting it — it has drifted twice already: it once named a
-    /// `DELETE …/realtime/rooms` route that does not exist, and it said
-    /// "five" for one commit after #955 T3 added the publish-policy faces.
+    /// trusting it — it has drifted three times already: it once named a
+    /// `DELETE …/realtime/rooms` route that does not exist; it said "five"
+    /// for one commit after #955 T3 added the publish-policy faces; and that
+    /// same T3 commit, the one that wrote this warning, left FOUR sibling
+    /// docs still cross-referencing the old "5" — `McpRegistry::with_bus`,
+    /// `tests/helpers.rs::test_mcp_http`, and two in `tests/rooms_ws.rs`.
+    ///
+    /// So the rule is now structural rather than diligent: **this list is the
+    /// only place allowed to state a count.** Those four siblings were
+    /// rewritten to name the tools they care about and link here; a sibling
+    /// that needs the number links to this doc instead of copying it, because
+    /// a copied count is a count that drifts.
+    ///
     /// The recipe that returns exactly these eight and nothing else, verified
     /// 2026-08-14, is `grep -rn 'bus_rooms\.evict_tenant(' src/` — every
     /// production caller reaches this method through a field or parameter so

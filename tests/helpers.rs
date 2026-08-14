@@ -15,10 +15,13 @@ use tokio::sync::Mutex;
 ///
 /// #955 — takes `bus_rooms` because the registry used to mint its OWN
 /// (`McpRegistry::with_bus` defaulted it from `test_rooms_defaults`), which put
-/// the MCP tools `delete_user` / `revoke_user_sessions` — 2 of the 5 sites
-/// `RoomBus::evict_tenant`'s doc enumerates — on a bus no socket in the stack
-/// was ever on. Pass the same instance `shared_bus_rooms` returned; never a
-/// fresh one.
+/// every MCP tool that evicts — `delete_user`, `revoke_user_sessions` and
+/// `set_publish_policy` — on a bus no socket in the stack was ever on. Pass the
+/// same instance `shared_bus_rooms` returned; never a fresh one.
+///
+/// No count here on purpose: `RoomBus::evict_tenant`'s doc owns the
+/// authoritative call-site list and the recipe to re-derive it. The count this
+/// comment used to repeat ("2 of the 5") was stale the day it shipped.
 pub fn test_mcp_http(
     tenants: Arc<TenantRegistry>,
     bus: EventBus,

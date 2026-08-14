@@ -2490,11 +2490,17 @@ impl DrustMcpService {
         // #955 — and the rooms bus, so a REAL flag change also closes the
         // live WS sockets still holding the old `TenantPublishPolicy` (they
         // capture it once at upgrade). Unlike `delete_user` /
-        // `revoke_user_sessions` above, the evict is NOT in this arm: it is
-        // conditional on a pre-image only readable under the meta lock the
-        // tool fn holds, and this `#[tool]` method is private, so an evict
-        // here could not be pinned by any integration test. See the tool fn's
-        // doc comment; pinned by `tests/auth_cache_mcp_publish_policy.rs`.
+        // `revoke_user_sessions` above, the evict is NOT in this arm, for ONE
+        // reason: it is conditional on a pre-image only readable under the
+        // meta lock the tool fn holds, and this arm has no pre-image to
+        // compare against — it could only evict unconditionally, which would
+        // thunder-herd the tenant on a no-op call.
+        //
+        // Testability is NOT a reason. Until the #955 T3 round-2 review this
+        // comment also claimed a `#[tool]` method is unreachable from an
+        // integration test; that is false (`tools/call` reaches these
+        // wrappers — see the tool fn's doc comment). Pinned by
+        // `tests/auth_cache_mcp_publish_policy.rs`.
         let inner = self.state.inner();
         match owner_field_tools::set_publish_policy(
             &meta,

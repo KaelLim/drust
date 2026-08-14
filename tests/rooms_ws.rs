@@ -133,9 +133,11 @@ async fn send_op(ws: &mut WsClient, v: serde_json::Value) {
 /// OTHER test files still minted their own bus, and every helper stack —
 /// `spin_up_tenant_rooms` included — ALSO ran a second bus inside its MCP
 /// registry, because `test_mcp_http` built one from `test_rooms_defaults()`.
-/// That last one is not cosmetic: `delete_user` and `revoke_user_sessions` are
-/// MCP tools, 2 of the 5 sites `RoomBus::evict_tenant`'s doc enumerates, so a
-/// "revoke over MCP, assert the socket died" test could not have failed.
+/// That last one is not cosmetic: `delete_user`, `revoke_user_sessions` and
+/// `set_publish_policy` all evict through the registry-supplied bus (the
+/// authoritative call-site list lives on `RoomBus::evict_tenant`; no count is
+/// repeated here, because the one that used to be went stale), so a "revoke
+/// over MCP, assert the socket died" test could not have failed.
 ///
 /// So the scan is now the whole `tests/` tree, and `test_mcp_http` takes the
 /// bus as a parameter (checked below). The #955 harness itself is covered by
@@ -268,12 +270,15 @@ fn every_test_stack_shares_one_room_bus_with_its_auth_state() {
 /// behind the shared `Arc<DashMap>`, so this is an identity probe that needs no
 /// new accessor on `RoomBus`.
 ///
-/// It matters because `delete_user` and `revoke_user_sessions` are MCP tools
-/// that call `evict_tenant` directly (`src/mcp/handler.rs`), i.e. 2 of the 5
-/// call sites `RoomBus::evict_tenant`'s doc enumerates. While `test_mcp_http`
-/// defaulted the registry's bus, those two tools moved an epoch no socket in
-/// the harness was watching, and a "revoke over MCP, assert the socket died"
-/// test could not have failed.
+/// It matters because `delete_user` and `revoke_user_sessions` call
+/// `evict_tenant` directly from their `#[tool]` wrappers
+/// (`src/mcp/handler.rs`), and `set_publish_policy` evicts one level down
+/// through the same registry-supplied `bus_rooms`
+/// (`mcp::tools::owner_field::set_publish_policy`); `RoomBus::evict_tenant`'s
+/// doc holds the authoritative list, and no count is repeated here. While
+/// `test_mcp_http` defaulted the registry's bus, those tools moved an epoch no
+/// socket in the harness was watching, and a "revoke over MCP, assert the
+/// socket died" test could not have failed.
 ///
 /// Not `#[ignore]`d: no socket is involved, so it runs in every gate.
 #[tokio::test]

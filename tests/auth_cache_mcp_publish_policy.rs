@@ -125,10 +125,20 @@ async fn mcp_set_publish_policy_noop_call_still_clears_nothing_foreign() {
 /// are non-`#[ignore]`d and need no socket, because the whole behaviour is
 /// visible as a per-tenant epoch bump. The evict lives in the TOOL FN rather
 /// than in the `#[tool]` wrapper (where the #952 `delete_user` /
-/// `revoke_user_sessions` evicts sit) for two reasons: the change detection it
-/// is conditional on can only be done under the meta lock the tool fn holds,
-/// and a `#[tool]` method is a private `impl DrustMcp` fn that no integration
-/// test can reach — an evict placed there would have no gate at all.
+/// `revoke_user_sessions` evicts sit) for ONE reason: the change detection it
+/// is conditional on can only be done under the meta lock the tool fn holds.
+///
+/// This test calls the tool fn DIRECTLY, and that is a harness limit, not a
+/// statement about `#[tool]` reachability. `#[tool]` wrappers ARE reachable
+/// from an integration test — `tests/admin_users.rs` drives
+/// `revoke_user_sessions` over `/t/<id>/mcp` `tools/call`, and that tool's #952
+/// evict lives in the wrapper arm. What stops the same shape here is that
+/// `McpRegistry::with_bus` (every helper stack's MCP ctor) passes `meta: None`,
+/// so the wrapper short-circuits before the fn below: measured, `tools/call
+/// set_publish_policy` answers `-32603 "meta connection not available in this
+/// context"` and leaves the epoch at 0. An earlier version of this comment said
+/// no integration test could reach a `#[tool]` method at all; that was false
+/// and is corrected here (#955 T3 round 2).
 #[tokio::test]
 async fn mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not() {
     let dir = tempfile::tempdir().unwrap();

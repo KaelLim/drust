@@ -234,14 +234,26 @@ impl McpRegistry {
     /// Test-only ctor for a registry that goes into a `TenantStack`.
     ///
     /// #955 — `bus_rooms` is a REQUIRED parameter, not a default, because the
-    /// two MCP eviction sites (`delete_user`, `revoke_user_sessions`, 2 of the
-    /// 5 call sites `RoomBus::evict_tenant`'s doc enumerates) must move the
-    /// SAME bus the WS handler's sockets are on — production threads one
-    /// instance into all three (`src/main.rs` → `with_bus_and_storage`). While
-    /// this ctor defaulted it from `test_rooms_defaults`, every helper stack in
-    /// the suite ran two buses and any "revoke over MCP, assert the socket
-    /// died" test would have passed without exercising anything. Tests get the
+    /// MCP eviction tools — `delete_user` and `revoke_user_sessions` (evicting
+    /// in their `#[tool]` wrappers) and `set_publish_policy` (evicting one
+    /// level down, in `mcp::tools::owner_field`, through this same
+    /// registry-supplied `bus_rooms`) — all must move the SAME bus the WS
+    /// handler's sockets are on. Production threads one instance into all
+    /// three (`src/main.rs` → `with_bus_and_storage`). While this ctor
+    /// defaulted it from `test_rooms_defaults`, every helper stack in the
+    /// suite ran two buses and any "revoke over MCP, assert the socket died"
+    /// test would have passed without exercising anything. Tests get the
     /// instance from `helpers::shared_bus_rooms`.
+    ///
+    /// For the authoritative list of everything that calls `evict_tenant`, read
+    /// [`crate::tenant::rooms::RoomBus::evict_tenant`]'s doc and re-derive it
+    /// with the recipe there. This doc deliberately states NO count: the one it
+    /// used to carry ("2 of the 5") went stale in the very commit that added
+    /// `set_publish_policy` as the third MCP site.
+    ///
+    /// Note this ctor also leaves `meta: None`, so any tool whose body needs
+    /// the meta handle (`set_publish_policy` among them) short-circuits in its
+    /// wrapper under this registry.
     pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus, bus_rooms: RoomBus) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
         let (_private_bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
