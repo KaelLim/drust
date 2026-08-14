@@ -49,24 +49,25 @@ pub(crate) fn code_only(src: &str) -> String {
     while i < b.len() {
         // Raw string `r"…"` / `r#"…"#` — checked before the bare-`"` arm so
         // the hashes are consumed with it.
-        if b[i] == b'r' && !is_ident_byte(b, i.wrapping_sub(1)) {
-            if let Some(end) = raw_string_end(b, i) {
-                out.extend_from_slice(&b[i..end]);
-                i = end;
-                continue;
-            }
+        if b[i] == b'r'
+            && !is_ident_byte(b, i.wrapping_sub(1))
+            && let Some(end) = raw_string_end(b, i)
+        {
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+            continue;
         }
 
         // Char literal `'x'` / `'\n'` — only matched in that exact shape, so a
         // lifetime (`'a`, which has no closing quote) is left alone. This
         // exists for `'"'`, which would otherwise open a phantom string and
         // stop the scanner stripping comments from there on.
-        if b[i] == b'\'' {
-            if let Some(end) = char_literal_end(b, i) {
-                out.extend_from_slice(&b[i..end]);
-                i = end;
-                continue;
-            }
+        if b[i] == b'\''
+            && let Some(end) = char_literal_end(b, i)
+        {
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+            continue;
         }
 
         if b[i] == b'"' {

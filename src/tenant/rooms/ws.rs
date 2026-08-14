@@ -17,9 +17,18 @@
 //! re-resolved, so revocation reaches a LIVE socket only through the
 //! tenant eviction epoch: `ws_handler` captures
 //! `RoomBus::tenant_epoch_handle` + its value BEFORE the upgrade and hands
-//! both to `handle_socket`, which compares on branch (a) before dispatch
-//! and on branch (c) every tick. A mismatch sends [`codes::CONN_EVICTED`]
-//! and closes 1008.
+//! both to `handle_socket`, which compares on branch (a) — on EVERY inbound
+//! frame, before the `match` that dispatches it — and on branch (c) every
+//! tick. A mismatch sends [`codes::CONN_EVICTED`] and closes 1008.
+//!
+//! Checkpoint (a) sits above the frame `match`, not inside the `Text` arm,
+//! deliberately. Only Text carries a privileged effect today, so the narrow
+//! placement was not a hole — but it made the covered set an ENUMERATION of
+//! arms (Ping / Binary / Pong were unchecked), and the next op carried on a
+//! Binary frame would have joined the unchecked side silently. Above the
+//! match there is nothing to enumerate: every frame that reaches the server
+//! is checked, and the structural pin anchors on `match frame {` so the
+//! placement cannot regress into an arm.
 //!
 //! Branch (b) deliberately does NOT check — but not because nothing can
 //! arrive there post-revocation. `RoomBus::evict_tenant`'s own doc spells
@@ -43,11 +52,11 @@ use crate::tenant::rooms::policy::{
     PublishGate, TenantPublishPolicy, check_publish_allowed, validate_room_name,
 };
 use crate::tenant::rooms::rest::{PublishCtx, PublishError, publish_into_bus};
-use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocketUpgrade};
 use axum::extract::{Extension, Path};
 use axum::response::Response;
 use futures::SinkExt;
-use futures::stream::{SplitSink, StreamExt};
+use futures::stream::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::{Duration, Instant};
@@ -100,7 +109,15 @@ pub async fn ws_handler(
 
     ws.max_message_size(cap)
         .max_frame_size(cap)
-        .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant, policy, epoch, epoch0))
+        .on_upgrade(move |socket| {
+            // Splitting HERE rather than inside `handle_socket` is what makes
+            // the conn loop generic over its two halves, and therefore
+            // drivable by an in-memory duplex in a lib test — see
+            // `handle_socket`'s doc for why that mattered enough to change
+            // the signature.
+            let (sink, stream) = socket.split();
+            handle_socket(sink, stream, ctx, pc, tenant, policy, epoch, epoch0)
+        })
 }
 
 /// RAII guard that increments `drust_ws_connections_active` on construction
@@ -139,8 +156,21 @@ fn keepalive_interval(cfg: &crate::tenant::rooms::state::RoomsConfig) -> tokio::
 
 /// Per-connection event loop. Returns when the conn closes for any
 /// reason (client disconnect / LAGGED / send error).
-async fn handle_socket(
-    socket: WebSocket,
+///
+/// Generic over the two socket halves rather than taking a `WebSocket`,
+/// for one reason: a `WebSocket` cannot be constructed without a real
+/// upgraded connection, and **every** WS integration test in this repo is
+/// `#[ignore]`d (tokio/2374 — see `tests/rooms_ws.rs`), so `make test-all`
+/// runs none of them. Before this signature change the #955 checkpoints had
+/// no EXECUTED coverage at all: the only tests that could see them were a
+/// source-text pin (which any sufficiently creative mutant eventually
+/// out-runs — three rounds of that arms race are recorded on the pin) and
+/// ignored integration tests. With the halves generic, the real loop can be
+/// driven end-to-end over an in-memory duplex in a lib test that every gate
+/// runs — see `evicted_conn_loop_closes_1008_and_never_dispatches_the_frame`.
+async fn handle_socket<Si, St, E>(
+    mut sink: Si,
+    mut stream: St,
     ctx: AuthCtx,
     pc: PublishCtx,
     tenant: String,
@@ -153,9 +183,12 @@ async fn handle_socket(
     // make the comparison vacuous and close nothing.
     epoch: Arc<AtomicU64>,
     epoch0: u64,
-) {
+) where
+    Si: futures::Sink<Message> + Unpin,
+    St: futures::Stream<Item = Result<Message, E>> + Unpin,
+    E: std::fmt::Debug,
+{
     let _conn_guard = WsConnGuard::new(); // v1.32 C1 — tracks active WS connections
-    let (mut sink, mut stream) = socket.split();
 
     // v1.31.2 F6 — drop the separate `subscribed: HashSet<String>`. The
     // StreamMap itself IS the source of truth for which rooms this
@@ -190,12 +223,16 @@ async fn handle_socket(
                         break;
                     }
                 };
+                // #955 checkpoint (a) — above the match, so EVERY inbound frame
+                // is checked before it is dispatched at all: subscribe /
+                // unsubscribe / publish / op:ping (all Text), the WS control
+                // Ping we answer with a Pong, and any future op carried on a
+                // Binary frame. An evicted socket cannot land one more op on
+                // the way out, and the covered set is not an enumeration of
+                // match arms that a new arm can silently fall outside of.
+                if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
                 match frame {
                     Message::Text(text) => {
-                        // #955 checkpoint (a) — BEFORE dispatch, so it covers
-                        // subscribe / unsubscribe / publish / ping uniformly and
-                        // an evicted socket cannot land one more op on the way out.
-                        if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
                         if !handle_text_frame(
                             text.as_str(), &ctx, &pc, &tenant, token_hint, admin_id,
                             &policy, &mut stream_map, &mut sink,
@@ -260,7 +297,10 @@ async fn handle_socket(
 
 /// Handle one upstream text frame. Returns `true` to continue the
 /// outer loop, `false` to close the conn.
-async fn handle_text_frame(
+///
+/// Generic over the sink for the same reason as [`handle_socket`] — so the
+/// loop that calls it can be driven by an in-memory duplex under test.
+async fn handle_text_frame<S>(
     text: &str,
     ctx: &AuthCtx,
     pc: &PublishCtx,
@@ -269,8 +309,11 @@ async fn handle_text_frame(
     admin_id: Option<i64>,
     policy: &TenantPublishPolicy,
     stream_map: &mut StreamMap<String, BroadcastStream<RoomMessage>>,
-    sink: &mut SplitSink<WebSocket, Message>,
-) -> bool {
+    sink: &mut S,
+) -> bool
+where
+    S: futures::Sink<Message> + Unpin,
+{
     let op: ClientOp = match serde_json::from_str(text) {
         Ok(o) => o,
         Err(_) => {
@@ -476,13 +519,16 @@ where
 
 /// Emit `ack` only when client supplied `ref` — keeps the wire quiet
 /// for fire-and-forget clients.
-async fn send_ack(
-    sink: &mut SplitSink<WebSocket, Message>,
+async fn send_ack<S>(
+    sink: &mut S,
     client_ref: Option<String>,
     op: &'static str,
     room: Option<String>,
     delivered_to: Option<usize>,
-) -> Result<(), axum::Error> {
+) -> Result<(), S::Error>
+where
+    S: futures::Sink<Message> + Unpin,
+{
     if client_ref.is_none() {
         return Ok(());
     }
@@ -658,6 +704,31 @@ mod tests {
     /// below is therefore matched against [`srcpin::code_only`], which blanks
     /// comments, so a mutant can no longer leave its own alibi in one.
     ///
+    /// Round 3 measured the class all three earlier rounds had left open, and
+    /// it is worth naming precisely because it explains the shape of the
+    /// needles below. Rounds 1–2 only ever tightened WHERE a checkpoint sits
+    /// and WHETHER it breaks — never WHICH ATOMIC it compares. So one line at
+    /// the top of `handle_socket`, `let epoch = AtomicU64::new(epoch0);`,
+    /// shadowed the passed-in handle (both `&AtomicU64` and `&Arc<AtomicU64>`
+    /// coerce at the call sites, so it compiled untouched), left both
+    /// checkpoints exactly where the pin demands, and made #955 a total
+    /// no-op: `cargo test --lib rooms::` = 53 passed, 0 failed, this pin
+    /// among them. Killed here by pinning the ARGUMENT TUPLE itself and by
+    /// forbidding the body from naming `AtomicU64` or re-binding `epoch` at
+    /// all.
+    ///
+    /// The `AtomicU64` ban is why this test splits the signature off the body:
+    /// `epoch: Arc<AtomicU64>` is a legitimate use in the parameter list, and
+    /// the ban applies only to what follows the opening brace.
+    ///
+    /// Round 3's real lesson, though, is that this pin should not have been
+    /// the last line of defence. It is not any more — the loop is now driven
+    /// for real in `evicted_conn_loop_closes_1008_and_never_dispatches_the_frame`,
+    /// which is EXECUTED in every gate and which that mutant fails outright.
+    /// Keep both: the executed test proves the behaviour, this pin proves the
+    /// two checkpoints exist where an idle socket and a busy socket
+    /// respectively reach them.
+    ///
     /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
@@ -695,50 +766,80 @@ mod tests {
 
         // ---- the checkpoints: inside `handle_socket` ----
         let start = src
-            .find("async fn handle_socket(")
+            .find("async fn handle_socket<")
             .expect("handle_socket's signature changed — update this structural pin");
         let rest = &src[start..];
         let end = rest
             .find("\n}\n")
             .expect("could not find the end of handle_socket's body");
-        let body = &rest[..end];
+        let decl = &rest[..end];
 
+        // Signature and body are scanned separately: `epoch: Arc<AtomicU64>`
+        // is legitimate in the parameter list, and forbidden after the brace.
+        let open = decl
+            .find("\n{\n")
+            .expect("handle_socket's body must still open on a line of its own");
+        let body = &decl[open..];
+
+        // The mutant that beat rounds 1–3 (`let epoch = AtomicU64::new(epoch0);`
+        // shadowing the passed-in handle) is killed by this needle: it pins the
+        // WHOLE argument tuple, so the comparison provably runs against the
+        // handle the parameter list received, twice — once per checkpoint.
         assert_eq!(
-            body.matches("tenant_epoch_handle(").count(),
-            0,
-            "mutant 1: handle_socket must NOT take its own epoch handle — the baseline is \
-             captured once in ws_handler and passed in. A per-frame capture makes epoch0 \
-             always equal epoch, so no socket is ever closed",
-        );
-        assert_eq!(
-            body.matches("epoch.load(").count(),
-            0,
-            "mutant 1: handle_socket must NOT re-read the baseline off the shared handle — \
-             the only load belongs in check_epoch_evicted, which compares against the \
-             connect-time epoch0",
+            body.matches("check_epoch_evicted(&mut sink, &epoch, epoch0)")
+                .count(),
+            2,
+            "mutant 3: both checkpoints must compare the PASSED-IN handle against the \
+             connect-time epoch0 — `check_epoch_evicted(&mut sink, &epoch, epoch0)`, exactly \
+             twice. Pinning only WHERE the calls sit lets a one-line shadow of `epoch` \
+             decouple them from the bus with every gate green",
         );
 
-        // Checkpoint (a): every inbound Text frame, BEFORE dispatch.
-        let text_arm = body
-            .find("Message::Text(text) => {")
-            .expect("the inbound Text arm moved — update this structural pin");
-        let dispatch = text_arm
-            + body[text_arm..]
-                .find("handle_text_frame(")
-                .expect("the Text arm must still dispatch through handle_text_frame");
-        let check_a = text_arm
-            + body[text_arm..dispatch]
-                .find("check_epoch_evicted(")
-                .expect(
-                    "checkpoint (a) missing: the epoch must be checked BEFORE handle_text_frame, \
-                     so an evicted socket cannot land one more subscribe/publish",
-                );
-        assert!(
-            body[check_a..dispatch].contains("break"),
-            "mutant 2: checkpoint (a) must BREAK the conn loop. Without the break the error + \
-             Close still go out first, so every wire assertion passes, while the op runs \
-             behind them — one more subscribe (re-creating the channel evict just dropped) or \
-             one more publish plus its audit row",
+        // Belt and braces for the same class: the body may not name the atomic
+        // type at all, nor re-bind `epoch`, so no locally-synthesized counter
+        // can be substituted under a matching argument tuple.
+        for needle in [
+            "AtomicU64",
+            "let epoch",
+            "let mut epoch",
+            "tenant_epoch_handle(",
+            "epoch.load(",
+            "epoch =",
+        ] {
+            assert_eq!(
+                body.matches(needle).count(),
+                0,
+                "mutants 1+3: handle_socket's body must not contain `{needle}`. The eviction \
+                 baseline is captured ONCE in ws_handler and passed in; anything that takes a \
+                 second handle, re-reads epoch0, or synthesizes/rebinds the atomic makes the \
+                 comparison vacuous — epoch0 can then never differ from epoch, so no socket is \
+                 ever closed",
+            );
+        }
+
+        // Checkpoint (a): EVERY inbound frame, above the dispatch `match` —
+        // not inside the Text arm, so a future op on a Binary frame cannot
+        // land outside the checked set.
+        let a_arm = body
+            .find("maybe_frame = stream.next() => {")
+            .expect("branch (a) moved — update this structural pin");
+        let dispatch = a_arm
+            + body[a_arm..]
+                .find("match frame {")
+                .expect("branch (a) must still dispatch the frame through `match frame`");
+        assert_eq!(
+            body[a_arm..dispatch]
+                .matches("if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }")
+                .count(),
+            1,
+            "checkpoint (a) must be exactly `if check_epoch_evicted(&mut sink, &epoch, epoch0) \
+             .await {{ break; }}`, ABOVE `match frame`. Below it (or inside one arm) an evicted \
+             socket lands one more op on the way out — one more subscribe, re-creating the \
+             channel evict just dropped, or one more publish plus its audit row — and arms the \
+             check does not cover are invisible to every other assertion here. Without the \
+             `break` the error + Close still go out first, so even the wire assertions pass \
+             while the op runs behind them. (If rustfmt ever reflows this statement, re-verify \
+             the placement by hand and update the needle — do not relax it.)",
         );
 
         // Checkpoint (c): the keepalive tick, BEFORE the Ping — this is what
@@ -750,15 +851,247 @@ mod tests {
             + body[ka_arm..]
                 .find("Message::Ping(")
                 .expect("the keepalive arm must still send a Ping");
-        let check_c = ka_arm
-            + body[ka_arm..ping].find("check_epoch_evicted(").expect(
-                "checkpoint (c) missing: without it an evicted IDLE socket lives until the \
-                 client disconnects, which is unbounded",
+        assert_eq!(
+            body[ka_arm..ping]
+                .matches("if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }")
+                .count(),
+            1,
+            "checkpoint (c) must be exactly `if check_epoch_evicted(&mut sink, &epoch, epoch0) \
+             .await {{ break; }}`, before the Ping. Without it an evicted IDLE socket lives \
+             until the client disconnects, which is unbounded; without the `break` it is told \
+             it is evicted, then pinged, then kept",
+        );
+    }
+
+    /// #955 — drive the REAL conn loop over an in-memory duplex and return
+    /// every frame it wrote.
+    ///
+    /// This exists because `tests/rooms_ws.rs` is entirely `#[ignore]`d
+    /// (tokio/2374), so no gate runs a WS integration test and the checkpoint
+    /// behaviour had only source-text pins behind it. `handle_socket` is
+    /// generic over its sink and stream precisely so this harness can exist.
+    ///
+    /// Determinism, deliberately: the inbound stream carries ONE frame and is
+    /// then closed, so the loop returns on `None` even when nothing evicts it
+    /// — no timeout, no sleep, no flake. Keepalive stays at the 30 s default
+    /// so branch (c) never fires and cannot muddy the frame list, and the
+    /// StreamMap is empty so branch (b) is gated off.
+    ///
+    /// The frame is `op:ping` **with a `ref`**: it is the only op that
+    /// replies without touching a database, and the reply is skipped when
+    /// `ref` is absent — so "was the frame dispatched?" is answerable from
+    /// the wire alone, which is what makes the negative assertion real
+    /// instead of vacuous.
+    ///
+    /// Division of labour with the structural pin, measured on 2026-08-14
+    /// (`cargo test --lib rooms::ws::tests`, one mutant at a time, reverted
+    /// after each):
+    ///
+    /// | mutant | pin | executed |
+    /// |---|---|---|
+    /// | `let epoch = AtomicU64::new(epoch0);` shadow (round 3) | red | red |
+    /// | re-take the handle inside `handle_socket` | red | red |
+    /// | checkpoint (a) loses its `break` | red | red |
+    /// | checkpoint (a) `{ /* no break */ }` | red | red |
+    /// | checkpoint (a) commented out | red | red |
+    /// | checkpoint (a) moved BELOW `handle_text_frame` | red | red |
+    /// | checkpoint (c) loses its `break` / deleted | red | red |
+    /// | checkpoint (a) moved back INSIDE the `Text` arm | red | green |
+    ///
+    /// The last row is the honest limit of the executed tests and the reason
+    /// the pin stays: that mutant does not change what happens to a Text
+    /// frame, only which OTHER frames are covered, so only a placement
+    /// assertion can see it.
+    async fn drive_one_frame(evict: bool) -> Vec<Message> {
+        const TENANT: &str = "t_epoch_loop";
+
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+
+        let cfg = RoomsConfig::test_defaults();
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+
+        let (frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        frames_in
+            .unbounded_send(Ok(Message::Text(Utf8Bytes::from_static(
+                r#"{"op":"ping","ref":"r1"}"#,
+            ))))
+            .unwrap();
+        drop(frames_in); // end-of-stream behind the frame
+
+        if evict {
+            bus.evict_tenant(TENANT);
+        }
+
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+        handle_socket(
+            sink,
+            stream,
+            AuthCtx::Anon,
+            pc,
+            TENANT.to_string(),
+            TenantPublishPolicy::default(),
+            epoch,
+            epoch0,
+        )
+        .await;
+
+        out.collect::<Vec<_>>().await
+    }
+
+    /// The control arm. Without it, a checkpoint that closed EVERY connection
+    /// would satisfy the eviction test below, and #955 would read as green
+    /// while realtime was simply broken.
+    #[tokio::test]
+    async fn live_conn_loop_dispatches_the_frame_and_stays_silent_about_epochs() {
+        let out = drive_one_frame(false).await;
+        assert_eq!(
+            out.len(),
+            1,
+            "an un-evicted socket must answer the op and emit nothing else: {out:?}"
+        );
+        let Message::Text(t) = &out[0] else {
+            panic!("expected the pong, got {:?}", out[0]);
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "pong", "{v}");
+        assert_eq!(v["ref"], "r1", "{v}");
+    }
+
+    /// #955, EXECUTED: the property the whole change set exists for, proven by
+    /// running the real loop rather than by reading its source.
+    ///
+    /// Measured against the round-3 mutant (`let epoch = AtomicU64::new(epoch0);`
+    /// at the top of `handle_socket`, which every source-text pin let through):
+    /// this test fails on it.
+    #[tokio::test]
+    async fn evicted_conn_loop_closes_1008_and_never_dispatches_the_frame() {
+        let out = drive_one_frame(true).await;
+
+        assert_eq!(
+            out.len(),
+            2,
+            "an evicted socket must write exactly the typed error and the close — a third \
+             frame means the op was dispatched anyway: {out:?}"
+        );
+
+        let Message::Text(t) = &out[0] else {
+            panic!(
+                "expected the CONN_EVICTED error frame first, got {:?}",
+                out[0]
             );
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error", "{v}");
+        assert_eq!(v["code"], codes::CONN_EVICTED, "{v}");
+
+        match &out[1] {
+            Message::Close(Some(cf)) => assert_eq!(
+                cf.code,
+                axum::extract::ws::close_code::POLICY,
+                "must close 1008 Policy Violation, not a normal close"
+            ),
+            other => panic!("expected Close(1008) after the error, got {other:?}"),
+        }
+
+        // The load-bearing negative: the op must NOT have run. A pong here
+        // means the checkpoint sat after dispatch — an evicted socket landing
+        // one more op on its way out, the exact hole #955 closes.
         assert!(
-            body[check_c..ping].contains("break"),
-            "mutant 2: checkpoint (c) must BREAK the conn loop — otherwise the evicted idle \
-             socket is told it is evicted, then pinged, then kept",
+            !out.iter()
+                .any(|m| matches!(m, Message::Text(t) if t.as_str().contains("pong"))),
+            "the frame must not have been dispatched: {out:?}"
+        );
+    }
+
+    /// #955 checkpoint (c), EXECUTED: the IDLE-socket bound.
+    ///
+    /// This is the arm an operator actually depends on — a revoked holder who
+    /// simply stops typing is closed by the keepalive tick, not "whenever
+    /// they happen to disconnect" — and it is the arm the frame-driven test
+    /// above cannot reach. `keepalive_secs = 1` costs the suite about a
+    /// second of real time; the alternative (`tokio::time` paused) would mean
+    /// enabling tokio's `test-util` feature repo-wide for one test.
+    ///
+    /// The outer `timeout` is not belt-and-braces: without it, DELETING
+    /// checkpoint (c) — or dropping its `break` — makes this test HANG
+    /// forever rather than fail, and a gate that hangs is worse than one that
+    /// is red. With it, both mutants fail loudly in 10 s.
+    #[tokio::test]
+    async fn evicted_idle_conn_loop_closes_on_the_keepalive_tick() {
+        const TENANT: &str = "t_epoch_idle";
+
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+
+        let mut cfg = RoomsConfig::test_defaults();
+        cfg.keepalive_secs = 1;
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+
+        // Bound for the whole test on purpose: the inbound stream must stay
+        // OPEN and silent. Dropping the sender would end the stream and exit
+        // the loop through branch (a), proving nothing about the tick.
+        let (_frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+
+        bus.evict_tenant(TENANT);
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            handle_socket(
+                sink,
+                stream,
+                AuthCtx::Anon,
+                pc,
+                TENANT.to_string(),
+                TenantPublishPolicy::default(),
+                epoch,
+                epoch0,
+            ),
+        )
+        .await
+        .expect(
+            "checkpoint (c) missing or non-breaking: an evicted IDLE socket was still running \
+             many keepalive periods later, i.e. its post-evict life is bounded by nothing but \
+             the client choosing to disconnect",
+        );
+
+        let frames = out.collect::<Vec<_>>().await;
+        assert_eq!(
+            frames.len(),
+            2,
+            "the tick must write exactly the typed error and the close: {frames:?}"
+        );
+        let Message::Text(t) = &frames[0] else {
+            panic!("expected CONN_EVICTED first, got {:?}", frames[0]);
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["code"], codes::CONN_EVICTED, "{v}");
+        match &frames[1] {
+            Message::Close(Some(cf)) => assert_eq!(
+                cf.code,
+                axum::extract::ws::close_code::POLICY,
+                "must close 1008 Policy Violation, not a normal close"
+            ),
+            other => panic!("expected Close(1008) after the error, got {other:?}"),
+        }
+        // The keepalive Ping is what the tick does on a LIVE conn; an evicted
+        // one must be closed instead, not pinged and kept.
+        assert!(
+            !frames.iter().any(|m| matches!(m, Message::Ping(_))),
+            "an evicted socket must be closed on the tick, not pinged: {frames:?}"
         );
     }
 }

@@ -3,7 +3,28 @@
 //! Boots a real axum server on 127.0.0.1:0, connects via tokio-tungstenite,
 //! exercises subscribe / publish / cap / ping / cross-tenant isolation.
 //!
-//! ## All 9 tests marked `#[ignore]` — read before unignoring
+//! ## EVERY test in this file is `#[ignore]`d — read before unignoring
+//!
+//! No count, deliberately: this heading said "All 9" while the file held 10,
+//! then 15, and the number is the part a reader trusts least once it has
+//! drifted. `cargo test --test g_rooms -- --ignored --list` is the count.
+//!
+//! **What that means for the gate:** `make test-all` runs NONE of the tests
+//! below. Everything here is opt-in, one at a time, by hand. So when you are
+//! deciding whether some WS behaviour is covered, a test in this file is
+//! evidence that it WORKED when someone last ran it — not that it still
+//! works today.
+//!
+//! For the #955 eviction checkpoints specifically, the in-gate coverage is
+//! `src/tenant/rooms/ws.rs`'s lib tests, which drive the real `handle_socket`
+//! loop over an in-memory duplex (`evicted_conn_loop_closes_1008_and_never_dispatches_the_frame`,
+//! `evicted_idle_conn_loop_closes_on_the_keepalive_tick`, plus the structural
+//! pin `epoch_checkpoints_sit_before_dispatch_and_on_the_keepalive_tick`).
+//! What only the tests below cover is the same behaviour over a REAL socket:
+//! the upgrade, the wire frames as tungstenite decodes them, and the
+//! interaction with the live auth stack. Add checkpoint coverage in BOTH
+//! places — a behaviour whose only test is in this file is a behaviour with
+//! no gate.
 //!
 //! Each test uses `#[tokio::test]` which creates a fresh tokio runtime per
 //! test. The test spawns `axum::serve(...)` as a background task on that
@@ -19,11 +40,15 @@
 //! NON-DETERMINISTIC subset of these tests hangs each run (1–4 tests, no
 //! pattern — even the simplest "ping/pong" can hang).
 //!
-//! Each test PASSES individually:
-//!     cargo test --test rooms_ws ping_returns_pong_with_ref -- --ignored --nocapture
+//! Each test PASSES individually — and #925 merged this file into the
+//! `g_rooms` group harness, so that is the target name now:
+//!     cargo test --test g_rooms ping_returns_pong_with_ref -- --ignored --nocapture
+//!
+//! Run them ONE AT A TIME. Several ignored WS tests in a single invocation
+//! reproduce exactly the starvation described above.
 //!
 //! The v1.31 handler itself was verified by running each test individually
-//! (all 9 green at ~0.04–0.1s each). Production smoke also confirms the
+//! (all green at ~0.04–0.1s each). Production smoke also confirms the
 //! `/t/<id>/realtime` route works end-to-end.
 //!
 //! Root cause: tokio-rs/tokio#2374 (no public API to share a runtime across
