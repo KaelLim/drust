@@ -40,15 +40,16 @@ async fn missed_hook_revocation_honored_within_safety_ttl() {
     // Injected short TTL — the whole point of safety_ttl being a field.
     let cache = Arc::new(AuthCache::new(Duration::from_millis(50), 200_000));
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut state);
     state.auth_cache = cache.clone();
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: helpers::test_mcp_http(tenants, bus),
+        mcp: helpers::test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,

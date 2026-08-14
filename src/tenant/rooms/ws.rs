@@ -27,8 +27,12 @@
 //! arms (Ping / Binary / Pong were unchecked), and the next op carried on a
 //! Binary frame would have joined the unchecked side silently. Above the
 //! match there is nothing to enumerate: every frame that reaches the server
-//! is checked, and the structural pin anchors on `match frame {` so the
-//! placement cannot regress into an arm.
+//! is checked. The structural pin holds that categorical claim up in both
+//! directions a refactor could break it — the checkpoint must be the LAST
+//! statement before `match frame {` (so it cannot slide into an arm) and
+//! nothing above it may branch, `continue` or await (so it cannot be wrapped
+//! back into a Text-only check, which was measured green against the
+//! placement assertion alone).
 //!
 //! Branch (b) deliberately does NOT check — but not because nothing can
 //! arrive there post-revocation. `RoomBus::evict_tenant`'s own doc spells
@@ -120,13 +124,28 @@ pub async fn ws_handler(
     // later evict — "revocation silently did not happen", the exact class
     // #955 exists to close.
     //
-    // Capturing here leaves only the await-free middleware→handler hop, and
-    // moving the capture EARLIER is strictly fail-closed: an older baseline
-    // can only cause an extra close, never a missed one. The no-sticky-kill
-    // property is unchanged because a reconnect takes its own fresh baseline
+    // What remains, stated exactly: the window is the bearer-auth DECISION →
+    // this line. It is NOT await-free — it crosses `next.run(req).await` in
+    // `bearer_auth_layer` (`src/tenant/router.rs`), which polls straight
+    // through into this handler in practice but is a suspension point all the
+    // same. Inside that window the behaviour is fail-OPEN for exactly ONE
+    // revocation: an evict landing there is adopted as this socket's baseline,
+    // so this socket ignores THAT revocation and closes only at some later,
+    // unrelated evict.
+    //
+    // Moving the capture EARLIER is strictly fail-CLOSED (an older baseline
+    // can only cause an extra close, never a missed one), and the window can
+    // in fact be made smaller than this: `bearer_auth_layer` already holds
+    // `state.bus_rooms`, so it could take the pair at the auth decision itself
+    // and hand it over in a request extension — no per-frame identity
+    // re-resolution needed. That is not done because it would add a DashMap
+    // lookup plus an `Arc` clone to EVERY tenant request (REST, MCP, files —
+    // WS upgrades are a rounding error in that traffic) to shrink a window
+    // that is sub-poll in practice. A trade, not an impossibility: if the
+    // fail-open direction ever outweighs the per-request cost, that is the
+    // fix. The no-sticky-kill property holds either way, because a reconnect
+    // takes its own fresh baseline
     // (`handle_taken_after_evict_reads_current_epoch_no_false_eviction`).
-    // The residual is now the handler hop itself, which is the smallest this
-    // design can make it without re-resolving identity per frame.
     //
     // WHAT is captured is `connect_baseline`'s executed contract; WHERE it is
     // captured is all this line still decides, and all the structural pin
@@ -860,6 +879,19 @@ mod tests {
     /// `ws_handler` calls it exactly once, before the upgrade, and hands the
     /// pair through untouched.
     ///
+    /// Round 4 also measured the class that rounds 1–3 left open on the OTHER
+    /// axis of checkpoint (a). Every earlier assertion pinned WHERE the
+    /// checkpoint sits relative to the dispatch; none pinned that it runs
+    /// UNCONDITIONALLY. So `if matches!(frame, Message::Text(_)) {
+    /// <checkpoint> }`, written immediately above `match frame`, was green
+    /// (`cargo test --lib rooms::ws` = 15 passed / 0 failed, this pin
+    /// included) while quietly restoring the Text-only enumeration the round-2
+    /// hoist exists to prevent — and the module doc asserts the categorical
+    /// version of that property, so the doc would have been lying. Killed here
+    /// by two assertions per checkpoint: (a) must be the LAST statement before
+    /// `match frame` with a branch-free, await-free prologue, and (c) must be
+    /// the FIRST statement in the keepalive arm.
+    ///
     /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
@@ -1002,49 +1034,103 @@ mod tests {
             );
         }
 
+        const CHECKPOINT: &str = "if check_epoch_evicted(&mut sink, &epoch, epoch0).await \
+                                  { break; }";
+
         // Checkpoint (a): EVERY inbound frame, above the dispatch `match` —
         // not inside the Text arm, so a future op on a Binary frame cannot
         // land outside the checked set.
+        const ARM_A: &str = "maybe_frame = stream.next() => {";
         let a_arm = body
-            .find("maybe_frame = stream.next() => {")
+            .find(ARM_A)
             .expect("branch (a) moved — update this structural pin");
         let dispatch = a_arm
             + body[a_arm..]
                 .find("match frame {")
                 .expect("branch (a) must still dispatch the frame through `match frame`");
+        let a_region = &body[a_arm..dispatch];
         assert_eq!(
-            body[a_arm..dispatch]
-                .matches("if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }")
-                .count(),
+            a_region.matches(CHECKPOINT).count(),
             1,
-            "checkpoint (a) must be exactly `if check_epoch_evicted(&mut sink, &epoch, epoch0) \
-             .await {{ break; }}`, ABOVE `match frame`. Below it (or inside one arm) an evicted \
-             socket lands one more op on the way out — one more subscribe, re-creating the \
-             channel evict just dropped, or one more publish plus its audit row — and arms the \
-             check does not cover are invisible to every other assertion here. Without the \
-             `break` the error + Close still go out first, so even the wire assertions pass \
-             while the op runs behind them. (If rustfmt ever reflows this statement, re-verify \
-             the placement by hand and update the needle — do not relax it.)",
+            "checkpoint (a) must be exactly `{CHECKPOINT}`, ABOVE `match frame`. Below it (or \
+             inside one arm) an evicted socket lands one more op on the way out — one more \
+             subscribe, re-creating the channel evict just dropped, or one more publish plus its \
+             audit row — and arms the check does not cover are invisible to every other \
+             assertion here. Without the `break` the error + Close still go out first, so even \
+             the wire assertions pass while the op runs behind them. (If rustfmt ever reflows \
+             this statement, re-verify the placement by hand and update the needle — do not \
+             relax it.)",
         );
+
+        // Round 4 MEASURED that the count assertion above is satisfied by
+        // `if matches!(frame, Message::Text(_)) { <checkpoint> }` written
+        // immediately above `match frame`: `cargo test --lib rooms::ws` = 15
+        // passed / 0 failed, this pin included. That mutant shrinks the
+        // covered set back to Text-only — precisely the ENUMERATION that
+        // hoisting the checkpoint out of the `match` exists to prevent, and
+        // which this file's module doc asserts categorically ("every frame
+        // that reaches the server is checked"). Being ABOVE the dispatch is
+        // therefore not enough; the checkpoint must also be UNCONDITIONAL,
+        // and the two halves of that are pinned separately below.
+        let at = a_region.find(CHECKPOINT).unwrap();
+        let trailing = &a_region[at + CHECKPOINT.len()..];
+        assert!(
+            trailing.trim().is_empty(),
+            "checkpoint (a) must be the LAST statement before `match frame` — anything between \
+             them means the checkpoint sits inside something (a wrapper's closing brace is \
+             exactly what a conditional mutant leaves here). Found:\n{trailing}",
+        );
+        // …and nothing above it may branch, skip, or await: an `if` wrapping
+        // the checkpoint, or an early `continue` that hands one frame kind
+        // past it, both leave the checkpoint textually last while some frames
+        // never reach it. The ONE statement allowed here is
+        // `let frame = match maybe_frame { … };`, which classifies the stream
+        // item and cannot skip the checkpoint (its two non-frame arms `break`).
+        let prologue = &a_region[..at];
+        for (needle, allowed) in [
+            ("if ", 0usize),
+            ("else", 0),
+            ("continue", 0),
+            (".await", 0),
+            ("match ", 1),
+        ] {
+            assert_eq!(
+                prologue.matches(needle).count(),
+                allowed,
+                "branch (a)'s prologue must contain exactly {allowed} × `{needle}`: the only \
+                 statement allowed above checkpoint (a) is `let frame = match maybe_frame {{ … \
+                 }};`. A branch or an early exit there makes the checked set an enumeration \
+                 again, with every other assertion in this pin still green. Found:\n{prologue}",
+            );
+        }
 
         // Checkpoint (c): the keepalive tick, BEFORE the Ping — this is what
         // bounds an IDLE socket's post-evict life to one keepalive period.
+        const ARM_C: &str = "_ = ka.tick() => {";
         let ka_arm = body
-            .find("_ = ka.tick() => {")
+            .find(ARM_C)
             .expect("the keepalive arm moved — update this structural pin");
         let ping = ka_arm
             + body[ka_arm..]
                 .find("Message::Ping(")
                 .expect("the keepalive arm must still send a Ping");
+        let c_region = &body[ka_arm..ping];
         assert_eq!(
-            body[ka_arm..ping]
-                .matches("if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }")
-                .count(),
+            c_region.matches(CHECKPOINT).count(),
             1,
-            "checkpoint (c) must be exactly `if check_epoch_evicted(&mut sink, &epoch, epoch0) \
-             .await {{ break; }}`, before the Ping. Without it an evicted IDLE socket lives \
-             until the client disconnects, which is unbounded; without the `break` it is told \
-             it is evicted, then pinged, then kept",
+            "checkpoint (c) must be exactly `{CHECKPOINT}`, before the Ping. Without it an \
+             evicted IDLE socket lives until the client disconnects, which is unbounded; \
+             without the `break` it is told it is evicted, then pinged, then kept",
+        );
+        // Same conditional-wrapper class as (a), mirrored: on the tick side
+        // the checkpoint is FIRST rather than last, so what must be empty is
+        // everything between the arm's opening brace and the checkpoint.
+        let c_prologue = &c_region[ARM_C.len()..c_region.find(CHECKPOINT).unwrap()];
+        assert!(
+            c_prologue.trim().is_empty(),
+            "checkpoint (c) must be the FIRST statement in the keepalive arm — anything before \
+             it can wrap or skip it, and an evicted IDLE socket then lives until the client \
+             disconnects. Found:\n{c_prologue}",
         );
     }
 
@@ -1082,11 +1168,16 @@ mod tests {
     /// | checkpoint (a) moved BELOW `handle_text_frame` | red | red |
     /// | checkpoint (c) loses its `break` / deleted | red | red |
     /// | checkpoint (a) moved back INSIDE the `Text` arm | red | green |
+    /// | checkpoint (a) wrapped in `if matches!(frame, Message::Text(_))` | red¹ | green |
+    /// | an `if …{ continue; }` slipped above checkpoint (a) | red¹ | green |
     ///
-    /// The last row is the honest limit of the executed tests and the reason
-    /// the pin stays: that mutant does not change what happens to a Text
-    /// frame, only which OTHER frames are covered, so only a placement
-    /// assertion can see it.
+    /// ¹ red only since the round-4 hardening; both were green against the
+    /// placement-only pin.
+    ///
+    /// The last three rows are the honest limit of the executed tests and the
+    /// reason the pin stays: those mutants do not change what happens to a
+    /// Text frame, only which OTHER frames are covered, so only a source-text
+    /// assertion can see them.
     async fn drive_one_frame(evict: bool) -> Vec<Message> {
         const TENANT: &str = "t_epoch_loop";
 

@@ -18,13 +18,15 @@
 //!    invariant. `tenants.file_policy_seeded` is the marker, and a tenant born
 //!    after v1.63 is stamped as already-seeded at create time.
 
+mod helpers;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
 use drust::storage::meta::open_meta;
 use drust::storage::pool::TenantRegistry;
 use drust::tenant::events::EventBus;
-use drust::tenant::rooms::{RoomBus, RoomsConfig};
+use drust::tenant::rooms::RoomsConfig;
 use drust::tenant::router::TenantAuthState;
 use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router};
 use serde_json::{Value, json};
@@ -79,15 +81,16 @@ async fn stack(tenant: &str) -> Stack {
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut auth_state);
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone()),
+        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone(), bus_rooms.clone()),
     )));
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: auth_state,
         bus: bus.clone(),
-        bus_rooms: RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: RoomsConfig::test_defaults().bucket(),
         rooms_cfg: RoomsConfig::test_defaults(),
         mcp,

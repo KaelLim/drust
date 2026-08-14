@@ -16,6 +16,8 @@
 use crate::common;
 use common::oauth_helpers::*;
 
+mod helpers;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -104,18 +106,19 @@ fn build_tenant_state(
     state
 }
 
-fn build_router(state: TenantAuthState) -> Router {
+fn build_router(mut state: TenantAuthState) -> Router {
     let registry = state.registry.clone();
     let bus = EventBus::new();
+    let bus_rooms = helpers::shared_bus_rooms(&mut state);
     let webhooks = drust::tenant::WebhookDispatcher::new(registry.clone(), None);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(registry.clone());
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::new(registry),
+        drust::mcp::server::McpRegistry::with_bus(registry, bus.clone(), bus_rooms.clone()),
     )));
     build_tenant_router(TenantStack {
         auth: state,
         bus,
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp,

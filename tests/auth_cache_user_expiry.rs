@@ -58,15 +58,16 @@ async fn expired_user_entry_rejected_from_cache_without_db_read() {
     );
 
     let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut state);
     state.auth_cache = cache.clone();
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: helpers::test_mcp_http(tenants, bus),
+        mcp: helpers::test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,

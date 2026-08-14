@@ -40,6 +40,8 @@
 //! none — the admin router mounts behind an admin session and has no bearer,
 //! so "extension absent ⇒ treat as service" would be fail-OPEN on a read gate.
 
+mod helpers;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::post;
@@ -194,20 +196,21 @@ async fn mode_a_stack(tenant: &str) -> ModeA {
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut auth_state);
     let garage = mem_garage();
     let mut files_state =
         TenantFilesState::test_default(Some(garage.clone()), data.clone(), tenants.clone());
     // CI disks routinely sit under the 20% default and the guard would 507.
     files_state.disk_min_free_pct = 0;
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone()),
+        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone(), bus_rooms.clone()),
     )));
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: auth_state,
         bus: bus.clone(),
-        bus_rooms: RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: RoomsConfig::test_defaults().bucket(),
         rooms_cfg: RoomsConfig::test_defaults(),
         mcp,
@@ -820,8 +823,11 @@ async fn admin_twins_upload_stream_and_delete_without_a_bearer() {
     drust::db::migrations::run_migrations(&conn, &data).unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    // #955 — one bus for this fixture too: the host-admin MgmtState and the
+    // MCP registry it mounts must evict the same instance.
+    let bus_rooms = RoomBus::new();
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone()),
+        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone(), bus_rooms.clone()),
     )));
     let mut state = MgmtState::test_default(
         Arc::new(Mutex::new(conn)),
@@ -829,7 +835,7 @@ async fn admin_twins_upload_stream_and_delete_without_a_bearer() {
         tenants,
         mcp,
         bus,
-        RoomBus::new(),
+        bus_rooms,
     );
     state.garage = Some(mem_garage());
     state.disk_min_free_pct = 0;

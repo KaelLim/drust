@@ -124,14 +124,15 @@ async fn spin_up() -> Fixture {
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let mut auth = TenantAuthState::test_default(meta.clone(), tenants.clone());
     auth.auth_cache = cache.clone();
+    let bus_rooms = helpers::shared_bus_rooms(&mut auth);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let tenant_app = build_tenant_router(TenantStack {
         auth,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: helpers::test_mcp_http(tenants.clone(), bus),
+        mcp: helpers::test_mcp_http(tenants.clone(), bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -151,7 +152,9 @@ async fn spin_up() -> Fixture {
         tenants,
         mcp,
         drust::tenant::events::EventBus::new(),
-        drust::tenant::rooms::RoomBus::new(),
+        // #955 — the mgmt plane evicts the SAME bus the tenant router's
+        // sockets are on (production threads one instance into both).
+        bus_rooms,
     );
     mgmt.log_dir = log_dir;
     mgmt.auth_cache = cache;

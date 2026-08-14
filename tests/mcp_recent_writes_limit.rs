@@ -9,6 +9,8 @@
 //! connection the tenant's `DrustMcp` reads from, seeds it with more write rows
 //! than any limit under test, and drives the tool over the MCP HTTP surface.
 
+mod helpers;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -54,12 +56,17 @@ async fn spin_up_with_audit(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut state);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
 
     // Hold the registry so the tenant's service (and therefore its audit
     // connection) is the same instance the HTTP surface will serve.
-    let registry = Arc::new(McpRegistry::with_bus(tenants, bus.clone()));
+    let registry = Arc::new(McpRegistry::with_bus(
+        tenants,
+        bus.clone(),
+        bus_rooms.clone(),
+    ));
     let audit = registry
         .get_or_create(tenant)
         .await
@@ -71,7 +78,7 @@ async fn spin_up_with_audit(
     let stack = TenantStack {
         auth: state,
         bus,
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: Arc::new(McpHttpRegistry::new(registry)),

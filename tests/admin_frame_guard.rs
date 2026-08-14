@@ -51,13 +51,16 @@ async fn mgmt_app_inner(with_garage: bool) -> (axum::Router, tempfile::TempDir) 
         2,
     ));
     let bus = drust::tenant::events::EventBus::new();
+    // #955 — one bus per fixture: the admin-plane state and the MCP registry
+    // it mounts must evict the same instance.
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let mut state = MgmtState::test_default(
         Arc::new(Mutex::new(conn)),
         data_dir.clone(),
         tenants.clone(),
-        helpers::test_mcp_http(tenants, bus.clone()),
+        helpers::test_mcp_http(tenants, bus.clone(), bus_rooms.clone()),
         bus,
-        drust::tenant::rooms::RoomBus::new(),
+        bus_rooms,
     );
     if with_garage {
         state.garage = Some(Arc::new(GarageClient::from_store(

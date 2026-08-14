@@ -202,6 +202,12 @@ pub struct McpRegistry {
 }
 
 impl McpRegistry {
+    /// Test-only ctor. **Mints a PRIVATE `RoomBus`** (`test_rooms_defaults`),
+    /// so the MCP surface it builds evicts a bus nothing else is on — fine for
+    /// a registry used on its own to drive tools, WRONG for one handed to a
+    /// `TenantStack`, where `delete_user` / `revoke_user_sessions` must reach
+    /// the same sockets the WS handler serves (#955). Stacks use
+    /// [`McpRegistry::with_bus`], which requires the bus explicitly.
     pub fn new(tenants: Arc<TenantRegistry>) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
         let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
@@ -225,9 +231,20 @@ impl McpRegistry {
             services: DashMap::new(),
         }
     }
-    pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus) -> Self {
+    /// Test-only ctor for a registry that goes into a `TenantStack`.
+    ///
+    /// #955 — `bus_rooms` is a REQUIRED parameter, not a default, because the
+    /// two MCP eviction sites (`delete_user`, `revoke_user_sessions`, 2 of the
+    /// 5 call sites `RoomBus::evict_tenant`'s doc enumerates) must move the
+    /// SAME bus the WS handler's sockets are on — production threads one
+    /// instance into all three (`src/main.rs` → `with_bus_and_storage`). While
+    /// this ctor defaulted it from `test_rooms_defaults`, every helper stack in
+    /// the suite ran two buses and any "revoke over MCP, assert the socket
+    /// died" test would have passed without exercising anything. Tests get the
+    /// instance from `helpers::shared_bus_rooms`.
+    pub fn with_bus(tenants: Arc<TenantRegistry>, bus: EventBus, bus_rooms: RoomBus) -> Self {
         let webhooks = WebhookDispatcher::new(tenants.clone(), None);
-        let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
+        let (_private_bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
         Self {
             tenants,
             bus,

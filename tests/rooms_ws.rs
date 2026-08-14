@@ -3,17 +3,20 @@
 //! Boots a real axum server on 127.0.0.1:0, connects via tokio-tungstenite,
 //! exercises subscribe / publish / cap / ping / cross-tenant isolation.
 //!
-//! ## EVERY test in this file is `#[ignore]`d — read before unignoring
+//! ## EVERY SOCKET test in this file is `#[ignore]`d — read before unignoring
 //!
 //! No count, deliberately: this heading said "All 9" while the file held 10,
 //! then 15, and the number is the part a reader trusts least once it has
 //! drifted. `cargo test --test g_rooms -- --ignored --list` is the count.
 //!
-//! **What that means for the gate:** `make test-all` runs NONE of the tests
-//! below. Everything here is opt-in, one at a time, by hand. So when you are
-//! deciding whether some WS behaviour is covered, a test in this file is
-//! evidence that it WORKED when someone last ran it — not that it still
-//! works today.
+//! **What that means for the gate:** `make test-all` runs none of them.
+//! Everything that opens a real socket is opt-in, one at a time, by hand. So
+//! when you are deciding whether some WS behaviour is covered, such a test is
+//! evidence that it WORKED when someone last ran it — not that it still works
+//! today. The two exceptions are the wiring tests
+//! (`mcp_registry_and_ws_stack_share_one_bus_instance` and
+//! `every_test_stack_shares_one_room_bus_with_its_auth_state`), which need no
+//! socket and therefore DO run in every gate.
 //!
 //! For the #955 eviction checkpoints specifically, the in-gate coverage is
 //! `src/tenant/rooms/ws.rs`'s lib tests, which drive the real `handle_socket`
@@ -110,66 +113,198 @@ async fn send_op(ws: &mut WsClient, v: serde_json::Value) {
     ws.send(TM::Text(v.to_string())).await.unwrap();
 }
 
-/// #955 (T2 review round 3) — the split-`RoomBus` trap, disarmed for good.
+/// #955 (T2 review rounds 3–4) — the split-`RoomBus` trap.
 ///
 /// `TenantAuthState::test_default` builds its OWN `RoomBus::default()`
-/// (`src/tenant/router.rs`), so a `TenantStack` that ALSO passes a fresh
+/// (`src/tenant/router.rs`), so a stack literal that ALSO passes a fresh
 /// `RoomBus::new()` runs two buses where production runs one
-/// (`src/main.rs` threads a single instance into both). Every eviction surface
-/// then splits: the #952 `revoke_user_realtime` funnel and the #955 token
-/// reroll / tenant-delete paths move the state's bus, while the WS handler's
-/// sockets and the SSE subscribers sit on the stack's. A test written against
-/// a split stack evicts a bus no socket is on and **passes while proving
-/// nothing** — a vacuous green, which is the failure mode no assertion in the
-/// test itself can catch.
+/// (`src/main.rs` threads a single instance into the auth state, the stack and
+/// the MCP registry). Every eviction surface then splits: the #952
+/// `revoke_user_realtime` funnel and the #955 token reroll / tenant-delete
+/// paths move the state's bus, while the WS handler's sockets and the SSE
+/// subscribers sit on the stack's. A test written against a split stack evicts
+/// a bus no socket is on and **passes while proving nothing** — a vacuous
+/// green, which is the failure mode no assertion in the test itself can catch.
 ///
-/// `spin_up_tenant_rooms` was created with the correct wiring, and its doc
-/// named the trap — but the warning lived on the NEW harness, which is not
-/// where the next author reaching for `spin_up_tenant_with_role_cached` would
-/// look. So every helper now shares one bus via `helpers::shared_bus_rooms`,
-/// and this pins it: a new stack built the old way fails here rather than
-/// producing a test that lies.
+/// Round 3 wired every helper in `tests/helpers.rs` through
+/// `helpers::shared_bus_rooms` and pinned it — but pinned it by
+/// `include_str!("helpers.rs")`, i.e. over ONE file, while claiming the trap was
+/// "disarmed for good". Round 4 measured what that missed: 19 stack literals in
+/// OTHER test files still minted their own bus, and every helper stack —
+/// `spin_up_tenant_rooms` included — ALSO ran a second bus inside its MCP
+/// registry, because `test_mcp_http` built one from `test_rooms_defaults()`.
+/// That last one is not cosmetic: `delete_user` and `revoke_user_sessions` are
+/// MCP tools, 2 of the 5 sites `RoomBus::evict_tenant`'s doc enumerates, so a
+/// "revoke over MCP, assert the socket died" test could not have failed.
 ///
-/// This is the only NON-ignored test in this file (everything else needs a
-/// real socket — see the module doc), so it runs in `cargo test --test
-/// g_rooms` and in `make test-all`.
+/// So the scan is now the whole `tests/` tree, and `test_mcp_http` takes the
+/// bus as a parameter (checked below). The #955 harness itself is covered by
+/// something better than a scan:
+/// `mcp_registry_and_ws_stack_share_one_bus_instance` runs
+/// `spin_up_tenant_rooms` and compares the two buses by `Arc` identity.
+///
+/// **What this does NOT cover**, stated so the next reader is not told the
+/// ground is bigger than it is:
+///
+/// * Any OTHER fixture that builds its MCP registry inline still has to pass
+///   the right bus by hand. What forces the author to think is the ctor:
+///   `McpRegistry::with_bus` now REQUIRES the bus, and `McpRegistry::new` —
+///   which still mints a private one — is documented as "never for a
+///   `TenantStack`". Neither is checked here.
+/// * Admin-plane fixtures (`MgmtState` / `TenantsState`) are out of scope: they
+///   carry a `bus_rooms` too, and the ones sharing a fixture with a stack were
+///   fixed by hand, but no assertion holds them to it.
+/// * It is a source-text scan. It proves how the stacks are WRITTEN, not that
+///   any particular test exercises eviction.
+///
+/// This and the identity test below it are the only NON-ignored tests in this
+/// file (everything else needs a real socket — see the module doc), so they run
+/// in `cargo test --test g_rooms` and in `make test-all`.
 #[test]
 fn every_test_stack_shares_one_room_bus_with_its_auth_state() {
-    const SRC: &str = include_str!("helpers.rs");
-    const WIRE: &str = "let bus_rooms = shared_bus_rooms(&mut state);";
+    // Both needles are assembled at runtime so this file's own source cannot
+    // satisfy the scan it performs — the pin reads `tests/*.rs`, itself
+    // included.
+    let stack_lit = ["TenantStack", " {"].concat();
+    let wire = ["shared_bus_rooms(", "&mut "].concat();
+
+    let tests_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&tests_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", tests_dir.display()))
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rs"))
+        .collect();
+    files.sort();
+    assert!(
+        files.len() >= 200,
+        "vacuity guard: only {} `.rs` files found under {} — the scan lost its input, which \
+         would make every assertion below trivially true",
+        files.len(),
+        tests_dir.display(),
+    );
 
     let mut stacks = 0usize;
-    for (at, _) in SRC.match_indices("TenantStack {") {
-        // The struct has no `Default`, so the first `bus_rooms:` line after the
-        // literal opens is always that literal's own field.
-        let field = SRC[at..]
-            .lines()
-            .find(|l| l.trim_start().starts_with("bus_rooms:"))
-            .expect("every TenantStack literal must set bus_rooms")
-            .trim();
-        assert!(
-            matches!(field, "bus_rooms: bus_rooms.clone()," | "bus_rooms,"),
-            "TenantStack literal #{} in tests/helpers.rs sets `{field}`. It must take the bus \
-             from `{WIRE}` instead: a stack that mints its own leaves the auth state on a \
-             DIFFERENT bus than the WS handler, so every revoke-then-assert test on it goes \
-             green without exercising anything. See `helpers::shared_bus_rooms`.",
-            stacks + 1,
-        );
-        stacks += 1;
+    let mut wires = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        wires += src.matches(&wire).count();
+        for (at, _) in src.match_indices(&stack_lit) {
+            stacks += 1;
+            // The struct has no `Default`, so the first `bus_rooms:` line after
+            // the literal opens is always that literal's own field.
+            let field = src[at..]
+                .lines()
+                .find(|l| l.trim_start().starts_with("bus_rooms:"))
+                .unwrap_or_else(|| panic!("{name}: a tenant-stack literal sets no bus_rooms"))
+                .trim();
+            if !matches!(field, "bus_rooms: bus_rooms.clone()," | "bus_rooms,") {
+                offenders.push(format!("{name}: `{field}`"));
+            }
+        }
     }
 
     assert!(
-        stacks >= 8,
-        "expected to scan at least the 8 known TenantStack literals in tests/helpers.rs, found \
-         {stacks} — the scanner's anchor (`TenantStack {{`) probably stopped matching, which \
-         would make this pin silently vacuous",
+        offenders.is_empty(),
+        "these tenant-stack literals mint their own RoomBus: {offenders:?}. Take it from \
+         `helpers::shared_bus_rooms`, passing the stack's auth state, instead — a stack with \
+         its own bus \
+         leaves the auth state (and the MCP registry) on a DIFFERENT bus than the WS handler, \
+         so every revoke-then-assert test on it goes green without exercising anything.",
+    );
+    assert!(
+        stacks >= 27,
+        "expected at least the 27 known tenant-stack literals across tests/, found {stacks} — \
+         the scanner's anchor probably stopped matching, which would make this pin silently \
+         vacuous",
     );
     assert_eq!(
-        SRC.matches(WIRE).count(),
-        stacks,
-        "one `{WIRE}` per TenantStack literal ({stacks}). A stack that reuses another's \
-         variable would satisfy the field check above while still leaving ITS auth state on a \
-         private bus",
+        wires, stacks,
+        "one `shared_bus_rooms` call per tenant-stack literal ({stacks} stacks, {wires} calls). \
+         A stack that reuses another's variable would satisfy the field check above while still \
+         leaving ITS auth state on a private bus",
+    );
+
+    // The MCP half of the same trap: the registry a stack mounts must be handed
+    // the stack's bus, not build one from `test_rooms_defaults()`.
+    let helpers_src = std::fs::read_to_string(tests_dir.join("helpers.rs")).unwrap();
+    let at = helpers_src
+        .find("pub fn test_mcp_http(")
+        .expect("helpers::test_mcp_http was renamed — update this pin");
+    let f = &helpers_src[at..at + helpers_src[at..].find("\n}\n").expect("unterminated fn")];
+    assert!(
+        f.contains("bus_rooms: drust::tenant::rooms::RoomBus"),
+        "test_mcp_http must TAKE the stack's RoomBus as a parameter. While it defaulted one, \
+         every helper stack ran a second bus inside its MCP surface, so the MCP eviction sites \
+         (`delete_user`, `revoke_user_sessions`) moved a bus no socket was on:\n{f}",
+    );
+    // Signature and body are checked separately: `bus_rooms` in the parameter
+    // list proves only that the caller was asked for one. Taking it and then
+    // handing the registry a fresh bus is the same no-op with a nicer
+    // signature, and it is what the assertion above alone would allow.
+    let body_at = f
+        .find(") -> Arc<McpHttpRegistry> {")
+        .expect("test_mcp_http's return type changed — update this pin");
+    let body = &f[body_at..];
+    assert!(
+        body.contains("McpRegistry::with_bus(") && body.contains("bus_rooms"),
+        "test_mcp_http must FORWARD the bus it was given into the registry:\n{body}",
+    );
+    assert!(
+        !body.contains("RoomBus::new()") && !body.contains("test_rooms_defaults"),
+        "test_mcp_http must not mint a RoomBus of its own — that is exactly the default the \
+         round-4 review found putting every helper stack's MCP surface on a bus no socket was \
+         on:\n{body}",
+    );
+}
+
+/// #955, EXECUTED — the MCP half of the split-bus trap, proven by running the
+/// harness rather than by reading its source.
+///
+/// The scan above is source text; this is the property itself, on the harness
+/// the #955 WS tests actually use. Two `RoomBus` clones are the same instance
+/// iff `tenant_epoch_handle` hands back the same `Arc` — the epoch map lives
+/// behind the shared `Arc<DashMap>`, so this is an identity probe that needs no
+/// new accessor on `RoomBus`.
+///
+/// It matters because `delete_user` and `revoke_user_sessions` are MCP tools
+/// that call `evict_tenant` directly (`src/mcp/handler.rs`), i.e. 2 of the 5
+/// call sites `RoomBus::evict_tenant`'s doc enumerates. While `test_mcp_http`
+/// defaulted the registry's bus, those two tools moved an epoch no socket in
+/// the harness was watching, and a "revoke over MCP, assert the socket died"
+/// test could not have failed.
+///
+/// Not `#[ignore]`d: no socket is involved, so it runs in every gate.
+#[tokio::test]
+async fn mcp_registry_and_ws_stack_share_one_bus_instance() {
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "service",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+    let svc = h.mcp.get_or_create(TENANT).await.unwrap();
+    let mcp_bus = svc.inner().bus_rooms.clone();
+
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &mcp_bus.tenant_epoch_handle(TENANT),
+            &h.bus_rooms.tenant_epoch_handle(TENANT),
+        ),
+        "the MCP surface must sit on the SAME RoomBus as the WS handler: the MCP eviction tools \
+         would otherwise bump an epoch no socket is watching",
+    );
+
+    // And the consequence, not just the pointer: an evict driven through the
+    // MCP-side handle is visible to a baseline captured from the WS-side one.
+    let seen_by_ws = h.bus_rooms.tenant_epoch_handle(TENANT);
+    let before = seen_by_ws.load(std::sync::atomic::Ordering::SeqCst);
+    mcp_bus.evict_tenant(TENANT);
+    assert_eq!(
+        seen_by_ws.load(std::sync::atomic::Ordering::SeqCst),
+        before + 1,
+        "an evict on the MCP side must move the epoch the WS sockets compare against",
     );
 }
 

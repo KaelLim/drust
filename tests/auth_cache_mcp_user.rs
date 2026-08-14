@@ -110,8 +110,11 @@ async fn with_bus_and_storage_threads_cache_into_inner() {
     );
 
     // Test-only ctor stays cache-less: MCP tools see None and skip the hook.
-    let reg2 =
-        drust::mcp::server::McpRegistry::with_bus(tenants, drust::tenant::events::EventBus::new());
+    let reg2 = drust::mcp::server::McpRegistry::with_bus(
+        tenants,
+        drust::tenant::events::EventBus::new(),
+        drust::tenant::rooms::RoomBus::new(),
+    );
     let svc2 = reg2.get_or_create("t-mcpwire").await.unwrap();
     assert!(svc2.inner().auth_cache.is_none());
 }

@@ -11,31 +11,49 @@ use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router, events:
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub fn test_mcp_http(tenants: Arc<TenantRegistry>, bus: EventBus) -> Arc<McpHttpRegistry> {
+/// Build the MCP surface a `TenantStack` mounts.
+///
+/// #955 — takes `bus_rooms` because the registry used to mint its OWN
+/// (`McpRegistry::with_bus` defaulted it from `test_rooms_defaults`), which put
+/// the MCP tools `delete_user` / `revoke_user_sessions` — 2 of the 5 sites
+/// `RoomBus::evict_tenant`'s doc enumerates — on a bus no socket in the stack
+/// was ever on. Pass the same instance `shared_bus_rooms` returned; never a
+/// fresh one.
+pub fn test_mcp_http(
+    tenants: Arc<TenantRegistry>,
+    bus: EventBus,
+    bus_rooms: drust::tenant::rooms::RoomBus,
+) -> Arc<McpHttpRegistry> {
     Arc::new(McpHttpRegistry::new(Arc::new(McpRegistry::with_bus(
-        tenants, bus,
+        tenants, bus, bus_rooms,
     ))))
 }
 
 /// #955 — mint the ONE `RoomBus` a test stack must share between its
 /// `TenantAuthState` and its `TenantStack`, and wire it into the state.
 ///
-/// **Call this at every `TenantStack` construction site; never build a stack's
-/// `bus_rooms` inline.** `TenantAuthState::test_default` creates its OWN
-/// `RoomBus::default()` (`src/tenant/router.rs`), so a stack that also passes a
-/// fresh `RoomBus::new()` ends up with TWO buses: the #952
-/// `revoke_user_realtime` funnel (logout, logout-all, password change, OAuth
-/// account-claim, admin revoke-sessions, admin delete-user) and the #955 token
-/// reroll / tenant-delete paths evict the state's bus, while the WS handler and
-/// SSE subscribers live on the stack's. Production wires one instance into both
-/// (`src/main.rs`), so a split-bus test evicts a bus no socket is on: the
-/// failure mode is a test that goes GREEN while proving nothing, and no
-/// assertion or gate fires. Every helper here shared the split until the #955
-/// T2 review; `every_test_stack_shares_one_room_bus_with_its_auth_state`
-/// (`tests/rooms_ws.rs`) now fails the build-out of a new one.
+/// **Call this at every `TenantStack` construction site — in this file and in
+/// every other `tests/*.rs` — and never build a stack's `bus_rooms` inline.**
+/// `TenantAuthState::test_default` creates its OWN `RoomBus::default()`
+/// (`src/tenant/router.rs`), so a stack that also passes a fresh
+/// `RoomBus::new()` ends up with TWO buses: the #952 `revoke_user_realtime`
+/// funnel (logout, logout-all, password change, OAuth account-claim, admin
+/// revoke-sessions, admin delete-user) and the #955 token reroll /
+/// tenant-delete paths evict the state's bus, while the WS handler and SSE
+/// subscribers live on the stack's. Production wires one instance into all
+/// three consumers — auth state, stack, MCP registry (`src/main.rs`) — so a
+/// split-bus test evicts a bus no socket is on: the failure mode is a test that
+/// goes GREEN while proving nothing, and no assertion or gate fires.
 ///
-/// Returns the bus so the caller can pass `bus_rooms: bus_rooms.clone()` into
-/// the stack and hand a handle back to the test.
+/// Pass the returned bus BOTH as the stack's `bus_rooms:` field and as
+/// [`test_mcp_http`]'s third argument — the MCP tools `delete_user` /
+/// `revoke_user_sessions` evict through the registry's copy, and until the #955
+/// T2 review round 4 that copy was always a private one.
+///
+/// `every_test_stack_shares_one_room_bus_with_its_auth_state`
+/// (`tests/rooms_ws.rs`) scans every `tests/*.rs` for stack literals that skip
+/// this, and checks `test_mcp_http`'s signature; read that test's doc for the
+/// two things it still does NOT cover (inline registries, admin-plane states).
 pub fn shared_bus_rooms(state: &mut TenantAuthState) -> drust::tenant::rooms::RoomBus {
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
     state.bus_rooms = bus_rooms.clone();
@@ -72,7 +90,7 @@ pub async fn spin_up_tenant(tenant: &str) -> (Router, String, tempfile::TempDir)
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -192,7 +210,7 @@ pub async fn spin_up_tenant_with_fn_runner(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: Some(files_state),
         webhooks,
         functions,
@@ -283,7 +301,7 @@ pub async fn spin_up_tenant_with_fn_seed(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -383,7 +401,7 @@ pub async fn spin_up_cron_stack(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -641,7 +659,7 @@ pub async fn spin_up_functions_route_stack(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -774,7 +792,7 @@ pub async fn spin_up_tenant_with_role_cached(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -803,6 +821,12 @@ pub struct RoomsHarness {
     pub meta: Arc<Mutex<rusqlite::Connection>>,
     pub auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
     pub tenants: Arc<TenantRegistry>,
+    /// The SAME `McpRegistry` the stack's `/t/<id>/mcp` surface serves from —
+    /// exposed so a test can prove (not assume) that the MCP tools evict the
+    /// bus this harness's sockets are on. `McpHttpRegistry` keeps its inner
+    /// registry private, so without this handle the only available check would
+    /// be a source-text one.
+    pub mcp: Arc<McpRegistry>,
     pub data_dir: std::path::PathBuf,
     /// Keeps the temp data directory alive for the test's lifetime.
     pub dir: tempfile::TempDir,
@@ -814,10 +838,12 @@ pub struct RoomsHarness {
 /// 1. **The shared `RoomBus` handed BACK to the caller**, so a test can evict
 ///    the very bus its socket is on (or watch a real revocation surface move
 ///    it). The sharing itself is no longer special: [`shared_bus_rooms`] does
-///    it for every helper in this file, because the split it prevents produced
-///    a silently vacuous green rather than a failure. It is listed here only
-///    because the returned handle is what makes an eviction test writable at
-///    all.
+///    it at every stack site in the suite, and since the T2 review round 4 the
+///    same instance also reaches the stack's MCP registry (via
+///    [`test_mcp_http`]), so an eviction driven through the MCP `delete_user` /
+///    `revoke_user_sessions` tools reaches this harness's socket too. It is
+///    listed here only because the returned handle is what makes an eviction
+///    test writable at all.
 /// 2. **Caller-supplied `rooms_cfg`**, because the idle-close test needs
 ///    `keepalive_secs = 1` (`test_defaults` must stay 30: a 1 s tick makes
 ///    every other WS test's recv loop eat Ping frames).
@@ -862,13 +888,20 @@ pub async fn spin_up_tenant_rooms(
     let bus_rooms = shared_bus_rooms(&mut state);
     let auth_cache = state.auth_cache.clone();
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
+    // Built here rather than through `test_mcp_http` only so the handle can be
+    // returned; the wiring is identical (same bus, same EventBus).
+    let mcp = Arc::new(McpRegistry::with_bus(
+        tenants.clone(),
+        bus.clone(),
+        bus_rooms.clone(),
+    ));
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),
         bucket: rooms_cfg.bucket(),
         rooms_cfg: rooms_cfg.clone(),
-        mcp: test_mcp_http(tenants.clone(), bus),
+        mcp: Arc::new(McpHttpRegistry::new(mcp.clone())),
         files: None,
         webhooks,
         functions,
@@ -885,6 +918,7 @@ pub async fn spin_up_tenant_rooms(
         meta,
         auth_cache,
         tenants,
+        mcp,
         data_dir: data,
         dir,
     }
@@ -928,7 +962,7 @@ pub async fn spin_up_tenant_with_threshold(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus),
+        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -1095,14 +1129,18 @@ pub async fn tenants_state_with_cache(
     .unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    // #955 — one bus for the whole fixture: the admin-plane state and the MCP
+    // registry it mounts must evict the same instance. There is no
+    // `TenantAuthState` here, so `shared_bus_rooms` has nothing to wire into.
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let meta = Arc::new(Mutex::new(conn));
     let mut state = drust::mgmt::tenants::TenantsState::test_default(
         meta,
         data,
         tenants.clone(),
-        test_mcp_http(tenants, bus.clone()),
+        test_mcp_http(tenants, bus.clone(), bus_rooms.clone()),
         bus,
-        drust::tenant::rooms::RoomBus::new(),
+        bus_rooms,
     );
     state.auth_cache = cache;
     (state, dir)
@@ -1127,14 +1165,16 @@ pub async fn mgmt_state_with_cache_and_admin(
     .unwrap();
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    // #955 — see the note in `tenants_state_with_cache`: one bus per fixture.
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let meta = Arc::new(Mutex::new(conn));
     let mut state = drust::mgmt::routes::MgmtState::test_default(
         meta,
         data,
         tenants.clone(),
-        test_mcp_http(tenants, bus.clone()),
+        test_mcp_http(tenants, bus.clone(), bus_rooms.clone()),
         bus,
-        drust::tenant::rooms::RoomBus::new(),
+        bus_rooms,
     );
     state.auth_cache = cache;
     (state, dir)

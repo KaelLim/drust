@@ -23,6 +23,8 @@
 //! so any test of the unmatched owner-scoped DEFAULT must `clear` the root
 //! policy first, or it is really testing the seed.
 
+mod helpers;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::bearer::{generate_token, hash_token};
@@ -93,19 +95,20 @@ async fn stack_with_caps(tenant: &str, user_caps: &str, anon_caps: &str) -> Ctx 
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut auth_state);
     let mut files_state =
         TenantFilesState::test_default(Some(mem_garage()), data.clone(), tenants.clone());
     // CI disks routinely sit under the 20% default and the guard would 507.
     files_state.disk_min_free_pct = 0;
     let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
-        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone()),
+        drust::mcp::server::McpRegistry::with_bus(tenants.clone(), bus.clone(), bus_rooms.clone()),
     )));
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let app = build_tenant_router(TenantStack {
         auth: auth_state,
         bus: bus.clone(),
-        bus_rooms: RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: RoomsConfig::test_defaults().bucket(),
         rooms_cfg: RoomsConfig::test_defaults(),
         mcp,

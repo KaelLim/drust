@@ -633,6 +633,11 @@ async fn mcp_set_self_register_tool() {
     let bus = EventBus::new();
     let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
     let meta_arc = Arc::new(Mutex::new(conn));
+    // #955 — the auth state is built FIRST so its bus can be threaded into the
+    // MCP registry below as well: `delete_user` / `revoke_user_sessions` are MCP
+    // tools, and they must evict the bus this stack's sockets are on.
+    let mut state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut state);
     let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
         tenants.clone(),
         bus.clone(),
@@ -646,7 +651,7 @@ async fn mcp_set_self_register_tool() {
         Arc::new(Mutex::new(
             drust::safety::audit_db::open_audit_db_memory().unwrap(),
         )),
-        drust::tenant::rooms::RoomBus::new(),
+        bus_rooms.clone(),
         drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         drust::tenant::rooms::RoomsConfig::test_defaults(),
         Arc::new(drust::tenant::auth_cache::AuthCache::new(
@@ -659,12 +664,11 @@ async fn mcp_set_self_register_tool() {
             drust::functions::FnConfig::test_default(),
         ),
     ));
-    let state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: state,
         bus: bus.clone(),
-        bus_rooms: drust::tenant::rooms::RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
         mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),

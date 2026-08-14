@@ -10,6 +10,8 @@
 //!     guard is actually mounted in `src/tenant/mod.rs` — a genuine red→green on
 //!     production wiring, not a replica.
 
+mod helpers;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -134,7 +136,7 @@ use drust::mgmt::tenant_files::TenantFilesState;
 use drust::storage::garage::GarageClient;
 use drust::storage::meta::open_meta;
 use drust::tenant::events::EventBus;
-use drust::tenant::rooms::{RoomBus, RoomsConfig};
+use drust::tenant::rooms::RoomsConfig;
 use drust::tenant::router::TenantAuthState;
 use drust::tenant::{TenantStack, WebhookDispatcher, build_tenant_router};
 use tokio::sync::Mutex;
@@ -213,18 +215,20 @@ async fn files_stack(
     let bus = EventBus::new();
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let meta = Arc::new(Mutex::new(conn));
-    let auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let mut auth_state = TenantAuthState::test_default(meta, tenants.clone());
+    let bus_rooms = helpers::shared_bus_rooms(&mut auth_state);
     let files_state =
         TenantFilesState::test_default(Some(mem_garage()), data.clone(), tenants.clone());
     let mcp = Arc::new(McpHttpRegistry::new(Arc::new(McpRegistry::with_bus(
         tenants.clone(),
         bus.clone(),
+        bus_rooms.clone(),
     ))));
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let stack = TenantStack {
         auth: auth_state,
         bus: bus.clone(),
-        bus_rooms: RoomBus::new(),
+        bus_rooms: bus_rooms.clone(),
         bucket: RoomsConfig::test_defaults().bucket(),
         rooms_cfg: RoomsConfig::test_defaults(),
         mcp,

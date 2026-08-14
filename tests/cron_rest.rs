@@ -590,14 +590,17 @@ async fn tenant_soft_delete_invalidates_cron_index() {
     let conn = drust::storage::meta::open_meta(&data.join("meta.sqlite")).unwrap();
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
     let bus = drust::tenant::events::EventBus::new();
+    // #955 — one bus per fixture: the admin-plane state and the MCP registry
+    // it mounts must evict the same instance.
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let meta = Arc::new(tokio::sync::Mutex::new(conn));
     let state = drust::mgmt::tenants::TenantsState::test_default(
         meta,
         data,
         tenants.clone(),
-        helpers::test_mcp_http(tenants.clone(), bus.clone()),
+        helpers::test_mcp_http(tenants.clone(), bus.clone(), bus_rooms.clone()),
         bus,
-        drust::tenant::rooms::RoomBus::new(),
+        bus_rooms,
     );
 
     let pool = tenants.get_or_create("t-cr-del").unwrap();
