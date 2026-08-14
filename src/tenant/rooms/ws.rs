@@ -15,13 +15,25 @@
 //!
 //! #955 — that upgrade-time identity is captured ONCE and never
 //! re-resolved, so revocation reaches a LIVE socket only through the
-//! tenant eviction epoch: `handle_socket` captures
-//! `RoomBus::tenant_epoch_handle` + its value at connect and compares on
-//! branch (a) before dispatch and on branch (c) every tick. A mismatch
-//! sends [`codes::CONN_EVICTED`] and closes 1008. Branch (b) deliberately
-//! does NOT check — after an evict the channels are gone, so the only
-//! thing that can still arrive there is a message published BEFORE the
-//! revocation that is still sitting in the broadcast buffer.
+//! tenant eviction epoch: `ws_handler` captures
+//! `RoomBus::tenant_epoch_handle` + its value BEFORE the upgrade and hands
+//! both to `handle_socket`, which compares on branch (a) before dispatch
+//! and on branch (c) every tick. A mismatch sends [`codes::CONN_EVICTED`]
+//! and closes 1008.
+//!
+//! Branch (b) deliberately does NOT check — but not because nothing can
+//! arrive there post-revocation. `RoomBus::evict_tenant`'s own doc spells
+//! out the residual: a socket whose epoch load happened before the bump
+//! can still reach `subscribe()` AFTER `channels.remove` and RE-CREATE the
+//! tenant's channel, and any later publish from a legitimate connection
+//! (REST, MCP broadcast, another WS) is then delivered over branch (b) to
+//! the revoked socket. What bounds it is that socket's NEXT checkpoint:
+//! one keepalive tick, which `DRUST_BROADCAST_KEEPALIVE_SECS` clamps into
+//! 1..=300 s — so up to 5 minutes on a configured-slow tenant, not the
+//! 30 s default a reader would assume. That is the same accepted
+//! micro-race as spec §隔離與資安不變量 item 4; checking branch (b) would
+//! not remove it, only shorten it, at the cost of a load per delivered
+//! message on every healthy connection.
 
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
@@ -36,6 +48,7 @@ use axum::extract::{Extension, Path};
 use axum::response::Response;
 use futures::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 use tokio::time::interval;
@@ -60,9 +73,34 @@ pub async fn ws_handler(
     // this hard ceiling.
     let cap = pc.cfg.payload_max_bytes;
     let policy = policy.map(|Extension(p)| p).unwrap_or_default();
+
+    // #955 — capture this connection's eviction baseline HERE, before the
+    // upgrade, not inside the `on_upgrade` closure.
+    //
+    // `on_upgrade` runs its closure only after this handler returns, the 101
+    // response is serialized and written to the socket, hyper completes the
+    // upgrade, and the spawned task is scheduled — network I/O plus a task
+    // hand-off, which this repo has measured being starved long enough to
+    // HANG tests (see `tests/rooms_ws.rs`'s module doc on tokio/2374). The
+    // consequence is not proportional to the window's length: an evict that
+    // lands inside it is adopted as this socket's BASELINE, so the socket is
+    // permanently immune to THAT revocation and survives until some unrelated
+    // later evict — "revocation silently did not happen", the exact class
+    // #955 exists to close.
+    //
+    // Capturing here leaves only the await-free middleware→handler hop, and
+    // moving the capture EARLIER is strictly fail-closed: an older baseline
+    // can only cause an extra close, never a missed one. The no-sticky-kill
+    // property is unchanged because a reconnect takes its own fresh baseline
+    // (`handle_taken_after_evict_reads_current_epoch_no_false_eviction`).
+    // The residual is now the handler hop itself, which is the smallest this
+    // design can make it without re-resolving identity per frame.
+    let epoch = pc.bus.tenant_epoch_handle(&tenant);
+    let epoch0 = epoch.load(SeqCst);
+
     ws.max_message_size(cap)
         .max_frame_size(cap)
-        .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant, policy))
+        .on_upgrade(move |socket| handle_socket(socket, ctx, pc, tenant, policy, epoch, epoch0))
 }
 
 /// RAII guard that increments `drust_ws_connections_active` on construction
@@ -107,18 +145,17 @@ async fn handle_socket(
     pc: PublishCtx,
     tenant: String,
     policy: TenantPublishPolicy,
+    // #955 — the eviction baseline, captured in `ws_handler` BEFORE the
+    // upgrade (see there for why not here). Passed in rather than taken here
+    // so every checkpoint below is a bare atomic load against a FIXED
+    // connect-time value: no map lookup, no lock, nothing on the hot path —
+    // and, load-bearing, no way to re-read `epoch0` per frame, which would
+    // make the comparison vacuous and close nothing.
+    epoch: Arc<AtomicU64>,
+    epoch0: u64,
 ) {
     let _conn_guard = WsConnGuard::new(); // v1.32 C1 — tracks active WS connections
     let (mut sink, mut stream) = socket.split();
-
-    // #955 — capture the tenant's eviction epoch ONCE. Every checkpoint
-    // below is then a bare atomic load: no map lookup, no lock, nothing on
-    // the hot path. The upgrade→capture window (sub-millisecond) is an
-    // accepted micro-race: an evict landing inside it is read as this
-    // connection's baseline, so it survives that one eviction — but any
-    // LATER evict still closes it (spec §隔離與資安不變量 item 4).
-    let epoch = pc.bus.tenant_epoch_handle(&tenant);
-    let epoch0 = epoch.load(SeqCst);
 
     // v1.31.2 F6 — drop the separate `subscribed: HashSet<String>`. The
     // StreamMap itself IS the source of truth for which rooms this
@@ -586,7 +623,8 @@ mod tests {
         );
     }
 
-    /// #955 — structural pin for WHERE the two checkpoints sit.
+    /// #955 — structural pin for WHERE the baseline is captured, WHERE the two
+    /// checkpoints sit, and that each checkpoint actually BREAKS the loop.
     ///
     /// The same reasoning as `bus.rs::evict_tenant_bumps_epoch_before_dropping_channels`:
     /// the only behavioural coverage of the checkpoint POSITIONS lives in
@@ -595,11 +633,56 @@ mod tests {
     /// let an evicted socket land one more subscribe/publish before dying,
     /// the exact hole #955 closes — leaves every gate green.
     ///
-    /// It reads `handle_socket`'s own body, so the needles in this test's
+    /// Round 1 of the T2 review MEASURED two mutants that the first version of
+    /// this pin let through, both turning #955 into a silent no-op with every
+    /// executed gate green:
+    ///
+    /// 1. Re-capture the baseline PER FRAME (delete the pre-upgrade capture,
+    ///    take a fresh handle + fresh `epoch0` inside each arm). `epoch0` can
+    ///    then never differ from `epoch`, so nothing ever closes. The old
+    ///    `capture < check_a` assertion was satisfied by the re-capture itself,
+    ///    because `find` returns the FIRST occurrence anywhere. Killed here by
+    ///    anchoring the capture in `ws_handler` and requiring `handle_socket`
+    ///    to contain NO capture and NO baseline re-read at all.
+    /// 2. Drop the `break` from a checkpoint. The error + Close are still
+    ///    written first, so even the `#[ignore]`d integration tests stay green
+    ///    while the op runs behind the close frame. Killed here by requiring a
+    ///    `break` between each `check_epoch_evicted` and the work it guards.
+    ///
+    /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
     fn epoch_checkpoints_sit_before_dispatch_and_on_the_keepalive_tick() {
         let src = include_str!("ws.rs");
+
+        // ---- the capture: in `ws_handler`, BEFORE the upgrade ----
+        let h_start = src
+            .find("pub async fn ws_handler(")
+            .expect("ws_handler's signature changed — update this structural pin");
+        let h_rest = &src[h_start..];
+        let h_end = h_rest
+            .find("\n}\n")
+            .expect("could not find the end of ws_handler's body");
+        let handler = &h_rest[..h_end];
+
+        assert_eq!(
+            handler.matches("tenant_epoch_handle(").count(),
+            1,
+            "ws_handler must capture the tenant eviction baseline EXACTLY once",
+        );
+        let capture = handler.find("tenant_epoch_handle(").unwrap();
+        let upgrade = handler
+            .find(".on_upgrade(")
+            .expect("ws_handler must still upgrade through .on_upgrade");
+        assert!(
+            capture < upgrade,
+            "the eviction baseline must be captured BEFORE .on_upgrade: the closure runs only \
+             after the 101 is written and the task is scheduled, and an evict landing in that \
+             window would be adopted as this socket's baseline — permanent immunity to that \
+             revocation",
+        );
+
+        // ---- the checkpoints: inside `handle_socket` ----
         let start = src
             .find("async fn handle_socket(")
             .expect("handle_socket's signature changed — update this structural pin");
@@ -609,9 +692,20 @@ mod tests {
             .expect("could not find the end of handle_socket's body");
         let body = &rest[..end];
 
-        let capture = body
-            .find("tenant_epoch_handle(")
-            .expect("handle_socket must capture the tenant epoch handle ONCE at connect");
+        assert_eq!(
+            body.matches("tenant_epoch_handle(").count(),
+            0,
+            "mutant 1: handle_socket must NOT take its own epoch handle — the baseline is \
+             captured once in ws_handler and passed in. A per-frame capture makes epoch0 \
+             always equal epoch, so no socket is ever closed",
+        );
+        assert_eq!(
+            body.matches("epoch.load(").count(),
+            0,
+            "mutant 1: handle_socket must NOT re-read the baseline off the shared handle — \
+             the only load belongs in check_epoch_evicted, which compares against the \
+             connect-time epoch0",
+        );
 
         // Checkpoint (a): every inbound Text frame, BEFORE dispatch.
         let text_arm = body
@@ -629,8 +723,11 @@ mod tests {
                      so an evicted socket cannot land one more subscribe/publish",
                 );
         assert!(
-            capture < check_a,
-            "the epoch handle must be captured before the loop, not inside the checkpoint",
+            body[check_a..dispatch].contains("break"),
+            "mutant 2: checkpoint (a) must BREAK the conn loop. Without the break the error + \
+             Close still go out first, so every wire assertion passes, while the op runs \
+             behind them — one more subscribe (re-creating the channel evict just dropped) or \
+             one more publish plus its audit row",
         );
 
         // Checkpoint (c): the keepalive tick, BEFORE the Ping — this is what
@@ -642,9 +739,15 @@ mod tests {
             + body[ka_arm..]
                 .find("Message::Ping(")
                 .expect("the keepalive arm must still send a Ping");
-        body[ka_arm..ping].find("check_epoch_evicted(").expect(
-            "checkpoint (c) missing: without it an evicted IDLE socket lives until the client \
-             disconnects, which is unbounded",
+        let check_c = ka_arm
+            + body[ka_arm..ping].find("check_epoch_evicted(").expect(
+                "checkpoint (c) missing: without it an evicted IDLE socket lives until the \
+                 client disconnects, which is unbounded",
+            );
+        assert!(
+            body[check_c..ping].contains("break"),
+            "mutant 2: checkpoint (c) must BREAK the conn loop — otherwise the evicted idle \
+             socket is told it is evicted, then pinged, then kept",
         );
     }
 }

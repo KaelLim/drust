@@ -340,6 +340,18 @@ async fn evicted_conn_gets_conn_evicted_and_close_on_next_subscribe() {
     // Pre-#955 this re-subscribe succeeded on the live socket with no re-auth.
     send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c2"})).await;
     expect_conn_evicted_then_close(&mut ws).await;
+
+    // T2 review round 1 — side-effect assertion, not just wire shape: with the
+    // `break` deleted from checkpoint (a), the server still writes error+Close
+    // FIRST and then runs the subscribe anyway, so every wire assertion above
+    // stays green while the evicted socket re-creates the channel evict just
+    // dropped. Measured red under that mutant, green on HEAD.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        h.bus_rooms.tenant_channel_count(TENANT),
+        0,
+        "evicted socket landed one more subscribe behind the Close frame"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
