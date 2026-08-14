@@ -6,7 +6,7 @@ version: 0.1.8
 # MUST equal Cargo.toml's version — render_test.sh asserts it, and since
 # values.yaml's image.tag defaults to this field, it is what `helm install`
 # actually pulls. Bump both in the release commit.
-appVersion: "1.64.0"
+appVersion: "1.65.0"
 home: https://github.com/KaelLim/drust
 sources:
   - https://github.com/KaelLim/drust

@@ -1,3 +1,117 @@
+## v1.65.0 — 2026-08-14
+
+**Evicting a tenant now CLOSES its live WebSocket connections (#955).** Until this release
+`RoomBus::evict_tenant` dropped the tenant's broadcast CHANNELS and nothing else. A rooms WS
+connection resolves its identity ONCE, at upgrade, and never re-checks — so a socket whose
+token had just been rerolled, whose user session had just been revoked, or whose tenant had
+just been soft-deleted lost its channel, silently re-subscribed on the SAME live socket, and
+carried on reading (and, where `allow_user_publish` / `allow_anon_publish` were on, writing)
+until the client itself chose to disconnect. Every tenant-wide revocation surface sat behind
+that gap, and v1.61.1's #952 fix — evicting rooms on user-session revoke — inherited it
+rather than closing it.
+
+The mechanism is a per-tenant epoch counter, not a socket registry: `evict_tenant` bumps an
+`AtomicU64` **before** dropping the channels, each connection captures that counter's value
+at upgrade, and the two moments a connection is already awake — every inbound frame and every
+keepalive tick — compare captured against current. A mismatch writes `CONN_EVICTED` and
+closes **1008 Policy Violation**. No new locks, no auth-plane refactor, no per-connection
+bookkeeping: the steady-state cost is one atomic load per frame and per tick.
+
+**The close is lazy, so the keepalive period is now a security bound.** A busy socket dies at
+its next frame; an IDLE one at its next tick — which makes `DRUST_BROADCAST_KEEPALIVE_SECS`
+the worst-case revocation latency of an evicted idle socket rather than a chattiness
+preference. It is therefore the one rooms knob that is clamped and that says so out loud (see
+Deploy below).
+
+### Added
+
+- **`CONN_EVICTED`** (rooms WS error code, connection-level — the sibling of the existing
+  room-level `ROOM_EVICTED`). Sent immediately before the 1008 close on any tenant-wide
+  eviction: token reroll, user-session revoke (every REST revoke path and the MCP revoke
+  tools), tenant soft-delete, admin evict-all, or a publish-policy change. Both frames are
+  best-effort: if the peer is already gone both sends fail and the loop breaks anyway, so the
+  connection ends either way. Clients should treat it as
+  "reconnect and re-authenticate"; the reconnect re-runs the full bearer path, so a genuinely
+  revoked holder then gets 401 while a valid one is back in seconds.
+- **`DRUST_BROADCAST_KEEPALIVE_SECS`** (default `30`, **clamped into `1..=300`**) — the WS
+  keepalive Ping period, and with it the upper bound on how long an idle socket survives an
+  eviction. See Deploy for the clamp's rationale and the warning it emits.
+- **`RoomBus::tenant_epoch_handle`** — the shared `Arc<AtomicU64>` a connection captures at
+  upgrade, so every later check is a bare load with no map lookup. Epoch entries are
+  deliberately NEVER reclaimed (the empty-channel sweeper must not touch them): a reclaimed
+  and rebuilt entry would hand already-open sockets a stale `Arc` that never sees a later
+  bump. The residue is ~100 bytes per distinct tenant id seen since process start.
+
+### Changed
+
+- **The publish-policy faces evict, but only on a REAL change.** A live connection captures
+  its `TenantPublishPolicy` at upgrade too, so both doors that can turn a publish flag off —
+  REST `PATCH /admin/tenants/{id}/publish-policy` and the MCP tool `set_publish_policy` — now
+  read the pre-image and evict only when the effective `(user, anon)` pair MOVES. A no-op
+  PATCH (an admin page re-submitting unchanged checkboxes) does not evict: now that eviction
+  closes sockets, an unconditional one would kick every subscriber on the tenant for nothing.
+  Both faces evict AFTER the auth-cache clear, never before — the reverse order lets the
+  closed client reconnect into a not-yet-cleared cache entry and capture the stale flags for
+  the whole life of the new socket.
+- **`POST /admin/tenants/{id}/realtime/evict-all` genuinely kicks subscribers now.** Its
+  semantics were "drop the channels; clients re-subscribe" and are now "close the
+  connections". The returned `subscribers_dropped` is still the count at eviction time, and
+  the sockets behind it are gone within ≤1 keepalive period rather than synchronously with
+  the response. The per-room sibling (`.../rooms/{room}/evict`) is unchanged and deliberately
+  does NOT bump the epoch: per-room eviction is a data-plane operation, not an identity
+  event.
+
+### Known residual
+
+- The checkpoint is a comparison, not a lock. A socket whose epoch load happened just before
+  the bump still proceeds, so its `subscribe()` can land after the channel teardown and
+  re-create the tenant's channel; later publishes from legitimate connections are then
+  delivered to it over the fan-in branch, which deliberately does not check (checking would
+  shorten this window, not close it, at the cost of a load per delivered message on every
+  healthy connection). The bound is that socket's next checkpoint — one frame, or one
+  keepalive tick.
+- Session EXPIRY (the janitor sweep) still does not evict at all, by design: it is passive
+  and would thunder-herd every tenant on every pass.
+- **Reconnect cost is a rejection, not an absorption.** Because every evict now produces a
+  reconnect herd, and `bearer_auth_layer` probes the per-token rate limiter BEFORE the
+  auth-cache consult, the herd is throttled by the token's own bucket — shared with that
+  token's ordinary REST traffic. With defaults (`DRUST_RATE_LIMIT_PER_TOKEN`=60 per
+  `DRUST_RATE_LIMIT_WINDOW_SECS`=10 s ⇒ 6 reconnects/s): ≤ 60 sockets on one token reconnect
+  untouched, above that the herd drains at ~6/s with 429 + `Retry-After` for the excess.
+  Rejected attempts are not written into the window, so retries do not extend the throttle. A
+  tenant expecting more concurrent sockets on ONE shared token should raise that knob or
+  issue per-user tokens.
+
+### Deploy
+
+No migration, no schema change, no config required — the epoch lives in memory and the one new
+knob has a working default. Nothing changes for a deployment that upgrades and restarts.
+
+**`DRUST_BROADCAST_KEEPALIVE_SECS`** — WS keepalive tick, default `30`, enforced range
+**`1..=300`**. Unlike the rest of the `DRUST_BROADCAST_*` family it is **not** on the silent
+parse-or-default path:
+
+| Value | What runs | What is logged |
+|---|---|---|
+| unset / empty | 30 | nothing |
+| inside `1..=300` | the value verbatim | nothing |
+| `0`, or above `300` | clamped to `1` / `300` | `tracing::warn!` naming the requested and the applied value |
+| not a whole number of seconds | 30 (the default) | `tracing::warn!` naming the raw value |
+
+Both ends are clamped at the source because both failure modes are otherwise silent: `0` would
+disable the tick (`tokio::time::interval` panics on a zero period, and a disabled tick would
+strand an evicted idle socket forever), while a plausible "reduce WS chatter" setting like
+`3600` is not rejected by tokio at all — it computes a far-future deadline, i.e. "never ticks
+again", which is exactly the disabled state reached through the knob that documents it as
+impossible. And because the clamp overrules a deliberate operator setting, it says so: silence
+on a knob that IS a security bound is the same failure shape `x-drust-boot-degraded` exists
+for.
+
+Like the rest of the `DRUST_BROADCAST_*` family, the knob is not enumerated in the three
+deployment targets — it has a working default. An operator who needs a different value sets it
+the usual way per target: the systemd `EnvironmentFile`, the Compose `environment:` block, or
+Helm `extraEnv`.
+
 ## v1.64.0 — 2026-08-13
 
 **Publishing becomes a per-prefix grant (#974).** v1.63.0 made "may this caller upload a
@@ -3747,6 +3861,10 @@ SSE routes; new bus is independent of the v1.10 SSE record channels.
 | `DRUST_BROADCAST_ROOM_SUBSCRIBER_MAX` | 1000 |
 | `DRUST_BROADCAST_CLIENT_ROOM_MAX` | 100 |
 | `DRUST_BROADCAST_SWEEPER_INTERVAL_SECS` | 300 |
+
+*(The family gained a sixth member later: `DRUST_BROADCAST_KEEPALIVE_SECS`, default 30 and
+clamped into `1..=300` — documented under v1.65.0, which is also where it stops being a
+chattiness knob and becomes a revocation bound.)*
 
 ### Migration
 

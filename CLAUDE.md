@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-13
+updated: 2026-08-14
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -195,7 +195,11 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    revoked data. Applies to realtime-disable, `anon_caps` revoke, policy attach or clear,
    `set_owner_field`, and **token reroll** (`reroll_token_json` revokes the old bearer, so
    in-flight SSE/rooms subscribers holding it must be dropped — a tenant-wide `evict_tenant`,
-   not `evict_collection`, since the revoked identity spans all collections).
+   not `evict_collection`, since the revoked identity spans all collections; **since v1.65
+   `evict_tenant` also bumps the tenant's rooms epoch, so a live WS socket is CLOSED —
+   `CONN_EVICTED` then Close 1008 — at its next inbound frame or keepalive tick instead of
+   merely losing its channel and silently re-subscribing, i.e. within
+   `DRUST_BROADCAST_KEEPALIVE_SECS` (default 30, clamped `1..=300`) when idle**).
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks
