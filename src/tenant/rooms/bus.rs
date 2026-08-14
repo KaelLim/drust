@@ -19,9 +19,23 @@ pub struct RoomBus {
     /// and lazily compare per inbound frame + keepalive tick. Entries are
     /// NEVER reclaimed (`sweep_empty` must not touch this map): a
     /// reclaimed and rebuilt entry would hand old sockets a stale `Arc`
-    /// that never sees later bumps. ~16 bytes/tenant, bounded by tenant
-    /// count — the WS upgrade sits behind `bearer_auth_layer` so keys are
-    /// real tenants (precedent: #951 webhook per-tenant semaphore map).
+    /// that never sees later bumps — pinned by
+    /// `sweep_empty_must_not_reclaim_epoch_entries`.
+    ///
+    /// Cost and bound, stated honestly: an entry is on the order of
+    /// **~100 bytes** (an `Arc<str>` key — fat pointer plus its heap
+    /// allocation and refcounts — an `Arc<AtomicU64>` with its own
+    /// allocation, and the DashMap slot), and the map is monotonic in the
+    /// number of DISTINCT tenant ids **seen since process start**,
+    /// including ids that have since been deleted — only a restart clears
+    /// it. Both `tenant_epoch_handle` AND `evict_tenant` are INSERTING
+    /// calls on this key space, so every caller must validate/authorize
+    /// the tenant id first: `mgmt::admin_rooms` (v1.31.3 F14) rejects
+    /// malformed ids at the door for exactly this reason, and
+    /// `tenant_ownership_layer` 404s unknown or soft-deleted ids before
+    /// the admin evict handler runs. If tenant churn ever makes the
+    /// residue matter, reclaim on tenant HARD-delete — never from the
+    /// periodic sweeper. (Precedent: #951 per-tenant webhook semaphore map.)
     epochs: Arc<DashMap<Arc<str>, Arc<AtomicU64>>>,
 }
 
@@ -112,9 +126,16 @@ impl RoomBus {
     /// close themselves (`CONN_EVICTED` + Close 1008) at their next
     /// inbound frame or keepalive tick.
     pub fn evict_tenant(&self, tenant: &str) {
-        // #955 — bump FIRST (close the new road, then tear down the old
-        // bridge): a socket racing a re-subscribe past a not-yet-bumped
-        // epoch would land in a fresh channel and linger a full keepalive.
+        // #955 — bump BEFORE the teardown. What the ordering actually
+        // buys is narrow, so state it exactly: the window in which a
+        // concurrent checkpoint can still read a STALE epoch ends at the
+        // bump, i.e. before the channel teardown rather than after it.
+        // It does NOT close the re-subscribe race — a socket whose epoch
+        // load happened before the bump still proceeds, and its
+        // `subscribe()` can land after `channels.remove`, creating a
+        // fresh channel that lives until that socket's NEXT checkpoint
+        // (≤1 keepalive). That residual is the accepted micro-race, same
+        // family as spec §隔離與資安不變量 item 4.
         self.epochs
             .entry(Arc::<str>::from(tenant))
             .or_default()
@@ -301,17 +322,80 @@ mod tests {
         );
     }
 
-    /// #955 — a connection opened AFTER an evict takes the current value
+    /// #955 — a connection opened AFTER an evict takes the CURRENT value
     /// as its baseline, so it is not killed by an eviction that predates
-    /// it (no sticky kill).
+    /// it (no sticky kill) — and it is not immune to the NEXT one either.
+    ///
+    /// The three legs are deliberate; `assert_eq!(baseline, baseline)`
+    /// would pin nothing. Leg 1 catches a `tenant_epoch_handle` that
+    /// hands back a fresh 0 instead of the live value. Legs 2/3 catch a
+    /// handle-taking that MUTATES (e.g. a plausible-looking "reset the
+    /// epoch for a fresh connection"): since `subscribe` is open to anon,
+    /// ANY client connecting could otherwise reset the shared atomic and
+    /// resurrect every already-revoked socket on that tenant.
     #[tokio::test]
     async fn handle_taken_after_evict_reads_current_epoch_no_false_eviction() {
         let bus = RoomBus::new();
         bus.evict_tenant("t1"); // bump with no prior handle
         let h = bus.tenant_epoch_handle("t1");
-        let baseline = h.load(std::sync::atomic::Ordering::SeqCst);
-        // A NEW connection's baseline equals current — no phantom mismatch.
-        assert_eq!(h.load(std::sync::atomic::Ordering::SeqCst), baseline);
+        let baseline = h.load(SeqCst);
+        // Leg 1 — a NEW connection's baseline is the CURRENT epoch.
+        assert_eq!(
+            baseline, 1,
+            "handle taken after an evict must read the CURRENT epoch, not a fresh 0"
+        );
+        // Leg 2 — taking a handle is a pure read shared by every caller.
+        let h2 = bus.tenant_epoch_handle("t1");
+        assert_eq!(
+            h.load(SeqCst),
+            1,
+            "tenant_epoch_handle must never mutate the epoch"
+        );
+        assert!(
+            Arc::ptr_eq(&h, &h2),
+            "every handle for a tenant must alias ONE shared atomic"
+        );
+        // Leg 3 — the post-evict baseline is still live: the next evict moves it.
+        bus.evict_tenant("t1");
+        assert_eq!(
+            h.load(SeqCst),
+            2,
+            "a handle taken after an evict must still observe later bumps"
+        );
+        assert_eq!(h2.load(SeqCst), 2, "both handles see the same bump");
+    }
+
+    /// #955 regression pin for the load-bearing doc claim on `epochs` and
+    /// `sweep_empty`: the sweeper reclaims empty CHANNEL entries ONLY.
+    ///
+    /// Without this test the claim had zero coverage and adding
+    /// `self.epochs.clear()` to `sweep_empty` left the whole suite green.
+    /// In production the sweeper runs every 300 s (`main.rs`,
+    /// `DRUST_BROADCAST_SWEEPER_INTERVAL_SECS`) but is DISABLED in
+    /// `RoomsConfig::test_defaults` (`sweeper_interval_secs: 0`), so no
+    /// integration test could ever see it either: every socket older than
+    /// one sweep would hold an orphaned `Arc` that never observes a later
+    /// bump, and EVERY revoke path (#952's six sites, token reroll,
+    /// tenant delete, admin evict) would silently stop closing sockets.
+    #[tokio::test]
+    async fn sweep_empty_must_not_reclaim_epoch_entries() {
+        let bus = RoomBus::new();
+        let h = bus.tenant_epoch_handle("t1");
+        bus.evict_tenant("t1");
+        assert_eq!(h.load(SeqCst), 1);
+        // Sweep with nothing to reclaim...
+        assert_eq!(bus.sweep_empty(), 0);
+        // ...and a sweep that DOES reclaim a dead channel on this tenant.
+        {
+            let _dead = bus.subscribe("t1", "gone");
+        } // 0 receivers
+        assert_eq!(bus.sweep_empty(), 1, "the dead channel should be swept");
+        bus.evict_tenant("t1");
+        assert_eq!(
+            h.load(SeqCst),
+            2,
+            "sweep_empty must not reclaim epoch entries — the old handle would go stale"
+        );
     }
 
     /// #955 — tenant isolation: one tenant's evict must not move another

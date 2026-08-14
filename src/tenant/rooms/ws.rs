@@ -88,7 +88,11 @@ async fn handle_socket(
     // StreamMap entry while the HashSet still claimed it, making
     // re-Subscribe a silent no-op.
     let mut stream_map: StreamMap<String, BroadcastStream<RoomMessage>> = StreamMap::new();
-    let mut ka = interval(Duration::from_secs(30));
+    // #955 — honour the configured keepalive period. `from_env` already
+    // clamps 0 up to 1; `.max(1)` here is belt-and-braces for any other
+    // `RoomsConfig` constructor (test literals), because `interval`
+    // panics on a zero period.
+    let mut ka = interval(Duration::from_secs(pc.cfg.keepalive_secs.max(1)));
     ka.tick().await; // consume immediate first tick
 
     let token_hint = match &ctx {
