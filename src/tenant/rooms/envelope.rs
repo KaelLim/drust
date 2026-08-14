@@ -87,6 +87,15 @@ pub mod codes {
     pub const MALFORMED_FRAME: &str = "MALFORMED_FRAME";
     pub const LAGGED: &str = "LAGGED";
     pub const ROOM_EVICTED: &str = "ROOM_EVICTED";
+    /// #955 — the connection's tenant epoch moved since it connected, i.e.
+    /// something called `RoomBus::evict_tenant` (that function's doc
+    /// enumerates the call sites — token reroll, user-session revoke, tenant
+    /// soft-delete, admin evict-all …). CONNECTION-level, unlike the room-level
+    /// [`ROOM_EVICTED`]: the server sends this and then closes the socket
+    /// with 1008 Policy Violation, because the identity captured at connect
+    /// is no longer trustworthy. Clients must reconnect and re-authenticate;
+    /// a still-valid token reconnects normally.
+    pub const CONN_EVICTED: &str = "CONN_EVICTED";
 }
 
 #[cfg(test)]

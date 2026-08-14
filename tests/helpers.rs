@@ -751,6 +751,110 @@ pub async fn spin_up_tenant_with_role_cached(
     (app, tok, cache, dir)
 }
 
+/// #955 — everything a rooms WS test needs to drive BOTH the socket and the
+/// surfaces that revoke it, against one shared backing state.
+///
+/// Built by [`spin_up_tenant_rooms`]; see there for why the plain
+/// `spin_up_tenant_with_role*` helpers are not usable for eviction tests.
+pub struct RoomsHarness {
+    pub app: Router,
+    /// Bearer for the tenant token minted with the requested role.
+    pub token: String,
+    /// The SAME `RoomBus` instance the WS handler and the revoke paths use —
+    /// call `evict_tenant` on it to simulate an eviction, or drive a real
+    /// revocation surface and watch it move.
+    pub bus_rooms: drust::tenant::rooms::RoomBus,
+    pub meta: Arc<Mutex<rusqlite::Connection>>,
+    pub auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
+    pub tenants: Arc<TenantRegistry>,
+    pub data_dir: std::path::PathBuf,
+    /// Keeps the temp data directory alive for the test's lifetime.
+    pub dir: tempfile::TempDir,
+}
+
+/// #955 rooms WS harness — like `spin_up_tenant_with_role_cached`, plus three
+/// things eviction tests cannot work without:
+///
+/// 1. **ONE `RoomBus` shared** between `TenantAuthState` (the #952
+///    `revoke_user_realtime` path, and anything else that evicts through the
+///    auth state) and `TenantStack.bus_rooms` (what the WS handler publishes
+///    and subscribes on). The plain helpers give each its own instance —
+///    `TenantAuthState::test_default` builds a fresh `RoomBus::default()` —
+///    so a cross-surface eviction test would evict a bus no socket is on and
+///    pass while proving nothing. Production wires one instance to both.
+/// 2. **Caller-supplied `rooms_cfg`**, because the idle-close test needs
+///    `keepalive_secs = 1` (`test_defaults` must stay 30: a 1 s tick makes
+///    every other WS test's recv loop eat Ping frames).
+/// 3. **`allow_self_register = 1`** and the meta / auth-cache / registry
+///    handles, so a test can mint a real end-user session over REST and drive
+///    admin handlers against the same state.
+pub async fn spin_up_tenant_rooms(
+    tenant: &str,
+    role: &str,
+    rooms_cfg: drust::tenant::rooms::RoomsConfig,
+) -> RoomsHarness {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let tok = generate_token();
+    conn.execute(
+        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, ?3)",
+        rusqlite::params![tenant, hash_token(&tok), role],
+    )
+    .unwrap();
+    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    // Lets a test mint an end-user session over the real REST auth routes and
+    // then revoke it, which is the only way to exercise eviction through a
+    // production surface rather than by poking the bus.
+    conn.execute(
+        "UPDATE tenants SET allow_self_register = 1 WHERE id = ?1",
+        rusqlite::params![tenant],
+    )
+    .unwrap();
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let meta = Arc::new(Mutex::new(conn));
+    let bus_rooms = drust::tenant::rooms::RoomBus::new();
+    let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
+    // The whole point of this harness — one bus on both sides.
+    state.bus_rooms = bus_rooms.clone();
+    let auth_cache = state.auth_cache.clone();
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: bus_rooms.clone(),
+        bucket: rooms_cfg.bucket(),
+        rooms_cfg: rooms_cfg.clone(),
+        mcp: test_mcp_http(tenants.clone(), bus),
+        files: None,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
+        cors_origins: Vec::new(),
+    };
+    let app = build_tenant_router(stack);
+    RoomsHarness {
+        app,
+        token: tok,
+        bus_rooms,
+        meta,
+        auth_cache,
+        tenants,
+        data_dir: data,
+        dir,
+    }
+}
+
 /// Like `spin_up_tenant_with_role` but uses a specific `index_large_table_rows`
 /// threshold. Useful for regression-testing that the configured threshold is
 /// plumbed end-to-end (REST + MCP + admin) rather than a hardcoded default.

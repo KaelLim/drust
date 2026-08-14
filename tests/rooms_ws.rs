@@ -283,6 +283,244 @@ async fn unsubscribe_is_idempotent_acked() {
     assert_eq!(ack["ref"], "u1");
 }
 
+// ---------------------------------------------------------------------------
+// #955 — eviction closes live sockets (epoch lazy close).
+//
+// `evict_tenant` used to drop only the broadcast CHANNELS: the socket itself,
+// and the `AuthCtx` it captured at upgrade, survived — so a revoked holder
+// could re-subscribe (and re-publish) indefinitely on a live connection. Each
+// conn now captures the tenant epoch at connect and compares it before every
+// inbound frame and on every keepalive tick.
+//
+// These tests carry the same `#[ignore]` as the rest of the file (see the
+// module doc) — run them ONE AT A TIME with `-- --ignored`.
+// ---------------------------------------------------------------------------
+
+/// The post-eviction wire contract: the typed error first (so the client knows
+/// WHY), then a Close with 1008 Policy Violation.
+///
+/// `recv_json` panics on Close, so the close frame is read raw.
+async fn expect_conn_evicted_then_close(ws: &mut WsClient) {
+    let err = recv_json(ws).await;
+    assert_eq!(err["kind"], "error", "expected an error frame, got {err}");
+    assert_eq!(err["code"], "CONN_EVICTED", "got {err}");
+    let nxt = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .expect("timed out waiting for the Close frame")
+        .expect("stream ended without a Close frame")
+        .expect("ws error while waiting for Close");
+    match nxt {
+        TM::Close(Some(cf)) => assert_eq!(
+            u16::from(cf.code),
+            1008,
+            "an evicted socket must be closed with 1008 Policy Violation"
+        ),
+        other => panic!("expected Close(1008) right after CONN_EVICTED, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn evicted_conn_gets_conn_evicted_and_close_on_next_subscribe() {
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "anon",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+
+    send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c1"})).await;
+    let ack = recv_json(&mut ws).await;
+    assert_eq!(ack["kind"], "ack", "baseline subscribe must work");
+
+    h.bus_rooms.evict_tenant(TENANT);
+
+    // Pre-#955 this re-subscribe succeeded on the live socket with no re-auth.
+    send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c2"})).await;
+    expect_conn_evicted_then_close(&mut ws).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn evicted_conn_is_closed_on_a_publish_frame_too() {
+    // Service role, so publish is allowed by the gate — which is the point:
+    // the checkpoint must fire BEFORE `check_publish_allowed`, not instead of
+    // a denial. The pre-evict publish proves the gate would have said yes.
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "service",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+
+    send_op(
+        &mut ws,
+        json!({"op":"publish","room":"x","payload":{"n":1},"ref":"p1"}),
+    )
+    .await;
+    let ack = recv_json(&mut ws).await;
+    assert_eq!(ack["kind"], "ack", "baseline service publish must work");
+
+    h.bus_rooms.evict_tenant(TENANT);
+
+    send_op(
+        &mut ws,
+        json!({"op":"publish","room":"x","payload":{"n":2},"ref":"p2"}),
+    )
+    .await;
+    expect_conn_evicted_then_close(&mut ws).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn idle_socket_is_closed_within_two_keepalive_ticks_after_evict() {
+    // The frame checkpoint only helps a socket that keeps talking. A silent
+    // subscriber reaches ONE checkpoint — the keepalive tick — so this test is
+    // what bounds an evicted idle socket's life, and the only end-to-end pin
+    // on the `keepalive_secs` wiring (`ws::keepalive_interval`'s unit test
+    // pins the period selection; only this one proves the tick actually
+    // closes an evicted socket).
+    let mut cfg = drust::tenant::rooms::RoomsConfig::test_defaults();
+    cfg.keepalive_secs = 1;
+    let h = helpers::spin_up_tenant_rooms(TENANT, "anon", cfg).await;
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+
+    send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c1"})).await;
+    assert_eq!(recv_json(&mut ws).await["kind"], "ack");
+
+    h.bus_rooms.evict_tenant(TENANT);
+
+    // Send NOTHING from here on.
+    let (saw_evicted, close_frame) = tokio::time::timeout(Duration::from_secs(4), async {
+        let mut saw_evicted = false;
+        loop {
+            match ws.next().await {
+                Some(Ok(TM::Ping(p))) => ws.send(TM::Pong(p)).await.unwrap(),
+                Some(Ok(TM::Text(t))) => {
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                    assert_eq!(v["code"], "CONN_EVICTED", "unexpected text frame: {v}");
+                    saw_evicted = true;
+                }
+                Some(Ok(TM::Close(frame))) => return (saw_evicted, frame),
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("ws error before the Close: {e}"),
+                None => panic!("stream ended without a Close frame"),
+            }
+        }
+    })
+    .await
+    .expect("an evicted IDLE socket must close within 2 keepalive ticks (4 s at 1 s/tick)");
+
+    assert!(
+        saw_evicted,
+        "the close must be preceded by the typed CONN_EVICTED error"
+    );
+    assert_eq!(
+        u16::from(close_frame.expect("close frame must carry a code").code),
+        1008
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn valid_token_reconnects_after_evict_with_no_sticky_kill() {
+    // Eviction is tenant-wide and blunt by design (there is no per-user room
+    // index), so an innocent bystander gets closed too. What must NOT happen
+    // is a sticky kill: the epoch is a baseline, not a tombstone, so a
+    // reconnect with the SAME still-valid token works normally.
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "anon",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+    send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c1"})).await;
+    assert_eq!(recv_json(&mut ws).await["kind"], "ack");
+
+    h.bus_rooms.evict_tenant(TENANT);
+
+    send_op(&mut ws, json!({"op":"ping","ref":"k1"})).await;
+    expect_conn_evicted_then_close(&mut ws).await;
+
+    // Same token, new socket: the bus evict is not a token revocation.
+    let (mut ws2, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+    send_op(&mut ws2, json!({"op":"subscribe","room":"chat","ref":"c2"})).await;
+    let ack = recv_json(&mut ws2).await;
+    assert_eq!(ack["kind"], "ack", "reconnect must subscribe normally");
+    assert_eq!(ack["ref"], "c2");
+    // ...and stays alive: the new baseline is the CURRENT epoch, so the old
+    // eviction must not follow it.
+    send_op(&mut ws2, json!({"op":"ping","ref":"k2"})).await;
+    let pong = recv_json(&mut ws2).await;
+    assert_eq!(pong["kind"], "pong", "sticky kill: got {pong}");
+    assert_eq!(pong["ref"], "k2");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn rest_logout_closes_that_users_live_ws_socket() {
+    // The #952 semantic completion, end to end through a REAL revocation
+    // surface rather than a direct `bus.evict_tenant` call: REST logout →
+    // `TenantAuthState::revoke_user_realtime` → `evict_tenant` → epoch bump →
+    // the live socket closes at its next frame. Before #955 the session was
+    // gone from `_system_sessions` while this socket kept subscribing and
+    // publishing under the dead token.
+    //
+    // This is also the test that would catch the harness regressing to two
+    // separate `RoomBus` instances (auth state vs stack): with split buses the
+    // logout evicts a bus nothing is subscribed on and the ping below answers
+    // `pong`.
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let h = helpers::spin_up_tenant_rooms(
+        TENANT,
+        "service",
+        drust::tenant::rooms::RoomsConfig::test_defaults(),
+    )
+    .await;
+    let user_token =
+        helpers::register_and_login_via_app(&h.app, TENANT, "ws-evict@example.com", "longpassword")
+            .await;
+
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &user_token))
+        .await
+        .unwrap();
+    send_op(&mut ws, json!({"op":"subscribe","room":"chat","ref":"c1"})).await;
+    assert_eq!(
+        recv_json(&mut ws).await["kind"],
+        "ack",
+        "an end-user session must be able to subscribe"
+    );
+
+    let logout = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{TENANT}/auth/logout"))
+                .header(header::AUTHORIZATION, format!("Bearer {user_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 200, "logout should succeed");
+
+    send_op(&mut ws, json!({"op":"ping","ref":"k1"})).await;
+    expect_conn_evicted_then_close(&mut ws).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
 async fn unauth_ws_upgrade_returns_failure_pre_handshake() {

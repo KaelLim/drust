@@ -12,6 +12,16 @@
 //! may subscribe; `op:publish` is gated by `check_publish_allowed`
 //! against the per-tenant `TenantPublishPolicy` (v1.32.5 — was
 //! service-only pre-v1.32.5).
+//!
+//! #955 — that upgrade-time identity is captured ONCE and never
+//! re-resolved, so revocation reaches a LIVE socket only through the
+//! tenant eviction epoch: `handle_socket` captures
+//! `RoomBus::tenant_epoch_handle` + its value at connect and compares on
+//! branch (a) before dispatch and on branch (c) every tick. A mismatch
+//! sends [`codes::CONN_EVICTED`] and closes 1008. Branch (b) deliberately
+//! does NOT check — after an evict the channels are gone, so the only
+//! thing that can still arrive there is a message published BEFORE the
+//! revocation that is still sitting in the broadcast buffer.
 
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
@@ -26,6 +36,7 @@ use axum::extract::{Extension, Path};
 use axum::response::Response;
 use futures::SinkExt;
 use futures::stream::{SplitSink, StreamExt};
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 use tokio::time::interval;
 use tokio_stream::StreamMap;
@@ -100,6 +111,15 @@ async fn handle_socket(
     let _conn_guard = WsConnGuard::new(); // v1.32 C1 — tracks active WS connections
     let (mut sink, mut stream) = socket.split();
 
+    // #955 — capture the tenant's eviction epoch ONCE. Every checkpoint
+    // below is then a bare atomic load: no map lookup, no lock, nothing on
+    // the hot path. The upgrade→capture window (sub-millisecond) is an
+    // accepted micro-race: an evict landing inside it is read as this
+    // connection's baseline, so it survives that one eviction — but any
+    // LATER evict still closes it (spec §隔離與資安不變量 item 4).
+    let epoch = pc.bus.tenant_epoch_handle(&tenant);
+    let epoch0 = epoch.load(SeqCst);
+
     // v1.31.2 F6 — drop the separate `subscribed: HashSet<String>`. The
     // StreamMap itself IS the source of truth for which rooms this
     // connection is subscribed to. Pre-fix, evict_tenant could drop the
@@ -135,6 +155,10 @@ async fn handle_socket(
                 };
                 match frame {
                     Message::Text(text) => {
+                        // #955 checkpoint (a) — BEFORE dispatch, so it covers
+                        // subscribe / unsubscribe / publish / ping uniformly and
+                        // an evicted socket cannot land one more op on the way out.
+                        if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
                         if !handle_text_frame(
                             text.as_str(), &ctx, &pc, &tenant, token_hint, admin_id,
                             &policy, &mut stream_map, &mut sink,
@@ -186,6 +210,11 @@ async fn handle_socket(
             }
             // Branch (c): keepalive
             _ = ka.tick() => {
+                // #955 checkpoint (c) — this is the ONLY checkpoint an IDLE
+                // socket ever reaches, so it is what bounds post-evict life
+                // to one keepalive period instead of "until the client
+                // happens to disconnect".
+                if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
                 if sink.send(Message::Ping(axum::body::Bytes::new())).await.is_err() { break; }
             }
         }
@@ -357,10 +386,52 @@ async fn handle_text_frame(
     }
 }
 
-async fn send_json(
-    sink: &mut SplitSink<WebSocket, Message>,
-    env: &ServerMessage,
-) -> Result<(), axum::Error> {
+/// #955 — the connection-level eviction checkpoint.
+///
+/// Returns `true` when the caller must break its conn loop: the tenant's
+/// epoch moved since `epoch0` was captured at connect, meaning something
+/// revoked or invalidated the identity this socket is still running under.
+/// The bump happens in [`crate::tenant::rooms::bus::RoomBus::evict_tenant`],
+/// whose doc enumerates the call sites (token reroll, the #952 user-session
+/// revoke funnel, tenant soft-delete, admin evict-all …) — do not duplicate
+/// that list here, it drifts.
+///
+/// Both sends are best-effort — the point is to CLOSE, and a client that
+/// already vanished cannot be told why. Order matters: the typed error
+/// goes first so a client that respects close frames still learns it was
+/// evicted rather than disconnected.
+///
+/// Generic over the sink purely so the wire behaviour is unit-testable: a
+/// `SplitSink<WebSocket, _>` cannot be built without a real upgraded
+/// socket, and every WS integration test in this repo is `#[ignore]`d.
+async fn check_epoch_evicted<S>(sink: &mut S, epoch: &AtomicU64, epoch0: u64) -> bool
+where
+    S: futures::Sink<Message> + Unpin,
+{
+    if epoch.load(SeqCst) == epoch0 {
+        return false;
+    }
+    let _ = send_error(
+        sink,
+        None,
+        codes::CONN_EVICTED,
+        "connection evicted; reconnect and re-authenticate",
+        None,
+    )
+    .await;
+    let _ = sink
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: axum::extract::ws::close_code::POLICY, // 1008
+            reason: Utf8Bytes::from_static("evicted"),
+        })))
+        .await;
+    true
+}
+
+async fn send_json<S>(sink: &mut S, env: &ServerMessage) -> Result<(), S::Error>
+where
+    S: futures::Sink<Message> + Unpin,
+{
     let s = serde_json::to_string(env)
         .unwrap_or_else(|_| r#"{"kind":"error","code":"INTERNAL","msg":""}"#.to_string());
     sink.send(Message::Text(Utf8Bytes::from(s))).await
@@ -387,13 +458,16 @@ async fn send_ack(
     send_json(sink, &env).await
 }
 
-async fn send_error(
-    sink: &mut SplitSink<WebSocket, Message>,
+async fn send_error<S>(
+    sink: &mut S,
     client_ref: Option<String>,
     code: &'static str,
     msg: &str,
     room: Option<String>,
-) -> Result<(), axum::Error> {
+) -> Result<(), S::Error>
+where
+    S: futures::Sink<Message> + Unpin,
+{
     let env = ServerMessage::Error {
         client_ref,
         code,
@@ -445,5 +519,132 @@ mod tests {
         // not panic `tokio::time::interval`.
         cfg.keepalive_secs = 0;
         assert_eq!(keepalive_interval(&cfg).period(), Duration::from_secs(1));
+    }
+
+    /// #955 — the wire behaviour of the eviction checkpoint, pinned at the
+    /// LIB level.
+    ///
+    /// Why this is not left to the integration tests: every WS test in
+    /// `tests/rooms_ws.rs` is `#[ignore]`d (tokio/2374), so `make test-all`
+    /// runs NONE of them. Without this test the only executed coverage of
+    /// "what an evicted socket actually receives" would be a test nobody's
+    /// gate runs.
+    ///
+    /// Three properties, all load-bearing: an UNCHANGED epoch must emit
+    /// nothing at all (a checkpoint that chattered would fire on every frame
+    /// of every healthy connection), a MOVED epoch must emit the typed
+    /// `CONN_EVICTED` error BEFORE the Close (a bare close leaves the client
+    /// guessing whether it was evicted or the network died), and the close
+    /// code must be 1008 Policy Violation rather than a normal 1000 — the
+    /// client is being refused, not dismissed.
+    #[tokio::test]
+    async fn check_epoch_evicted_is_silent_until_the_epoch_moves_then_errors_and_closes_1008() {
+        let (mut sink, mut frames) = futures::channel::mpsc::unbounded::<Message>();
+        let epoch = AtomicU64::new(7);
+
+        // Baseline == current: no frames, keep the conn.
+        assert!(
+            !check_epoch_evicted(&mut sink, &epoch, 7).await,
+            "an unmoved epoch must not close the connection"
+        );
+        assert!(
+            frames.try_recv().is_err(),
+            "an unmoved epoch must put NOTHING on the wire"
+        );
+
+        // The evict.
+        epoch.fetch_add(1, SeqCst);
+        assert!(
+            check_epoch_evicted(&mut sink, &epoch, 7).await,
+            "a moved epoch must tell the caller to break the conn loop"
+        );
+
+        let first = frames.try_recv().expect("expected an error frame");
+        let Message::Text(t) = first else {
+            panic!("expected the CONN_EVICTED error frame first, got {first:?}");
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error");
+        assert_eq!(v["code"], codes::CONN_EVICTED);
+        assert!(
+            v["msg"].as_str().unwrap().contains("reconnect"),
+            "the message must tell the client what to do next: {v}"
+        );
+
+        let second = frames.try_recv().expect("expected a close frame");
+        match second {
+            Message::Close(Some(cf)) => assert_eq!(
+                cf.code,
+                axum::extract::ws::close_code::POLICY,
+                "must close 1008 Policy Violation, not a normal close"
+            ),
+            other => panic!("expected Close(1008) after the error, got {other:?}"),
+        }
+        assert!(
+            frames.try_recv().is_err(),
+            "exactly two frames: the typed error, then the close"
+        );
+    }
+
+    /// #955 — structural pin for WHERE the two checkpoints sit.
+    ///
+    /// The same reasoning as `bus.rs::evict_tenant_bumps_epoch_before_dropping_channels`:
+    /// the only behavioural coverage of the checkpoint POSITIONS lives in
+    /// `#[ignore]`d WS integration tests, so deleting either call site — or
+    /// moving the frame checkpoint to AFTER `handle_text_frame`, which would
+    /// let an evicted socket land one more subscribe/publish before dying,
+    /// the exact hole #955 closes — leaves every gate green.
+    ///
+    /// It reads `handle_socket`'s own body, so the needles in this test's
+    /// source cannot satisfy it.
+    #[test]
+    fn epoch_checkpoints_sit_before_dispatch_and_on_the_keepalive_tick() {
+        let src = include_str!("ws.rs");
+        let start = src
+            .find("async fn handle_socket(")
+            .expect("handle_socket's signature changed — update this structural pin");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n}\n")
+            .expect("could not find the end of handle_socket's body");
+        let body = &rest[..end];
+
+        let capture = body
+            .find("tenant_epoch_handle(")
+            .expect("handle_socket must capture the tenant epoch handle ONCE at connect");
+
+        // Checkpoint (a): every inbound Text frame, BEFORE dispatch.
+        let text_arm = body
+            .find("Message::Text(text) => {")
+            .expect("the inbound Text arm moved — update this structural pin");
+        let dispatch = text_arm
+            + body[text_arm..]
+                .find("handle_text_frame(")
+                .expect("the Text arm must still dispatch through handle_text_frame");
+        let check_a = text_arm
+            + body[text_arm..dispatch]
+                .find("check_epoch_evicted(")
+                .expect(
+                    "checkpoint (a) missing: the epoch must be checked BEFORE handle_text_frame, \
+                     so an evicted socket cannot land one more subscribe/publish",
+                );
+        assert!(
+            capture < check_a,
+            "the epoch handle must be captured before the loop, not inside the checkpoint",
+        );
+
+        // Checkpoint (c): the keepalive tick, BEFORE the Ping — this is what
+        // bounds an IDLE socket's post-evict life to one keepalive period.
+        let ka_arm = body
+            .find("_ = ka.tick() => {")
+            .expect("the keepalive arm moved — update this structural pin");
+        let ping = ka_arm
+            + body[ka_arm..]
+                .find("Message::Ping(")
+                .expect("the keepalive arm must still send a Ping");
+        body[ka_arm..ping].find("check_epoch_evicted(").expect(
+            "checkpoint (c) missing: without it an evicted IDLE socket lives until the client \
+             disconnects, which is unbounded",
+        );
     }
 }
