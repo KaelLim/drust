@@ -103,6 +103,23 @@ pub async fn reroll(
     // admin PAT resolves to `AuthCtx::Service` on every tenant it can reach).
     // Cache first, sockets second: the kicked client reconnects instantly and
     // must not be re-admitted from a stale cache entry.
+    //
+    // Say the blunt part out loud, because it is the one site where the spec's
+    // "don't turn evict into a button anyone can press" rationale (§隔離與資安
+    // 不變量 4) does NOT bite: the other conditional sites got `n > 0` /
+    // `changed > 0` / demotion-only guards, but a reroll ALWAYS revokes
+    // something, so it always evicts — and `/admin/settings/token/reroll` sits
+    // in `settings_router`, which is authenticated but carries no
+    // `require_owner_layer`. So ANY logged-in admin, `member` included, can
+    // close every rooms socket on every tenant, repeatably, by rerolling their
+    // OWN PAT. Accepted by design (the user chose the blunt host-wide evict
+    // over a per-connection credential index): the cost is a reconnect herd,
+    // which the per-token limiter drains at ~6/s per token — it REJECTS the
+    // excess with 429, it does not absorb it — and the security direction is
+    // unaffected, since a throttled reconnect fails closed. Narrowing this
+    // means building the per-connection PAT registry that #975 deferred, not
+    // adding a role check here: a member rerolling their own key is a
+    // legitimate revocation and must still close that key's sockets.
     s.bus_rooms.evict_all_tenants();
 
     emit_audit_revoke(caller_id);
