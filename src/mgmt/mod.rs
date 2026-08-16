@@ -16,6 +16,9 @@ pub mod i18n;
 pub mod locale_layer;
 pub mod metrics;
 pub mod oauth_login;
+/// #975 — the shared "which tenants does this admin's PAT reach" decision the
+/// PAT-revocation sites evict over.
+pub mod pat_evict;
 /// Test-only: the #975 structural pin over the PAT-revocation sites'
 /// `clear_admin_pat` → `bus_rooms.evict` ordering. Not a runtime module.
 #[cfg(test)]

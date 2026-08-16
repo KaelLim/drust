@@ -93,8 +93,25 @@ fn insert_cli_pat(dir: &TempDir, admin_id: i64, label: &str) -> (i64, String) {
     (conn.last_insert_rowid(), pt)
 }
 
+/// #975 T2 review — a tenant row with an explicit owner, so the reach-scoped
+/// eviction set (`SELECT id FROM tenants WHERE owner_admin_id = ?`) has
+/// something to select.
+fn insert_tenant(dir: &TempDir, id: &str, owner: i64) {
+    let conn = open_meta_ro(dir);
+    conn.execute(
+        "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, ?2, ?3)",
+        params![id, id, owner],
+    )
+    .unwrap();
+}
+
 /// Seed a labeled CLI PAT for the bootstrapped admin (id=1). Returns
 /// `(admin_id, plaintext)`.
+///
+/// That admin is bootstrapped BEFORE `run_migrations`, so the v1.29 role
+/// backfill makes it an `owner` — i.e. `sees_all_tenants`, whose PAT really
+/// does reach every tenant. Tests that need the NARROW reach must make their
+/// own `member` (see `insert_admin`).
 fn seed_cli_pat(dir: &TempDir, label: &str) -> (i64, String) {
     let (_, pt) = insert_cli_pat(dir, 1, label);
     (1, pt)
@@ -251,9 +268,10 @@ async fn concurrent_refresh_replay_never_mints_a_second_active_pat() {
 
 /// #975 — refresh soft-revokes the OLD CLI PAT, which resolves to
 /// `AuthCtx::Service` on every tenant its admin can see and may be holding
-/// live rooms WS sockets anywhere. Host-wide evict, same as reroll.
+/// live rooms WS sockets there. The seeded admin is an `owner`
+/// (`sees_all_tenants`), so "every tenant it can see" is the whole host.
 #[tokio::test]
-async fn refresh_evicts_live_rooms_sockets_host_wide() {
+async fn refresh_by_a_sees_all_admin_evicts_host_wide() {
     let (app, dir, bus) = spin_up_with_bus().await;
     let (_, old_cli) = seed_cli_pat(&dir, "cli:laptop");
     let ha = bus.tenant_epoch_handle("t-a");
@@ -267,6 +285,39 @@ async fn refresh_evicts_live_rooms_sockets_host_wide() {
 
     assert_eq!(ha.load(SeqCst), 1, "refresh must evict (tenant t-a)");
     assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
+}
+
+/// #975 T2 review (MED), the narrow direction — and the one that exercises the
+/// PUBLIC-router shape: `/auth/cli/token/refresh` self-authenticates against
+/// the bearer being rotated, so there is no admin session and no
+/// `AdminProfileExt` here. The reach still has to come out right, which is why
+/// `mgmt::pat_evict` re-reads `admins.role` from `meta` rather than taking the
+/// extension. A `member`'s CLI must not be able to disconnect a tenant that
+/// member cannot even see.
+#[tokio::test]
+async fn refresh_by_a_member_evicts_only_the_tenants_that_member_owns() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (member_id, _) = insert_admin(&dir, "cli-member@x", "member");
+    let (_, old_cli) = insert_cli_pat(&dir, member_id, "cli:laptop");
+    insert_tenant(&dir, "t-mine", member_id);
+    insert_tenant(&dir, "t-theirs", 1); // the bootstrapped owner's tenant
+    let h_mine = bus.tenant_epoch_handle("t-mine");
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+
+    let resp = app
+        .oneshot(post_bearer("/auth/cli/token/refresh", &old_cli))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(h_mine.load(SeqCst), 1, "the member's own tenant is evicted");
+    assert_eq!(
+        h_theirs.load(SeqCst),
+        0,
+        "a member refreshing their own CLI token must not kick another \
+         admin's tenant — the bearer CTE would have refused their PAT there \
+         (PAT_TENANT_DENIED), so no socket there is theirs"
+    );
 }
 
 #[tokio::test]
@@ -395,9 +446,10 @@ async fn logout_with_ui_pat_reports_not_revoked_and_leaves_it_active() {
 }
 
 /// #975 — a logout that actually revoked something (`n > 0`) must close the
-/// revoked PAT's live rooms sockets host-wide.
+/// revoked PAT's live rooms sockets. The seeded admin is an `owner`, so the
+/// reach is the whole host.
 #[tokio::test]
-async fn logout_evicts_live_rooms_sockets_host_wide() {
+async fn logout_by_a_sees_all_admin_evicts_host_wide() {
     let (app, dir, bus) = spin_up_with_bus().await;
     let (_admin_id, cli) = seed_cli_pat(&dir, "cli:laptop");
     let ha = bus.tenant_epoch_handle("t-a");
@@ -420,11 +472,45 @@ async fn logout_evicts_live_rooms_sockets_host_wide() {
     assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
 }
 
+/// #975 T2 review (MED), narrow direction — a `member`'s CLI logout closes
+/// only that member's own tenants.
+#[tokio::test]
+async fn logout_by_a_member_evicts_only_the_tenants_that_member_owns() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (member_id, _) = insert_admin(&dir, "cli-logout-member@x", "member");
+    let (_, cli) = insert_cli_pat(&dir, member_id, "cli:laptop");
+    insert_tenant(&dir, "t-mine", member_id);
+    insert_tenant(&dir, "t-theirs", 1);
+    let h_mine = bus.tenant_epoch_handle("t-mine");
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(h_mine.load(SeqCst), 1, "the member's own tenant is evicted");
+    assert_eq!(
+        h_theirs.load(SeqCst),
+        0,
+        "a member logging out must not kick another admin's tenant"
+    );
+}
+
 /// #975, the other direction — a logout that revoked NOTHING (`n == 0`; here
 /// the unlabeled UI PAT, which the `label IS NOT NULL` scope excludes) must
 /// NOT evict. Nothing was revoked, so there is no stale credential to close,
-/// and evicting anyway would hand any authenticated admin a host-wide
-/// disconnect button (spec §隔離與資安不變量 4, the "真變才 evict" rule).
+/// and evicting anyway would kick live subscribers for a no-op (spec
+/// §隔離與資安不變量 4, the "真變才 evict" rule) — and for a `sees_all_tenants`
+/// caller that no-op reaches every tenant on the host.
 #[tokio::test]
 async fn logout_with_nothing_to_revoke_does_not_evict() {
     let (app, dir, bus) = spin_up_with_bus().await;
@@ -544,9 +630,9 @@ async fn ui_revoke_cannot_touch_another_admins_token_or_the_ui_pat() {
 }
 
 /// #975 — the admin-UI per-row revoke kills a CLI PAT that may hold live rooms
-/// sockets on any tenant; evict host-wide.
+/// sockets on any tenant its admin reaches; for an `owner` that is the host.
 #[tokio::test]
-async fn ui_revoke_evicts_live_rooms_sockets_host_wide() {
+async fn ui_revoke_by_a_sees_all_admin_evicts_host_wide() {
     let (app, dir, bus) = spin_up_with_bus().await;
     let (admin_id, session) = insert_admin(&dir, "kael-evict@x", "owner");
     let id = seed_cli_pat_for(&dir, admin_id, "cli:laptop");
@@ -570,9 +656,46 @@ async fn ui_revoke_evicts_live_rooms_sockets_host_wide() {
     assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
 }
 
+/// #975 T2 review (MED), narrow direction — this route is the second one on
+/// `settings_router` (no `require_owner_layer`), so a `member` reaches it with
+/// nothing but a session and a CLI token of their own. Their revoke must stop
+/// at the tenants they own.
+#[tokio::test]
+async fn ui_revoke_by_a_member_evicts_only_the_tenants_that_member_owns() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (member_id, session) = insert_admin(&dir, "kael-member-evict@x", "member");
+    let id = seed_cli_pat_for(&dir, member_id, "cli:laptop");
+    insert_tenant(&dir, "t-mine", member_id);
+    insert_tenant(&dir, "t-theirs", 1);
+    let h_mine = bus.tenant_epoch_handle("t-mine");
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{id}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    assert_eq!(h_mine.load(SeqCst), 1, "the member's own tenant is evicted");
+    assert_eq!(
+        h_theirs.load(SeqCst),
+        0,
+        "a member revoking their own CLI token must not kick another admin's \
+         tenant"
+    );
+}
+
 /// #975, the other direction — a revoke that matched no row 404s before the
 /// clear/evict pair, so it must not bump anything. Otherwise a guessed token
-/// id becomes a host-wide disconnect button.
+/// id becomes a disconnect button — host-wide in the hands of the `owner` this
+/// test uses.
 #[tokio::test]
 async fn ui_revoke_that_matches_no_row_does_not_evict() {
     let (app, dir, bus) = spin_up_with_bus().await;

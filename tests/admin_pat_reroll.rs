@@ -93,6 +93,18 @@ fn insert_admin(dir: &tempfile::TempDir, email: &str, role: &str) -> (i64, Strin
     (admin_id, format!("drust_session={session_token}"))
 }
 
+/// #975 T2 review — a tenant row with an explicit owner, so the reach-scoped
+/// eviction set (`SELECT id FROM tenants WHERE owner_admin_id = ?`) has
+/// something to select. `owner` = `None` leaves it unowned (member-invisible).
+fn insert_tenant(dir: &tempfile::TempDir, id: &str, owner: Option<i64>) {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, ?2, ?3)",
+        params![id, id, owner],
+    )
+    .unwrap();
+}
+
 async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), 65_536)
         .await
@@ -188,21 +200,25 @@ async fn reroll_returns_plaintext_and_revokes_previous() {
 }
 
 /// #975 — the bulk reroll soft-revokes every unlabeled PAT of this admin, and
-/// an admin PAT resolves to `AuthCtx::Service` on ANY tenant it can see, so the
-/// revoked credential may be holding live rooms WS sockets anywhere on the
-/// host. The reroll must bump EVERY tenant's eviction epoch, not one tenant's:
-/// a socket only closes at its next checkpoint if its own tenant's epoch moved.
+/// an admin PAT resolves to `AuthCtx::Service` on every tenant it can see, so
+/// the revoked credential may be holding live rooms WS sockets there. For an
+/// admin whose role IS cross-tenant (`owner` / `admin` — `sees_all_tenants`),
+/// that is the whole host: every tenant's epoch must move, including tenants
+/// this admin does not own, because their PAT resolves on those too.
 #[tokio::test]
-async fn reroll_evicts_live_rooms_sockets_host_wide() {
+async fn reroll_by_a_sees_all_admin_evicts_host_wide() {
     let (app, dir, bus) = spin_up_with_bus().await;
-    let (_admin_id, session) = insert_admin(&dir, "kael-evict@x", "member");
+    let (owner_id, session) = insert_admin(&dir, "kael-owner@x", "owner");
+    let (other_id, _) = insert_admin(&dir, "someone-else@x", "member");
+    insert_tenant(&dir, "t-mine", Some(owner_id));
+    insert_tenant(&dir, "t-theirs", Some(other_id));
 
-    // Two unrelated tenants each hold an epoch handle, exactly the way
-    // `ws_handler` takes its baseline before upgrading a socket.
-    let ha = bus.tenant_epoch_handle("t-a");
-    let hb = bus.tenant_epoch_handle("t-b");
-    assert_eq!(ha.load(SeqCst), 0, "baseline");
-    assert_eq!(hb.load(SeqCst), 0, "baseline");
+    // Two tenants each hold an epoch handle, exactly the way `ws_handler`
+    // takes its baseline before upgrading a socket.
+    let h_mine = bus.tenant_epoch_handle("t-mine");
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+    assert_eq!(h_mine.load(SeqCst), 0, "baseline");
+    assert_eq!(h_theirs.load(SeqCst), 0, "baseline");
 
     let resp = app
         .oneshot(
@@ -218,14 +234,76 @@ async fn reroll_evicts_live_rooms_sockets_host_wide() {
     assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
 
     assert_eq!(
-        ha.load(SeqCst),
+        h_mine.load(SeqCst),
         1,
-        "reroll must evict live rooms sockets (tenant t-a)"
+        "reroll must evict live rooms sockets on the admin's own tenant"
     );
     assert_eq!(
-        hb.load(SeqCst),
+        h_theirs.load(SeqCst),
         1,
-        "the evict must be host-wide, not one tenant (tenant t-b)"
+        "a sees-all admin's PAT resolves on foreign tenants too, so its \
+         revocation must close those sockets as well"
+    );
+}
+
+/// #975 T2 review (MED) — the OTHER direction, and the reason the reach is
+/// scoped at all.
+///
+/// `/admin/settings/token/reroll` is on `settings_router`, which is
+/// session-authenticated but carries no `require_owner_layer`, and a reroll
+/// always revokes something — so there is no `n > 0`-style guard either. If
+/// this evicted host-wide, the lowest-privilege admin role would hold a
+/// repeatable cross-tenant disconnect button, which spec §隔離與資安不變量 4
+/// forbids in as many words ("寧可少踢也不把 evict 變成任何人可觸發的全站斷線
+/// 按鈕").
+///
+/// Scoping it is not a weakening: the data-plane bearer CTE refuses a
+/// non-sees-all admin's PAT on any tenant they do not own
+/// (`PAT_TENANT_DENIED`, `src/tenant/router.rs`), so a foreign tenant's socket
+/// cannot be theirs — evicting it would only kick a stranger.
+#[tokio::test]
+async fn reroll_by_a_member_evicts_only_the_tenants_that_member_owns() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (member_id, session) = insert_admin(&dir, "kael-member@x", "member");
+    let (other_id, _) = insert_admin(&dir, "someone-else@x", "member");
+    insert_tenant(&dir, "t-mine", Some(member_id));
+    insert_tenant(&dir, "t-theirs", Some(other_id));
+    insert_tenant(&dir, "t-orphan", None);
+
+    let h_mine = bus.tenant_epoch_handle("t-mine");
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+    let h_orphan = bus.tenant_epoch_handle("t-orphan");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings/token/reroll")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
+
+    assert_eq!(
+        h_mine.load(SeqCst),
+        1,
+        "the member's own tenant is where their PAT could hold a socket — it \
+         must still be evicted"
+    );
+    assert_eq!(
+        h_theirs.load(SeqCst),
+        0,
+        "a member rerolling their own key must not disconnect another admin's \
+         tenant — that is the host-wide button this narrowing removes"
+    );
+    assert_eq!(
+        h_orphan.load(SeqCst),
+        0,
+        "an unowned tenant is invisible to a member (tenant_access_for → Deny), \
+         so it is not in their eviction set either"
     );
 }
 

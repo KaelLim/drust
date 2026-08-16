@@ -30,17 +30,23 @@
 //!
 //! It reads each handler's own comment-stripped source
 //! ([`crate::tenant::rooms::srcpin`]) and asserts that the LAST
-//! `clear_admin_pat(` precedes the FIRST `bus_rooms.evict` — i.e. every clear
+//! `clear_admin_pat(` precedes the FIRST eviction call — i.e. every clear
 //! before any evict, not merely the first pair in order. Both needles are
 //! required, so deleting either call, or hiding either behind a helper with a
 //! different name, fails CLOSED (the `expect` fires) rather than silently
 //! passing — the escape that defeated three successive cuts of the sibling pin
-//! in `bus.rs`.
+//! in `bus.rs`. "Eviction call" is [`EVICTS`], a small closed set of accepted
+//! spellings, because since the T2 review the four `admin_pat.rs` sites reach
+//! the bus through the shared reach-scoped `mgmt::pat_evict` decision instead
+//! of calling it directly.
 //!
 //! It does NOT check the CONDITION each evict sits under (`n > 0`, `changed >
-//! 0`, the demotion-only predicate, `old_owner != new_owner`) or which evict
-//! variant is used. Those are behaviourally observable through the eviction
-//! epoch and are covered both-directions by the integration tests in
+//! 0`, the demotion-only predicate, `old_owner != new_owner`), which evict
+//! variant is used, or WHICH TENANTS the eviction covers. Those are
+//! behaviourally observable through the eviction
+//! epoch — the reach decision additionally has unit tests in
+//! `mgmt::pat_evict` — and are covered both-directions by the integration
+//! tests in
 //! `tests/{admin_pat_reroll,admin_team_crud,cli_auth_endpoints,
 //! tenant_ownership_transfer}.rs`. This pin covers only the part those tests
 //! cannot see.
@@ -76,10 +82,40 @@ use crate::tenant::rooms::srcpin::{code_only, prod_fn_body, production_half};
 /// other binding.
 const CLEAR: &str = "clear_admin_pat(";
 
-/// The rooms eviction — matches both variants in use
-/// (`evict_all_tenants()` for the PAT family, `evict_tenant(&tid)` for the
-/// owner transfer).
-const EVICT: &str = "bus_rooms.evict";
+/// The rooms eviction, in every spelling a site may legitimately use.
+///
+/// Two, because the eviction SET is not the same at every site:
+///
+/// - `bus_rooms.evict` — the direct bus call. Covers both variants
+///   (`evict_all_tenants()` where the revoked identity's reach genuinely is the
+///   host, `evict_tenant(&tid)` for the owner transfer's single tenant).
+/// - `pat_evict::evict_pat_rooms_sockets(` — the shared reach-scoped decision
+///   the four self-service PAT-lifecycle sites in `admin_pat.rs` go through
+///   (#975 T2 review, MED): those sites are reachable by a `member`, so a
+///   host-wide evict there was a cross-tenant availability lever anyone could
+///   pull. The helper picks host-wide vs the caller's owned tenants; the SITE's
+///   obligation — clear the cache before you close the sockets — is unchanged,
+///   which is why it is still what this pin measures.
+///
+/// A site satisfies the pin with EITHER. Both are counted for completeness, so
+/// moving a site from one spelling to the other stays accounted for and
+/// deleting the call entirely still fails closed.
+const EVICTS: &[&str] = &["bus_rooms.evict", "pat_evict::evict_pat_rooms_sockets("];
+
+/// Human-readable form of [`EVICTS`] for failure messages.
+fn evicts_display() -> String {
+    EVICTS.join("` / `")
+}
+
+/// Offset of the FIRST eviction call of any spelling in `body`.
+fn first_evict(body: &str) -> Option<usize> {
+    EVICTS.iter().filter_map(|n| body.find(n)).min()
+}
+
+/// How many eviction calls of any spelling `hay` contains.
+fn count_evicts(hay: &str) -> usize {
+    EVICTS.iter().map(|n| hay.matches(n).count()).sum()
+}
 
 /// `(display path, file source, handler heads)` from ONE file literal, so the
 /// path in a failure message cannot drift from the file actually scanned.
@@ -137,9 +173,10 @@ fn every_revocation_site_clears_the_pat_cache_before_evicting_rooms_sockets() {
                      back out of this pin's sight. Do not just drop the site."
                 )
             });
-            let evict = body.find(EVICT).unwrap_or_else(|| {
+            let evict = first_evict(body).unwrap_or_else(|| {
+                let evicts = evicts_display();
                 panic!(
-                    "{path} `{head}`: no `{EVICT}` call. This handler revokes a PAT, so it must \
+                    "{path} `{head}`: no `{evicts}` call. This handler revokes a PAT, so it must \
                      close the rooms sockets that PAT may still hold (#975); a revoked admin PAT \
                      otherwise keeps an `AuthCtx::Service` socket open indefinitely."
                 )
@@ -178,11 +215,19 @@ fn the_pinned_site_list_is_the_whole_site_list() {
         let stripped = code_only(raw);
         let prod = production_half(&stripped);
 
-        for needle in [CLEAR, EVICT] {
-            let in_file = prod.matches(needle).count();
+        // `(display name, count in a haystack)` — the eviction half counts
+        // every spelling in `EVICTS` together, so a site that switches from the
+        // direct bus call to the shared reach-scoped helper (or back) is still
+        // accounted for rather than reading as a vanished site.
+        let counters: [(String, fn(&str) -> usize); 2] = [
+            (CLEAR.to_string(), |hay: &str| hay.matches(CLEAR).count()),
+            (evicts_display(), count_evicts),
+        ];
+        for (needle, count) in &counters {
+            let in_file = count(prod);
             let in_pinned: usize = heads
                 .iter()
-                .map(|head| prod_fn_body(&stripped, head).matches(needle).count())
+                .map(|head| count(prod_fn_body(&stripped, head)))
                 .sum();
             assert_eq!(
                 in_pinned, in_file,
@@ -228,8 +273,8 @@ const NON_SITE_CLEAR_FILES: &[(&str, &str)] = &[
 /// the enumeration is grounded the same way the spec grounded it (a `src`-wide
 /// grep) rather than by a list someone has to remember to extend.
 ///
-/// Deliberately keyed on [`CLEAR`] alone, not [`EVICT`]: `bus_rooms.evict` is a
-/// general realtime operation with eight legitimate non-PAT callers (tenant
+/// Deliberately keyed on [`CLEAR`] alone, not [`EVICTS`]: `bus_rooms.evict` is
+/// a general realtime operation with eight legitimate non-PAT callers (tenant
 /// soft-delete, token reroll, user-session revoke, publish-policy, …), so
 /// requiring an allowlist row for each of those would be noise. Touching the
 /// PAT cache is what makes a site a PAT-revocation site, and that needle has

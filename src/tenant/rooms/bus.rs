@@ -148,7 +148,7 @@ impl RoomBus {
     /// Drop every channel for `tenant`. Existing subscribers get
     /// `RecvError::Closed` on next recv.
     ///
-    /// **Called from nine production sites.** Re-derive the list rather than
+    /// **Called from ten production sites.** Re-derive the list rather than
     /// trusting it — it has drifted three times already: it once named a
     /// `DELETE …/realtime/rooms` route that does not exist; it said "five"
     /// for one commit after #955 T3 added the publish-policy faces; and that
@@ -162,7 +162,7 @@ impl RoomBus {
     /// that needs the number links to this doc instead of copying it, because
     /// a copied count is a count that drifts.
     ///
-    /// The recipe that returns exactly these nine and nothing else, verified
+    /// The recipe that returns exactly these ten and nothing else, verified
     /// 2026-08-16, is `grep -rn 'bus_rooms\.evict_tenant(' src/` — every
     /// production caller reaches this method through a field or parameter so
     /// named, while the in-file tests bind the bus as `bus`. Do NOT grep the
@@ -188,10 +188,19 @@ impl RoomBus {
     /// - admin `POST /admin/tenants/{id}/realtime/evict-all`
     ///   (`mgmt::admin_rooms::evict_all_rooms_handler`);
     /// - tenant owner transfer (`mgmt::tenant_settings::patch_tenant_owner`,
-    ///   #975) — the ONE member of the PAT-revocation family that evicts a
-    ///   single tenant rather than the host: only this tenant changed hands,
-    ///   so only its sockets are stale. Same real-change rule as the
-    ///   publish-policy PATCH — re-submitting the current owner does nothing.
+    ///   #975) — evicts a single tenant rather than the host: only this tenant
+    ///   changed hands, so only its sockets are stale. Same real-change rule as
+    ///   the publish-policy PATCH — re-submitting the current owner does
+    ///   nothing;
+    /// - `mgmt::pat_evict::evict_pat_rooms_sockets` (#975 T2 review) — the
+    ///   NARROW arm of the admin-PAT revocation family, looping over the
+    ///   tenants a non-sees-all admin OWNS. Its other arm is
+    ///   [`RoomBus::evict_all_tenants`], taken when the revoked admin's role
+    ///   really is cross-tenant. This is one call site serving four handlers
+    ///   (`reroll`, `cli_token_refresh`, `cli_token_logout`,
+    ///   `cli_token_revoke`), which is the point: those four are reachable by a
+    ///   `member`, so a host-wide evict there was a disconnect button anyone
+    ///   could press.
     ///
     /// The two publish-policy faces are one station with two doors, and both
     /// must evict: a live WS connection captures its `TenantPublishPolicy`
@@ -291,17 +300,29 @@ impl RoomBus {
     /// that opened a rooms channel without first taking a handle would break
     /// it silently, so re-derive it if one appears.
     ///
-    /// Why host-wide: an admin PAT spans every tenant its holder can see, and
-    /// there is no per-connection credential index, so the correct eviction
-    /// set for a PAT-family revocation is "everything" — blunt but fail-safe
-    /// (the #952 precedent). Valid holders reconnect through
-    /// `bearer_auth_layer`; a revoked PAT gets 401/403 there. It EXISTS FOR
-    /// the PAT-revocation family in `mgmt::{admin_pat, admin_team}` (#975) —
-    /// that is its purpose, deliberately not a caller list: re-derive the
-    /// live list with `rg -n 'evict_all_tenants' src/` rather than trusting
-    /// prose here. The sibling list on `evict_tenant` drifted three times,
-    /// and the first draft of THIS sentence claimed callers one commit
-    /// before any existed.
+    /// Why host-wide: there is no per-connection credential index, so when the
+    /// revoked identity's reach IS the host the only available eviction set is
+    /// "everything" — blunt but fail-safe (the #952 precedent). Valid holders
+    /// reconnect through `bearer_auth_layer`; a revoked PAT gets 401/403 there.
+    /// It EXISTS FOR the PAT-revocation family in
+    /// `mgmt::{admin_pat, admin_team}` (#975) — that is its purpose,
+    /// deliberately not a caller list: re-derive the live list with
+    /// `rg -n 'evict_all_tenants' src/` rather than trusting prose here. The
+    /// sibling list on `evict_tenant` drifted three times, and the first draft
+    /// of THIS sentence claimed callers one commit before any existed.
+    ///
+    /// **"Host-wide" is a property of the REVOKED IDENTITY, never a default.**
+    /// An admin PAT spans every tenant its holder can see, and for an `owner`
+    /// or `admin` that is the host — but for a `member` the bearer CTE denies
+    /// the PAT on every tenant they do not own (`PAT_TENANT_DENIED`), so
+    /// evicting host-wide would close strangers' sockets. Since the #975 T2
+    /// review the four self-service `admin_pat.rs` sites — all reachable by a
+    /// `member`, none behind `require_owner_layer` — therefore route through
+    /// `mgmt::pat_evict::evict_pat_rooms_sockets`, which calls this method only
+    /// on the sees-all arm and loops [`RoomBus::evict_tenant`] otherwise.
+    /// Anything new that calls this must be able to say WHY the revoked
+    /// identity reaches the whole host; if the answer is "it is simpler", it
+    /// belongs behind `pat_evict` instead.
     ///
     /// Passive expiry (PAT `expires_at`, the session janitor) deliberately
     /// does NOT call this — same rule as session expiry (#952): no revoking

@@ -99,28 +99,21 @@ pub async fn reroll(
     // admin; the handler holds only the NEW hash. Scan-clear all cached
     // Bearer entries whose role is AdminPat { admin_id == caller_id }.
     s.auth_cache.clear_admin_pat(caller_id);
-    // #975 — the soft-revoked PATs may hold live rooms sockets host-wide (an
-    // admin PAT resolves to `AuthCtx::Service` on every tenant it can reach).
+    // #975 — the soft-revoked PATs may hold live rooms sockets on every tenant
+    // they could reach (an admin PAT resolves to `AuthCtx::Service` there).
     // Cache first, sockets second: the kicked client reconnects instantly and
     // must not be re-admitted from a stale cache entry.
     //
-    // Say the blunt part out loud, because it is the one site where the spec's
-    // "don't turn evict into a button anyone can press" rationale (§隔離與資安
-    // 不變量 4) does NOT bite: the other conditional sites got `n > 0` /
-    // `changed > 0` / demotion-only guards, but a reroll ALWAYS revokes
-    // something, so it always evicts — and `/admin/settings/token/reroll` sits
-    // in `settings_router`, which is authenticated but carries no
-    // `require_owner_layer`. So ANY logged-in admin, `member` included, can
-    // close every rooms socket on every tenant, repeatably, by rerolling their
-    // OWN PAT. Accepted by design (the user chose the blunt host-wide evict
-    // over a per-connection credential index): the cost is a reconnect herd,
-    // which the per-token limiter drains at ~6/s per token — it REJECTS the
-    // excess with 429, it does not absorb it — and the security direction is
-    // unaffected, since a throttled reconnect fails closed. Narrowing this
-    // means building the per-connection PAT registry that #975 deferred, not
-    // adding a role check here: a member rerolling their own key is a
-    // legitimate revocation and must still close that key's sockets.
-    s.bus_rooms.evict_all_tenants();
+    // The eviction SET is the caller's own PAT reach, not the host, and that
+    // matters most at THIS site: `/admin/settings/token/reroll` sits on
+    // `settings_router`, which is session-authenticated but carries no
+    // `require_owner_layer`, and a reroll always revokes something, so no
+    // `n > 0`-style guard gates it either. Host-wide here would let any
+    // logged-in admin — `member` included — close every rooms socket on every
+    // tenant, repeatably, by rerolling their OWN key. See
+    // `mgmt::pat_evict::pat_reach`: a sees-all admin still gets the host-wide
+    // evict, because that is genuinely their reach.
+    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller_id).await;
 
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
@@ -369,9 +362,12 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     };
     // hook (same class as reroll hook 2) — the old CLI PAT is soft-revoked.
     s.auth_cache.clear_admin_pat(caller.admin_id);
-    // #975 — the soft-revoked PAT may hold live rooms sockets host-wide.
-    // Same order as reroll: cache first, sockets second.
-    s.bus_rooms.evict_all_tenants();
+    // #975 — the soft-revoked PAT may hold live rooms sockets anywhere its
+    // admin can reach. Same order as reroll (cache first, sockets second) and
+    // the same reach-scoped set: this route is on the PUBLIC router and
+    // self-authenticates against the very PAT being rotated, so a `member`'s
+    // CLI could otherwise disconnect every tenant on the host at will.
+    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller.admin_id).await;
     emit_audit_revoke(caller.admin_id);
     emit_audit_mint(caller.admin_id);
 
@@ -418,8 +414,9 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         s.auth_cache.clear_admin_pat(caller.admin_id);
         // #975 — inside the `n > 0` arm on purpose: a logout that revoked
         // NOTHING has no stale credential to close, and evicting anyway would
-        // hand any authenticated admin a host-wide disconnect button.
-        s.bus_rooms.evict_all_tenants();
+        // kick subscribers for a no-op. The set is the caller's own PAT reach,
+        // so a `member` logout closes only their tenants' sockets.
+        crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller.admin_id).await;
         emit_audit_revoke(caller.admin_id);
     }
     Json(serde_json::json!({ "revoked": n > 0 })).into_response()
@@ -454,10 +451,11 @@ pub async fn cli_token_revoke(
     }
     s.auth_cache.clear_admin_pat(caller_id);
     // #975 — reached only when `changed > 0` (the `changed == 0` arm above has
-    // already returned 404), so a guessed token id cannot become a host-wide
-    // disconnect button. The revoked CLI PAT may hold live rooms sockets on
-    // any tenant.
-    s.bus_rooms.evict_all_tenants();
+    // already returned 404), so a guessed token id cannot become a disconnect
+    // button; and the set is the caller's own PAT reach, so even a real revoke
+    // by a `member` on this un-`require_owner_layer`ed router cannot reach a
+    // tenant they do not own.
+    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller_id).await;
     emit_audit_revoke(caller_id);
     Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
 }
