@@ -203,11 +203,19 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    **Since v1.65.1 the admin-PAT credential family evicts on the same rule** — PAT reroll,
    CLI refresh / logout / revoke, a reach-narrowing `change_role`, `remove_admin`, and tenant
    owner transfer — because an admin PAT resolves to `AuthCtx::Service` on the rooms socket.
-   The eviction SET is the revoked identity's REACH, decided in one place
-   (`mgmt::pat_evict`): host-wide (`evict_all_tenants`) only when
+   The eviction SET is the revoked identity's REACH, and like the rest of this list it is
+   enumerated per site, not delegated to one abstraction. The four self-service PAT routes
+   and `remove_admin` share `mgmt::pat_evict`: host-wide (`evict_all_tenants`) only when
    `tenant_authz::sees_all_tenants` holds, otherwise just the tenants that admin owns, which
    is exactly where the bearer CTE would have admitted the PAT; DB failure falls back
-   host-wide. Owner transfer stays a precise single-tenant evict. Passive expiry never evicts.
+   host-wide — `remove_admin` over a reach snapshot taken BEFORE its DELETE, because a
+   post-commit read cannot see the `admins` row and would fall back host-wide. `change_role`
+   deliberately does NOT route through that decision point: it decides inline on the
+   **pre-image** role, evicting host-wide on a sees-all → non-sees-all flip and doing nothing
+   otherwise. `pat_evict` reads the role LIVE, so calling it there would answer with the NEW,
+   narrower reach and leave the demoted PAT's foreign-tenant sockets open — the exact
+   under-evict this shape exists to prevent. Owner transfer stays a precise single-tenant
+   evict. Passive expiry never evicts.
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks

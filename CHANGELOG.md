@@ -15,15 +15,23 @@ flags, no new API, no schema change** — the same endpoints simply close what t
   existing `clear_admin_pat` — a kicked client reconnects instantly and must not be
   re-admitted from a cache entry the clear had not yet removed. Both the per-site order and
   the completeness of the site list are pinned structurally, tree-wide.
-- **The eviction SET is the revoked identity's reach, not the host (#975).** One decision
-  point, `mgmt::pat_evict`, reads `admins.role` and answers host-wide — the single new bus
-  method `RoomBus::evict_all_tenants`, which bumps EVERY tenant's epoch before dropping any
+- **The eviction SET is the revoked identity's reach, not the host (#975).** The four
+  self-service PAT routes and `remove_admin` share one decision point, `mgmt::pat_evict`: it
+  reads `admins.role` and answers host-wide — the single new bus method
+  `RoomBus::evict_all_tenants`, which bumps EVERY tenant's epoch before dropping any
   channel, the same ORDER LOAD-BEARING rule as `evict_tenant` and pinned the same way — only
   when `tenant_authz::sees_all_tenants` holds (`owner` | `admin`, the same predicate the
   bearer CTE's PAT arm now routes through, so the two cannot drift). For any other role the
   set is the tenants that admin OWNS, applied as precise per-tenant evicts: the CTE answers
-  `PAT_TENANT_DENIED` everywhere else, so those are the only tenants where that PAT could
-  ever have opened a socket, and evicting wider would close a stranger's. That scoping is
+  `PAT_TENANT_DENIED` everywhere else, so those are the tenants where that PAT can hold a
+  socket under its CURRENT role, and evicting wider would close a stranger's. The reach is
+  read LIVE, which is why `change_role` is the deliberate exception and evicts host-wide
+  inline off its PRE-IMAGE role instead: routed through the shared decision point it would
+  read the new, narrower role and skip exactly the foreign-tenant sockets a demotion has to
+  close. The same live read leaves one stated residual — a socket opened while the role was
+  still WIDER is outside the narrow set — and every in-tree narrowing path closes those
+  sockets at the moment it narrows, so only the out-of-process `set_admin_role` break-glass
+  (which evicts nothing at all) can leave one behind. That scoping is
   what keeps the four SELF-SERVICE PAT routes — none of which sits behind
   `require_owner_layer` — from handing the lowest-privilege admin role a repeatable
   cross-tenant disconnect lever by rerolling its own key. An unknown future role narrows (the

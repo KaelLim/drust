@@ -29,9 +29,11 @@
 //! - [`crate::mgmt::tenant_authz::tenant_access_for`] says the same thing on the
 //!   management plane.
 //!
-//! So for a non-sees-all admin the set of tenants where that PAT could ever have
-//! opened a socket IS the set of tenants they own — every other tenant's socket
-//! belongs to somebody else, and closing it evicts a stranger. For a sees-all
+//! So for a non-sees-all admin the set of tenants where that PAT can hold a
+//! socket under its CURRENT role IS the set of tenants they own — every other
+//! tenant's socket belongs to somebody else, and closing it evicts a stranger.
+//! ("Current", not "ever": the reach is read live — see the residual below.)
+//! For a sees-all
 //! admin (`owner` / `admin`) the reach genuinely is the host, and
 //! [`RoomBus::evict_all_tenants`](crate::tenant::rooms::RoomBus::evict_all_tenants)
 //! stays exactly right. No per-connection credential index is needed for either
