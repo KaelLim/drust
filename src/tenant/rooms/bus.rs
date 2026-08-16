@@ -617,6 +617,20 @@ mod tests {
 
     /// #975 — same ORDER LOAD-BEARING rule as evict_tenant, host-wide form.
     /// Behaviourally invisible (measured in #955), so pinned structurally.
+    ///
+    /// The pin verifies TWO things, and the second half is not decoration.
+    /// A first cut asserted only "the `epochs.iter` loop precedes
+    /// `self.channels.clear();`" and a spec reviewer MEASURED it failing
+    /// open: inserting `self.channels.retain(|_, v| v.is_empty());` as the
+    /// FIRST statement — a genuine channel teardown running before any epoch
+    /// is bumped, exactly the inversion this pin exists to catch — left
+    /// `cargo test --lib rooms::bus` at 16 passed / 0 failed, because the
+    /// ordering pair it compared was still in order and the behavioural test
+    /// cannot see ordering at all. So the second assertion is written over
+    /// the RECEIVER (`self.channels`), not over one spelling of the
+    /// teardown: no channels operation of ANY shape may appear before the
+    /// bump loop. Needles run against [`srcpin::code_only`], so a commented
+    /// mention cannot satisfy or trip either half.
     #[test]
     fn evict_all_tenants_bumps_epochs_before_clearing_channels() {
         const FN_HEAD: &str = "pub fn evict_all_tenants(&self) {";
@@ -634,16 +648,23 @@ mod tests {
         let bump_loop = body
             .find("for entry in self.epochs.iter()")
             .expect("evict_all_tenants must iterate every epoch entry");
-        assert!(
-            body.contains("fetch_add(1, SeqCst)"),
-            "the loop must actually bump each epoch"
-        );
+        let bump = body
+            .find("fetch_add(1, SeqCst)")
+            .expect("the loop must actually bump each epoch");
         let teardown = body
             .find("self.channels.clear();")
             .expect("evict_all_tenants must clear all channels");
         assert!(
-            bump_loop < teardown,
-            "ORDER LOAD-BEARING (#975): every epoch must be bumped BEFORE the teardown"
+            bump_loop < bump && bump < teardown,
+            "ORDER LOAD-BEARING (#975): every epoch must be bumped BEFORE the teardown",
+        );
+        assert_eq!(
+            body[..bump_loop].find("self.channels"),
+            None,
+            "ORDER LOAD-BEARING (#975): NOTHING may touch self.channels before the bump \
+             loop — any teardown shape there (clear/remove/retain/…) drops channels while \
+             some tenant's epoch is still stale, which is the very inversion this pin \
+             exists to catch and which no behavioural test can observe",
         );
     }
 
