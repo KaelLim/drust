@@ -8,11 +8,21 @@
 //!
 //! NOTE (out-of-process, codex-review): this CLI writes `admins.role` directly
 //! in `meta.sqlite` and cannot reach the RUNNING server's PAT auth-cache, so a
-//! demotion here (e.g. admin→member) takes effect on the data plane within the
-//! auth-cache's 10 s safety TTL, not instantly — same bound as any other
-//! out-of-process credential change. The in-process HTTP path
-//! (`PATCH /admin/team/{id}/role`) evicts immediately. For an instant effect,
-//! prefer the admin UI / API; use this break-glass tool for recovery.
+//! demotion here (e.g. admin→member) takes effect on the data plane — for NEW
+//! requests — within the auth-cache's 10 s safety TTL, not instantly.
+//!
+//! The 10 s bound does NOT cover live rooms WS sockets (v1.65.1, codex
+//! review): a socket already open under the demoted PAT keeps its captured
+//! `AuthCtx::Service` until something bumps the rooms epoch, and this
+//! out-of-process tool cannot evict (no IPC into `RoomBus`). After a live
+//! demotion through this tool, either restart the drust service or make any
+//! in-process revocation that evicts (e.g. reroll the demoted admin's PATs
+//! via the API — but note `mgmt::pat_evict` reads the role LIVE, so after the
+//! demotion it answers the NEW narrow reach; the reroll then closes only
+//! owned-tenant sockets, and a restart is the only complete containment).
+//! The in-process HTTP path (`PATCH /admin/team/{id}/role`) both takes effect
+//! immediately AND closes the demoted admin's sockets — prefer it whenever
+//! the server is reachable; use this break-glass tool for recovery only.
 
 use rusqlite::params;
 use std::path::PathBuf;
