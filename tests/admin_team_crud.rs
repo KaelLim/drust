@@ -352,14 +352,64 @@ async fn lateral_role_move_inside_sees_all_does_not_evict() {
     );
 }
 
-/// #975 — `remove_admin` cascade-DELETEs the removed admin's `_admin_tokens`,
-/// so every socket those PATs opened is now credential-less. Unconditional
-/// host-wide evict.
+/// Insert a tenant row owned by `owner_admin_id` directly into meta, so a test
+/// can give a `member` admin a concrete rooms reach.
+fn insert_tenant(dir: &tempfile::TempDir, tenant_id: &str, owner_admin_id: i64) {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, ?1, ?2)",
+        params![tenant_id, owner_admin_id],
+    )
+    .unwrap();
+}
+
+/// #975 — `remove_admin`'s eviction is scoped to the REMOVED identity's reach
+/// (the bus.rs "host-wide is a property of the revoked identity" rule): a
+/// `member`'s PATs could only ever hold sockets on tenants they OWN (the
+/// bearer CTE answers `PAT_TENANT_DENIED` everywhere else), so removing one
+/// closes exactly those — a stranger's tenant must not blink.
 #[tokio::test]
-async fn remove_admin_evicts_live_rooms_sockets_host_wide() {
+async fn remove_admin_of_a_member_evicts_only_their_owned_tenants() {
     let (app, dir, bus) = spin_up_with_bus().await;
     let owner_cookie = login(&app, "root", "hunter2").await;
     let (alice_id, _) = insert_admin(&dir, "alice-remove@example.com", "member");
+    insert_tenant(&dir, "t-owned-by-alice", alice_id);
+    let ha = bus.tenant_epoch_handle("t-owned-by-alice");
+    let hb = bus.tenant_epoch_handle("t-foreign");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/team/{alice_id}"))
+                .header(header::COOKIE, &owner_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "remove should return 200");
+
+    assert_eq!(
+        ha.load(SeqCst),
+        1,
+        "the removed member's owned tenant must evict"
+    );
+    assert_eq!(
+        hb.load(SeqCst),
+        0,
+        "a tenant the removed member never reached must NOT evict"
+    );
+}
+
+/// #975 — other direction: a sees-all (`admin`) removal genuinely reaches the
+/// host, so the evict is host-wide.
+#[tokio::test]
+async fn remove_admin_of_a_sees_all_admin_evicts_host_wide() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (alice_id, _) = insert_admin(&dir, "alice-remove-admin@example.com", "admin");
     let ha = bus.tenant_epoch_handle("t-a");
     let hb = bus.tenant_epoch_handle("t-b");
 
@@ -377,8 +427,16 @@ async fn remove_admin_evicts_live_rooms_sockets_host_wide() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "remove should return 200");
 
-    assert_eq!(ha.load(SeqCst), 1, "removal must evict (tenant t-a)");
-    assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
+    assert_eq!(
+        ha.load(SeqCst),
+        1,
+        "sees-all removal must evict (tenant t-a)"
+    );
+    assert_eq!(
+        hb.load(SeqCst),
+        1,
+        "sees-all removal is host-wide (tenant t-b)"
+    );
 }
 
 #[tokio::test]

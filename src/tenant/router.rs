@@ -718,8 +718,14 @@ SELECT \
                 // member PAT is scoped to owned tenants only. The v1.50 comment
                 // anticipated this exact widening ("deny unless owner-or-owns");
                 // the fail-closed shape is preserved.
-                let pat_sees_all =
-                    matches!(pat_admin_role.as_deref(), Some("owner") | Some("admin"));
+                // Routed through the ONE role predicate (invariant 7) rather
+                // than a literal role list: `mgmt::pat_evict` derives a PAT's
+                // rooms-eviction set from `sees_all_tenants` on the SAME
+                // column, so a role added here but not there would under-evict
+                // — the security direction. One predicate, no drift.
+                let pat_sees_all = pat_admin_role
+                    .as_deref()
+                    .is_some_and(crate::mgmt::tenant_authz::sees_all_tenants);
                 if !(pat_sees_all || tenant_owner_admin_id == Some(admin_id)) {
                     crate::mgmt::metrics::metrics()
                         .bearer_denied_total

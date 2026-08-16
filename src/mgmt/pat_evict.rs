@@ -50,7 +50,7 @@
 //! The reach is read live, so a socket opened under a WIDER past role is outside
 //! the narrow set. Every in-tree path that narrows a role closes those sockets
 //! itself at the moment it narrows them (`admin_team::change_role` evicts
-//! host-wide on a sees-all → member flip; `remove_admin` unconditionally;
+//! host-wide on a sees-all → member flip; `remove_admin` over the pre-image reach it snapshots before its DELETE;
 //! `tenant_settings::patch_tenant_owner` for the one tenant that moved), so the
 //! gap needs the OUT-OF-PROCESS break-glass `set_admin_role` binary, which
 //! evicts nothing at all today and leaves those sockets live regardless of what
@@ -132,7 +132,17 @@ pub(crate) fn read_pat_reach(conn: &Connection, admin_id: i64) -> PatReach {
 /// Must also be called after the handler's own DB work has committed and its
 /// `meta` guard has dropped — this takes the `meta` lock itself.
 pub(crate) async fn evict_pat_rooms_sockets(s: &MgmtState, admin_id: i64) {
-    match pat_reach(&s.meta, admin_id).await {
+    let reach = pat_reach(&s.meta, admin_id).await;
+    evict_reach(s, reach);
+}
+
+/// Apply an already-decided [`PatReach`]. Split out for the caller that must
+/// read the reach BEFORE destroying the rows it is derived from —
+/// `admin_team::remove_admin`: its `DELETE FROM admins` fires the FK
+/// `ON DELETE SET NULL` on `tenants.owner_admin_id`, so a post-commit
+/// `read_pat_reach` would answer `Owned([])` and evict nothing.
+pub(crate) fn evict_reach(s: &MgmtState, reach: PatReach) {
+    match reach {
         PatReach::HostWide => s.bus_rooms.evict_all_tenants(),
         PatReach::Owned(ids) => {
             // `evict_tenant` is an INSERTING call on the never-reclaimed
@@ -140,6 +150,13 @@ pub(crate) async fn evict_pat_rooms_sockets(s: &MgmtState, admin_id: i64) {
             // id first. These ids come straight out of `tenants`, so the key
             // space stays bounded by the tenant table — no caller-supplied
             // string reaches it.
+            //
+            // Per-tenant interleaving (tenant A's channel teardown landing
+            // before tenant B's epoch bump) is fine HERE even though
+            // `evict_all_tenants` refuses that shape for the host-wide set: a
+            // WS socket checkpoints only its OWN tenant's epoch, and each
+            // `evict_tenant` is internally bump-then-teardown (structurally
+            // pinned), so the stale-epoch window never spans tenants.
             for id in &ids {
                 s.bus_rooms.evict_tenant(id);
             }

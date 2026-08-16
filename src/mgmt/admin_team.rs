@@ -747,7 +747,15 @@ pub async fn remove_admin(
     }
 
     // All DB work inside a single sync block before any .await.
-    let db_result: Result<(String, Option<String>, Option<String>), Response> = {
+    let db_result: Result<
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            crate::mgmt::pat_evict::PatReach,
+        ),
+        Response,
+    > = {
         let conn = s.meta.lock().await;
 
         // Snapshot target role + email BEFORE the DELETE so the audit row
@@ -763,6 +771,13 @@ pub async fn remove_admin(
             Some(s) => s,
             None => return json_error(StatusCode::NOT_FOUND, "ADMIN_NOT_FOUND", "admin not found"),
         };
+
+        // #975 — snapshot the removed identity's rooms reach BEFORE the
+        // DELETE: the FK `ON DELETE SET NULL` orphans `tenants.owner_admin_id`
+        // at DELETE time, so an after-the-fact read would answer `Owned([])`
+        // and evict nothing. Same meta lock, so nothing can widen the reach
+        // between this read and the commit.
+        let target_reach = crate::mgmt::pat_evict::read_pat_reach(&conn, target_id);
 
         // v1.57 privileged gate: removing a row that HOLDS an owner|admin role is
         // owner-only. An admin (team manager) may only remove member rows. Placed
@@ -883,11 +898,11 @@ pub async fn remove_admin(
             )
             .ok();
 
-        Ok((target_role, target_email, caller_email))
+        Ok((target_role, target_email, caller_email, target_reach))
         // conn guard drops here — before any .await
     };
 
-    let (removed_role, removed_email, caller_email) = match db_result {
+    let (removed_role, removed_email, caller_email, removed_reach) = match db_result {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -899,10 +914,13 @@ pub async fn remove_admin(
     // immediately, not after the 10s safety TTL. Mirrors hook 2 (admin_pat.rs).
     s.auth_cache.clear_admin_pat(target_id);
 
-    // #975 — those cascade-deleted PATs may still hold live rooms sockets on
-    // any tenant; close them host-wide. Unconditional: reaching here means the
-    // admin row is gone, so every PAT of theirs is gone with it.
-    s.bus_rooms.evict_all_tenants();
+    // #975 — those cascade-deleted PATs may still hold live rooms sockets;
+    // close exactly what the removed identity could reach (bus.rs rule:
+    // "host-wide is a property of the REVOKED IDENTITY, never a default").
+    // A sees-all removal closes the host; a member removal closes only the
+    // tenants they owned — every other tenant's socket belongs to a stranger.
+    // The reach was snapshotted pre-DELETE (see above).
+    crate::mgmt::pat_evict::evict_reach(&s, removed_reach);
 
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.remove", 0);

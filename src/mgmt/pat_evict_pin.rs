@@ -97,10 +97,20 @@ const CLEAR: &str = "clear_admin_pat(";
 ///   obligation — clear the cache before you close the sockets — is unchanged,
 ///   which is why it is still what this pin measures.
 ///
-/// A site satisfies the pin with EITHER. Both are counted for completeness, so
-/// moving a site from one spelling to the other stays accounted for and
-/// deleting the call entirely still fails closed.
-const EVICTS: &[&str] = &["bus_rooms.evict", "pat_evict::evict_pat_rooms_sockets("];
+/// - `pat_evict::evict_reach(` — the pre-image variant of the same decision,
+///   for a site that must read the reach BEFORE destroying the rows it derives
+///   from (`remove_admin`: the FK `ON DELETE SET NULL` orphans
+///   `tenants.owner_admin_id` at DELETE time, so the live read would answer
+///   `Owned([])` after the fact and evict nothing).
+///
+/// A site satisfies the pin with ANY spelling. All are counted for
+/// completeness, so moving a site from one spelling to another stays accounted
+/// for and deleting the call entirely still fails closed.
+const EVICTS: &[&str] = &[
+    "bus_rooms.evict",
+    "pat_evict::evict_pat_rooms_sockets(",
+    "pat_evict::evict_reach(",
+];
 
 /// Human-readable form of [`EVICTS`] for failure messages.
 fn evicts_display() -> String {
