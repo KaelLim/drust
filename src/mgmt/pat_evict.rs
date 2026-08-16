@@ -138,9 +138,11 @@ pub(crate) async fn evict_pat_rooms_sockets(s: &MgmtState, admin_id: i64) {
 
 /// Apply an already-decided [`PatReach`]. Split out for the caller that must
 /// read the reach BEFORE destroying the rows it is derived from —
-/// `admin_team::remove_admin`: its `DELETE FROM admins` fires the FK
-/// `ON DELETE SET NULL` on `tenants.owner_admin_id`, so a post-commit
-/// `read_pat_reach` would answer `Owned([])` and evict nothing.
+/// `admin_team::remove_admin`: once its `DELETE FROM admins` commits,
+/// [`read_pat_reach`] cannot see the row, and the fail-direction fallback
+/// answers `HostWide` — so a post-commit read would OVER-evict every tenant
+/// for a mere member removal. The pre-image snapshot is what keeps that
+/// removal scoped to the tenants the member actually owned.
 pub(crate) fn evict_reach(s: &MgmtState, reach: PatReach) {
     match reach {
         PatReach::HostWide => s.bus_rooms.evict_all_tenants(),

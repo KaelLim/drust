@@ -773,10 +773,15 @@ pub async fn remove_admin(
         };
 
         // #975 — snapshot the removed identity's rooms reach BEFORE the
-        // DELETE: the FK `ON DELETE SET NULL` orphans `tenants.owner_admin_id`
-        // at DELETE time, so an after-the-fact read would answer `Owned([])`
-        // and evict nothing. Same meta lock, so nothing can widen the reach
-        // between this read and the commit.
+        // DELETE. A post-commit `read_pat_reach` cannot see the `admins` row
+        // at all (its role query fails first, so the FK-orphaned
+        // `tenants.owner_admin_id` is never even consulted), and the helper's
+        // fail direction turns that into `HostWide` — i.e. a member removal
+        // would OVER-evict every tenant on the host, the exact availability
+        // defect the reach-scoping exists to remove (measured: moving this
+        // read after `tx.commit()` turns the foreign-tenant assertion red).
+        // Same meta lock, so nothing can widen the reach between this read
+        // and the commit.
         let target_reach = crate::mgmt::pat_evict::read_pat_reach(&conn, target_id);
 
         // v1.57 privileged gate: removing a row that HOLDS an owner|admin role is

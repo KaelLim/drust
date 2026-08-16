@@ -192,15 +192,17 @@ impl RoomBus {
     ///   changed hands, so only its sockets are stale. Same real-change rule as
     ///   the publish-policy PATCH — re-submitting the current owner does
     ///   nothing;
-    /// - `mgmt::pat_evict::evict_pat_rooms_sockets` (#975 T2 review) — the
+    /// - `mgmt::pat_evict::evict_reach` (#975 T2 review + arbitration) — the
     ///   NARROW arm of the admin-PAT revocation family, looping over the
     ///   tenants a non-sees-all admin OWNS. Its other arm is
     ///   [`RoomBus::evict_all_tenants`], taken when the revoked admin's role
-    ///   really is cross-tenant. This is one call site serving four handlers
-    ///   (`reroll`, `cli_token_refresh`, `cli_token_logout`,
-    ///   `cli_token_revoke`), which is the point: those four are reachable by a
-    ///   `member`, so a host-wide evict there was a disconnect button anyone
-    ///   could press.
+    ///   really is cross-tenant. This is one call site serving five handlers:
+    ///   the four self-service PAT sites (`reroll`, `cli_token_refresh`,
+    ///   `cli_token_logout`, `cli_token_revoke`) via the live-read delegator
+    ///   `evict_pat_rooms_sockets`, plus `remove_admin` via its pre-DELETE
+    ///   reach snapshot. The scoping is the point: the four self-service
+    ///   sites are reachable by a `member`, so a host-wide evict there was a
+    ///   disconnect button anyone could press.
     ///
     /// The two publish-policy faces are one station with two doors, and both
     /// must evict: a live WS connection captures its `TenantPublishPolicy`

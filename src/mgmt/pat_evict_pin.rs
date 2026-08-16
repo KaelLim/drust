@@ -84,7 +84,7 @@ const CLEAR: &str = "clear_admin_pat(";
 
 /// The rooms eviction, in every spelling a site may legitimately use.
 ///
-/// Two, because the eviction SET is not the same at every site:
+/// Three, because the eviction SET is not the same at every site:
 ///
 /// - `bus_rooms.evict` — the direct bus call. Covers both variants
 ///   (`evict_all_tenants()` where the revoked identity's reach genuinely is the
@@ -99,9 +99,9 @@ const CLEAR: &str = "clear_admin_pat(";
 ///
 /// - `pat_evict::evict_reach(` — the pre-image variant of the same decision,
 ///   for a site that must read the reach BEFORE destroying the rows it derives
-///   from (`remove_admin`: the FK `ON DELETE SET NULL` orphans
-///   `tenants.owner_admin_id` at DELETE time, so the live read would answer
-///   `Owned([])` after the fact and evict nothing).
+///   from (`remove_admin`: after its DELETE commits, the live read cannot see
+///   the `admins` row and falls back to `HostWide`, so it would OVER-evict the
+///   whole host for a member removal).
 ///
 /// A site satisfies the pin with ANY spelling. All are counted for
 /// completeness, so moving a site from one spelling to another stays accounted
