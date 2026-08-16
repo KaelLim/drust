@@ -562,37 +562,12 @@ mod tests {
         );
     }
 
-    /// Slice out ONE PRODUCTION function's comment-stripped body text.
-    ///
-    /// The `#[cfg(test)]` split is the load-bearing part, not tidiness.
-    /// [`srcpin::code_only`] preserves string literals verbatim (documented
-    /// and tested in `srcpin.rs`), so every pin's own `FN_HEAD` constant is a
-    /// SECOND occurrence of that signature in the stripped source. Searching
-    /// the whole file therefore made the `"signature changed"` expect
-    /// UNFIREABLE — a review MEASURED it: renaming the production
-    /// `pub fn evict_all_tenants` to `pub(crate) fn` AND fully inverting its
-    /// body (`channels.clear()` hoisted above the bump loop — the mutant that
-    /// goes RED on an untouched tree) left `cargo test --lib rooms::bus` at
-    /// 16 passed / 0 failed, because `find` had re-anchored on the test's own
-    /// literal and the pin then validated the TEST function's source.
-    /// Searching only the pre-`#[cfg(test)]` half makes a rename fail CLOSED.
-    fn prod_fn_body<'a>(stripped: &'a str, head: &str) -> &'a str {
-        let prod = stripped
-            .split("#[cfg(test)]")
-            .next()
-            .expect("split always yields at least one segment");
-        let start = prod.find(head).unwrap_or_else(|| {
-            panic!(
-                "`{head}` not found in the production half of bus.rs — the signature changed \
-                 (or the fn moved below `#[cfg(test)]`); update this structural pin"
-            )
-        });
-        let rest = &prod[start..];
-        let end = rest
-            .find("\n    }\n")
-            .unwrap_or_else(|| panic!("could not find the end of the body of `{head}`"));
-        &rest[..end]
-    }
+    /// Slices one production function's comment-stripped body out of this
+    /// file. Moved to `srcpin` in #975 T2 so the PAT-revocation site pins
+    /// (`crate::mgmt::pat_evict_pin`) share it instead of copying it; the
+    /// `#[cfg(test)]`-half rationale that makes it load-bearing lives on
+    /// [`srcpin::production_half`].
+    use crate::tenant::rooms::srcpin::prod_fn_body;
 
     /// #955 (quality review round 3) — the bump-before-teardown ordering
     /// inside `evict_tenant` is a stated invariant (spec §隔離與資安不變量

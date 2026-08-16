@@ -1,12 +1,15 @@
-//! Test-only source scanner for the rooms STRUCTURAL PINS (#955).
+//! Test-only source scanner for the STRUCTURAL PINS (#955, #975).
 //!
-//! Two invariants in this module are pinned by reading their own function's
+//! Several ordering invariants are pinned by reading their own function's
 //! source text, because no behavioural test can see them:
-//! `bus::evict_tenant_bumps_epoch_before_dropping_channels` (the epoch bump
-//! must precede the channel teardown) and
+//! `bus::evict_tenant_bumps_epoch_before_dropping_channels` and its host-wide
+//! sibling (the epoch bump(s) must precede the channel teardown),
 //! `ws::epoch_checkpoints_sit_before_dispatch_and_on_the_keepalive_tick` (the
 //! eviction baseline is captured once pre-upgrade, and each checkpoint breaks
-//! the conn loop).
+//! the conn loop), and `crate::mgmt::pat_evict_pin` (every PAT-revocation site
+//! clears the auth cache BEFORE it evicts rooms sockets). The last one lives
+//! outside `rooms`, which is why [`code_only`], [`production_half`] and
+//! [`prod_fn_body`] are `pub(crate)` rather than private to this module.
 //!
 //! Both pins matched needles against RAW source, which makes a COMMENT a
 //! hiding place. Measured on this branch, all three green with the feature
@@ -114,6 +117,67 @@ pub(crate) fn code_only(src: &str) -> String {
     // Only ASCII comment bytes were replaced (by ASCII spaces); every other
     // byte was copied verbatim, so UTF-8 boundaries are preserved.
     String::from_utf8(out).expect("code_only preserves UTF-8 boundaries")
+}
+
+/// The half of a stripped source file that is NOT `#[cfg(test)]`.
+///
+/// Load-bearing, not tidiness. [`code_only`] preserves string literals
+/// verbatim, so every pin's own needle constants are a SECOND occurrence of
+/// the text they search for. A pin that scanned the whole file therefore had
+/// an UNFIREABLE "signature changed" expect — a #975 T1 review MEASURED it:
+/// renaming the production `pub fn evict_all_tenants` to `pub(crate) fn` AND
+/// fully inverting its body left `cargo test --lib rooms::bus` at 16 passed /
+/// 0 failed, because `find` had re-anchored on the test's own literal and the
+/// pin then validated the TEST function's source. Cutting the test half off
+/// first makes a rename fail CLOSED.
+pub(crate) fn production_half(stripped: &str) -> &str {
+    stripped
+        .split("#[cfg(test)]")
+        .next()
+        .expect("split always yields at least one segment")
+}
+
+/// Slice out ONE PRODUCTION function's comment-stripped body text.
+///
+/// `head` is matched against [`production_half`] and must be UNIQUE there —
+/// a head that matches twice cannot say which function the pin anchored on,
+/// so it panics rather than picking the first.
+pub(crate) fn prod_fn_body<'a>(stripped: &'a str, head: &str) -> &'a str {
+    let prod = production_half(stripped);
+    let start = prod.find(head).unwrap_or_else(|| {
+        panic!(
+            "`{head}` not found in the production half of the pinned file — the signature \
+             changed (or the fn moved below `#[cfg(test)]`); update this structural pin"
+        )
+    });
+    assert!(
+        !prod[start + head.len()..].contains(head),
+        "`{head}` occurs more than once in the production half — a structural pin cannot tell \
+         which of them it anchored on; make the head unique or split the pin"
+    );
+
+    // The closing brace sits at the head's OWN indentation, so derive the
+    // terminator rather than taking it as a parameter. The two failure
+    // directions are not symmetric: a method marker (`\n    }\n`) used on a
+    // top-level fn cuts the body short — fail CLOSED, a visible panic — but a
+    // top-level marker (`\n}\n`) used on a method runs past the fn to the end
+    // of its `impl` block and silently pins the wrong text. Deriving removes
+    // the fail-OPEN direction, which is the whole failure class these pins
+    // exist to close.
+    let line_start = prod[..start].rfind('\n').map_or(0, |nl| nl + 1);
+    let indent = &prod[line_start..start];
+    assert!(
+        indent.bytes().all(|b| b == b' '),
+        "the pinned head `{head}` must start its own line, but the text before it on that \
+         line was {indent:?}"
+    );
+    let terminator = format!("\n{indent}}}\n");
+
+    let rest = &prod[start..];
+    let end = rest
+        .find(&terminator)
+        .unwrap_or_else(|| panic!("could not find the end of the body of `{head}`"));
+    &rest[..end]
 }
 
 fn is_ident_byte(b: &[u8], i: usize) -> bool {

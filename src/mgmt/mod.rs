@@ -16,6 +16,10 @@ pub mod i18n;
 pub mod locale_layer;
 pub mod metrics;
 pub mod oauth_login;
+/// Test-only: the #975 structural pin over the PAT-revocation sites'
+/// `clear_admin_pat` → `bus_rooms.evict` ordering. Not a runtime module.
+#[cfg(test)]
+mod pat_evict_pin;
 pub mod public_files;
 pub mod quota_admin;
 pub mod request_janitor;
