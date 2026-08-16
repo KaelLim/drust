@@ -15,9 +15,11 @@ use drust::auth::admin_token::{generate_cli_token, hash_token};
 use drust::mgmt::routes::MgmtState;
 use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::meta::{bootstrap_admin, open_meta};
+use drust::tenant::rooms::RoomBus;
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::SeqCst;
 use tempfile::{TempDir, tempdir};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -50,6 +52,14 @@ fn build_state(conn: rusqlite::Connection, data_dir: PathBuf, log_dir: PathBuf) 
 /// Production order (bootstrap_admin → run_migrations) so the backfill loop
 /// mints admin 1's unlabeled UI PAT (with plaintext) — `ui_pat_of` reads it.
 async fn spin_up() -> (axum::Router, TempDir) {
+    let (app, dir, _bus) = spin_up_with_bus().await;
+    (app, dir)
+}
+
+/// #975 — same router, plus the SHARED `RoomBus` the CLI-PAT lifecycle
+/// handlers evict through, so a test can observe a tenant's eviction epoch
+/// across a REST call.
+async fn spin_up_with_bus() -> (axum::Router, TempDir, RoomBus) {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -58,8 +68,9 @@ async fn spin_up() -> (axum::Router, TempDir) {
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     let state = build_state(conn, data_dir.clone(), log_dir);
+    let bus_rooms = state.bus_rooms.clone();
     let app = state.with_data_dir(data_dir);
-    (app, dir)
+    (app, dir, bus_rooms)
 }
 
 fn open_meta_ro(dir: &TempDir) -> Connection {
@@ -238,6 +249,26 @@ async fn concurrent_refresh_replay_never_mints_a_second_active_pat() {
     );
 }
 
+/// #975 — refresh soft-revokes the OLD CLI PAT, which resolves to
+/// `AuthCtx::Service` on every tenant its admin can see and may be holding
+/// live rooms WS sockets anywhere. Host-wide evict, same as reroll.
+#[tokio::test]
+async fn refresh_evicts_live_rooms_sockets_host_wide() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (_, old_cli) = seed_cli_pat(&dir, "cli:laptop");
+    let ha = bus.tenant_epoch_handle("t-a");
+    let hb = bus.tenant_epoch_handle("t-b");
+
+    let resp = app
+        .oneshot(post_bearer("/auth/cli/token/refresh", &old_cli))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(ha.load(SeqCst), 1, "refresh must evict (tenant t-a)");
+    assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
+}
+
 #[tokio::test]
 async fn refresh_refuses_the_unlabeled_ui_pat() {
     let (app, dir) = spin_up().await;
@@ -363,6 +394,64 @@ async fn logout_with_ui_pat_reports_not_revoked_and_leaves_it_active() {
     assert!(!is_revoked(&open_meta_ro(&dir), &hash_of(&ui_pat)));
 }
 
+/// #975 — a logout that actually revoked something (`n > 0`) must close the
+/// revoked PAT's live rooms sockets host-wide.
+#[tokio::test]
+async fn logout_evicts_live_rooms_sockets_host_wide() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (_admin_id, cli) = seed_cli_pat(&dir, "cli:laptop");
+    let ha = bus.tenant_epoch_handle("t-a");
+    let hb = bus.tenant_epoch_handle("t-b");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(ha.load(SeqCst), 1, "logout must evict (tenant t-a)");
+    assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
+}
+
+/// #975, the other direction — a logout that revoked NOTHING (`n == 0`; here
+/// the unlabeled UI PAT, which the `label IS NOT NULL` scope excludes) must
+/// NOT evict. Nothing was revoked, so there is no stale credential to close,
+/// and evicting anyway would hand any authenticated admin a host-wide
+/// disconnect button (spec §隔離與資安不變量 4, the "真變才 evict" rule).
+#[tokio::test]
+async fn logout_with_nothing_to_revoke_does_not_evict() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (_admin_id, ui_pat) = ui_pat_of(&dir);
+    let ha = bus.tenant_epoch_handle("t-a");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {ui_pat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["revoked"], serde_json::json!(false));
+
+    assert_eq!(
+        ha.load(SeqCst),
+        0,
+        "a no-op logout must not kick anyone's sockets"
+    );
+}
+
 // ─── T7 helpers (cookie-gated admin-UI revoke) ────────────────────────────────
 
 /// Insert an admin directly + create a session. Returns `(admin_id, cookie)`.
@@ -452,6 +541,64 @@ async fn ui_revoke_cannot_touch_another_admins_token_or_the_ui_pat() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND); // CLI_TOKEN_NOT_FOUND, fail-closed
     assert!(!row_is_revoked(&open_meta_ro(&dir), other));
+}
+
+/// #975 — the admin-UI per-row revoke kills a CLI PAT that may hold live rooms
+/// sockets on any tenant; evict host-wide.
+#[tokio::test]
+async fn ui_revoke_evicts_live_rooms_sockets_host_wide() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (admin_id, session) = insert_admin(&dir, "kael-evict@x", "owner");
+    let id = seed_cli_pat_for(&dir, admin_id, "cli:laptop");
+    let ha = bus.tenant_epoch_handle("t-a");
+    let hb = bus.tenant_epoch_handle("t-b");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{id}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    assert_eq!(ha.load(SeqCst), 1, "ui revoke must evict (tenant t-a)");
+    assert_eq!(hb.load(SeqCst), 1, "evict must be host-wide (tenant t-b)");
+}
+
+/// #975, the other direction — a revoke that matched no row 404s before the
+/// clear/evict pair, so it must not bump anything. Otherwise a guessed token
+/// id becomes a host-wide disconnect button.
+#[tokio::test]
+async fn ui_revoke_that_matches_no_row_does_not_evict() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (_a, session) = insert_admin(&dir, "a-evict@x", "owner");
+    let (b_id, _) = insert_admin(&dir, "b-evict@x", "member");
+    let other = seed_cli_pat_for(&dir, b_id, "cli:other"); // belongs to admin B
+    let ha = bus.tenant_epoch_handle("t-a");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{other}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        ha.load(SeqCst),
+        0,
+        "a revoke that changed nothing must not kick anyone's sockets"
+    );
 }
 
 // ─── T7 — settings page lists labeled CLI tokens ──────────────────────────────

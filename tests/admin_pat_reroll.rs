@@ -10,9 +10,11 @@ use axum::http::{Request, StatusCode, header};
 use drust::mgmt::routes::MgmtState;
 use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use drust::storage::meta::{bootstrap_admin, open_meta};
+use drust::tenant::rooms::RoomBus;
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::SeqCst;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -42,6 +44,13 @@ fn build_state(conn: rusqlite::Connection, data_dir: PathBuf, log_dir: PathBuf) 
 
 /// Spin up a mgmt router with one bootstrapped owner admin ("root" / "hunter2").
 async fn spin_up() -> (axum::Router, tempfile::TempDir) {
+    let (router, dir, _bus) = spin_up_with_bus().await;
+    (router, dir)
+}
+
+/// #975 — same router, plus the SHARED `RoomBus` the handlers evict through,
+/// so a test can observe a tenant's eviction epoch across a REST call.
+async fn spin_up_with_bus() -> (axum::Router, tempfile::TempDir, RoomBus) {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -52,8 +61,9 @@ async fn spin_up() -> (axum::Router, tempfile::TempDir) {
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     bootstrap_admin(&mut conn, "root", "hunter2").unwrap();
     let state = build_state(conn, data_dir.clone(), log_dir);
+    let bus_rooms = state.bus_rooms.clone();
     let router = state.with_data_dir(data_dir);
-    (router, dir)
+    (router, dir, bus_rooms)
 }
 
 /// Insert an admin directly + create a session.  Returns `(admin_id, cookie_string)`.
@@ -175,6 +185,48 @@ async fn reroll_returns_plaintext_and_revokes_previous() {
         )
         .unwrap();
     assert!(revoked_count >= 1, "at least one revoked row must exist");
+}
+
+/// #975 — the bulk reroll soft-revokes every unlabeled PAT of this admin, and
+/// an admin PAT resolves to `AuthCtx::Service` on ANY tenant it can see, so the
+/// revoked credential may be holding live rooms WS sockets anywhere on the
+/// host. The reroll must bump EVERY tenant's eviction epoch, not one tenant's:
+/// a socket only closes at its next checkpoint if its own tenant's epoch moved.
+#[tokio::test]
+async fn reroll_evicts_live_rooms_sockets_host_wide() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (_admin_id, session) = insert_admin(&dir, "kael-evict@x", "member");
+
+    // Two unrelated tenants each hold an epoch handle, exactly the way
+    // `ws_handler` takes its baseline before upgrading a socket.
+    let ha = bus.tenant_epoch_handle("t-a");
+    let hb = bus.tenant_epoch_handle("t-b");
+    assert_eq!(ha.load(SeqCst), 0, "baseline");
+    assert_eq!(hb.load(SeqCst), 0, "baseline");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings/token/reroll")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
+
+    assert_eq!(
+        ha.load(SeqCst),
+        1,
+        "reroll must evict live rooms sockets (tenant t-a)"
+    );
+    assert_eq!(
+        hb.load(SeqCst),
+        1,
+        "the evict must be host-wide, not one tenant (tenant t-b)"
+    );
 }
 
 #[tokio::test]

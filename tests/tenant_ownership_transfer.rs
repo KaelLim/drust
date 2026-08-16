@@ -13,9 +13,11 @@ use axum::http::{Request, StatusCode, header};
 use drust::mgmt::routes::MgmtState;
 use drust::storage::meta::{bootstrap_admin, open_meta};
 use drust::tenant::auth_cache::{AuthCache, CachedAuth, CachedRole};
+use drust::tenant::rooms::RoomBus;
 use rusqlite::params;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::SeqCst;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
@@ -44,6 +46,13 @@ fn build_state(conn: rusqlite::Connection, data_dir: PathBuf, log_dir: PathBuf) 
 /// Mgmt router with one bootstrapped owner admin ("root"/"hunter2", id 1).
 /// Also returns the shared auth-cache handle so tests can observe evictions.
 async fn spin_up() -> (axum::Router, tempfile::TempDir, Arc<AuthCache>) {
+    let (router, dir, cache, _bus) = spin_up_with_bus().await;
+    (router, dir, cache)
+}
+
+/// #975 — same router, plus the SHARED `RoomBus` the owner-transfer handler
+/// evicts through, so a test can observe per-tenant eviction epochs.
+async fn spin_up_with_bus() -> (axum::Router, tempfile::TempDir, Arc<AuthCache>, RoomBus) {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -53,8 +62,9 @@ async fn spin_up() -> (axum::Router, tempfile::TempDir, Arc<AuthCache>) {
     drust::db::migrations::run_migrations(&conn, &data_dir).unwrap();
     let state = build_state(conn, data_dir.clone(), log_dir);
     let cache = state.auth_cache.clone();
+    let bus_rooms = state.bus_rooms.clone();
     let router = state.with_data_dir(data_dir);
-    (router, dir, cache)
+    (router, dir, cache, bus_rooms)
 }
 
 async fn login(app: &axum::Router, username: &str, password: &str) -> String {
@@ -386,6 +396,76 @@ async fn transfer_evicts_old_and_new_owner_pat_cache_entries() {
     assert!(
         cache.get("h-ctl").is_some(),
         "unrelated admin's PAT entry must survive"
+    );
+}
+
+// ─── #975 — owner transfer closes THAT tenant's live rooms sockets ───────────
+
+/// #975 — a transfer changes who can see THIS tenant and nothing else, so the
+/// precise per-tenant `evict_tenant` is the right blast radius: the old
+/// owner's live WS sockets on the transferred tenant close, and an unrelated
+/// tenant's subscribers are left alone. (The PAT-family sites next door are
+/// host-wide because a PAT spans every tenant; this one does not.)
+#[tokio::test]
+async fn owner_transfer_evicts_only_the_transferred_tenants_rooms_sockets() {
+    let (app, dir, _cache, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (m2_id, m2_cookie) = insert_admin(&dir, "alice@example.com", "member");
+    let (m3_id, m3_cookie) = insert_admin(&dir, "bob@example.com", "member");
+    create_tenant_json(&app, &m2_cookie, "t-b", "BetaCorp").await;
+    create_tenant_json(&app, &m3_cookie, "t-c", "GammaCorp").await;
+    assert_eq!(owner_of(&dir, "t-b"), Some(m2_id), "seed: m2 owns t-b");
+
+    let h_moved = bus.tenant_epoch_handle("t-b");
+    let h_other = bus.tenant_epoch_handle("t-c");
+
+    let (status, body) = patch_owner(
+        &app,
+        &owner_cookie,
+        "/admin/api/tenants/t-b/owner",
+        serde_json::json!({"owner_admin_id": m3_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "transfer failed: {body}");
+
+    assert_eq!(
+        h_moved.load(SeqCst),
+        1,
+        "the transferred tenant's sockets must close"
+    );
+    assert_eq!(
+        h_other.load(SeqCst),
+        0,
+        "an unrelated tenant must not be evicted"
+    );
+}
+
+/// #975, the other direction — re-submitting the CURRENT owner changes
+/// nothing, so it must not kick that tenant's subscribers. Same "real change
+/// only" rule as the #955 publish-policy faces.
+#[tokio::test]
+async fn owner_transfer_to_the_same_owner_does_not_evict() {
+    let (app, dir, _cache, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (m2_id, m2_cookie) = insert_admin(&dir, "alice@example.com", "member");
+    create_tenant_json(&app, &m2_cookie, "t-b", "BetaCorp").await;
+    assert_eq!(owner_of(&dir, "t-b"), Some(m2_id), "seed: m2 owns t-b");
+
+    let h = bus.tenant_epoch_handle("t-b");
+
+    let (status, body) = patch_owner(
+        &app,
+        &owner_cookie,
+        "/admin/api/tenants/t-b/owner",
+        serde_json::json!({"owner_admin_id": m2_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "no-op transfer failed: {body}");
+
+    assert_eq!(
+        h.load(SeqCst),
+        0,
+        "a no-op transfer must not kick the tenant's subscribers"
     );
 }
 

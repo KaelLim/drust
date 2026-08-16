@@ -148,7 +148,7 @@ impl RoomBus {
     /// Drop every channel for `tenant`. Existing subscribers get
     /// `RecvError::Closed` on next recv.
     ///
-    /// **Called from eight production sites.** Re-derive the list rather than
+    /// **Called from nine production sites.** Re-derive the list rather than
     /// trusting it — it has drifted three times already: it once named a
     /// `DELETE …/realtime/rooms` route that does not exist; it said "five"
     /// for one commit after #955 T3 added the publish-policy faces; and that
@@ -162,8 +162,8 @@ impl RoomBus {
     /// that needs the number links to this doc instead of copying it, because
     /// a copied count is a count that drifts.
     ///
-    /// The recipe that returns exactly these eight and nothing else, verified
-    /// 2026-08-14, is `grep -rn 'bus_rooms\.evict_tenant(' src/` — every
+    /// The recipe that returns exactly these nine and nothing else, verified
+    /// 2026-08-16, is `grep -rn 'bus_rooms\.evict_tenant(' src/` — every
     /// production caller reaches this method through a field or parameter so
     /// named, while the in-file tests bind the bus as `bus`. Do NOT grep the
     /// bare method name: [`crate::tenant::events::EventBus`] has an
@@ -186,7 +186,12 @@ impl RoomBus {
     ///   admin page re-submitting unchanged checkboxes cannot thunder-herd
     ///   the tenant's subscribers;
     /// - admin `POST /admin/tenants/{id}/realtime/evict-all`
-    ///   (`mgmt::admin_rooms::evict_all_rooms_handler`).
+    ///   (`mgmt::admin_rooms::evict_all_rooms_handler`);
+    /// - tenant owner transfer (`mgmt::tenant_settings::patch_tenant_owner`,
+    ///   #975) — the ONE member of the PAT-revocation family that evicts a
+    ///   single tenant rather than the host: only this tenant changed hands,
+    ///   so only its sockets are stale. Same real-change rule as the
+    ///   publish-policy PATCH — re-submitting the current owner does nothing.
     ///
     /// The two publish-policy faces are one station with two doors, and both
     /// must evict: a live WS connection captures its `TenantPublishPolicy`

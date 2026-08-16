@@ -699,6 +699,21 @@ pub async fn change_role(
     // Mirrors remove_admin below.
     s.auth_cache.clear_admin_pat(target_id);
 
+    // #975 — a reach-NARROWING role flip (owner|admin → member) leaves the
+    // demoted admin's PAT-backed rooms sockets live on tenants they can no
+    // longer see; close them host-wide. A promotion or a lateral move inside
+    // the sees-all set widens or keeps reach, so it does NOT evict — the #955
+    // "real change only" rule, which is also what keeps this from becoming a
+    // free host-wide disconnect button. The predicate goes through
+    // `tenant_authz` so role semantics stay in lockstep (invariant 7); a
+    // hand-written string compare would drift the day a fourth role appears.
+    // Order is load-bearing: `clear_admin_pat` above, sockets here.
+    if crate::mgmt::tenant_authz::sees_all_tenants(&old_role)
+        && !crate::mgmt::tenant_authz::sees_all_tenants(&new_role)
+    {
+        s.bus_rooms.evict_all_tenants();
+    }
+
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.role_change", 0);
     entry.actor_admin_id = Some(caller_id);
@@ -883,6 +898,11 @@ pub async fn remove_admin(
     // Evict it now so a removed admin loses service-level data-plane access
     // immediately, not after the 10s safety TTL. Mirrors hook 2 (admin_pat.rs).
     s.auth_cache.clear_admin_pat(target_id);
+
+    // #975 — those cascade-deleted PATs may still hold live rooms sockets on
+    // any tenant; close them host-wide. Unconditional: reaching here means the
+    // admin row is gone, so every PAT of theirs is gone with it.
+    s.bus_rooms.evict_all_tenants();
 
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.remove", 0);

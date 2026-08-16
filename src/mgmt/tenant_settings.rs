@@ -328,6 +328,17 @@ pub async fn patch_tenant_owner(
         state.auth_cache.clear_admin_pat(admin_id);
     }
 
+    // #975 — the tenant changed hands, so the old owner's live rooms sockets on
+    // THIS tenant must close. Blast radius is one tenant, not the host: unlike
+    // the PAT-revocation family next door, nothing about any OTHER tenant's
+    // access changed here, so the precise `evict_tenant` is correct and
+    // `evict_all_tenants` would kick strangers. A no-op re-submit of the
+    // current owner changes nothing and does not evict (#955 "real change
+    // only"). Order is load-bearing: the PAT cache clear above, sockets here.
+    if old_owner != new_owner {
+        state.bus_rooms.evict_tenant(&tid);
+    }
+
     // Emit audit (async — safe; lock already released).
     let mut entry = crate::safety::audit::AuditEntry::success(&tid, "-", "tenant.owner.set", 0);
     entry.actor_admin_id = Some(caller_id);

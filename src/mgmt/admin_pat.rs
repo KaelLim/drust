@@ -99,6 +99,11 @@ pub async fn reroll(
     // admin; the handler holds only the NEW hash. Scan-clear all cached
     // Bearer entries whose role is AdminPat { admin_id == caller_id }.
     s.auth_cache.clear_admin_pat(caller_id);
+    // #975 — the soft-revoked PATs may hold live rooms sockets host-wide (an
+    // admin PAT resolves to `AuthCtx::Service` on every tenant it can reach).
+    // Cache first, sockets second: the kicked client reconnects instantly and
+    // must not be re-admitted from a stale cache entry.
+    s.bus_rooms.evict_all_tenants();
 
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
@@ -347,6 +352,9 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     };
     // hook (same class as reroll hook 2) — the old CLI PAT is soft-revoked.
     s.auth_cache.clear_admin_pat(caller.admin_id);
+    // #975 — the soft-revoked PAT may hold live rooms sockets host-wide.
+    // Same order as reroll: cache first, sockets second.
+    s.bus_rooms.evict_all_tenants();
     emit_audit_revoke(caller.admin_id);
     emit_audit_mint(caller.admin_id);
 
@@ -391,6 +399,10 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
     };
     if n > 0 {
         s.auth_cache.clear_admin_pat(caller.admin_id);
+        // #975 — inside the `n > 0` arm on purpose: a logout that revoked
+        // NOTHING has no stale credential to close, and evicting anyway would
+        // hand any authenticated admin a host-wide disconnect button.
+        s.bus_rooms.evict_all_tenants();
         emit_audit_revoke(caller.admin_id);
     }
     Json(serde_json::json!({ "revoked": n > 0 })).into_response()
@@ -424,6 +436,11 @@ pub async fn cli_token_revoke(
         );
     }
     s.auth_cache.clear_admin_pat(caller_id);
+    // #975 — reached only when `changed > 0` (the `changed == 0` arm above has
+    // already returned 404), so a guessed token id cannot become a host-wide
+    // disconnect button. The revoked CLI PAT may hold live rooms sockets on
+    // any tenant.
+    s.bus_rooms.evict_all_tenants();
     emit_audit_revoke(caller_id);
     Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
 }
