@@ -268,6 +268,34 @@ impl RoomBus {
         false
     }
 
+    /// #975 — host-wide identity evict. Bumps EVERY tenant's eviction epoch,
+    /// then drops every channel, so each live WS socket host-wide is CLOSED
+    /// (`CONN_EVICTED` + Close 1008) at its next inbound frame or keepalive
+    /// tick — the same lazy-close contract as `evict_tenant`.
+    ///
+    /// Why host-wide: an admin PAT spans every tenant its holder can see, and
+    /// there is no per-connection credential index, so the correct eviction
+    /// set for a PAT-family revocation is "everything" — blunt but fail-safe
+    /// (the #952 precedent). Valid holders reconnect through
+    /// `bearer_auth_layer`; a revoked PAT gets 401/403 there. Callers are the
+    /// PAT-revocation family in `mgmt::{admin_pat, admin_team}` — re-derive
+    /// the list with grep rather than trusting prose here (the sibling list
+    /// on `evict_tenant` drifted three times).
+    ///
+    /// Passive expiry (PAT `expires_at`, the session janitor) deliberately
+    /// does NOT call this — same rule as session expiry (#952): no revoking
+    /// actor, no justification for a host-wide reconnect herd.
+    pub fn evict_all_tenants(&self) {
+        // ORDER LOAD-BEARING (#975, same rule as evict_tenant above): every
+        // epoch is bumped BEFORE any teardown, so the stale-epoch window on
+        // every tenant ends before the first channel drops. Pinned by
+        // `evict_all_tenants_bumps_epochs_before_clearing_channels`.
+        for entry in self.epochs.iter() {
+            entry.value().fetch_add(1, SeqCst);
+        }
+        self.channels.clear();
+    }
+
     /// Channels currently allocated (tests + admin overview card).
     /// Sums every inner map's len — empty inner maps contribute 0, so
     /// post-evict_room residue is invisible to callers.
@@ -560,6 +588,62 @@ mod tests {
             "ORDER LOAD-BEARING (spec §隔離與資安不變量 3): evict_tenant must bump the \
              eviction epoch BEFORE dropping the channels, so the stale-epoch window ends \
              before the teardown rather than after it",
+        );
+    }
+
+    /// #975 — host-wide identity evict: every tenant with a live epoch handle
+    /// sees exactly +1, and every channel is gone; the bus keeps working after.
+    #[tokio::test]
+    async fn evict_all_tenants_bumps_every_epoch_and_clears_channels() {
+        let bus = RoomBus::new();
+        let ha = bus.tenant_epoch_handle("tenant-A");
+        let hb = bus.tenant_epoch_handle("tenant-B");
+        let _rx_a = bus.subscribe("tenant-A", "room1");
+        let _rx_b = bus.subscribe("tenant-B", "room2");
+        assert_eq!(bus.channel_count(), 2);
+
+        bus.evict_all_tenants();
+
+        assert_eq!(ha.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(hb.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(bus.channel_count(), 0, "all channels must be dropped");
+
+        // Fresh connect afterwards works and sees the bumped value as baseline.
+        let ha2 = bus.tenant_epoch_handle("tenant-A");
+        assert_eq!(ha2.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let _rx = bus.subscribe("tenant-A", "room1");
+        assert_eq!(bus.channel_count(), 1);
+    }
+
+    /// #975 — same ORDER LOAD-BEARING rule as evict_tenant, host-wide form.
+    /// Behaviourally invisible (measured in #955), so pinned structurally.
+    #[test]
+    fn evict_all_tenants_bumps_epochs_before_clearing_channels() {
+        const FN_HEAD: &str = "pub fn evict_all_tenants(&self) {";
+        let stripped = crate::tenant::rooms::srcpin::code_only(include_str!("bus.rs"));
+        let src = stripped.as_str();
+        let start = src
+            .find(FN_HEAD)
+            .expect("evict_all_tenants's signature changed — update this structural pin");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n    }\n")
+            .expect("could not find the end of evict_all_tenants's body");
+        let body = &rest[..end];
+
+        let bump_loop = body
+            .find("for entry in self.epochs.iter()")
+            .expect("evict_all_tenants must iterate every epoch entry");
+        assert!(
+            body.contains("fetch_add(1, SeqCst)"),
+            "the loop must actually bump each epoch"
+        );
+        let teardown = body
+            .find("self.channels.clear();")
+            .expect("evict_all_tenants must clear all channels");
+        assert!(
+            bump_loop < teardown,
+            "ORDER LOAD-BEARING (#975): every epoch must be bumped BEFORE the teardown"
         );
     }
 
