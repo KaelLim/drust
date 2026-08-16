@@ -277,10 +277,13 @@ impl RoomBus {
     /// there is no per-connection credential index, so the correct eviction
     /// set for a PAT-family revocation is "everything" — blunt but fail-safe
     /// (the #952 precedent). Valid holders reconnect through
-    /// `bearer_auth_layer`; a revoked PAT gets 401/403 there. Callers are the
-    /// PAT-revocation family in `mgmt::{admin_pat, admin_team}` — re-derive
-    /// the list with grep rather than trusting prose here (the sibling list
-    /// on `evict_tenant` drifted three times).
+    /// `bearer_auth_layer`; a revoked PAT gets 401/403 there. It EXISTS FOR
+    /// the PAT-revocation family in `mgmt::{admin_pat, admin_team}` (#975) —
+    /// that is its purpose, deliberately not a caller list: re-derive the
+    /// live list with `rg -n 'evict_all_tenants' src/` rather than trusting
+    /// prose here. The sibling list on `evict_tenant` drifted three times,
+    /// and the first draft of THIS sentence claimed callers one commit
+    /// before any existed.
     ///
     /// Passive expiry (PAT `expires_at`, the session janitor) deliberately
     /// does NOT call this — same rule as session expiry (#952): no revoking
@@ -563,19 +566,43 @@ mod tests {
     /// with every gate passing. Needles are matched against
     /// [`srcpin::code_only`] (comments blanked) for that reason; the same
     /// mutant shape had defeated the sibling pin in `ws.rs` twice.
+    /// Slice out ONE PRODUCTION function's comment-stripped body text.
+    ///
+    /// The `#[cfg(test)]` split is the load-bearing part, not tidiness.
+    /// [`srcpin::code_only`] preserves string literals verbatim (documented
+    /// and tested in `srcpin.rs`), so every pin's own `FN_HEAD` constant is a
+    /// SECOND occurrence of that signature in the stripped source. Searching
+    /// the whole file therefore made the `"signature changed"` expect
+    /// UNFIREABLE — a review MEASURED it: renaming the production
+    /// `pub fn evict_all_tenants` to `pub(crate) fn` AND fully inverting its
+    /// body (`channels.clear()` hoisted above the bump loop — the mutant that
+    /// goes RED on an untouched tree) left `cargo test --lib rooms::bus` at
+    /// 16 passed / 0 failed, because `find` had re-anchored on the test's own
+    /// literal and the pin then validated the TEST function's source.
+    /// Searching only the pre-`#[cfg(test)]` half makes a rename fail CLOSED.
+    fn prod_fn_body<'a>(stripped: &'a str, head: &str) -> &'a str {
+        let prod = stripped
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields at least one segment");
+        let start = prod.find(head).unwrap_or_else(|| {
+            panic!(
+                "`{head}` not found in the production half of bus.rs — the signature changed \
+                 (or the fn moved below `#[cfg(test)]`); update this structural pin"
+            )
+        });
+        let rest = &prod[start..];
+        let end = rest
+            .find("\n    }\n")
+            .unwrap_or_else(|| panic!("could not find the end of the body of `{head}`"));
+        &rest[..end]
+    }
+
     #[test]
     fn evict_tenant_bumps_epoch_before_dropping_channels() {
         const FN_HEAD: &str = "pub fn evict_tenant(&self, tenant: &str) {";
         let stripped = crate::tenant::rooms::srcpin::code_only(include_str!("bus.rs"));
-        let src = stripped.as_str();
-        let start = src
-            .find(FN_HEAD)
-            .expect("evict_tenant's signature changed — update this structural pin");
-        let rest = &src[start..];
-        let end = rest
-            .find("\n    }\n")
-            .expect("could not find the end of evict_tenant's body");
-        let body = &rest[..end];
+        let body = prod_fn_body(&stripped, FN_HEAD);
 
         let bump = body
             .find("self.bump_epoch(tenant);")
@@ -618,53 +645,96 @@ mod tests {
     /// #975 — same ORDER LOAD-BEARING rule as evict_tenant, host-wide form.
     /// Behaviourally invisible (measured in #955), so pinned structurally.
     ///
-    /// The pin verifies TWO things, and the second half is not decoration.
-    /// A first cut asserted only "the `epochs.iter` loop precedes
-    /// `self.channels.clear();`" and a spec reviewer MEASURED it failing
-    /// open: inserting `self.channels.retain(|_, v| v.is_empty());` as the
-    /// FIRST statement — a genuine channel teardown running before any epoch
-    /// is bumped, exactly the inversion this pin exists to catch — left
-    /// `cargo test --lib rooms::bus` at 16 passed / 0 failed, because the
-    /// ordering pair it compared was still in order and the behavioural test
-    /// cannot see ordering at all. So the second assertion is written over
-    /// the RECEIVER (`self.channels`), not over one spelling of the
-    /// teardown: no channels operation of ANY shape may appear before the
-    /// bump loop. Needles run against [`srcpin::code_only`], so a commented
-    /// mention cannot satisfy or trip either half.
+    /// The scanned region is "everything up to and including the bump loop's
+    /// CLOSING brace", and arriving at that took three measured failures —
+    /// each earlier cut was green with the invariant inverted:
+    ///
+    /// - A first cut compared only "the `epochs.iter` loop header precedes
+    ///   `self.channels.clear();`". Mutant B — `self.channels.retain(|_, v|
+    ///   v.is_empty());` as the FIRST statement — kept the compared pair in
+    ///   order and stayed green.
+    /// - The second cut added "no `self.channels` BEFORE the loop HEADER",
+    ///   written over the RECEIVER rather than one spelling of the teardown.
+    ///   Mutant C2 — `self.channels.remove(entry.key());` as the first
+    ///   statement INSIDE the loop, bump second — stayed green (16 passed / 0
+    ///   failed, measured), because nothing ever looked inside the loop body.
+    ///   That mutant drops every tenant's channels while THAT tenant's epoch
+    ///   is still stale: bit-for-bit the inversion this pin exists to catch.
+    /// - Mutant C3 — bump first, then `self.channels.remove(entry.key());`
+    ///   inside the same loop — is the interleave the spec forbids outright
+    ///   (§設計: 「不重用 `bump_epoch(tenant)` 逐租戶呼叫再逐租戶 remove」),
+    ///   because "all bumps first" is the window semantic, not merely
+    ///   "each tenant's own bump first". Anchoring on the LAST `fetch_add`
+    ///   does NOT catch it — there is only one `fetch_add` in the text and
+    ///   the `remove` sits after it — so the region has to end at the loop's
+    ///   brace, not at any statement inside it.
+    ///
+    /// Hence: brace-match the loop, then assert `self.channels` is untouched
+    /// anywhere in `body[..loop_close]`. Needles run against
+    /// [`srcpin::code_only`], so a commented mention can neither satisfy nor
+    /// trip any half, and the body comes from [`prod_fn_body`], so a renamed
+    /// production signature fails CLOSED instead of re-anchoring here.
     #[test]
     fn evict_all_tenants_bumps_epochs_before_clearing_channels() {
         const FN_HEAD: &str = "pub fn evict_all_tenants(&self) {";
         let stripped = crate::tenant::rooms::srcpin::code_only(include_str!("bus.rs"));
-        let src = stripped.as_str();
-        let start = src
-            .find(FN_HEAD)
-            .expect("evict_all_tenants's signature changed — update this structural pin");
-        let rest = &src[start..];
-        let end = rest
-            .find("\n    }\n")
-            .expect("could not find the end of evict_all_tenants's body");
-        let body = &rest[..end];
+        let body = prod_fn_body(&stripped, FN_HEAD);
 
         let bump_loop = body
             .find("for entry in self.epochs.iter()")
             .expect("evict_all_tenants must iterate every epoch entry");
-        let bump = body
-            .find("fetch_add(1, SeqCst)")
-            .expect("the loop must actually bump each epoch");
+
+        // Brace-match the loop so the scanned region covers its BODY, not
+        // just its header. Failure to match panics — fail closed.
+        let open = bump_loop
+            + body[bump_loop..]
+                .find('{')
+                .expect("the epoch bump loop must have a braced body");
+        let mut depth = 0usize;
+        let mut close = None;
+        for (off, ch) in body[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + off + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("could not find the closing brace of the epoch bump loop");
+        let loop_src = &body[open..close];
+
+        assert!(
+            !loop_src.contains('"'),
+            "the bump loop must stay string-literal-free: `code_only` keeps literals verbatim, \
+             so a `}}` inside one would end the brace match early, shrink the scanned region \
+             and reopen the C2 hole",
+        );
+        assert!(
+            loop_src.contains("fetch_add(1, SeqCst)"),
+            "the bump must happen INSIDE the loop — one `fetch_add` after it bumps one epoch, \
+             not every epoch",
+        );
         let teardown = body
             .find("self.channels.clear();")
             .expect("evict_all_tenants must clear all channels");
         assert!(
-            bump_loop < bump && bump < teardown,
+            close <= teardown,
             "ORDER LOAD-BEARING (#975): every epoch must be bumped BEFORE the teardown",
         );
         assert_eq!(
-            body[..bump_loop].find("self.channels"),
+            body[..close].find("self.channels"),
             None,
-            "ORDER LOAD-BEARING (#975): NOTHING may touch self.channels before the bump \
-             loop — any teardown shape there (clear/remove/retain/…) drops channels while \
-             some tenant's epoch is still stale, which is the very inversion this pin \
-             exists to catch and which no behavioural test can observe",
+            "ORDER LOAD-BEARING (#975): NOTHING may touch self.channels until the bump loop \
+             has FINISHED — not before it, and not inside it. Any teardown shape in that \
+             region (clear/remove/retain/…) drops some tenant's channels while that tenant's \
+             epoch is still stale, so a concurrent WS checkpoint reads the pre-bump epoch, \
+             passes, and its re-subscribe lands after the removal — the socket survives the \
+             eviction, which is the #955 hole. No behavioural test can observe this",
         );
     }
 
