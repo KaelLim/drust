@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-14
+updated: 2026-08-16
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -200,6 +200,14 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    `CONN_EVICTED` then Close 1008 — at its next inbound frame or keepalive tick instead of
    merely losing its channel and silently re-subscribing, i.e. within
    `DRUST_BROADCAST_KEEPALIVE_SECS` (default 30, clamped `1..=300`) when idle**).
+   **Since v1.65.1 the admin-PAT credential family evicts on the same rule** — PAT reroll,
+   CLI refresh / logout / revoke, a reach-narrowing `change_role`, `remove_admin`, and tenant
+   owner transfer — because an admin PAT resolves to `AuthCtx::Service` on the rooms socket.
+   The eviction SET is the revoked identity's REACH, decided in one place
+   (`mgmt::pat_evict`): host-wide (`evict_all_tenants`) only when
+   `tenant_authz::sees_all_tenants` holds, otherwise just the tenants that admin owns, which
+   is exactly where the bearer CTE would have admitted the PAT; DB failure falls back
+   host-wide. Owner transfer stays a precise single-tenant evict. Passive expiry never evicts.
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks

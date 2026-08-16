@@ -1,3 +1,61 @@
+## v1.65.1 — 2026-08-16
+
+Security follow-up to v1.65.0, from the codex second-engine review of that release. **No new
+flags, no new API, no schema change** — the same endpoints simply close what they revoke.
+
+### Fixed
+
+- **Admin-PAT revocation now CLOSES live rooms WebSocket sockets (#975).** The tenant bearer
+  CTE resolves an admin PAT to `AuthCtx::Service`, so it can subscribe AND publish on
+  `/t/<id>/realtime`, and v1.65.0's lazy-close covered only tenant-scoped events. Seven
+  management-plane paths revoked or narrowed a PAT while touching nothing but the auth cache,
+  leaving an already-open socket alive with full service rights until the client itself chose
+  to disconnect: PAT reroll, CLI token refresh / logout / revoke, `change_role`,
+  `remove_admin`, and tenant owner transfer. All seven now evict, always **after** the
+  existing `clear_admin_pat` — a kicked client reconnects instantly and must not be
+  re-admitted from a cache entry the clear had not yet removed. Both the per-site order and
+  the completeness of the site list are pinned structurally, tree-wide.
+- **The eviction SET is the revoked identity's reach, not the host (#975).** One decision
+  point, `mgmt::pat_evict`, reads `admins.role` and answers host-wide — the single new bus
+  method `RoomBus::evict_all_tenants`, which bumps EVERY tenant's epoch before dropping any
+  channel, the same ORDER LOAD-BEARING rule as `evict_tenant` and pinned the same way — only
+  when `tenant_authz::sees_all_tenants` holds (`owner` | `admin`, the same predicate the
+  bearer CTE's PAT arm now routes through, so the two cannot drift). For any other role the
+  set is the tenants that admin OWNS, applied as precise per-tenant evicts: the CTE answers
+  `PAT_TENANT_DENIED` everywhere else, so those are the only tenants where that PAT could
+  ever have opened a socket, and evicting wider would close a stranger's. That scoping is
+  what keeps the four SELF-SERVICE PAT routes — none of which sits behind
+  `require_owner_layer` — from handing the lowest-privilege admin role a repeatable
+  cross-tenant disconnect lever by rerolling its own key. An unknown future role narrows (the
+  predicate is an allow-list); every DB read failure falls back host-wide, because
+  over-evicting costs availability while under-evicting costs security.
+- **Real change only, and a pre-image where it matters (#975).** `change_role` evicts only on
+  a reach-NARROWING flip (sees-all → member) — a promotion or a lateral move does not.
+  `cli_token_logout` evicts only when it actually revoked something; `cli_token_revoke` only
+  past its `changed == 0` 404. Owner transfer evicts that ONE tenant, and only when the owner
+  really changed. `remove_admin` snapshots the removed identity's reach BEFORE its DELETE,
+  inside the same meta lock: a post-commit read cannot see the `admins` row, so the fail-safe
+  fallback would answer host-wide and over-evict every tenant for a mere member removal
+  (measured — moving the read after the commit turns the foreign-tenant assertion red).
+  Passive expiry (a PAT's `expires_at`, the session janitor) still evicts nothing at all: no
+  revoking actor, the same rule as session expiry (#952).
+
+### Docs
+
+- **The second eviction residual, stated (codex F2).** Besides the known "the checkpoint is a
+  comparison, not a lock" window — which bounds how long an evicted socket keeps living —
+  there is an earlier one that can make a socket miss a revocation entirely: a revocation
+  landing between the bearer-auth decision and `ws_handler`'s epoch-baseline capture is
+  ADOPTED as that socket's baseline, so the socket is fail-open for exactly that one
+  revocation until some later, unrelated evict bumps the epoch again. `ws.rs`'s comment at
+  the capture line already said this; `.claude/rules/background-jobs.md` now says it too, so
+  the ≤1-keepalive bound is not read as the whole story.
+
+### Deploy
+
+- No new environment variables and no config change on any of the three targets. Version bump
+  only: `Cargo.toml` + `Cargo.lock` and Helm `Chart.yaml` `appVersion`.
+
 ## v1.65.0 — 2026-08-14
 
 **Evicting a tenant now CLOSES its live WebSocket connections (#955).** Until this release

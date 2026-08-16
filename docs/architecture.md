@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-08-14
+updated: 2026-08-16
 generated_by: docs/gen-architecture.py
 ---
 
@@ -29,13 +29,13 @@ generated_by: docs/gen-architecture.py
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 26 | 206 | 83 | 43 |
-| [`mgmt/`](#srcmgmt) | 42 | 376 | 116 | 53 |
+| [`mgmt/`](#srcmgmt) | 44 | 381 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 65 | 14 | 39 |
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
-| [`tenant/`](#srctenant) | 38 | 281 | 118 | 71 |
+| [`tenant/`](#srctenant) | 38 | 283 | 119 | 73 |
 
 ## Group dependency graph
 
@@ -232,8 +232,10 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 35 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 36 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
+- [`pat_evict.rs`](../src/mgmt/pat_evict.rs) — #975 — the eviction SET for an admin-PAT revocation, and the one place that · 4 pub
+- [`pat_evict_pin.rs`](../src/mgmt/pat_evict_pin.rs) — Test-only STRUCTURAL PIN (#975): at every admin-PAT revocation site, the
 - [`public_files.rs`](../src/mgmt/public_files.rs) — Admin UI for the host-level public bucket. Provides list, upload, delete, · 22 pub
 - [`quota_admin.rs`](../src/mgmt/quota_admin.rs) — v1.50 (Spec B, Task 6) — quota upgrade request / review admin plane. · 15 pub
 - [`request_janitor.rs`](../src/mgmt/request_janitor.rs) — Retention for the admin-plane request queues in `meta.sqlite`. · 2 pub
@@ -363,7 +365,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/mod.rs`](../src/tenant/rooms/mod.rs) — v1.31 — broadcast rooms (WebSocket multiplex). · 9 pub
 - [`rooms/policy.rs`](../src/tenant/rooms/policy.rs) — v1.31 policy gates: room-name validation, per-tenant publish · 6 pub
 - [`rooms/rest.rs`](../src/tenant/rooms/rest.rs) — v1.31 REST publish handler — POST /t/{tenant}/rooms/{room}. · 4 pub
-- [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the rooms STRUCTURAL PINS (#955). · 1 pub
+- [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the STRUCTURAL PINS (#955, #975). · 3 pub
 - [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 7 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
 - [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 1 pub
