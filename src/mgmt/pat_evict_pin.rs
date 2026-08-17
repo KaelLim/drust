@@ -1,5 +1,7 @@
 //! Test-only STRUCTURAL PIN (#975): at every admin-PAT revocation site, the
-//! auth-cache clear happens BEFORE the rooms eviction.
+//! auth-cache clear happens BEFORE the rooms eviction — and (#976 T4) every
+//! site that snapshots a `PatReach` reads it inside the SAME critical section
+//! as its own revoking write.
 //!
 //! ## Why this exists
 //!
@@ -70,6 +72,26 @@
 //!    failed. The spec grounds the site set with a TREE-wide grep ("全樹
 //!    `clear_admin_pat` 呼叫者就是這 7 站"), so only a tree-wide check can
 //!    honestly carry the name of test (2).
+//!
+//! ## A fourth pin, for a different invariant: snapshot LOCALITY
+//!
+//! [`every_reach_snapshot_is_read_inside_the_revoking_critical_section`] is not
+//! part of that ladder. It guards #976 T4: the five sites that go through
+//! [`crate::mgmt::pat_evict::evict_reach`] must read the reach while still
+//! holding the `meta` guard their revoking write ran under, so the eviction set
+//! and the revocation are one atomic decision.
+//!
+//! It is here for the same reason the ordering is: **no behavioural test can
+//! see it.** The defect a post-commit re-read produces is a RACE — a promotion
+//! landing between the commit and the read widens a member's own-key revocation
+//! into a host-wide disconnect — and the mutant the T4 plan proposed as its
+//! acceptance check was MEASURED green: moving `reroll`'s snapshot out of the
+//! guard left `cargo test --test admin_pat_reroll` at 5 passed and `--lib
+//! pat_evict` at 9 passed. (The sibling mutant at `remove_admin` IS
+//! behaviourally red, but only because its `DELETE FROM admins` destroys the
+//! row the read needs; nothing at the four self-service sites destroys
+//! anything, so their tests cannot tell the two placements apart.) Structural
+//! pin or nothing.
 
 use std::path::{Path, PathBuf};
 
@@ -84,33 +106,46 @@ const CLEAR: &str = "clear_admin_pat(";
 
 /// The rooms eviction, in every spelling a site may legitimately use.
 ///
-/// Three, because the eviction SET is not the same at every site:
+/// Two, because the eviction SET is not the same at every site:
 ///
 /// - `bus_rooms.evict` — the direct bus call. Covers both variants
 ///   (`evict_all_tenants()` where the revoked identity's reach genuinely is the
 ///   host, `evict_tenant(&tid)` for the owner transfer's single tenant).
-/// - `pat_evict::evict_pat_rooms_sockets(` — the shared reach-scoped decision
-///   the four self-service PAT-lifecycle sites in `admin_pat.rs` go through
-///   (#975 T2 review, MED): those sites are reachable by a `member`, so a
-///   host-wide evict there was a cross-tenant availability lever anyone could
-///   pull. The helper picks host-wide vs the caller's owned tenants; the SITE's
-///   obligation — clear the cache before you close the sockets — is unchanged,
-///   which is why it is still what this pin measures.
+/// - `pat_evict::evict_reach(` — the shared reach-scoped decision, applied to a
+///   `PatReach` the site snapshotted under the same `meta` guard as its
+///   revoking write (#976 T4). Every PAT site goes through it: the four
+///   self-service ones in `admin_pat.rs`, which a `member` can reach on demand
+///   so a host-wide evict there was a cross-tenant availability lever anyone
+///   could pull (#975 T2 review, MED), and `remove_admin`, whose snapshot must
+///   additionally precede its DELETE (afterwards the read cannot see the
+///   `admins` row and falls back to `HostWide`, over-evicting the whole host
+///   for a member removal). The helper picks host-wide vs the caller's owned
+///   tenants; the SITE's obligation — clear the cache before you close the
+///   sockets — is unchanged, which is why it is still what this pin measures.
 ///
-/// - `pat_evict::evict_reach(` — the pre-image variant of the same decision,
-///   for a site that must read the reach BEFORE destroying the rows it derives
-///   from (`remove_admin`: after its DELETE commits, the live read cannot see
-///   the `admins` row and falls back to `HostWide`, so it would OVER-evict the
-///   whole host for a member removal).
-///
-/// A site satisfies the pin with ANY spelling. All are counted for
+/// A site satisfies the pin with ANY spelling. Both are counted for
 /// completeness, so moving a site from one spelling to another stays accounted
 /// for and deleting the call entirely still fails closed.
-const EVICTS: &[&str] = &[
-    "bus_rooms.evict",
-    "pat_evict::evict_pat_rooms_sockets(",
-    "pat_evict::evict_reach(",
-];
+const EVICTS: &[&str] = &["bus_rooms.evict", "pat_evict::evict_reach("];
+
+/// The reach-scoped eviction ALONE, for the snapshot pin below. [`EVICTS`] also
+/// matches the direct bus call, which the two non-snapshot sites (`change_role`
+/// decides inline on the pre-image role, `patch_tenant_owner` on the one tenant
+/// that moved) use — neither takes a `PatReach`, so neither is in scope here.
+const EVICT_REACH: &str = "pat_evict::evict_reach(";
+
+/// The reach snapshot itself.
+const SNAPSHOT: &str = "read_pat_reach(";
+
+/// The `meta` acquisition, of which a snapshot site may make exactly ONE.
+///
+/// This count is what gives the snapshot pin teeth. [`SNAPSHOT`] takes a
+/// `&Connection`, and the only one in a handler's scope comes from its own
+/// `s.meta.lock().await`, so the read cannot move out of that guard's block and
+/// still compile — the only way to re-read the reach in a DIFFERENT critical
+/// section is to take the lock a second time, and that is what this counts.
+/// Borrow checker plus needle count, jointly.
+const META_LOCK: &str = "s.meta.lock().await";
 
 /// Human-readable form of [`EVICTS`] for failure messages.
 fn evicts_display() -> String {
@@ -161,6 +196,23 @@ const SITES: &[(&str, &str, &[&str])] = &[
         "pub async fn remove_admin(",
     ),
     site!("tenant_settings.rs", "pub async fn patch_tenant_owner("),
+];
+
+/// #976 T4 — the subset of [`SITES`] that decides its eviction set from a
+/// `PatReach` snapshot. `tenant_settings.rs` is absent because owner transfer
+/// evicts one named tenant directly, and `change_role` is absent for a reason
+/// worth keeping in sight: it MUST decide inline on the pre-image role, since a
+/// live read would answer with the new, narrower reach and leave the demoted
+/// PAT's foreign-tenant sockets open.
+const SNAPSHOT_SITES: &[(&str, &str, &[&str])] = &[
+    site!(
+        "admin_pat.rs",
+        "pub async fn reroll(",
+        "pub async fn cli_token_refresh(",
+        "pub async fn cli_token_logout(",
+        "pub async fn cli_token_revoke(",
+    ),
+    site!("admin_team.rs", "pub async fn remove_admin("),
 ];
 
 /// #975 — the per-site ordering invariant, one assertion per site.
@@ -246,6 +298,83 @@ fn the_pinned_site_list_is_the_whole_site_list() {
                  joining `SITES` in this file, so its clear/evict ordering is unpinned. Add the \
                  handler's `pub async fn …(` head to `SITES` (and give it an integration test \
                  for the eviction itself)."
+            );
+        }
+    }
+}
+
+/// #976 T4 — the reach is a SNAPSHOT, taken in the revoking write's own
+/// critical section, never a re-read afterwards.
+///
+/// Three assertions per site, and the third is the load-bearing one:
+///
+/// 1. the handler snapshots at all ([`SNAPSHOT`] present),
+/// 2. it snapshots BEFORE it evicts,
+/// 3. it takes the `meta` lock exactly ONCE ([`META_LOCK`]).
+///
+/// (3) is what forbids the defect. A snapshot moved after the commit cannot
+/// keep using the guard's `&Connection` — that does not compile — so it has to
+/// acquire `meta` a second time, and a second acquisition is by definition a
+/// second critical section, in which a concurrent role change is free to land.
+/// See the module doc for why no behavioural test reaches this.
+#[test]
+fn every_reach_snapshot_is_read_inside_the_revoking_critical_section() {
+    for (path, raw, heads) in SNAPSHOT_SITES {
+        let stripped = code_only(raw);
+        let prod = production_half(&stripped);
+
+        // Completeness, same shape as `the_pinned_site_list_is_the_whole_site_list`:
+        // a new `evict_reach` caller in one of these files must join the list
+        // rather than inherit the guarantee without being checked.
+        let in_file = prod.matches(EVICT_REACH).count();
+        let in_pinned: usize = heads
+            .iter()
+            .map(|head| prod_fn_body(&stripped, head).matches(EVICT_REACH).count())
+            .sum();
+        assert_eq!(
+            in_pinned, in_file,
+            "{path} has {in_file} `{EVICT_REACH}` call(s) but only {in_pinned} of them are inside \
+             a handler pinned by `SNAPSHOT_SITES` — a reach-scoped eviction site was added, moved \
+             or renamed without joining that list, so nothing checks that its reach is a snapshot \
+             rather than a racing post-commit re-read."
+        );
+
+        for head in *heads {
+            let body = prod_fn_body(&stripped, head);
+
+            let snapshot = body.find(SNAPSHOT).unwrap_or_else(|| {
+                panic!(
+                    "{path} `{head}`: no `{SNAPSHOT}` call, but it still evicts through \
+                     `{EVICT_REACH}`. The reach must be READ here, under this handler's own meta \
+                     guard — a reach computed anywhere else is not the one the revoking write \
+                     committed against."
+                )
+            });
+            let evict = body.find(EVICT_REACH).unwrap_or_else(|| {
+                panic!(
+                    "{path} `{head}`: no `{EVICT_REACH}` call. This handler revokes a PAT, so it \
+                     must close the rooms sockets that PAT may hold (#975). If it genuinely \
+                     stopped revoking, remove it from `SNAPSHOT_SITES` and `SITES` together."
+                )
+            });
+            assert!(
+                snapshot < evict,
+                "{path} `{head}`: the reach is evicted before it is read — the two statements are \
+                 in the wrong order (#976 T4)."
+            );
+
+            let locks = body.matches(META_LOCK).count();
+            assert_eq!(
+                locks, 1,
+                "SNAPSHOT LOCALITY (#976 T4): {path} `{head}` takes `{META_LOCK}` {locks} time(s); \
+                 a site that snapshots a `PatReach` may take it exactly once. Two acquisitions \
+                 mean the reach is read in a DIFFERENT critical section from the revoking write, \
+                 and a role change landing between them decides the eviction set: a `member` \
+                 promoted right after rerolling their own key evicts HOST-WIDE, which is the \
+                 cross-tenant availability lever `mgmt::pat_evict` exists to remove. Zero \
+                 acquisitions mean the lock moved behind a helper and this pin can no longer see \
+                 the critical section at all. This is invisible to every behavioural test — the \
+                 mutant was measured green (module doc) — which is why it is pinned here."
             );
         }
     }

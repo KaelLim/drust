@@ -32,12 +32,31 @@
 //! So for a non-sees-all admin the set of tenants where that PAT can hold a
 //! socket under its CURRENT role IS the set of tenants they own — every other
 //! tenant's socket belongs to somebody else, and closing it evicts a stranger.
-//! ("Current", not "ever": the reach is read live — see the residual below.)
+//! ("Current", not "ever" — see the residual below.)
 //! For a sees-all
 //! admin (`owner` / `admin`) the reach genuinely is the host, and
 //! [`RoomBus::evict_all_tenants`](crate::tenant::rooms::RoomBus::evict_all_tenants)
 //! stays exactly right. No per-connection credential index is needed for either
 //! — that was the deferred option (b), and it is not what this costs.
+//!
+//! ## Why every caller SNAPSHOTS the reach instead of re-reading it
+//!
+//! [`read_pat_reach`] is called by the revoking handler while it still holds the
+//! `meta` guard its revoking write ran under, and the answer is carried out of
+//! that critical section to [`evict_reach`] (#976 T4). The reach and the
+//! revocation are therefore ONE atomic decision, which buys two things:
+//!
+//! - **No TOCTOU over-evict.** A post-commit re-read observes whatever role the
+//!   admin holds THEN. A promotion landing between the two turns a member's own
+//!   key reroll — which only ever reached that member's tenants — into a
+//!   host-wide disconnect, i.e. the very cross-tenant availability lever the
+//!   narrow set exists to remove.
+//! - **No second `meta` lock** on the revocation path.
+//!
+//! `admin_team::remove_admin` snapshots for a stronger reason still: its
+//! `DELETE FROM admins` destroys the row the reach derives from, so its read has
+//! to happen BEFORE the delete, not merely under the same guard (see
+//! [`evict_reach`]).
 //!
 //! ## Fail direction
 //!
@@ -49,19 +68,17 @@
 //!
 //! ## Known residual, stated rather than implied
 //!
-//! The reach is read live, so a socket opened under a WIDER past role is outside
-//! the narrow set. Every in-tree path that narrows a role closes those sockets
-//! itself at the moment it narrows them (`admin_team::change_role` evicts
-//! host-wide on a sees-all → member flip; `remove_admin` over the pre-image reach it snapshots before its DELETE;
+//! The reach is the role held AT REVOCATION TIME, so a socket opened under a
+//! WIDER past role is outside the narrow set. Every IN-TREE path that narrows a
+//! role closes those sockets itself at the moment it narrows them
+//! (`admin_team::change_role` evicts host-wide on a sees-all → member flip;
+//! `remove_admin` over the pre-image reach it snapshots before its DELETE;
 //! `tenant_settings::patch_tenant_owner` for the one tenant that moved), so the
 //! gap needs the OUT-OF-PROCESS break-glass `set_admin_role` binary, which
 //! evicts nothing at all today and leaves those sockets live regardless of what
 //! this module does.
 
-use std::sync::Arc;
-
 use rusqlite::{Connection, params};
-use tokio::sync::Mutex;
 
 use crate::mgmt::routes::MgmtState;
 use crate::mgmt::tenant_authz::sees_all_tenants;
@@ -80,23 +97,22 @@ pub(crate) enum PatReach {
     Owned(Vec<String>),
 }
 
-/// Read `admin_id`'s live PAT reach off `meta`.
+/// Read `admin_id`'s PAT reach off an ALREADY-HELD `meta` connection.
 ///
-/// Deliberately re-reads `admins.role` from the DB rather than taking the
-/// `AdminProfileExt` extension: two of the four callers sit on the PUBLIC
-/// router and have no profile extension at all, and the DB column is the same
-/// one the data-plane bearer CTE consults, so the eviction set cannot disagree
-/// with what the PAT can actually reach.
+/// Takes a `&Connection` rather than the `Arc<Mutex<…>>`, because every caller
+/// reads inside the critical section its own revoking write ran under — that is
+/// what makes the reach a snapshot rather than a racing re-read (module doc,
+/// §Why every caller SNAPSHOTS the reach). It also keeps this half testable
+/// against a plain `Connection` without a router.
+///
+/// Deliberately reads `admins.role` from the DB rather than taking the
+/// `AdminProfileExt` extension: the callers on the PUBLIC router have no
+/// profile extension at all, and the DB column is the same one the data-plane
+/// bearer CTE consults, so the eviction set cannot disagree with what the PAT
+/// can actually reach.
 ///
 /// Any failure answers [`PatReach::HostWide`] — see the module's fail-direction
 /// note.
-async fn pat_reach(meta: &Arc<Mutex<Connection>>, admin_id: i64) -> PatReach {
-    let conn = meta.lock().await;
-    read_pat_reach(&conn, admin_id)
-}
-
-/// The synchronous half, split out so it is testable against a plain
-/// `Connection` without a router.
 pub(crate) fn read_pat_reach(conn: &Connection, admin_id: i64) -> PatReach {
     let read = || -> rusqlite::Result<PatReach> {
         let role: String = conn.query_row(
@@ -124,23 +140,16 @@ pub(crate) fn read_pat_reach(conn: &Connection, admin_id: i64) -> PatReach {
 }
 
 /// #975 — close the rooms WS sockets an admin's just-revoked PAT may still be
-/// holding, over exactly the tenants that PAT could reach.
+/// holding, over exactly the tenants that PAT could reach, per a [`PatReach`]
+/// the caller snapshotted under its own `meta` guard.
 ///
 /// **Call this AFTER `auth_cache.clear_admin_pat`, never before** (spec
 /// §隔離與資安不變量 2, pinned per-site by the test-only `mgmt::pat_evict_pin`
 /// module): the kicked client reconnects immediately and must not be
 /// re-admitted from a cache entry the clear had not yet removed.
 ///
-/// Must also be called after the handler's own DB work has committed and its
-/// `meta` guard has dropped — this takes the `meta` lock itself.
-pub(crate) async fn evict_pat_rooms_sockets(s: &MgmtState, admin_id: i64) {
-    let reach = pat_reach(&s.meta, admin_id).await;
-    evict_reach(s, reach);
-}
-
-/// Apply an already-decided [`PatReach`]. Split out for the caller that must
-/// read the reach BEFORE destroying the rows it is derived from —
-/// `admin_team::remove_admin`: once its `DELETE FROM admins` commits,
+/// The snapshot is not an optimization at `admin_team::remove_admin`, it is the
+/// only correct order: once its `DELETE FROM admins` commits,
 /// [`read_pat_reach`] cannot see the row, and the fail-direction fallback
 /// answers `HostWide` — so a post-commit read would OVER-evict every tenant
 /// for a mere member removal. The pre-image snapshot is what keeps that
