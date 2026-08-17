@@ -24,7 +24,9 @@ Detailed mechanism lives in [`.claude/rules/`](.claude/rules/), loaded automatic
 you touch a matching path — see [Where the rest lives](#where-the-rest-lives). A generated
 per-file index is in [`docs/architecture.md`](docs/architecture.md)
 (`bash docs/gen-architecture.sh`). Reviewers arriving without this context should read
-[`AGENTS.md`](AGENTS.md).
+[`AGENTS.md`](AGENTS.md) — including its **Adjudicated verdicts** section, which lists
+designs already judged deliberate (with the module that compensates each) so a review
+neither re-reports nor "fixes" them.
 
 ## Build & restart
 
