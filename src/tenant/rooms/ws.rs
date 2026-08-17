@@ -9,6 +9,11 @@
 //!       carrying `expires_at` (`ws_auth::PatDeadline`); fires once, sends
 //!       [`codes::CONN_EXPIRED`] and closes 1008
 //!
+//! The select is `biased;` with priority (d) > (c) > (a) > (b) — an elapsed
+//! deadline wins every tie, so no op is dispatched and no fan-out message
+//! delivered past it (codex #976 r2; the ordering rationale lives on the
+//! `biased;` line itself).
+//!
 //! Auth at upgrade: bearer resolved by `bearer_auth_layer` upstream
 //! (which itself reads the Authorization header rewritten from
 //! `?token=` by `ws_query_token_adapter`). Anon / User / Service all
@@ -319,6 +324,57 @@ async fn handle_socket<Si, St, E>(
 
     loop {
         tokio::select! {
+            // codex #976 r2 — `biased;`: poll in declaration order, timers
+            // first. Random polling let a ready inbound frame (or a ready
+            // broadcast) beat an ELAPSED deadline at even odds per pass, so
+            // an expired credential could land one more op — or be handed
+            // one more fan-out message — on the way out (measured red by
+            // `an_elapsed_deadline_beats_a_ready_inbound_frame`).
+            // Declaration order IS the priority order now:
+            //   (d) expiry — fires at most once, can never starve anything;
+            //   (c) keepalive — ready once per period, and it carries the
+            //       idle-socket eviction checkpoint, so it must outrank both
+            //       data branches: below (b) a busy room could starve it and
+            //       unbound #955's idle eviction latency;
+            //   (a) inbound above (b) fan-out — a client flooding frames
+            //       only delays its OWN broadcast delivery, while the
+            //       reverse order would let a busy room starve the per-frame
+            //       checkpoint (a) and every client op behind it.
+            biased;
+            // Branch (d): #976 F2 — the credential's own hard expiry. Fires at
+            // most once (the arm breaks), and only for a credential family
+            // that HAS a hard expiry, which today is the admin PAT alone.
+            // Unlike an evict this is not an authorization event: nothing was
+            // revoked, so the frames say CONN_EXPIRED and the client learns
+            // that reconnecting needs a NEW token rather than the same one.
+            // Both sends are best-effort for the same reason as
+            // `check_epoch_evicted`'s — the point is to close.
+            _ = &mut expiry, if has_deadline => {
+                let _ = send_error(
+                    &mut sink,
+                    None,
+                    codes::CONN_EXPIRED,
+                    "credential expired; reconnect with a newly issued token",
+                    None,
+                )
+                .await;
+                let _ = sink
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::POLICY, // 1008
+                        reason: Utf8Bytes::from_static("expired"),
+                    })))
+                    .await;
+                break;
+            }
+            // Branch (c): keepalive
+            _ = ka.tick() => {
+                // #955 checkpoint (c) — this is the ONLY checkpoint an IDLE
+                // socket ever reaches, so it is what bounds post-evict life
+                // to one keepalive period instead of "until the client
+                // happens to disconnect".
+                if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
+                if sink.send(Message::Ping(axum::body::Bytes::new())).await.is_err() { break; }
+            }
             // Branch (a): upstream WS frame
             maybe_frame = stream.next() => {
                 let frame = match maybe_frame {
@@ -392,40 +448,6 @@ async fn handle_socket<Si, St, E>(
                         stream_map.remove(&room);
                     }
                 }
-            }
-            // Branch (c): keepalive
-            _ = ka.tick() => {
-                // #955 checkpoint (c) — this is the ONLY checkpoint an IDLE
-                // socket ever reaches, so it is what bounds post-evict life
-                // to one keepalive period instead of "until the client
-                // happens to disconnect".
-                if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
-                if sink.send(Message::Ping(axum::body::Bytes::new())).await.is_err() { break; }
-            }
-            // Branch (d): #976 F2 — the credential's own hard expiry. Fires at
-            // most once (the arm breaks), and only for a credential family
-            // that HAS a hard expiry, which today is the admin PAT alone.
-            // Unlike an evict this is not an authorization event: nothing was
-            // revoked, so the frames say CONN_EXPIRED and the client learns
-            // that reconnecting needs a NEW token rather than the same one.
-            // Both sends are best-effort for the same reason as
-            // `check_epoch_evicted`'s — the point is to close.
-            _ = &mut expiry, if has_deadline => {
-                let _ = send_error(
-                    &mut sink,
-                    None,
-                    codes::CONN_EXPIRED,
-                    "credential expired; reconnect with a newly issued token",
-                    None,
-                )
-                .await;
-                let _ = sink
-                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                        code: axum::extract::ws::close_code::POLICY, // 1008
-                        reason: Utf8Bytes::from_static("expired"),
-                    })))
-                    .await;
-                break;
             }
         }
     }
@@ -1280,6 +1302,62 @@ mod tests {
         );
     }
 
+    /// codex #976 r2 — the conn loop's select is `biased;` and its
+    /// declaration order IS the priority order: (d) expiry, (c) keepalive,
+    /// (a) inbound, (b) fan-out.
+    ///
+    /// Division of labour with the executed test
+    /// `an_elapsed_deadline_beats_a_ready_inbound_frame`: that test catches
+    /// a removed `biased;` or an (a)-above-(d) inversion (an expired
+    /// credential lands one more op). What ONLY this pin can see is
+    /// (c) sliding below (a) or (b): under `biased;` a continuously-ready
+    /// data branch polled ahead of the keepalive STARVES checkpoint (c), so
+    /// a busy room keeps an evicted idle socket alive indefinitely —
+    /// unbounding the one-keepalive-period guarantee #955 documents — and no
+    /// executed test can observe that without a timing race. Matched against
+    /// comment-stripped source per the srcpin rule: a commented-out
+    /// `// biased;` above a random-order select must not read as present.
+    #[test]
+    fn select_is_biased_with_timers_ahead_of_data_branches() {
+        let src = srcpin::code_only(include_str!("ws.rs"));
+        let start = src
+            .find("async fn handle_socket<")
+            .expect("handle_socket's signature changed — update this structural pin");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n}\n")
+            .expect("could not find the end of handle_socket's body");
+        let body = &rest[..end];
+
+        let sel = body
+            .find("tokio::select! {")
+            .expect("the conn loop must still be a tokio::select!");
+        let biased = body.find("biased;").expect(
+            "the select must stay `biased;` — random polling re-opens the post-expiry op \
+             race (an elapsed deadline loses a coin flip to a ready frame every pass)",
+        );
+        let d = body
+            .find("_ = &mut expiry, if has_deadline")
+            .expect("branch (d) moved — update this structural pin");
+        let c = body
+            .find("_ = ka.tick()")
+            .expect("branch (c) moved — update this structural pin");
+        let a = body
+            .find("maybe_frame = stream.next()")
+            .expect("branch (a) moved — update this structural pin");
+        let b = body
+            .find("stream_map.next(), if !stream_map.is_empty()")
+            .expect("branch (b) moved — update this structural pin");
+        assert!(
+            sel < biased && biased < d && d < c && c < a && a < b,
+            "branch order must be `biased;` then (d) expiry, (c) keepalive, (a) inbound, \
+             (b) fan-out — found offsets sel={sel} biased={biased} d={d} c={c} a={a} b={b}. \
+             (d) first is what makes the deadline win ties; (c) above the data branches is \
+             what keeps a busy room from starving the idle-socket eviction checkpoint; \
+             (a) above (b) means a frame-flooding client only delays its OWN broadcasts",
+        );
+    }
+
     /// #955 — drive the REAL conn loop over an in-memory duplex and return
     /// every frame it wrote.
     ///
@@ -1765,5 +1843,73 @@ mod tests {
             frames.len() > 2,
             "the socket was supposed to be BUSY: expected pongs before the close, got {frames:?}",
         );
+    }
+
+    /// #976 codex r2 (MED) — an ELAPSED deadline must beat a READY inbound
+    /// frame in the same poll: no op is ever dispatched past the deadline.
+    ///
+    /// `tokio::select!` polls its ready branches in RANDOM order unless
+    /// `biased;` is set, so with the frame queued before the loop's first
+    /// poll and the deadline already in the past, both branches are ready
+    /// together and the pre-fix loop dispatched the frame on roughly every
+    /// second run. One post-expiry pong anywhere is a fail, and 20 fair coin
+    /// flips all landing on the timer side has probability 2⁻²⁰ — so this
+    /// test was reliably red before `biased;` and is deterministic after it.
+    #[tokio::test]
+    async fn an_elapsed_deadline_beats_a_ready_inbound_frame() {
+        const TENANT: &str = "t_deadline_tie";
+        for round in 0..20u32 {
+            let bus = crate::tenant::rooms::bus::RoomBus::new();
+            let epoch = bus.tenant_epoch_handle(TENANT);
+            let epoch0 = epoch.load(SeqCst);
+            let cfg = RoomsConfig::test_defaults();
+            let pc = PublishCtx {
+                bus: bus.clone(),
+                bucket: cfg.bucket(),
+                cfg,
+            };
+
+            let (frames_in, stream) =
+                futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+            let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+
+            // `op:ping` WITH a `ref` — the one op whose dispatch is visible on
+            // the wire alone (a pong envelope), same trick as
+            // `drive_one_frame`. Queued BEFORE the first poll so branch (a)
+            // and branch (d) are ready in the same pass.
+            frames_in
+                .unbounded_send(Ok(Message::Text(Utf8Bytes::from_static(
+                    r#"{"op":"ping","ref":"r1"}"#,
+                ))))
+                .unwrap();
+            let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                handle_socket(
+                    sink,
+                    stream,
+                    AuthCtx::Anon,
+                    pc,
+                    TENANT.to_string(),
+                    TenantPublishPolicy::default(),
+                    epoch,
+                    epoch0,
+                    Some(deadline),
+                ),
+            )
+            .await
+            .expect("an elapsed deadline must close the socket");
+            drop(frames_in);
+
+            // Exactly the typed error + Close — a pong anywhere means the
+            // expired credential landed one more op on the way out.
+            let frames = out.collect::<Vec<_>>().await;
+            assert!(
+                frames.len() == 2,
+                "round {round}: an op was dispatched past the deadline: {frames:?}",
+            );
+            assert_typed_close(&frames, codes::CONN_EXPIRED);
+        }
     }
 }
