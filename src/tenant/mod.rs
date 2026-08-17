@@ -764,7 +764,12 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             "/t/{tenant}/records/{coll}/subscribe",
             get({
                 let b = bus.clone();
-                move |ext, ctx, path| sse::subscribe_handler(b.clone(), ext, ctx, path)
+                // #976 F2 — `pat_deadline` is the same extension /realtime
+                // consumes; SSE takes only that one (no epoch — see the
+                // handler).
+                move |ext, ctx, pat_deadline, path| {
+                    sse::subscribe_handler(b.clone(), ext, ctx, pat_deadline, path)
+                }
             }),
         )
         .route(

@@ -2,6 +2,7 @@ use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
 use crate::storage::schema::{DmlVerb, is_protected_collection};
 use crate::tenant::events::{Event, EventBus};
+use crate::tenant::rooms::ws_auth::PatDeadline;
 use crate::tenant::router::TenantRef;
 use axum::Extension;
 use axum::extract::Path;
@@ -29,8 +30,31 @@ pub async fn subscribe_handler(
     bus: EventBus,
     Extension(t): Extension<TenantRef>,
     Extension(ctx): Extension<AuthCtx>,
+    // #976 F2 — optional for the same reason `ws_handler`'s is: a router
+    // mounted without the PAT arms (tests, dev) still subscribes, with the
+    // pre-#976 behaviour of no expiry at all.
+    pat_deadline: Option<Extension<PatDeadline>>,
     Path((tenant, coll)): Path<(String, String)>,
 ) -> Response {
+    // #976 F2, the SSE face of the credential-expiry kick: an admin PAT
+    // carrying `expires_at` must not hold an event stream past it. Only the
+    // deadline is consumed here — epochs do NOT apply to SSE, whose eviction
+    // is a channel drop that ends the stream by itself, and which has no
+    // inbound frame or close code to carry a `CONN_EXPIRED` on.
+    //
+    // Converted BEFORE the schema reads below for the same reason ws.rs
+    // converts before `on_upgrade`: an `Instant::now()` taken later pushes the
+    // deadline out by however long the setup took. Earlier is fail-closed. A
+    // deadline already in the past saturates to ZERO and ends the stream on
+    // its first poll — the per-request CTE has already filtered such a PAT
+    // out, so that arm only ever runs as the backstop.
+    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(PatDeadline(exp))| {
+        let dur = (exp - chrono::Utc::now())
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        tokio::time::Instant::now() + dur
+    });
+
     // 1. Protected (_system_*) collections never broadcast and do not
     //    leak existence — 404, matches /records/* behaviour.
     if is_protected_collection(&coll) {
@@ -126,7 +150,7 @@ pub async fn subscribe_handler(
         AnonSelectFilter::PassAll
     };
     let rx = bus.subscribe(&tenant, &coll);
-    let stream = BroadcastStream::new(rx)
+    let events = BroadcastStream::new(rx)
         .filter_map(|r| r.ok())
         .filter(move |ev: &Event| match &anon_select {
             // No select policy (or service): everything passes, as before.
@@ -154,6 +178,21 @@ pub async fn subscribe_handler(
             },
         })
         .map(to_sse_event);
+    // #976 F2 — a credential deadline ends the stream, which closes the
+    // response body and so the connection. Boxed rather than always arming a
+    // far-future timer: absence of the extension must mean NO timer, not one
+    // parked decades out. `take_until` is `futures`' combinator, called
+    // qualified because importing its `StreamExt` here would make every
+    // `tokio_stream` combinator above ambiguous.
+    let stream: std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<SseEvent, Infallible>> + Send>,
+    > = match deadline {
+        Some(at) => Box::pin(futures::StreamExt::take_until(
+            events,
+            tokio::time::sleep_until(at),
+        )),
+        None => Box::pin(events),
+    };
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))
         .into_response()
