@@ -71,33 +71,42 @@ that forgets is a real bug, and it will look locally correct.
 Full review rounds keep re-deriving the same suspicions about the #975 PAT-eviction family,
 because each one looks wrong *locally* while another module carries the missing half.
 Every entry below was adjudicated against the live code (2026-08-17, `v1.65.0..HEAD`
-11-finding round, cross-checked per compensating module). Re-reporting one as a bug wastes
+11-finding round, cross-checked per compensating module) and **re-derived after #976
+landed**, which fixed three of them rather than compensating for them — the entries that
+survive describe v1.66.0 code, not the shape the round found. Re-reporting one as a bug wastes
 a round; **"fixing" one regresses a deliberate design**. If the compensating code itself
 changed in the diff under review, re-derive from scratch — that is the one case this list
 does not cover.
 
 **Deliberate — the "fix" would be the bug:**
 
-- `pat_evict` reads the PAT's reach **live, after commit** (a TOCTOU on paper). The
-  under-evict (security) direction is covered elsewhere: every in-tree path that *narrows*
-  a role closes that identity's sockets itself at the moment of narrowing —
-  `change_role` host-wide, `remove_admin` over its pre-DELETE snapshot, owner transfer for
-  the one tenant that moved (enumerated in `src/mgmt/pat_evict.rs` §Known residual). The
-  residual is over-evict on a promote-vs-reroll race: availability only, ms window. If it
-  ever needs closing, the shape is `remove_admin`'s snapshot-under-lock at all four
-  self-service sites **together** — never a one-site patch.
+- All five `pat_evict` callers read the reach **inside the critical section their revoking
+  write already holds** and apply it after commit (v1.66.0, #976 T4 — the earlier
+  post-commit live re-read, and the `evict_pat_rooms_sockets` delegator that did it, are
+  gone). Reach and revocation are one atomic decision, so do not "simplify" it back to a
+  read after the commit: at the four self-service sites that reopens the promote-vs-reroll
+  over-evict, and at `remove_admin` the row is DELETED by then, so the fail-direction
+  fallback answers `HostWide` and over-evicts the host for a member removal. The snapshot is
+  pinned structurally, not behaviourally — the plan's proposed behavioural mutant was
+  measured GREEN at the self-service sites, so the pin
+  `every_reach_snapshot_is_read_inside_the_revoking_critical_section` counts
+  `s.meta.lock().await` acquisitions instead.
 - `change_role` decides its evict **inline on the pre-image role** instead of calling
-  `pat_evict` — the helper reads the LIVE role, which after a demotion answers the new,
-  narrower reach and under-evicts (CLAUDE.md invariant 5). Not a second role model: both
-  sides classify through the one `tenant_authz::sees_all_tenants` predicate.
+  `pat_evict` — `read_pat_reach` answers off `admins.role` as it stands when it reads, which
+  at this one site is the new, narrower reach, so routing it through there under-evicts
+  (CLAUDE.md invariant 5). It is deliberately outside the snapshot unification above. Not a
+  second role model: both sides classify through the one `tenant_authz::sees_all_tenants`
+  predicate.
 - The PAT family is **enumerated per site**, unlike `revoke_user_realtime`'s choke point.
   The structural control is `pat_evict_pin`'s tree-wide scan
   (`no_revocation_site_hides_outside_the_pinned_files`), which caught a planted 8th site
   during T2 review.
-- `evict_pat_rooms_sockets` re-locks meta and re-reads `admins.role` even where the caller
-  already knows it: two of its four callers sit on the public router with **no profile
-  extension**, and the DB column is the same one the bearer CTE consults
-  (`src/mgmt/pat_evict.rs`, doc on `pat_reach`).
+- `read_pat_reach` re-reads `admins.role` from the DB even where the caller already knows
+  the role: two of its five callers sit on the public router with **no profile extension**,
+  and the DB column is the same one the bearer CTE consults, so the eviction set cannot
+  disagree with what the PAT can actually reach (`src/mgmt/pat_evict.rs`, doc on
+  `read_pat_reach`). It takes a `&Connection`, not the `Arc<Mutex<…>>`, which is what makes
+  the snapshot above impossible to move out of the guard without a visible second lock.
 - `remove_admin` reads `role` twice under the one meta lock (`target_snap` +
   `read_pat_reach`). The duplicate point-read is the price of keeping `read_pat_reach` a
   sealed single decision point; passing the role in would split the reach logic across
@@ -105,17 +114,14 @@ does not cover.
 
 **Accepted residuals — filed in #976; re-report only if the exposure changes:**
 
-- The auth→baseline fail-open window at WS connect (`src/tenant/rooms/ws.rs` module doc).
-  The `evict_all_tenants` shard-walk-vs-concurrent-first-connect race is the **same
-  window** — a socket can only be missed if its bearer auth passed before
-  `clear_admin_pat` — not a new hole.
-- `ws.rs`'s stated reason for not shrinking that window ("would tax every tenant request")
-  is adjudicated **wrong**: `ws_router` (`src/tenant/mod.rs`) is a two-route sub-router
-  with its own layer stack, so a WS-scoped capture layer costs REST nothing. That is a doc
-  bug to fix **with** the #976 work, not ad hoc.
+- The auth→baseline fail-open window at WS connect, **narrowed to one `next.run` poll hop**
+  by `ws_auth::ws_baseline_capture` (v1.66.0, #976 F1) and not closed: a revocation landing
+  between the auth decision and that layer's capture is still adopted as the socket's
+  baseline. The `evict_all_tenants` shard-walk-vs-concurrent-first-connect race is the
+  **same window** — a socket can only be missed if its bearer auth passed before
+  `clear_admin_pat` — not a new hole. Capture may only ever move EARLIER.
 - `pat_evict_pin` keys on the `clear_admin_pat(` needle — a future site that forgets the
   cache clear *too* is invisible to the pin; the guard there is invariant-4 review.
-- A PAT's `expires_at` does not close an already-open socket.
 
 ## Canonical sources — do not hand-verify against prose
 

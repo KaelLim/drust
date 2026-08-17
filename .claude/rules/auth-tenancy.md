@@ -118,7 +118,11 @@ a caller-supplied id. These are a labeled, expiring sub-namespace of admin PATs:
 `uniq_admin_tokens_active` index was relaxed so one unlabeled UI PAT and N labeled CLI PATs
 coexist per admin, and expiry is enforced at **both** the admin-plane resolver and the
 data-plane bearer CTE. They carry **no new privilege** — they resolve to
-`AuthCtx::Service{admin_id}`, which is already cross-tenant.
+`AuthCtx::Service{admin_id}`, which is already cross-tenant. Both admin-PAT resolution arms
+of `bearer_auth_layer` — cache hit and DB — also hand that expiry forward as the
+`PatDeadline` request extension (v1.66.0, #976), because a
+per-request gate alone let an ALREADY-OPEN rooms socket or SSE stream outlive the credential
+— see `.claude/rules/background-jobs.md` §Realtime for what the realtime faces do with it.
 
 Lifecycle routes live on the **public** router via a self-contained `resolve_cli_caller`
 that returns JSON 401 and never a 302.

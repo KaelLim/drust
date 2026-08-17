@@ -196,13 +196,16 @@ impl RoomBus {
     ///   NARROW arm of the admin-PAT revocation family, looping over the
     ///   tenants a non-sees-all admin OWNS. Its other arm is
     ///   [`RoomBus::evict_all_tenants`], taken when the revoked admin's role
-    ///   really is cross-tenant. This is one call site serving five handlers:
-    ///   the four self-service PAT sites (`reroll`, `cli_token_refresh`,
-    ///   `cli_token_logout`, `cli_token_revoke`) via the live-read delegator
-    ///   `evict_pat_rooms_sockets`, plus `remove_admin` via its pre-DELETE
-    ///   reach snapshot. The scoping is the point: the four self-service
-    ///   sites are reachable by a `member`, so a host-wide evict there was a
-    ///   disconnect button anyone could press.
+    ///   really is cross-tenant. This is one call site serving five handlers
+    ///   DIRECTLY (#976 T4 deleted the `evict_pat_rooms_sockets` delegator that
+    ///   used to re-read the reach after commit): the four self-service PAT
+    ///   sites (`reroll`, `cli_token_refresh`, `cli_token_logout`,
+    ///   `cli_token_revoke`) and `remove_admin`, each handing over a
+    ///   `PatReach` it snapshotted inside its own revoking critical section —
+    ///   `remove_admin`'s additionally BEFORE its DELETE, which destroys the
+    ///   row the reach derives from. The scoping is the point: the four
+    ///   self-service sites are reachable by a `member`, so a host-wide evict
+    ///   there was a disconnect button anyone could press.
     ///
     /// The two publish-policy faces are one station with two doors, and both
     /// must evict: a live WS connection captures its `TenantPublishPolicy`
@@ -320,15 +323,17 @@ impl RoomBus {
     /// evicting host-wide would close strangers' sockets. Since the #975 T2
     /// review the four self-service `admin_pat.rs` sites — all reachable by a
     /// `member`, none behind `require_owner_layer` — therefore route through
-    /// `mgmt::pat_evict::evict_pat_rooms_sockets`, which calls this method only
-    /// on the sees-all arm and loops [`RoomBus::evict_tenant`] otherwise.
+    /// `mgmt::pat_evict::evict_reach`, which calls this method only on the
+    /// sees-all arm and loops [`RoomBus::evict_tenant`] otherwise.
     /// Anything new that calls this must be able to say WHY the revoked
     /// identity reaches the whole host; if the answer is "it is simpler", it
     /// belongs behind `pat_evict` instead.
     ///
     /// Passive expiry (PAT `expires_at`, the session janitor) deliberately
     /// does NOT call this — same rule as session expiry (#952): no revoking
-    /// actor, no justification for a host-wide reconnect herd.
+    /// actor, no justification for a host-wide reconnect herd. An expiring
+    /// PAT still ends its OWN realtime connection (#976 `CONN_EXPIRED`), which
+    /// is a per-socket deadline and touches no epoch and no other holder.
     pub fn evict_all_tenants(&self) {
         // ORDER LOAD-BEARING (#975, same rule as evict_tenant above): every
         // epoch is bumped BEFORE any teardown, so the stale-epoch window on
