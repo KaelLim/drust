@@ -780,6 +780,16 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 }
             }),
         )
+        // #976 F1 — applied FIRST here, so it is the INNERMOST layer: the
+        // capture must run after `bearer_auth_layer` admitted the request,
+        // both because a baseline is only meaningful for an authenticated
+        // connection and because `tenant_epoch_handle` INSERTS into a
+        // never-reclaimed keyspace (bus.rs) that must only ever see a
+        // validated tenant id.
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            rooms::ws_auth::ws_baseline_capture,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             router::bearer_auth_layer,

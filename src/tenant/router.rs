@@ -332,6 +332,15 @@ pub async fn bearer_auth_layer(
                         if let CachedRole::AdminPat { admin_id } = role {
                             req.extensions_mut()
                                 .insert(crate::auth::middleware::AdminId(admin_id));
+                            // #976 F2 — hand the PAT's own hard expiry to the
+                            // realtime faces so a socket opened with it dies at
+                            // that instant. Same value the arm above just
+                            // checked; only the admin-PAT family gets one.
+                            if let Some(exp) = expires_at {
+                                req.extensions_mut().insert(
+                                    crate::tenant::rooms::ws_auth::PatDeadline(exp),
+                                );
+                            }
                         }
                         // Audit parity — the DB path sets `resolved_email_snapshot`
                         // from the CTE `pat_email` column so the audit row keeps
@@ -759,6 +768,16 @@ SELECT \
                     .as_deref()
                     .and_then(crate::tenant::auth_cache::parse_sqlite_utc);
                 let skip_cache = pat_expires_raw.is_some() && cached_exp.is_none();
+                // #976 F2 — the realtime faces read the same value from the
+                // request. A non-NULL expiry we cannot parse inserts NOTHING:
+                // identical fail direction to `skip_cache` above (the CTE
+                // still rejects the PAT per request; the socket merely keeps
+                // its pre-#976 lifetime) and strictly better than inventing a
+                // deadline out of an unparsable string.
+                if let Some(exp) = cached_exp {
+                    req.extensions_mut()
+                        .insert(crate::tenant::rooms::ws_auth::PatDeadline(exp));
+                }
                 if !skip_cache {
                     state.auth_cache.insert(
                         hash.clone(),

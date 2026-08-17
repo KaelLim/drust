@@ -1,4 +1,4 @@
-//! #925 — merged harness for the rooms test group (3 members).
+//! #925 — merged harness for the rooms test group (4 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! `duplicate_mod` is inherent to the merge, not a defect: 2 of the members
@@ -15,3 +15,5 @@ mod rooms_policy;
 mod rooms_rest_publish;
 #[path = "rooms_ws.rs"]
 mod rooms_ws;
+#[path = "rooms_ws_capture.rs"]
+mod rooms_ws_capture;

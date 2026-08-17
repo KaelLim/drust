@@ -10,12 +10,65 @@
 //! Both absent → request passes through unauth; bearer_auth rejects 401.
 //! Token with chars `HeaderValue::from_str` rejects (CR/LF/NUL) → silently
 //! dropped, falls through to unauth.
+//!
+//! #976 also puts the two request extensions the realtime faces consume here:
+//! [`WsBaselineMeta`] (produced by [`ws_baseline_capture`], mounted INSIDE
+//! `bearer_auth_layer` on `ws_router` only) and [`PatDeadline`] (produced by
+//! the two admin-PAT resolution arms of `bearer_auth_layer` itself). Both are
+//! server-side per-request state — a client cannot set a request extension.
 
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Uri, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// #976 F1 — this connection's eviction baseline, captured immediately after
+/// bearer auth admitted the request instead of inside the WS handler. The
+/// window between the auth DECISION and the capture is what a revocation can
+/// fall into and be adopted AS this socket's baseline (fail-OPEN for that one
+/// eviction), so the capture may only ever move EARLIER: an older baseline can
+/// only over-close. Absence is the fallback contract — the consumer captures
+/// inline, i.e. exactly today's behavior.
+#[derive(Clone)]
+pub struct WsBaselineMeta {
+    pub epoch: Arc<AtomicU64>,
+    pub epoch0: u64,
+}
+
+/// #976 F2 — the authenticated credential's own hard expiry, so a realtime
+/// connection cannot outlive it. Inserted ONLY when the bearer resolved to an
+/// admin PAT carrying `expires_at`: a user session is SLIDING (snapshotting
+/// its expiry would drop a session that is still being renewed) and a tenant
+/// bearer never expires. The determination follows the credential FAMILY, not
+/// the role.
+#[derive(Clone, Copy)]
+pub struct PatDeadline(pub chrono::DateTime<chrono::Utc>);
+
+/// #976 F1 — runs INNER of `bearer_auth_layer`, on `ws_router` ONLY, so it is
+/// strictly after auth admitted the request: `TenantRef` present ⇒ the tenant
+/// id is validated, which is what the `epochs` INSERTING-keyspace rule in
+/// bus.rs requires of every `tenant_epoch_handle` caller. Missing `TenantRef`
+/// ⇒ insert nothing; the consumer's inline fallback covers it.
+pub async fn ws_baseline_capture(
+    State(state): State<crate::tenant::router::TenantAuthState>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    if let Some(tid) = req
+        .extensions()
+        .get::<crate::tenant::router::TenantRef>()
+        .map(|t| t.tenant_id.clone())
+    {
+        let epoch = state.bus_rooms.tenant_epoch_handle(&tid);
+        let epoch0 = epoch.load(Ordering::SeqCst);
+        req.extensions_mut()
+            .insert(WsBaselineMeta { epoch, epoch0 });
+    }
+    next.run(req).await
+}
 
 pub async fn ws_query_token_adapter(mut req: Request<Body>, next: Next) -> Response {
     let already_has_header = req.headers().contains_key(header::AUTHORIZATION);
