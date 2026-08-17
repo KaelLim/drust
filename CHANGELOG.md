@@ -1,3 +1,25 @@
+## v1.66.1 — 2026-08-17
+
+The single finding of the v1.66.0 codex second-engine review (MED), fixed same-day. No new
+environment variable, no new API, no schema change, no wire-format change.
+
+### Fixed
+
+- **The rooms conn loop's `select!` is now `biased;` with priority expiry > keepalive >
+  inbound > fan-out, so an elapsed `PatDeadline` wins every tie.** `tokio::select!` polls
+  ready branches in random order by default, so a socket whose credential had already
+  expired could still dispatch one more op — or be handed one more fan-out message —
+  whenever a frame was ready in the same poll: a coin flip per pass (reproduced red in
+  `an_elapsed_deadline_beats_a_ready_inbound_frame`, 20 independent ties). Declaration
+  order now decides: no op is dispatched and no broadcast delivered past the deadline.
+  The order's second half is load-bearing on its own — keepalive sits ABOVE the two data
+  branches because under `biased;` a continuously-ready fan-out would otherwise starve
+  the #955 idle-socket eviction checkpoint, unbounding its one-keepalive-period
+  guarantee — and is structurally pinned
+  (`select_is_biased_with_timers_ahead_of_data_branches`, comment-stripped source), since
+  no executed test can observe starvation without a timing race. Mutant-measured: with
+  `biased;` commented out, the pin and the race test both go red.
+
 ## v1.66.0 — 2026-08-17
 
 The residuals v1.65.1 shipped WITH, closed (#976): the codex second-engine review of that
