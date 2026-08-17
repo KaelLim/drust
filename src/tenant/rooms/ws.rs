@@ -5,6 +5,9 @@
 //!   (b) `StreamMap<String, BroadcastStream<RoomMessage>>` — fan-in
 //!   (c) keepalive ticker (`RoomsConfig.keepalive_secs`, default 30 s,
 //!       clamped into 1..=300 — see `keepalive_interval`)
+//!   (d) #976 — the credential's own expiry, present only for an admin PAT
+//!       carrying `expires_at` (`ws_auth::PatDeadline`); fires once, sends
+//!       [`codes::CONN_EXPIRED`] and closes 1008
 //!
 //! Auth at upgrade: bearer resolved by `bearer_auth_layer` upstream
 //! (which itself reads the Authorization header rewritten from
@@ -15,11 +18,18 @@
 //!
 //! #955 — that upgrade-time identity is captured ONCE and never
 //! re-resolved, so revocation reaches a LIVE socket only through the
-//! tenant eviction epoch: `ws_handler` takes `connect_baseline` (the tenant's
-//! shared epoch handle + its value) BEFORE the upgrade and hands
-//! both to `handle_socket`, which compares on branch (a) — on EVERY inbound
+//! tenant eviction epoch: the connection's baseline (the tenant's shared
+//! epoch handle + its value) is taken BEFORE the upgrade and handed to
+//! `handle_socket`, which compares on branch (a) — on EVERY inbound
 //! frame, before the `match` that dispatches it — and on branch (c) every
 //! tick. A mismatch sends [`codes::CONN_EVICTED`] and closes 1008.
+//!
+//! #976 — the baseline is now produced one hop earlier, by the
+//! `ws_auth::ws_baseline_capture` layer mounted inside `bearer_auth_layer`
+//! on `ws_router`; `ws_handler` reads it out of the request extensions and
+//! falls back to capturing inline when it is absent. Revocation is one of
+//! two ways a socket dies: branch (d) covers the other, a credential that
+//! simply runs out of time.
 //!
 //! Checkpoint (a) sits above the frame `match`, not inside the `Text` arm,
 //! deliberately. Only Text carries a privileged effect today, so the narrow
@@ -56,6 +66,7 @@ use crate::tenant::rooms::policy::{
     PublishGate, TenantPublishPolicy, check_publish_allowed, validate_room_name,
 };
 use crate::tenant::rooms::rest::{PublishCtx, PublishError, publish_into_bus};
+use crate::tenant::rooms::ws_auth::{PatDeadline, WsBaselineMeta};
 use axum::extract::ws::{Message, Utf8Bytes, WebSocketUpgrade};
 use axum::extract::{Extension, Path};
 use axum::response::Response;
@@ -68,6 +79,12 @@ use tokio::time::interval;
 use tokio_stream::StreamMap;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+
+/// #976 — the placeholder period branch (d)'s timer is armed with when this
+/// connection has no credential deadline. It is never reached: the branch is
+/// guarded off in that case. 30 years sits comfortably inside tokio's timer
+/// range, so `sleep_until` neither saturates nor panics.
+const FAR_FUTURE: Duration = Duration::from_secs(86_400 * 365 * 30);
 
 /// #955 — this connection's eviction baseline: the tenant's SHARED epoch
 /// atomic plus the value it held at connect.
@@ -99,6 +116,11 @@ pub async fn ws_handler(
     // v1.32.5 — optional so tests / dev routers that mount without
     // bearer_auth_layer fall through to the safe default (service-only).
     policy: Option<Extension<TenantPublishPolicy>>,
+    // #976 — both optional for the same reason, and both fail toward the
+    // pre-#976 behaviour when absent: no baseline extension ⇒ capture inline
+    // below, no deadline ⇒ branch (d) stays disabled for this connection.
+    baseline: Option<Extension<WsBaselineMeta>>,
+    pat_deadline: Option<Extension<PatDeadline>>,
     Path((tenant,)): Path<(String,)>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -110,8 +132,8 @@ pub async fn ws_handler(
     let cap = pc.cfg.payload_max_bytes;
     let policy = policy.map(|Extension(p)| p).unwrap_or_default();
 
-    // #955 — capture this connection's eviction baseline HERE, before the
-    // upgrade, not inside the `on_upgrade` closure.
+    // #955/#976 — this connection's eviction baseline, resolved HERE, before
+    // the upgrade, never inside the `on_upgrade` closure.
     //
     // `on_upgrade` runs its closure only after this handler returns, the 101
     // response is serialized and written to the socket, hyper completes the
@@ -124,33 +146,54 @@ pub async fn ws_handler(
     // later evict — "revocation silently did not happen", the exact class
     // #955 exists to close.
     //
-    // What remains, stated exactly: the window is the bearer-auth DECISION →
-    // this line. It is NOT await-free — it crosses `next.run(req).await` in
-    // `bearer_auth_layer` (`src/tenant/router.rs`), which polls straight
-    // through into this handler in practice but is a suspension point all the
-    // same. Inside that window the behaviour is fail-OPEN for exactly ONE
-    // revocation: an evict landing there is adopted as this socket's baseline,
-    // so this socket ignores THAT revocation and closes only at some later,
-    // unrelated evict.
+    // The window is the bearer-auth DECISION → wherever the pair is actually
+    // read, and #976 F1 moves that read out of this handler entirely.
+    // `ws_auth::ws_baseline_capture` is mounted INNERMOST on `ws_router`
+    // (`src/tenant/mod.rs`), i.e. inside `bearer_auth_layer`, so it runs the
+    // statement after auth admitted the request and hands the pair over in a
+    // request extension — a per-request server-side slot a client cannot set.
+    // What is left of the window is one `next.run` poll hop rather than the
+    // whole routing + extractor run, and the fail direction is unchanged:
+    // inside it the socket is fail-OPEN for exactly ONE revocation, which it
+    // adopts as its baseline and then ignores until some later, unrelated
+    // evict.
     //
-    // Moving the capture EARLIER is strictly fail-CLOSED (an older baseline
-    // can only cause an extra close, never a missed one), and the window can
-    // in fact be made smaller than this: `bearer_auth_layer` already holds
-    // `state.bus_rooms`, so it could take the pair at the auth decision itself
-    // and hand it over in a request extension — no per-frame identity
-    // re-resolution needed. That is not done because it would add a DashMap
-    // lookup plus an `Arc` clone to EVERY tenant request (REST, MCP, files —
-    // WS upgrades are a rounding error in that traffic) to shrink a window
-    // that is sub-poll in practice. A trade, not an impossibility: if the
-    // fail-open direction ever outweighs the per-request cost, that is the
-    // fix. The no-sticky-kill property holds either way, because a reconnect
-    // takes its own fresh baseline
-    // (`handle_taken_after_evict_reads_current_epoch_no_false_eviction`).
+    // The layer sits on `ws_router` alone — the sub-router that carries only
+    // /realtime and the SSE /subscribe route — so no REST, MCP or files
+    // request ever runs it. (A previous version of this comment refused the
+    // move because taking the pair in `bearer_auth_layer` would tax EVERY
+    // tenant request. That cost was never on the table for a per-route layer,
+    // and the argument is deleted rather than softened.)
     //
-    // WHAT is captured is `connect_baseline`'s executed contract; WHERE it is
-    // captured is all this line still decides, and all the structural pin
-    // still has to check.
-    let (epoch, epoch0) = connect_baseline(&pc.bus, &tenant);
+    // The capture may only ever move EARLIER. An older baseline can cause an
+    // extra close, never a missed one, so earlier is strictly fail-CLOSED and
+    // any refactor that pushes it later — into the closure, into the loop —
+    // is a regression regardless of how much tidier it reads. The
+    // no-sticky-kill property holds at either end, because a reconnect takes
+    // its own fresh baseline
+    // (`connect_baseline_is_the_bus_handle_and_the_live_epoch`).
+    //
+    // WHAT is captured is `connect_baseline`'s executed contract, and the
+    // extension arm is the same pair taken one hop earlier; WHERE it is read
+    // is all these lines decide, and all the structural pin has to check.
+    let (epoch, epoch0) = match baseline {
+        Some(Extension(m)) => (m.epoch, m.epoch0),
+        None => connect_baseline(&pc.bus, &tenant),
+    };
+
+    // #976 F2 — the credential's hard expiry, converted to the monotonic
+    // clock the select loop can sleep on. Computed HERE for the same reason
+    // as the baseline: `Instant::now()` inside the closure would silently
+    // push the deadline out by the whole upgrade window. A deadline already
+    // in the past saturates to ZERO and therefore fires on the loop's first
+    // poll — the per-request CTE has already filtered such a PAT out, so this
+    // arm only ever runs as the fail-closed backstop.
+    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(PatDeadline(exp))| {
+        let dur = (exp - chrono::Utc::now())
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        tokio::time::Instant::now() + dur
+    });
 
     ws.max_message_size(cap)
         .max_frame_size(cap)
@@ -161,7 +204,9 @@ pub async fn ws_handler(
             // `handle_socket`'s doc for why that mattered enough to change
             // the signature.
             let (sink, stream) = socket.split();
-            handle_socket(sink, stream, ctx, pc, tenant, policy, epoch, epoch0)
+            handle_socket(
+                sink, stream, ctx, pc, tenant, policy, epoch, epoch0, deadline,
+            )
         })
 }
 
@@ -228,6 +273,12 @@ async fn handle_socket<Si, St, E>(
     // make the comparison vacuous and close nothing.
     epoch: Arc<AtomicU64>,
     epoch0: u64,
+    // #976 — the credential's expiry on the monotonic clock, `None` for every
+    // credential family that has no hard one (tenant bearers) or whose expiry
+    // slides (user sessions). Resolved in `ws_handler` for the same reason as
+    // the baseline: taking `Instant::now()` here would move the deadline by
+    // however long the upgrade took.
+    deadline: Option<tokio::time::Instant>,
 ) where
     Si: futures::Sink<Message> + Unpin,
     St: futures::Stream<Item = Result<Message, E>> + Unpin,
@@ -250,6 +301,24 @@ async fn handle_socket<Si, St, E>(
         AuthCtx::Anon => "anon",
     };
     let admin_id = ctx.admin_id();
+
+    // #976 branch (d)'s timer. `tokio::select!` needs a future it can poll
+    // every pass, so the no-deadline case gets a far-future sleep that the
+    // `if has_deadline` guard disables — the guard, not the instant, is what
+    // makes an unexpiring connection cost nothing.
+    //
+    // `sleep_until`, never `sleep`: the deadline is a point in time, not a
+    // budget. A relative sleep restarted on each pass of the loop lets a
+    // client that keeps sending frames postpone its own expiry indefinitely
+    // (measured — it is the one mutant
+    // `a_busy_socket_expires_on_time_because_the_timer_is_not_re_armed`
+    // exists for). Pinning once outside the loop is then just economy, not
+    // correctness.
+    let has_deadline = deadline.is_some();
+    let expiry = tokio::time::sleep_until(
+        deadline.unwrap_or_else(|| tokio::time::Instant::now() + FAR_FUTURE),
+    );
+    tokio::pin!(expiry);
 
     loop {
         tokio::select! {
@@ -335,6 +404,31 @@ async fn handle_socket<Si, St, E>(
                 // happens to disconnect".
                 if check_epoch_evicted(&mut sink, &epoch, epoch0).await { break; }
                 if sink.send(Message::Ping(axum::body::Bytes::new())).await.is_err() { break; }
+            }
+            // Branch (d): #976 F2 — the credential's own hard expiry. Fires at
+            // most once (the arm breaks), and only for a credential family
+            // that HAS a hard expiry, which today is the admin PAT alone.
+            // Unlike an evict this is not an authorization event: nothing was
+            // revoked, so the frames say CONN_EXPIRED and the client learns
+            // that reconnecting needs a NEW token rather than the same one.
+            // Both sends are best-effort for the same reason as
+            // `check_epoch_evicted`'s — the point is to close.
+            _ = &mut expiry, if has_deadline => {
+                let _ = send_error(
+                    &mut sink,
+                    None,
+                    codes::CONN_EXPIRED,
+                    "credential expired; reconnect with a newly issued token",
+                    None,
+                )
+                .await;
+                let _ = sink
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::POLICY, // 1008
+                        reason: Utf8Bytes::from_static("expired"),
+                    })))
+                    .await;
+                break;
             }
         }
     }
@@ -892,6 +986,18 @@ mod tests {
     /// `match frame` with a branch-free, await-free prologue, and (c) must be
     /// the FIRST statement in the keepalive arm.
     ///
+    /// #976 (round 5) changed WHAT the `ws_handler` half pins, not why. The
+    /// baseline now arrives in a request extension and `connect_baseline` is
+    /// the fallback for a router mounted without the capture layer, so the
+    /// single-statement needle became a three-part one: the `match` head, the
+    /// fallback arm, and — new — the deadline conversion, each asserted to sit
+    /// before `.on_upgrade`. The deadline joins for the round-4 reason, one
+    /// step removed: `tokio::time::Instant::now()` evaluated inside the
+    /// closure would move the expiry out by however long the upgrade took,
+    /// which is the same fail-OPEN direction as reading the epoch in there,
+    /// and equally invisible to every executed test (they call `handle_socket`
+    /// directly and hand it an instant that is already correct).
+    ///
     /// It reads the two functions' own bodies, so the needles in this test's
     /// source cannot satisfy it.
     #[test]
@@ -900,9 +1006,24 @@ mod tests {
         let stripped = srcpin::code_only(include_str!("ws.rs"));
         let src = stripped.as_str();
 
-        // ---- the capture: in `ws_handler`, BEFORE the upgrade ----
-        const CAPTURE: &str = "let (epoch, epoch0) = connect_baseline(&pc.bus, &tenant);";
-        const HANDOFF: &str = "handle_socket(sink, stream, ctx, pc, tenant, policy, epoch, epoch0)";
+        // ---- the baseline: in `ws_handler`, BEFORE the upgrade ----
+        // #976 changed the contract this half pins. There are now TWO ways the
+        // pair arrives — the `ws_baseline_capture` extension (production) and
+        // the inline `connect_baseline` fallback (a router mounted without the
+        // layer) — and BOTH must be resolved before `.on_upgrade`, because the
+        // fail-open window this whole apparatus exists to bound ends wherever
+        // the read happens, not wherever the extension was written. So the
+        // `match` head and its fallback arm are pinned separately, and both
+        // against the upgrade.
+        const BASELINE: &str = "let (epoch, epoch0) = match baseline {";
+        const FALLBACK: &str = "None => connect_baseline(&pc.bus, &tenant),";
+        const DEADLINE: &str = "let deadline: Option<tokio::time::Instant> =";
+        // The hand-off is past rustfmt's `fn_call_width`, so it is reflowed
+        // across lines and the needle has to be the ARGUMENT LIST alone; the
+        // call itself is counted separately. Same job either way — tying the
+        // resolved pair to the loop that consumes it.
+        const HANDOFF_CALL: &str = "handle_socket(";
+        const HANDOFF: &str = "sink, stream, ctx, pc, tenant, policy, epoch, epoch0, deadline,";
 
         let h_start = src
             .find("pub async fn ws_handler(")
@@ -914,13 +1035,22 @@ mod tests {
         let handler = &h_rest[..h_end];
 
         assert_eq!(
-            handler.matches(CAPTURE).count(),
+            handler.matches(BASELINE).count(),
             1,
-            "ws_handler must take its eviction baseline EXACTLY once, as `{CAPTURE}`. WHAT that \
-             call returns is executed contract \
+            "ws_handler must resolve its eviction baseline EXACTLY once, as `{BASELINE}`. WHAT \
+             the fallback arm returns is executed contract \
              (`connect_baseline_is_the_bus_handle_and_the_live_epoch`); this pin exists for the \
              one thing no test can reach — the call site itself, which cannot be exercised \
              because `WebSocketUpgrade` needs a real upgrading request",
+        );
+        assert_eq!(
+            handler.matches(FALLBACK).count(),
+            1,
+            "the extension arm needs a fallback that is EXACTLY `{FALLBACK}`: a router mounted \
+             without `ws_baseline_capture` (dev, tests) must still get today's inline capture. \
+             The fail direction of a missing extension is pre-#976 behaviour, never `no baseline \
+             at all` — a synthesized handle or a literal 0 would turn #955 off for every such \
+             mount",
         );
         assert_eq!(
             handler.matches("connect_baseline(").count(),
@@ -928,46 +1058,65 @@ mod tests {
             "exactly ONE baseline per connection: a second call would let the checkpoints \
              compare a handle against some other capture's value",
         );
-        let capture = handler.find(CAPTURE).unwrap();
+        let baseline_at = handler.find(BASELINE).unwrap();
+        let fallback_at = handler.find(FALLBACK).unwrap();
+        let deadline_at = handler
+            .find(DEADLINE)
+            .expect("ws_handler must convert the PAT deadline as `{DEADLINE}`");
         let upgrade = handler
             .find(".on_upgrade(")
             .expect("ws_handler must still upgrade through .on_upgrade");
-        assert!(
-            capture < upgrade,
-            "the eviction baseline must be captured BEFORE .on_upgrade: the closure runs only \
-             after the 101 is written and the task is scheduled, and an evict landing in that \
-             window would be adopted as this socket's baseline — permanent immunity to that \
-             revocation",
-        );
+        for (what, at) in [
+            ("the eviction baseline", baseline_at),
+            ("the inline fallback capture", fallback_at),
+            ("the deadline conversion", deadline_at),
+        ] {
+            assert!(
+                at < upgrade,
+                "{what} must be resolved BEFORE .on_upgrade: the closure runs only after the 101 \
+                 is written and the task is scheduled, and this repo has measured that hand-off \
+                 being starved. An evict landing in that window would be adopted as this \
+                 socket's baseline (permanent immunity to that revocation), and an \
+                 `Instant::now()` taken in there would push the credential deadline out by the \
+                 whole upgrade",
+            );
+        }
 
         // The hand-off. Pinning the whole argument tuple is what ties the
-        // captured pair to the loop that consumes it: `handle_socket`'s own
+        // resolved pair to the loop that consumes it: `handle_socket`'s own
         // body is already forbidden from taking a second handle, so if what
-        // reaches it here is the pair `connect_baseline` produced, the
+        // reaches it here is the pair the `match` above produced, the
         // comparison provably runs against the bus.
+        assert_eq!(
+            handler.matches(HANDOFF_CALL).count(),
+            1,
+            "ws_handler must start the conn loop exactly once",
+        );
         assert_eq!(
             handler.matches(HANDOFF).count(),
             1,
-            "ws_handler must hand the captured pair straight to the conn loop — `{HANDOFF}`. \
-             Anything else (a fresh atomic, a literal 0, a re-read) decouples the checkpoints \
-             from the bus while every other assertion here still passes",
+            "ws_handler must hand the resolved pair straight to the conn loop — \
+             `{HANDOFF_CALL}` over `{HANDOFF}`. Anything else (a fresh atomic, a literal 0, a \
+             re-read, a deadline recomputed in the closure) decouples the loop from what this \
+             handler resolved while every other assertion here still passes",
         );
         assert!(
             handler.find(HANDOFF).unwrap() > upgrade,
             "the hand-off belongs inside the on_upgrade closure",
         );
 
-        // Exactly four mentions of `epoch` in the whole (comment-stripped)
-        // handler: two in CAPTURE, two in HANDOFF. Any third statement that
-        // touches either name — `let epoch0 = 0;` (the fail-CLOSED mutant:
-        // every socket on a previously-evicted tenant dies at once), a second
+        // Exactly six mentions of `epoch` in the whole (comment-stripped)
+        // handler: two in BASELINE's head, two in the extension arm that
+        // destructures the meta, two in HANDOFF. Anything else that touches
+        // either name — `let epoch0 = 0;` (the fail-CLOSED mutant: every
+        // socket on a previously-evicted tenant dies at once), a second
         // binding, an arithmetic tweak — is a mutant, and counting is the only
         // form of this assertion that does not have to enumerate them.
         assert_eq!(
             handler.matches("epoch").count(),
-            4,
-            "ws_handler must mention `epoch`/`epoch0` in EXACTLY the two pinned statements \
-             (2 + 2). A third mention means something else is producing, rebinding or \
+            6,
+            "ws_handler must mention `epoch`/`epoch0` in EXACTLY the three pinned statements \
+             (2 + 2 + 2). A further mention means something else is producing, rebinding or \
              adjusting this connection's baseline:\n{handler}",
         );
         for needle in ["AtomicU64", "Arc::new(", "tenant_epoch_handle(", ".load("] {
@@ -1215,6 +1364,7 @@ mod tests {
             TenantPublishPolicy::default(),
             epoch,
             epoch0,
+            None,
         )
         .await;
 
@@ -1335,6 +1485,7 @@ mod tests {
                 TenantPublishPolicy::default(),
                 epoch,
                 epoch0,
+                None,
             ),
         )
         .await
@@ -1368,6 +1519,252 @@ mod tests {
         assert!(
             !frames.iter().any(|m| matches!(m, Message::Ping(_))),
             "an evicted socket must be closed on the tick, not pinged: {frames:?}"
+        );
+    }
+
+    /// #976 branch (d) — drive the REAL conn loop with NO inbound traffic and
+    /// return what it wrote, or `None` when it was still running after
+    /// `budget`.
+    ///
+    /// The inbound sender is held for the whole call on purpose: dropping it
+    /// would end the stream and exit through branch (a), proving nothing about
+    /// the timer branches. `None` is a first-class outcome rather than a
+    /// failure — the control arm ("a connection with no deadline is never
+    /// closed by branch (d)") can ONLY be stated as "it was still running",
+    /// and without it a branch that closed EVERY socket would read as green.
+    async fn drive_idle(
+        deadline: Option<tokio::time::Instant>,
+        evict: bool,
+        keepalive_secs: u64,
+        budget: Duration,
+    ) -> Option<Vec<Message>> {
+        const TENANT: &str = "t_deadline_idle";
+
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+
+        let mut cfg = RoomsConfig::test_defaults();
+        cfg.keepalive_secs = keepalive_secs;
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+
+        let (_frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+
+        if evict {
+            bus.evict_tenant(TENANT);
+        }
+
+        tokio::time::timeout(
+            budget,
+            handle_socket(
+                sink,
+                stream,
+                AuthCtx::Anon,
+                pc,
+                TENANT.to_string(),
+                TenantPublishPolicy::default(),
+                epoch,
+                epoch0,
+                deadline,
+            ),
+        )
+        .await
+        .ok()?;
+
+        Some(out.collect::<Vec<_>>().await)
+    }
+
+    /// Both timer branches close the same way — a typed error frame first,
+    /// then 1008 — so the wire assertion is shared rather than written twice
+    /// with two chances to drift.
+    fn assert_typed_close(frames: &[Message], expected_code: &str) {
+        assert_eq!(
+            frames.len(),
+            2,
+            "expected exactly the typed error and the close: {frames:?}"
+        );
+        let Message::Text(t) = &frames[0] else {
+            panic!("expected the typed error frame first, got {:?}", frames[0]);
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error", "{v}");
+        assert_eq!(
+            v["code"], expected_code,
+            "a client distinguishes `your credential ran out` from `you were revoked` by this \
+             code alone — reconnecting fixes exactly one of them: {v}",
+        );
+        match &frames[1] {
+            Message::Close(Some(cf)) => assert_eq!(
+                cf.code,
+                axum::extract::ws::close_code::POLICY,
+                "must close 1008 Policy Violation, not a normal close"
+            ),
+            other => panic!("expected Close(1008) after the error, got {other:?}"),
+        }
+    }
+
+    /// #976 F2, EXECUTED — an idle socket whose credential expires is closed
+    /// by branch (d), not left running until the holder disconnects.
+    ///
+    /// This is the whole point of F2: a PAT's `expires_at` used to gate new
+    /// REQUESTS only, so a socket opened one second before expiry kept
+    /// `AuthCtx::Service` for as long as the client cared to hold it.
+    ///
+    /// The keepalive stays at the 30 s default so branch (c) cannot fire and
+    /// take credit for the close, and the socket is never evicted, so the
+    /// epoch checkpoints have nothing to report either — the only thing that
+    /// can produce these two frames is the deadline.
+    #[tokio::test]
+    async fn pat_deadline_closes_the_idle_socket_with_conn_expired_1008() {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+        let frames = drive_idle(Some(deadline), false, 30, Duration::from_secs(10))
+            .await
+            .expect(
+                "branch (d) missing or non-breaking: a socket whose credential had expired was \
+                 still running long after the deadline, which is exactly the residual #976 F2 \
+                 exists to close",
+            );
+        assert_typed_close(&frames, codes::CONN_EXPIRED);
+    }
+
+    /// #976 F2 — an ALREADY-PAST deadline fires on the first poll.
+    ///
+    /// The per-request CTE already refuses an expired PAT, so this arm should
+    /// be unreachable in production; it is pinned because the conversion in
+    /// `ws_handler` saturates a negative duration to ZERO, and the plausible
+    /// alternative (`unwrap_or(FAR_FUTURE)`, or letting the subtraction
+    /// underflow into a huge positive) would turn the backstop into a socket
+    /// that never expires at all — fail-OPEN, and silent.
+    #[tokio::test]
+    async fn already_past_deadline_closes_immediately() {
+        let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+        let frames = drive_idle(Some(deadline), false, 30, Duration::from_secs(10))
+            .await
+            .expect("a deadline in the past must fire on the loop's first poll");
+        assert_typed_close(&frames, codes::CONN_EXPIRED);
+    }
+
+    /// The control arm for branch (d). Without it, an unguarded timer — or one
+    /// armed at `Instant::now()` for every connection — would satisfy the two
+    /// tests above while closing every healthy socket on the host.
+    #[tokio::test]
+    async fn a_connection_with_no_deadline_is_never_closed_by_branch_d() {
+        assert!(
+            drive_idle(None, false, 30, Duration::from_millis(400))
+                .await
+                .is_none(),
+            "a connection whose credential has no hard expiry (tenant bearer, sliding user \
+             session) must outlive branch (d) entirely",
+        );
+    }
+
+    /// #976 — the two timer branches coexist, and whichever comes FIRST closes
+    /// the socket.
+    ///
+    /// This direction is the one worth pinning: the deadline is far away and
+    /// the evict already happened, so an implementation that let branch (d)'s
+    /// far-future sleep starve branch (c) — or that returned `CONN_EXPIRED`
+    /// for an eviction — is caught. The opposite direction is
+    /// `pat_deadline_closes_the_idle_socket_with_conn_expired_1008` above,
+    /// which runs with no evict at all.
+    #[tokio::test]
+    async fn an_evict_still_wins_when_it_lands_before_the_deadline() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
+        let frames = drive_idle(Some(deadline), true, 1, Duration::from_secs(10))
+            .await
+            .expect("the keepalive checkpoint must still close an evicted socket");
+        assert_typed_close(&frames, codes::CONN_EVICTED);
+    }
+
+    /// #976 — the deadline is ABSOLUTE, so a BUSY socket expires on time too.
+    ///
+    /// Every other branch-(d) test above drives an idle socket, and an idle
+    /// socket cannot tell an absolute deadline from a countdown that traffic
+    /// restarts. This one feeds a frame every 5 ms for as long as the loop
+    /// will take them, so a timer that measures "80 ms since the last pass"
+    /// never arrives at all — unlimited life for a dead credential, with
+    /// every other test in this file green.
+    ///
+    /// Measured on 2026-08-17, one mutant at a time, `cargo test --lib
+    /// rooms::ws`:
+    ///
+    /// | mutant | this test |
+    /// |---|---|
+    /// | `sleep(ttl)` re-created per loop pass | red (times out at 10 s) |
+    /// | `sleep_until(deadline)` re-created per loop pass | green |
+    ///
+    /// The second row is why the doc says ABSOLUTE rather than "pinned
+    /// outside the loop": re-creating `sleep_until` with the same instant
+    /// costs an allocation and changes nothing, so this test does not — and
+    /// should not be described as if it does — pin the timer's placement.
+    /// What it pins is that the instant is not recomputed from `now()`.
+    #[tokio::test]
+    async fn a_busy_socket_expires_on_time_because_the_timer_is_not_re_armed() {
+        const TENANT: &str = "t_deadline_busy";
+
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+
+        let cfg = RoomsConfig::test_defaults();
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+
+        let (frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+
+        // Feeds until the conn loop drops its end of the stream, so the
+        // re-arming mutant keeps being handed a reason to postpone.
+        let feeder = tokio::spawn(async move {
+            while frames_in
+                .unbounded_send(Ok(Message::Text(Utf8Bytes::from_static(
+                    r#"{"op":"ping","ref":"r1"}"#,
+                ))))
+                .is_ok()
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(80);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            handle_socket(
+                sink,
+                stream,
+                AuthCtx::Anon,
+                pc,
+                TENANT.to_string(),
+                TenantPublishPolicy::default(),
+                epoch,
+                epoch0,
+                Some(deadline),
+            ),
+        )
+        .await
+        .expect(
+            "a socket under continuous traffic was never closed by its deadline — the expiry \
+             timer is being re-armed per pass, so an active client outlives its credential \
+             indefinitely",
+        );
+        feeder.abort();
+
+        let frames = out.collect::<Vec<_>>().await;
+        let tail = &frames[frames.len().saturating_sub(2)..];
+        assert_typed_close(tail, codes::CONN_EXPIRED);
+        assert!(
+            frames.len() > 2,
+            "the socket was supposed to be BUSY: expected pongs before the close, got {frames:?}",
         );
     }
 }

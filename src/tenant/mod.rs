@@ -775,8 +775,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                     bucket: state.bucket.clone(),
                     cfg: state.rooms_cfg.clone(),
                 };
-                move |ctx, policy, path, ws| {
-                    rooms::ws::ws_handler(pc.clone(), ctx, policy, path, ws)
+                // #976 — `baseline` / `pat_deadline` are the two extensions
+                // the layers below insert; both are `Option`, so a router
+                // built without them still upgrades.
+                move |ctx, policy, baseline, pat_deadline, path, ws| {
+                    rooms::ws::ws_handler(pc.clone(), ctx, policy, baseline, pat_deadline, path, ws)
                 }
             }),
         )
