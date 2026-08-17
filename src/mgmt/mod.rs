@@ -19,8 +19,10 @@ pub mod oauth_login;
 /// #975 — the shared "which tenants does this admin's PAT reach" decision the
 /// PAT-revocation sites evict over.
 pub mod pat_evict;
-/// Test-only: the #975 structural pin over the PAT-revocation sites'
-/// `clear_admin_pat` → `bus_rooms.evict` ordering. Not a runtime module.
+/// Test-only: the #975/#976 structural pins over the PAT-revocation sites —
+/// `clear_admin_pat` → `bus_rooms.evict` ordering, tree-wide site
+/// completeness, and the #976 rule that every reach snapshot is read inside
+/// its revoking critical section. Not a runtime module.
 #[cfg(test)]
 mod pat_evict_pin;
 pub mod public_files;

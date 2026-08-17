@@ -44,16 +44,10 @@ pub async fn subscribe_handler(
     //
     // Converted BEFORE the schema reads below for the same reason ws.rs
     // converts before `on_upgrade`: an `Instant::now()` taken later pushes the
-    // deadline out by however long the setup took. Earlier is fail-closed. A
-    // deadline already in the past saturates to ZERO and ends the stream on
-    // its first poll — the per-request CTE has already filtered such a PAT
-    // out, so that arm only ever runs as the backstop.
-    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(PatDeadline(exp))| {
-        let dur = (exp - chrono::Utc::now())
-            .to_std()
-            .unwrap_or(Duration::ZERO);
-        tokio::time::Instant::now() + dur
-    });
+    // deadline out by however long the setup took. Earlier is fail-closed.
+    // Fail direction (already-past ⇒ ends the stream on its first poll) lives
+    // — and is unit-tested — in `PatDeadline::instant`, shared with ws.rs.
+    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(d)| d.instant());
 
     // 1. Protected (_system_*) collections never broadcast and do not
     //    leak existence — 404, matches /records/* behaviour.

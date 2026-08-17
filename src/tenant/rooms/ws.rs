@@ -82,8 +82,11 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 /// #976 — the placeholder period branch (d)'s timer is armed with when this
 /// connection has no credential deadline. It is never reached: the branch is
-/// guarded off in that case. 30 years sits comfortably inside tokio's timer
-/// range, so `sleep_until` neither saturates nor panics.
+/// guarded off in that case. The exact value is inert — tokio clamps timers
+/// past ~2.2 years by SATURATING (verified in the vendored
+/// `TimeSource::instant_to_tick`, no panic), so 30 years arms a ~2.2-year
+/// sleep behind a guard that never lets it poll. All the constant must be is
+/// far away and non-panicking.
 const FAR_FUTURE: Duration = Duration::from_secs(86_400 * 365 * 30);
 
 /// #955 — this connection's eviction baseline: the tenant's SHARED epoch
@@ -182,18 +185,12 @@ pub async fn ws_handler(
     };
 
     // #976 F2 — the credential's hard expiry, converted to the monotonic
-    // clock the select loop can sleep on. Computed HERE for the same reason
+    // clock the select loop can sleep on. Converted HERE for the same reason
     // as the baseline: `Instant::now()` inside the closure would silently
-    // push the deadline out by the whole upgrade window. A deadline already
-    // in the past saturates to ZERO and therefore fires on the loop's first
-    // poll — the per-request CTE has already filtered such a PAT out, so this
-    // arm only ever runs as the fail-closed backstop.
-    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(PatDeadline(exp))| {
-        let dur = (exp - chrono::Utc::now())
-            .to_std()
-            .unwrap_or(Duration::ZERO);
-        tokio::time::Instant::now() + dur
-    });
+    // push the deadline out by the whole upgrade window. Fail direction
+    // (already-past ⇒ fires on first poll) lives — and is unit-tested — in
+    // `PatDeadline::instant`, shared with the SSE face.
+    let deadline: Option<tokio::time::Instant> = pat_deadline.map(|Extension(d)| d.instant());
 
     ws.max_message_size(cap)
         .max_frame_size(cap)
@@ -1636,11 +1633,13 @@ mod tests {
     /// #976 F2 — an ALREADY-PAST deadline fires on the first poll.
     ///
     /// The per-request CTE already refuses an expired PAT, so this arm should
-    /// be unreachable in production; it is pinned because the conversion in
-    /// `ws_handler` saturates a negative duration to ZERO, and the plausible
-    /// alternative (`unwrap_or(FAR_FUTURE)`, or letting the subtraction
-    /// underflow into a huge positive) would turn the backstop into a socket
-    /// that never expires at all — fail-OPEN, and silent.
+    /// be unreachable in production. What THIS test holds is the branch:
+    /// handed an elapsed `Instant`, the loop closes immediately rather than
+    /// treating it as "no deadline". The chrono→Instant conversion that
+    /// PRODUCES such an instant (and whose fail-open alternatives —
+    /// `unwrap_or(FAR_FUTURE)`, an underflowing subtraction — would never
+    /// reach this branch at all) is a separate surface, unit-tested where it
+    /// lives: `PatDeadline::instant` in `ws_auth.rs`.
     #[tokio::test]
     async fn already_past_deadline_closes_immediately() {
         let deadline = tokio::time::Instant::now() - Duration::from_secs(1);

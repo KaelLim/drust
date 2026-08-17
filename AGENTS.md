@@ -112,7 +112,7 @@ does not cover.
   sealed single decision point; passing the role in would split the reach logic across
   call sites.
 
-**Accepted residuals — filed in #976; re-report only if the exposure changes:**
+**Accepted residuals — what remains after #976 (v1.66.0); re-report only if the exposure changes:**
 
 - The auth→baseline fail-open window at WS connect, **narrowed to one `next.run` poll hop**
   by `ws_auth::ws_baseline_capture` (v1.66.0, #976 F1) and not closed: a revocation landing

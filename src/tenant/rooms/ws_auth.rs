@@ -47,11 +47,35 @@ pub struct WsBaselineMeta {
 #[derive(Clone, Copy)]
 pub struct PatDeadline(pub chrono::DateTime<chrono::Utc>);
 
+impl PatDeadline {
+    /// The expiry on the monotonic clock a `select!` loop can sleep on.
+    ///
+    /// One conversion shared by both realtime faces (ws.rs branch (d),
+    /// sse.rs `take_until`) so its fail direction is decided — and unit-tested
+    /// — in exactly one place: a deadline already in the PAST saturates to
+    /// `Instant::now()` and fires on the first poll. The plausible wrong
+    /// alternatives (`unwrap_or` a far-future duration, or letting the
+    /// subtraction underflow) would turn the backstop into a socket that
+    /// never expires — fail-OPEN, and silent, because the per-request CTE
+    /// already filters expired PATs so nothing in production would notice.
+    pub fn instant(&self) -> tokio::time::Instant {
+        let dur = (self.0 - chrono::Utc::now())
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO);
+        tokio::time::Instant::now() + dur
+    }
+}
+
 /// #976 F1 — runs INNER of `bearer_auth_layer`, on `ws_router` ONLY, so it is
 /// strictly after auth admitted the request: `TenantRef` present ⇒ the tenant
 /// id is validated, which is what the `epochs` INSERTING-keyspace rule in
 /// bus.rs requires of every `tenant_epoch_handle` caller. Missing `TenantRef`
 /// ⇒ insert nothing; the consumer's inline fallback covers it.
+///
+/// The `RoomBus` reached through `state.bus_rooms` MUST be the same instance
+/// as the one `ws_handler`'s `PublishCtx.bus` wraps (in production both clone
+/// one `TenantsState.bus_rooms`): a handle taken off a DIFFERENT bus would
+/// track a different `epochs` map and never see this tenant's bumps.
 pub async fn ws_baseline_capture(
     State(state): State<crate::tenant::router::TenantAuthState>,
     mut req: Request<Body>,
@@ -126,6 +150,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use axum::routing::get;
+    use std::time::Duration;
     use tower::ServiceExt;
 
     /// Probe: returns the inbound Authorization value (or "none").
@@ -308,6 +333,67 @@ mod tests {
             "pre-fix shape MUST 401 — confirms the layer-order bug \
              is what we think it is, and that the post-fix shape above \
              is the actual fix, not a coincidence"
+        );
+    }
+
+    /// #976 — `PatDeadline::instant`'s fail direction, both arms. The ws.rs
+    /// duplex tests drive `handle_socket` with a ready-made `Instant` and so
+    /// never execute this conversion; these two are what actually pin it.
+    #[tokio::test]
+    async fn deadline_instant_saturates_a_past_expiry_to_now() {
+        let past = PatDeadline(chrono::Utc::now() - chrono::Duration::hours(1));
+        assert!(
+            past.instant() <= tokio::time::Instant::now(),
+            "a PAST expiry must convert to an already-elapsed instant \
+             (fires on first poll), never to a future one"
+        );
+    }
+
+    #[tokio::test]
+    async fn deadline_instant_lands_a_future_expiry_at_the_right_offset() {
+        let dl = PatDeadline(chrono::Utc::now() + chrono::Duration::seconds(600)).instant();
+        let offset = dl - tokio::time::Instant::now();
+        assert!(
+            offset > Duration::from_secs(590) && offset <= Duration::from_secs(600),
+            "a future expiry must land ~its real offset out, got {offset:?}"
+        );
+    }
+
+    /// #976 — pin the PRODUCTION ws_router layer order in src/tenant/mod.rs.
+    ///
+    /// The behavioural tests above and in `tests/rooms_ws_capture.rs` build
+    /// routers that MIRROR the production order; none reads it. Moving the
+    /// `ws_baseline_capture` layer after `bearer_auth_layer` in mod.rs
+    /// (= outside auth) would silently disable the capture in production —
+    /// fallback behavior, every suite green. Needles run over comment-stripped
+    /// source (`srcpin::code_only`) so a commented-out layer line cannot
+    /// satisfy the order.
+    #[test]
+    fn production_ws_router_applies_capture_inside_auth() {
+        let src = crate::tenant::rooms::srcpin::code_only(include_str!("../mod.rs"));
+        let start = src
+            .find("let ws_router")
+            .expect("src/tenant/mod.rs must build a `ws_router`");
+        let end = src[start..]
+            .find(".with_state")
+            .map(|i| start + i)
+            .expect("ws_router block must end in .with_state");
+        let block = &src[start..end];
+        let capture = block
+            .find("ws_baseline_capture")
+            .expect("ws_router must mount ws_baseline_capture");
+        let bearer = block
+            .find("bearer_auth_layer")
+            .expect("ws_router must mount bearer_auth_layer");
+        let adapter = block
+            .find("ws_query_token_adapter")
+            .expect("ws_router must mount ws_query_token_adapter");
+        assert!(
+            capture < bearer && bearer < adapter,
+            "ws_router layer order regressed: capture must be added FIRST \
+             (innermost, runs after auth), bearer second, adapter last \
+             (outermost) — got offsets capture={capture} bearer={bearer} \
+             adapter={adapter}"
         );
     }
 

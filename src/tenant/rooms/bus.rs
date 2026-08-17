@@ -295,15 +295,16 @@ impl RoomBus {
     /// "EVERY tenant" is literally every tenant with an `epochs` entry, and
     /// the premise that makes that the right set is worth stating rather than
     /// assuming: every live socket's tenant necessarily HAS an entry, because
-    /// `ws_handler` takes its baseline handle through
-    /// [`RoomBus::tenant_epoch_handle`] BEFORE the upgrade
-    /// (`ws::connect_baseline` is that method's only production caller, and
-    /// `ws.rs` is the only production `subscribe` caller), and entries are
-    /// never reclaimed — `sweep_empty` deliberately skips `epochs`. So a
-    /// tenant with no entry has no socket to close. That is a two-call-site
-    /// invariant, not a structural one: a future admin- or SSE-side caller
-    /// that opened a rooms channel without first taking a handle would break
-    /// it silently, so re-derive it if one appears.
+    /// its handle is taken through [`RoomBus::tenant_epoch_handle`] BEFORE the
+    /// upgrade — since #976 by `ws_auth::ws_baseline_capture` (post-auth
+    /// layer, the production path), with `ws::connect_baseline` as the inline
+    /// fallback for mounts without the layer; those two are the only
+    /// production callers, `ws.rs` is the only production `subscribe` caller,
+    /// and entries are never reclaimed — `sweep_empty` deliberately skips
+    /// `epochs`. So a tenant with no entry has no socket to close. That is a
+    /// three-call-site invariant, not a structural one: a future admin- or
+    /// SSE-side caller that opened a rooms channel without first taking a
+    /// handle would break it silently, so re-derive it if one appears.
     ///
     /// Why host-wide: there is no per-connection credential index, so when the
     /// revoked identity's reach IS the host the only available eviction set is
