@@ -96,6 +96,12 @@ pub mod codes {
     /// is no longer trustworthy. Clients must reconnect and re-authenticate;
     /// a still-valid token reconnects normally.
     pub const CONN_EVICTED: &str = "CONN_EVICTED";
+    /// #976 F2 — the credential this socket authenticated with (an admin PAT
+    /// carrying `expires_at`) has reached its own expiry. Server sends this and
+    /// closes 1008. Unlike [`CONN_EVICTED`] nothing was revoked and no epoch
+    /// moved — reconnecting with the SAME token gets 401 from the per-request
+    /// expiry gate, which is the other half of this defense-in-depth pair.
+    pub const CONN_EXPIRED: &str = "CONN_EXPIRED";
 }
 
 #[cfg(test)]

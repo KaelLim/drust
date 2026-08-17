@@ -40,7 +40,7 @@ pub async fn reroll(
     let hash_new = hash_token(&plaintext_new);
 
     // All DB work in a scoped block; lock dropped before any .await.
-    let outcome: Result<(), Response> = {
+    let outcome: Result<crate::mgmt::pat_evict::PatReach, Response> = {
         let conn = s.meta.lock().await;
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
@@ -87,13 +87,22 @@ pub async fn reroll(
             );
         }
 
-        Ok(())
+        // #976 T4 — snapshot the reach while the guard that performed the
+        // revoke is STILL held, so the eviction set and the revocation are one
+        // atomic decision. Read after the commit instead, and a concurrent
+        // promotion between the two answers `HostWide` for a revocation whose
+        // PAT only ever reached this admin's own tenants; a second `meta` lock
+        // is also gone with it.
+        let reach = crate::mgmt::pat_evict::read_pat_reach(&conn, caller_id);
+
+        Ok(reach)
         // conn guard drops here — before any .await
     };
 
-    if let Err(resp) = outcome {
-        return resp;
-    }
+    let reach = match outcome {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
 
     // v1.35 hook 2 — the bulk reroll soft-revoked every active PAT for this
     // admin; the handler holds only the NEW hash. Scan-clear all cached
@@ -111,9 +120,13 @@ pub async fn reroll(
     // `n > 0`-style guard gates it either. Host-wide here would let any
     // logged-in admin — `member` included — close every rooms socket on every
     // tenant, repeatably, by rerolling their OWN key. See
-    // `mgmt::pat_evict::pat_reach`: a sees-all admin still gets the host-wide
-    // evict, because that is genuinely their reach.
-    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller_id).await;
+    // `mgmt::pat_evict::read_pat_reach`: a sees-all admin still gets the
+    // host-wide evict, because that is genuinely their reach.
+    //
+    // The under-evict direction is unchanged by the snapshot: a socket opened
+    // under a WIDER past role is closed by the path that NARROWS the role
+    // (`change_role`, `remove_admin`, owner transfer), never by this site.
+    crate::mgmt::pat_evict::evict_reach(&s, reach);
 
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
@@ -282,7 +295,7 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     let hash_new = hash_token(&plaintext_new);
     let label = caller.label.clone();
     let ttl_mod = format!("+{} seconds", cli_pat_ttl_secs());
-    let expires_at: Result<String, Response> = {
+    let minted: Result<(String, crate::mgmt::pat_evict::PatReach), Response> = {
         let conn = s.meta.lock().await;
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
@@ -353,10 +366,14 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
                 &e.to_string(),
             );
         }
-        Ok(exp)
+        // #976 T4 — snapshot under the guard that performed the revoke; see
+        // `reroll`.
+        let reach = crate::mgmt::pat_evict::read_pat_reach(&conn, caller.admin_id);
+
+        Ok((exp, reach))
         // conn guard drops here — before any .await
     };
-    let expires_at = match expires_at {
+    let (expires_at, reach) = match minted {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -367,7 +384,7 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     // the same reach-scoped set: this route is on the PUBLIC router and
     // self-authenticates against the very PAT being rotated, so a `member`'s
     // CLI could otherwise disconnect every tenant on the host at will.
-    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller.admin_id).await;
+    crate::mgmt::pat_evict::evict_reach(&s, reach);
     emit_audit_revoke(caller.admin_id);
     emit_audit_mint(caller.admin_id);
 
@@ -393,9 +410,9 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         Ok(c) => c,
         Err(e) => return e,
     };
-    let n = {
+    let (n, reach) = {
         let conn = s.meta.lock().await;
-        match conn.execute(
+        let n = match conn.execute(
             "UPDATE _admin_tokens SET revoked_at = datetime('now') \
              WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL AND revoked_at IS NULL",
             params![caller.token_id, caller.admin_id],
@@ -408,7 +425,12 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
                     &e.to_string(),
                 );
             }
-        }
+        };
+        // #976 T4 — snapshot under the guard that performed the revoke; see
+        // `reroll`. Read unconditionally because the `n > 0` guard below is
+        // what decides whether to EVICT, and reading a reach evicts nothing.
+        let reach = crate::mgmt::pat_evict::read_pat_reach(&conn, caller.admin_id);
+        (n, reach)
     };
     if n > 0 {
         s.auth_cache.clear_admin_pat(caller.admin_id);
@@ -416,7 +438,7 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         // NOTHING has no stale credential to close, and evicting anyway would
         // kick subscribers for a no-op. The set is the caller's own PAT reach,
         // so a `member` logout closes only their tenants' sockets.
-        crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller.admin_id).await;
+        crate::mgmt::pat_evict::evict_reach(&s, reach);
         emit_audit_revoke(caller.admin_id);
     }
     Json(serde_json::json!({ "revoked": n > 0 })).into_response()
@@ -433,14 +455,20 @@ pub async fn cli_token_revoke(
     Extension(AdminId(caller_id)): Extension<AdminId>,
     Path(token_id): Path<i64>,
 ) -> Response {
-    let changed = {
+    let (changed, reach) = {
         let conn = s.meta.lock().await;
-        conn.execute(
-            "UPDATE _admin_tokens SET revoked_at = datetime('now') \
-             WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL AND revoked_at IS NULL",
-            params![token_id, caller_id],
-        )
-        .unwrap_or(0)
+        let changed = conn
+            .execute(
+                "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+                 WHERE id = ?1 AND admin_id = ?2 AND label IS NOT NULL AND revoked_at IS NULL",
+                params![token_id, caller_id],
+            )
+            .unwrap_or(0);
+        // #976 T4 — snapshot under the guard that performed the revoke; see
+        // `reroll`. Read unconditionally because the `changed == 0` arm below
+        // is what decides whether to EVICT, and reading a reach evicts nothing.
+        let reach = crate::mgmt::pat_evict::read_pat_reach(&conn, caller_id);
+        (changed, reach)
     };
     if changed == 0 {
         return json_error(
@@ -455,7 +483,7 @@ pub async fn cli_token_revoke(
     // button; and the set is the caller's own PAT reach, so even a real revoke
     // by a `member` on this un-`require_owner_layer`ed router cannot reach a
     // tenant they do not own.
-    crate::mgmt::pat_evict::evict_pat_rooms_sockets(&s, caller_id).await;
+    crate::mgmt::pat_evict::evict_reach(&s, reach);
     emit_audit_revoke(caller_id);
     Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
 }

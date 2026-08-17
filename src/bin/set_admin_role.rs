@@ -17,9 +17,11 @@
 //! out-of-process tool cannot evict (no IPC into `RoomBus`). After a live
 //! demotion through this tool, either restart the drust service or make any
 //! in-process revocation that evicts (e.g. reroll the demoted admin's PATs
-//! via the API — but note `mgmt::pat_evict` reads the role LIVE, so after the
-//! demotion it answers the NEW narrow reach; the reroll then closes only
-//! owned-tenant sockets, and a restart is the only complete containment).
+//! via the API — but note `mgmt::pat_evict` snapshots the reach off
+//! `admins.role` inside the revoking write's own lock, and by then THIS tool
+//! has already written the narrow role, so the snapshot answers the demoted
+//! reach; the reroll then closes only owned-tenant sockets, and a restart is
+//! the only complete containment).
 //! The in-process HTTP path (`PATCH /admin/team/{id}/role`) both takes effect
 //! immediately AND closes the demoted admin's sockets — prefer it whenever
 //! the server is reachable; use this break-glass tool for recovery only.

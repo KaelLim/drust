@@ -5,7 +5,7 @@ name: drust
 port: 47826
 path: /drust
 status: production
-updated: 2026-08-16
+updated: 2026-08-17
 ---
 
 # drust — Rust multi-tenant SQLite BaaS
@@ -210,14 +210,24 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    and `remove_admin` share `mgmt::pat_evict`: host-wide (`evict_all_tenants`) only when
    `tenant_authz::sees_all_tenants` holds, otherwise just the tenants that admin owns, which
    is exactly where the bearer CTE would have admitted the PAT; DB failure falls back
-   host-wide — `remove_admin` over a reach snapshot taken BEFORE its DELETE, because a
-   post-commit read cannot see the `admins` row and would fall back host-wide. `change_role`
+   host-wide. **Since v1.66.0 all five SNAPSHOT that reach** — `read_pat_reach` runs on the
+   connection whose `meta` guard the revoking write itself ran under, and the answer is
+   carried past the commit to `evict_reach` — so the reach and the revocation are ONE atomic
+   decision: a role change landing in between can no longer turn a member's own-key
+   revocation into a host-wide disconnect, and the path takes the `meta` lock once.
+   `remove_admin` needs the snapshot for the stronger reason that its `DELETE FROM admins`
+   destroys the row the reach derives from, so a post-commit read falls back host-wide and
+   OVER-evicts. `change_role`
    deliberately does NOT route through that decision point: it decides inline on the
    **pre-image** role, evicting host-wide on a sees-all → non-sees-all flip and doing nothing
-   otherwise. `pat_evict` reads the role LIVE, so calling it there would answer with the NEW,
-   narrower reach and leave the demoted PAT's foreign-tenant sockets open — the exact
-   under-evict this shape exists to prevent. Owner transfer stays a precise single-tenant
-   evict. Passive expiry never evicts.
+   otherwise. `read_pat_reach` answers off `admins.role` as it stands when it reads, so at
+   that site it would answer with the NEW, narrower reach and leave the demoted PAT's
+   foreign-tenant sockets open — the exact under-evict this shape exists to prevent. Owner
+   transfer stays a precise single-tenant evict. Passive expiry never evicts — but **since
+   v1.66.0 an admin PAT's own `expires_at` closes the realtime connection it authenticated**
+   (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
+   half of the per-request expiry gate; nothing else is touched, and sliding user sessions
+   and never-expiring tenant bearers deliberately carry no deadline.
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks

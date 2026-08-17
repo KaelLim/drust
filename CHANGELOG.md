@@ -1,3 +1,73 @@
+## v1.66.0 — 2026-08-17
+
+The residuals v1.65.1 shipped WITH, closed (#976): the codex second-engine review of that
+release filed two, and the 2026-08-17 review round added a third. **No new environment
+variable, no new API, no schema change** — the one caller-visible addition is a new rooms
+error code, `CONN_EXPIRED`.
+
+### Fixed
+
+- **An admin PAT's own `expires_at` now ends the realtime connection it authenticated
+  (#976 F2).** Expiry used to bind NEW requests only: a rooms socket opened a second before
+  the deadline kept its captured `AuthCtx::Service` — full publish rights included — for as
+  long as the client cared to hold it, and the same was true of an SSE stream. The bearer
+  layer now attaches the credential's hard expiry to the request as `PatDeadline` at its two
+  admin-PAT resolution arms, and both realtime faces consume it: `/t/<id>/realtime` gets a
+  fourth `select!` branch that sends `CONN_EXPIRED` and closes **1008 Policy Violation**, and
+  the SSE subscribe stream simply ends (SSE carries no close code and has no inbound frame to
+  put one on). Reconnecting with the same token gets 401 from the per-request gate that
+  already existed — the two halves are defense in depth, and neither substitutes for the
+  other. The timer is an ABSOLUTE `sleep_until`, not a relative sleep re-armed each loop pass,
+  because a re-armed one lets a client postpone its own expiry by sending frames (measured).
+  The deadline follows the credential FAMILY, not the role: a user session is sliding, so
+  snapshotting its expiry would drop a session that is still being renewed, and a tenant
+  bearer never expires — neither carries one. A connection with no deadline arms no timer.
+- **The eviction baseline is captured immediately after auth instead of inside the WS handler
+  (#976 F1).** A revocation landing between the bearer-auth decision and `ws_handler`'s
+  epoch-baseline capture is adopted AS that socket's baseline, leaving it fail-OPEN for
+  exactly that one revocation; the window used to span the whole routing + extractor run.
+  `ws_auth::ws_baseline_capture`, mounted innermost on the two-route `ws_router` (so no REST,
+  MCP or files request ever runs it), now takes the pair the statement after auth admits the
+  request and hands it over in a request extension, leaving one `next.run` poll hop. The
+  handler falls back to its inline capture when the router was mounted without the layer
+  (dev, tests) — pre-#976 behavior, never "no baseline at all". The capture may only ever move
+  EARLIER: an older baseline over-closes, never under-closes. The v1.65.1 doc's reason for
+  refusing this ("it would tax EVERY tenant request") was wrong for a per-route layer and is
+  deleted rather than softened.
+- **The four self-service PAT routes decide their eviction reach under the lock that revokes
+  (#976 T4).** `reroll`, `cli_token_refresh`, `cli_token_logout` and `cli_token_revoke` used
+  to re-read the reach live AFTER the commit, through the `evict_pat_rooms_sockets`
+  delegator. Reach and revocation are now one atomic decision — `read_pat_reach` at the tail
+  of the existing write closure, `evict_reach` after commit — which removes a TOCTOU
+  over-evict (a promotion landing in between turned a member's own-key revocation into a
+  host-wide disconnect) and a second `meta` acquisition on every revocation. Each site keeps
+  its own guard unchanged: logout's `n > 0`, revoke's `changed == 0` 404. `remove_admin`
+  already had this shape for a stronger reason (its DELETE destroys the row the reach derives
+  from); `change_role` deliberately stays outside it and keeps deciding inline on the
+  pre-image role, because a helper reading `admins.role` as it stands would answer the new,
+  narrower reach and skip exactly the foreign-tenant sockets a demotion has to close. The
+  delegator and its async half are deleted; `read_pat_reach` + `evict_reach` are the only
+  public faces. The new pin
+  `every_reach_snapshot_is_read_inside_the_revoking_critical_section` is structural and counts
+  lock acquisitions, because the behavioural mutant for these four sites measures GREEN —
+  nothing there destroys the row a post-commit read would need.
+
+### Docs
+
+- `CLAUDE.md` invariant 5, `.claude/rules/background-jobs.md`, `RoomBus::evict_tenant`'s
+  caller list and the `set_admin_role` break-glass note all move from live-read to snapshot
+  semantics and record the expiry kick. `AGENTS.md`'s adjudicated-verdicts register was
+  re-derived under its own "if the compensating code changed, re-derive" clause: three
+  entries were fixed rather than compensated for and are gone or rewritten. The remaining
+  realtime residuals are unchanged in kind — the ≤1-keepalive checkpoint window, the narrowed
+  auth→capture hop, and the out-of-process `set_admin_role` binary, which still evicts
+  nothing.
+
+### Deploy
+
+- No new environment variables and no config change on any of the three targets. Version bump
+  only: `Cargo.toml` + `Cargo.lock` and Helm `Chart.yaml` `appVersion`.
+
 ## v1.65.1 — 2026-08-16
 
 Security follow-up to v1.65.0, from the codex second-engine review of that release. **No new
