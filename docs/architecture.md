@@ -28,13 +28,13 @@ generated_by: docs/gen-architecture.py
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 26 | 206 | 83 | 43 |
-| [`mgmt/`](#srcmgmt) | 44 | 380 | 119 | 55 |
+| [`mcp/`](#srcmcp) | 26 | 206 | 84 | 43 |
+| [`mgmt/`](#srcmgmt) | 44 | 382 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 66 | 14 | 40 |
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
-| [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
+| [`storage/`](#srcstorage) | 18 | 189 | 24 | 108 |
 | [`tenant/`](#srctenant) | 39 | 295 | 122 | 75 |
 
 ## Group dependency graph
@@ -249,9 +249,9 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tenant_cap.rs`](../src/mgmt/tenant_cap.rs) — v1.57 — per-member tenant creation cap. · 22 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 22 pub
 - [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 11 pub
-- [`tenants.rs`](../src/mgmt/tenants.rs) — 9 pub
+- [`tenants.rs`](../src/mgmt/tenants.rs) — 10 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
-- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 16 pub
+- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 17 pub
 - [`tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs) — Tenant-files admin page (group D). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs) — OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/overview.rs`](../src/mgmt/tenants/overview.rs) — Tenant overview admin page (group C). Relocated from `tenants.rs` by Finding #4. · 1 pub

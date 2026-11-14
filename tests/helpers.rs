@@ -1105,6 +1105,22 @@ pub async fn tenants_state_with_cache(
     tenant: &str,
     cache: Arc<drust::tenant::auth_cache::AuthCache>,
 ) -> (drust::mgmt::tenants::TenantsState, tempfile::TempDir) {
+    let (mut state, _inner, dir) = tenants_state_with_mcp(tenant).await;
+    state.auth_cache = cache;
+    (state, dir)
+}
+
+/// E5 — the `tenants_state_with_cache` fixture, but also handing back the
+/// inner `McpRegistry` (the layer whose `DrustMcp` holds the
+/// `Arc<TenantPool>`), so a lifecycle test can observe eviction at the
+/// registry layer without going through the `/t/<id>/mcp` route.
+pub async fn tenants_state_with_mcp(
+    tenant: &str,
+) -> (
+    drust::mgmt::tenants::TenantsState,
+    Arc<McpRegistry>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -1137,16 +1153,22 @@ pub async fn tenants_state_with_cache(
     // `TenantAuthState` here, so `shared_bus_rooms` has nothing to wire into.
     let bus_rooms = drust::tenant::rooms::RoomBus::new();
     let meta = Arc::new(Mutex::new(conn));
-    let mut state = drust::mgmt::tenants::TenantsState::test_default(
+    // Same construction as `test_mcp_http`, with the inner registry's Arc kept.
+    let inner = Arc::new(McpRegistry::with_bus(
+        tenants.clone(),
+        bus.clone(),
+        bus_rooms.clone(),
+    ));
+    let mcp = Arc::new(McpHttpRegistry::new(inner.clone()));
+    let state = drust::mgmt::tenants::TenantsState::test_default(
         meta,
         data,
         tenants.clone(),
-        test_mcp_http(tenants, bus.clone(), bus_rooms.clone()),
+        mcp,
         bus,
         bus_rooms,
     );
-    state.auth_cache = cache;
-    (state, dir)
+    (state, inner, dir)
 }
 
 /// Build a real `MgmtState` sharing `cache`, with one `admins` row id=`admin_id`

@@ -52,7 +52,10 @@ pub struct TenantsState {
     /// on the very next call.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
     /// Per-tenant MCP service registry. Used by soft_delete_tenant to
-    /// evict the cached `DrustMcpService` so in-flight sessions release.
+    /// evict the cached `DrustMcpService` so in-flight sessions release,
+    /// and by the id-recycle create path (via `evict_tenant_everywhere`); its
+    /// `evict` cascades into the inner `McpRegistry` and closes the evicted
+    /// service's live sessions.
     pub mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
     /// SSE broadcast channels. Used by soft_delete_tenant to drop every
     /// channel keyed on the tenant.
@@ -172,6 +175,18 @@ pub struct CreatedResp {
     pub initial_tokens: InitialTokens,
     /// Back-compat field: equals `initial_tokens.service`.
     pub initial_token: String,
+}
+
+/// What `crud::make_tenant_inner` did. `recycled` is true when the id
+/// belonged to a soft-deleted tenant whose row and tokens were hard-deleted
+/// in the same critical section — the caller must then run
+/// `crud::evict_tenant_everywhere` AFTER releasing the meta lock, because
+/// process caches keyed by the id still describe the old incarnation.
+#[derive(Debug)]
+#[must_use = "a recycled id must be evicted (crud::evict_tenant_everywhere) after the meta lock is released"]
+pub struct MadeTenant {
+    pub resp: CreatedResp,
+    pub recycled: bool,
 }
 
 #[derive(Debug, Serialize)]

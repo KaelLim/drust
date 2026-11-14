@@ -88,6 +88,22 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   change. The out-of-process `set_admin_role` binary still cannot signal (same residual as
   rooms), and the pre-existing auth-cache "insert after clear" race is unchanged (see
   AGENTS.md Accepted residuals). No new environment variable, API or wire format.
+- **Soft-deleting a tenant now releases the MCP layer's hold on its database, and
+  recycling a soft-deleted id can no longer hand the new tenant the old one's data (E5).**
+  The per-tenant MCP cache has two layers — the rmcp service and, beneath it, the
+  `DrustMcp` that owns an `Arc<TenantPool>` — and every live rmcp session holds its own
+  copy as well. Soft-delete evicted only the outer service, so the old pool's SQLite
+  connections stayed open on the file just moved into `_trash` (disk space not reclaimed
+  until restart, even after the janitor swept it), and when an admin then re-created a
+  tenant with the same id, the new service key's MCP session reused that pool — reading
+  the previous tenant's rows and writing into the `_trash` copy the janitor deletes after
+  the retention window, while REST served the new database. `McpHttpRegistry::evict` now
+  evicts the inner entry too and ends the evicted service's live sessions (they belong to
+  a deleted tenant, whose requests were already refused), and a create that recycles an
+  id runs the same eviction sequence as soft-delete (`evict_tenant_everywhere`) after the
+  meta lock is released, which also clears anything a request racing the soft-delete
+  re-populated. Creating a tenant with a fresh id is unchanged. No new environment
+  variable, no new API, no schema or wire-format change.
 
 ### Changed
 

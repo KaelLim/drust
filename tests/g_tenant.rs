@@ -1,4 +1,4 @@
-//! #925 — merged harness for the tenant test group (16 of 17 members).
+//! #925 — merged harness for the tenant test group (17 of 18 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! `tenant_quota_requests` is NOT here: it keeps its own `[[test]]` entry. It
@@ -11,7 +11,7 @@
 //!
 //! `duplicate_mod` is inherent to the merge, not a defect: every member still
 //! carries its own `#[path = "helpers.rs"] mod helpers;`, and once they share a
-//! crate clippy sees helpers.rs loaded 16 times. Deduping it would mean editing
+//! crate clippy sees helpers.rs loaded 17 times. Deduping it would mean editing
 //! test bodies (spec 鐵律 1 forbids that) for no gain — rustc compiles the file
 //! once per module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -51,5 +51,7 @@ mod tenant_ownership_visibility;
 mod tenant_quota_db;
 #[path = "tenant_quota_files.rs"]
 mod tenant_quota_files;
+#[path = "tenant_recycle_mcp_evict.rs"]
+mod tenant_recycle_mcp_evict;
 #[path = "tenant_settings.rs"]
 mod tenant_settings;

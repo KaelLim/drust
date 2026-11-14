@@ -190,7 +190,8 @@ impl RoomBus {
     ///   (`mcp::tools::owner_field::set_publish_policy`) — same
     ///   evicts-only-on-a-real-change rule as its REST twin below;
     /// - token reroll (`mgmt::tokens`);
-    /// - tenant soft-delete (`mgmt::tenants::crud`);
+    /// - tenant soft-delete and id-recycle create
+    ///   (`mgmt::tenants::crud::evict_tenant_everywhere`);
     /// - the publish-policy PATCH
     ///   (`mgmt::tenants::crud::patch_publish_policy`) — evicts only when the
     ///   effective `(user, anon)` pair MOVES; a no-op PATCH does not, so an

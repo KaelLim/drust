@@ -155,8 +155,10 @@ impl DrustMcp {
     }
 }
 
-/// Lazy cache of per-tenant MCP services. Entries are evicted when a tenant is
-/// soft-deleted (call `evict`). The cache shares the global `TenantRegistry`
+/// Lazy cache of per-tenant MCP services. Entries are evicted through
+/// `McpHttpRegistry::evict` (soft-delete and id-recycle, via
+/// `mgmt::tenants::crud::evict_tenant_everywhere`); nothing else calls `evict`
+/// directly. The cache shares the global `TenantRegistry`
 /// for pool lookup so writer/reader connections stay consistent across
 /// REST and MCP paths.
 pub struct McpRegistry {
@@ -354,6 +356,12 @@ impl McpRegistry {
     }
     pub fn evict(&self, tenant_id: &str) {
         self.services.remove(tenant_id);
+    }
+    /// How many tenants have a cached `DrustMcp`. Test/observability hook —
+    /// this layer holds the `Arc<TenantPool>`, so it is what a lifecycle
+    /// test must see drop to zero (E5).
+    pub fn cached_count(&self) -> usize {
+        self.services.len()
     }
 }
 

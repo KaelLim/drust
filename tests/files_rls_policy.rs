@@ -630,8 +630,16 @@ fn meta_with_owner() -> (rusqlite::Connection, tempfile::TempDir) {
 #[tokio::test]
 async fn a_new_tenant_is_seeded_with_an_open_root_and_stamped_as_seeded() {
     let (mut conn, dir) = meta_with_owner();
-    drust::mgmt::tenants::crud::make_tenant_inner(&mut conn, dir.path(), "born", "Born", 500, 1, 1)
-        .unwrap();
+    let _ = drust::mgmt::tenants::crud::make_tenant_inner(
+        &mut conn,
+        dir.path(),
+        "born",
+        "Born",
+        500,
+        1,
+        1,
+    )
+    .unwrap();
 
     assert_eq!(
         policy_rows(dir.path(), "born"),
@@ -714,8 +722,16 @@ fn marker(conn: &rusqlite::Connection, tenant: &str) -> i64 {
 #[tokio::test]
 async fn a_new_tenant_is_stamped_as_grandfathered_but_granted_nothing() {
     let (mut conn, dir) = meta_with_owner();
-    drust::mgmt::tenants::crud::make_tenant_inner(&mut conn, dir.path(), "born", "Born", 500, 1, 1)
-        .unwrap();
+    let _ = drust::mgmt::tenants::crud::make_tenant_inner(
+        &mut conn,
+        dir.path(),
+        "born",
+        "Born",
+        500,
+        1,
+        1,
+    )
+    .unwrap();
 
     assert_eq!(
         grant_rows(dir.path(), "born"),

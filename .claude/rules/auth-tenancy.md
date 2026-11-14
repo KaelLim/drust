@@ -206,7 +206,10 @@ deletes the removed admin's rows in **both** tables or the next invited teammate
 rowid and the review page renders their address as the author. Tenant ids are caller-supplied
 and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud` deletes that
 tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
-so a survivor would raise the *new* tenant's tier.
+so a survivor would raise the *new* tenant's tier. The same rule covers process memory: a
+create that recycled an id runs `crud::evict_tenant_everywhere` after the meta lock is
+released, so no pool, MCP state or session, bus channel, cache entry or cron index entry of
+the old incarnation survives the boundary.
 
 ## Provenance
 
