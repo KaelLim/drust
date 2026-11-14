@@ -1,4 +1,4 @@
-## Unreleased
+## v1.67.0 — 2026-11-14
 
 Fixes from the access-gate convergence review (E track). No new environment variable, no
 schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
