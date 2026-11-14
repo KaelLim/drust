@@ -15,8 +15,10 @@
 # ---- builder ----------------------------------------------------------------
 # rust:1 (latest stable) — the pinned Cargo.lock resolves rusqlite 0.42 /
 # libsqlite3-sys 0.40 (bundled SQLite 3.54.1, edition 2024; they declare
-# rust-version 1.89 / 1.88). The lock is committed for reproducibility; the
-# builder just needs to be >= the real MSRV, and latest-stable always is.
+# rust-version 1.89 / 1.88) and wasmtime / wasmtime-wasi 50.0.1, which
+# declare rust-version 1.97 — the highest floor in the graph, so the real
+# MSRV is 1.97. The lock is committed for reproducibility; the builder just
+# needs to be >= the real MSRV, and latest-stable always is.
 FROM rust:1-slim-bookworm AS builder
 
 # build-essential = cc + headers for rusqlite's bundled SQLite C compile.
