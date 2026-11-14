@@ -33,7 +33,7 @@ generated_by: docs/gen-architecture.py
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 40 |
 | [`rpc/`](#srcrpc) | 8 | 61 | 31 | 15 |
-| [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
+| [`safety/`](#srcsafety) | 8 | 43 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 108 |
 | [`tenant/`](#srctenant) | 39 | 295 | 122 | 76 |
 
@@ -195,7 +195,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 6 pub
-- [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
+- [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url / set_file_visibility. · 8 pub
 - [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
@@ -304,7 +304,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/safety/`
 
 - [`audit.rs`](../src/safety/audit.rs) — 5 pub
-- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 20 pub
+- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 21 pub
 - [`error_fixes.rs`](../src/safety/error_fixes.rs) — v1.26 — Static suggested_fix catalog. Maps every error_code drust · 4 pub
 - [`ip.rs`](../src/safety/ip.rs) — 1 pub
 - [`mod.rs`](../src/safety/mod.rs) — 7 pub

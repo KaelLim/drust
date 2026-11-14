@@ -267,6 +267,15 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   The `files-guide.md` resource now says when to switch to tus (above
   `limits.max_upload_bytes`) and that `OPTIONS …/uploads` reports `Tus-Max-Size`.
 
+### Build
+
+- **Builds clean under Rust 1.100's clippy.** CI installs the latest stable toolchain, and
+  1.100 (2026-11-09) added four `-D warnings` failures in code this release did not
+  otherwise touch: a deprecated atomic `fetch_update` (now an explicit compare-exchange
+  loop, same saturating decrement), two `chunks_exact(4)` (now `as_chunks::<4>()`), and
+  `AuditWriter::send_backfill`'s `Result<(), ()>` (now `Result<(), AuditWriterClosed>`).
+  No behaviour change; the minimum supported Rust version is unchanged.
+
 ## v1.66.1 — 2026-08-17
 
 The single finding of the v1.66.0 codex second-engine review (MED), fixed same-day. No new

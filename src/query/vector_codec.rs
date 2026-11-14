@@ -68,8 +68,10 @@ pub fn unpack(field: &str, blob: &[u8]) -> Result<Value, VectorCodecError> {
         });
     }
     let nums: Vec<Value> = blob
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .map(|f| {
             serde_json::Number::from_f64(f as f64)
                 .map(Value::Number)

@@ -87,8 +87,8 @@ fn format_blob_cell(
     }
     let take = (declared_dim as usize).min(3);
     let mut head: Vec<String> = Vec::with_capacity(take);
-    for chunk in bytes.chunks_exact(4).take(take) {
-        let f = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for chunk in bytes.as_chunks::<4>().0.iter().take(take) {
+        let f = f32::from_le_bytes(*chunk);
         // Two decimals is enough to convey magnitude + sign without
         // dominating the cell. The full-precision value lives behind
         // the row-detail modal that v1.32.9 introduces.
