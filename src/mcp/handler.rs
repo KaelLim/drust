@@ -4182,8 +4182,7 @@ mod instructions_tests {
     #[test]
     fn instructions_give_the_function_upload_path() {
         let s = render(TID);
-        assert!(s.contains("endpoints.rest_base"));
-        assert!(s.contains("functions"));
+        assert!(s.contains("endpoints.rest_base + `functions`"));
         // Prompts are commands the USER runs; the model cannot start one.
         assert!(!s.contains("start with the bootstrap prompt"));
         // `Audit:` would read as record-history audit (`set_audit_enabled`).
@@ -4693,6 +4692,24 @@ mod is_error_tests {
             None,
         );
         (DrustMcpService::new(mcp.clone()), mcp, tmp)
+    }
+
+    /// A caller-supplied fix wins over the catalogue; `None` falls back to it.
+    /// (MA1's outer conversion passes REST's contextual `suggested_fix` through.)
+    #[test]
+    fn tool_error_prefers_the_supplied_fix_over_the_catalogue() {
+        let code = "SYSTEM_FIELD_READONLY";
+        let catalogued = crate::safety::error_fixes::lookup(code).expect("catalogued code");
+
+        let given = tool_error(code, "m".into(), Some("contextual".into())).unwrap();
+        assert_eq!(given.is_error, Some(true));
+        assert_eq!(body(&given)["suggested_fix"], "contextual");
+
+        let fallback = tool_error(code, "m".into(), None).unwrap();
+        assert_eq!(body(&fallback)["suggested_fix"], catalogued);
+
+        let unknown = tool_error("NO_SUCH_CODE_IN_THE_CATALOGUE", "m".into(), None).unwrap();
+        assert!(body(&unknown).get("suggested_fix").is_none());
     }
 
     /// `content[0].text` parsed as JSON.

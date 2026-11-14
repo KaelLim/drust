@@ -166,11 +166,35 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   block a trusted caller with no exploit path left (`FTS_FIELD_INDEXED` differs: there the
   sync triggers break every write).
 
+**Deliberate — MCP annotations and error faces (not the PAT family):**
+
+- `openWorldHint` is `false` on every tool but `invoke_function`, even on record writes
+  that fan out to webhooks / edge functions and on `broadcast`: the hint describes the call
+  itself, and Claude Code's retry logic does not read it.
+- The 21 idempotent writes in `RETRY_SAFE_WRITES` (incl. `set_anon_caps` / `set_policy` /
+  `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
+  deliberately retry-safe: a repeat converges to the same state; the extra eviction only
+  makes subscribers reconnect and re-gate.
+- Only five tools (+ `list_files`) return `isError: true`; every other tool error is still
+  a JSON-RPC error. The blanket conversion is the planned outer `call_tool` (MA1), which
+  reuses `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s `expires_in`
+  range stay `-32603` until then.
+- Edge Privileged `delete-record` still returns `{"ok":false,"error_code":"RECORD_NOT_FOUND"}`
+  on the WIT ok-branch; M1 converted only the MCP wrapper.
+- `list_files` refuses only a misspelt `public` / `private` (`looks_like_misspelt_visibility`);
+  any other unknown `visibility` still lists every file. That is the documented "anything
+  else is ignored" contract kept on purpose — tightening it to reject every unknown value
+  turns documented successful calls into failures.
+- `set_file_visibility` is `destructiveHint: true` although it looks like a toggle: it
+  resets `cache_control`, and a publish cannot be recalled once Caddy serves the object
+  (invariant 19).
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |
 |---|---|
 | MCP tool count | `grep -c '#\[tool(' src/mcp/handler.rs` |
+| MCP tool annotations | `annotation_tests::TABLE` + `RETRY_SAFE_WRITES` in `src/mcp/handler.rs` |
 | Routes | the router builders in `src/mgmt/routes.rs`, `src/tenant/mod.rs` |
 | Per-file structure | `docs/architecture.md` (generated — `bash docs/gen-architecture.sh`) |
 | Edge-function host API | `sdk/edge-function-template/wit/world.wit` |

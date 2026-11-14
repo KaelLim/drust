@@ -1,4 +1,4 @@
-//! Y-scope MCP file tools — list / delete / get_file_url.
+//! Y-scope MCP file tools — list / delete / get_file_url / set_file_visibility.
 //!
 //! Backed by the per-tenant `_system_files` table and the tenant's two
 //! Garage buckets (`tenant-<id>-pub` / `tenant-<id>-prv`). Failures (no

@@ -31,7 +31,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 | | |
 |---|---|
 | :bricks: **A SaaS / CRUD backend** | Define collections in the admin UI, get REST + typed TypeScript/Zod clients instantly. No DB server, no migration tooling. |
-| :robot: **An AI-agent-native datastore** | Point any MCP client at `/t/<id>/mcp` — the agent inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; destructive ops support `dry_run`. |
+| :robot: **An AI-agent-native datastore** | Point any MCP client at `/t/<id>/mcp` — the agent inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; three destructive ops (`delete_record`, `drop_collection`, `drop_index`) support `dry_run`. |
 | :office: **A multi-tenant platform** | One process, many fully-isolated tenants. Cross-tenant access is denied **in-SQL** by the authorizer, not just in app code. |
 | :lock: **Per-user secured data** | Declare an `owner_field`, or write PocketBase-style row-level policies — every **record** read, write, and realtime event is filtered for you. Uploaded files have their own gate of the same shape: per-verb caps plus per-prefix policies over the file's logical path. |
 | :zap: **Realtime apps** | Subscribe over SSE, or multiplex many rooms over one WebSocket and broadcast JSON. |

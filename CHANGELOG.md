@@ -9,7 +9,8 @@ SSE streams opened with an admin PAT end when that admin's access is revoked (E2
 `drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
 `drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
 whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
-it (E3), and recycling a tenant id ends the old tenant's MCP sessions (E5).
+it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), and the per-tenant
+MCP endpoint's model-facing surface changes as described under *MCP (M1)* below.
 
 ### Fixed
 
@@ -205,6 +206,66 @@ it (E3), and recycling a tenant id ends the old tenant's MCP sessions (E5).
   included) that still names the dropped field. The drop is never refused for it, and no
   subscriber is evicted. The key is absent when there is nothing to report, so an
   unreferenced drop answers exactly as before.
+
+### MCP (M1) — model-facing text, tool annotations, error results
+
+No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.
+
+- **Server instructions rewritten to fit Claude Code's 4,096-character cap.** The old text
+  was roughly 8,700–9,300 characters; Claude Code reads only the first 4,096, which kept a
+  false "insert/update accept `dry_run`" claim and cut the correct one. The new text
+  (3,963 characters at most, for the longest tenant id) leads with the rules that prevent
+  damage: only `delete_record`, `drop_collection` and `drop_index` accept `dry_run` —
+  preview with it first (any other tool ignores the argument and runs for real) — record
+  writes are not idempotent, and the service identity bypasses owner_field filtering /
+  caps / RLS but must still set the owner field when inserting into an owner-scoped
+  collection. It names every tool and no longer carries absolute upload, function or
+  cron URLs — the upload detail lives in the `drust://<tenant>/files-guide.md` resource,
+  and a function is uploaded to `whoami`'s `endpoints.rest_base` + `functions`. It no
+  longer recommends `recent_writes`, which returns no rows yet, and no longer tells the
+  model to "start with" a prompt (prompts are commands the user runs). `list_functions`'
+  description no longer points at a `whoami` field that does not exist, and `query`'s
+  description no longer says the structured read tools enforce scoping on MCP.
+- **Tool annotations are now written out per tool instead of left to defaults.** `update_record` and
+  `upsert_records` are no longer marked idempotent, so Claude Code no longer re-sends them
+  automatically after a dropped connection (a re-send fired webhooks and edge functions
+  twice); you now see "connection closed before the tool call was answered" and decide
+  yourself. `call_rpc` is marked read-only (it always runs on the read-only executor on
+  MCP), so Claude Code may re-send it or run it in parallel with other reads.
+  `update_record` and `upsert_records` (both overwrite existing field values) and fourteen
+  replace-style tools (`set_anon_caps`, `set_user_caps`, `set_policy`, `set_description`,
+  `set_file_policy`, `set_file_visibility`, `update_rpc`, `update_user`, `set_owner_field`,
+  `set_file_caps`, `set_egress_allowlist`, `set_oauth_provider`, `set_redirect_uris`,
+  `update_webhook`) are now `destructiveHint: true` — clients that ask for confirmation
+  before destructive tools may now ask before these — and every tool except
+  `invoke_function` is `openWorldHint: false`.
+- **Five tools report failure as an error result.** `describe_collection` (unknown
+  collection), `delete_record` (unknown id, non-dry-run), `delete_file` and `get_file_url`
+  (unknown id, no storage), and `set_file_visibility` (unknown id, no storage, bad
+  visibility) used to return a *successful* result whose text was `{"error_code": …}`.
+  They now return `isError: true` with the JSON text
+  `{"error_code", "message", "suggested_fix"?}` — the same error codes as before.
+  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors are
+  unchanged (JSON-RPC errors with `data.error_code`), and so are `delete_record`'s
+  `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The descriptions of
+  `describe_collection`, `delete_file`, `get_file_url` and `set_file_visibility` now say
+  how they fail, and `recent_writes`' description says it returns no rows yet, so an
+  empty result is not proof that nothing was written.
+- **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other
+  than `public` / `private` as "no filter" — so a typo such as `"Public"` or `"pub"`
+  silently returned every file, private ones included. A value that is a case or
+  whitespace variant or a prefix of `public` / `private` (anything starting `pub` / `priv`
+  once trimmed and lower-cased, other than the exact words) now returns `isError: true`
+  with `INVALID_VISIBILITY`. Every other value (`"all"`, `""`, `"any"`, …) still lists
+  every file, as documented. A stored row that fails to decode is now a JSON-RPC error
+  instead of being dropped silently from the page.
+- **Prompts.** `debug_write` no longer suggests re-running a write with `dry_run` or
+  checking `recent_writes`; `write_edge_function`'s upload URL now honours
+  `DRUST_BASE_PATH` and the egress step uses `get_egress_allowlist` / `set_egress_allowlist`
+  (the allowlist is replaced, never merged); `bootstrap` no longer says `list_records` is
+  owner-enforced on MCP; `design_collection` lists the `datetime` and `json` field types.
+  The `files-guide.md` resource now says when to switch to tus (above
+  `limits.max_upload_bytes`) and that `OPTIONS …/uploads` reports `Tus-Max-Size`.
 
 ## v1.66.1 — 2026-08-17
 

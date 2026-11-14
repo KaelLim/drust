@@ -28,7 +28,7 @@ generated_by: docs/gen-architecture.py
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 26 | 206 | 85 | 43 |
+| [`mcp/`](#srcmcp) | 26 | 207 | 85 | 43 |
 | [`mgmt/`](#srcmgmt) | 44 | 382 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 40 |
@@ -184,7 +184,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 55 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 56 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 6 pub
 - [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
