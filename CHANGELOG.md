@@ -105,6 +105,17 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   re-populated. Creating a tenant with a fresh id is unchanged. No new environment
   variable, no new API, no schema or wire-format change.
 
+- **`drop_collection` now closes the collection's live SSE subscriptions (E4).** It
+  invalidated the schema cache but never called `bus.evict_collection`, so a subscriber
+  connected before the drop stayed attached to the same-name broadcast channel — and
+  because `publish` never re-checks the gate, a recreated same-name collection streamed
+  every insert/update to those old subscribers, even though a fresh connect is refused
+  (`create_collection` starts realtime OFF). The drop now evicts after the commit and after
+  `schema_cache.invalidate` (invariant 5 order, structurally pinned); reconnecting clients
+  get 404, or the recreated collection's own verdict. `dry_run: true` still closes
+  nothing. Only subscribers of the dropped collection are affected (service streams on it
+  included); other collections, other tenants and rooms are untouched.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
@@ -126,6 +137,16 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   relax the select policy), or re-read the row. The generated `/openapi.json` does not
   describe the id-only shape (its update operation already documents the bare row rather
   than `{"record": …}`; that pre-existing mismatch is left as is).
+
+- **`drop_collection` may return `warnings` (E4).** When anon-callable stored RPCs
+  (kind=sql or kind=query) depend on the dropped collection, the result carries
+  `warnings: [{code: "ANON_RPC_DEPENDS_ON_COLLECTION", rpc, kind, mode, message}]`. The
+  drop is never refused for it — this is a heads-up that recreating the same name would
+  re-arm those RPCs against the new table with no clear guard firing (a kind=query RPC
+  skips `anon_caps` under RpcGrant; a kind=sql RPC runs its SQL verbatim). If the scan
+  itself cannot read the RPC registry, one `ANON_RPC_SCAN_FAILED` warning is returned
+  instead and the drop still succeeds. The key is absent when there is nothing to report,
+  so existing callers see an unchanged shape. No new environment variable, no schema change.
 
 ## v1.66.1 — 2026-08-17
 

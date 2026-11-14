@@ -940,7 +940,11 @@ impl DrustMcpService {
         description = "Drop an entire collection (DROP TABLE + _updated_at trigger). \
         Irreversible. Rejected if other collections still FK-reference this one. \
         v1.26: pass `dry_run: true` to preview row_count + indexes + RPCs + \
-        reverse FK list without dropping."
+        reverse FK list without dropping. Closes this collection's live SSE \
+        subscriptions (subscribers reconnect and are re-gated against whatever \
+        exists then). If anon-callable RPCs depend on the collection, the result \
+        carries `warnings` naming them — the drop still succeeds. `dry_run` closes \
+        nothing and returns no `warnings`."
     )]
     async fn drop_collection(
         &self,

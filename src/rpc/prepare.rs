@@ -550,6 +550,65 @@ pub fn guard_clear_against_anon_query_rpcs(
     Ok(())
 }
 
+/// One anon-callable stored RPC that depends on a collection (E4).
+#[derive(Debug)]
+pub(crate) struct AnonRpcDependent {
+    pub name: String,
+    pub kind: crate::rpc::registry::RpcKind,
+    pub mode: RpcMode,
+}
+
+/// E4 — anon-callable stored RPCs (kind=sql and kind=query) that depend on
+/// `collection`, for `drop_collection`'s `warnings`. Advisory only: it never
+/// blocks anything.
+///
+/// Reads `_system_rpc` directly rather than through `registry::list`, which
+/// fails the WHOLE scan on one row's bad `params_json` (a column unused here).
+/// Same data source as the guards above, but the verdict is only ever WIDER: a
+/// table name compares case-insensitively (SQLite's names are, and stored SQL
+/// may spell `POSTS`), and a sql row that cannot be prepared falls back to a
+/// lowercase text match, so a row that cannot be judged errs toward LISTING. A
+/// query row whose template does not parse grants nothing and is skipped (same
+/// as the clear guard). Only the `_system_rpc` read itself can fail. Rows are
+/// collected before any is judged, so no statement is live while
+/// `referenced_user_tables` swaps authorizers (it always detaches its own).
+/// `collection` is an `identifier()`, i.e. already lowercase.
+pub(crate) fn anon_rpc_dependents(
+    conn: &Connection,
+    collection: &str,
+) -> rusqlite::Result<Vec<AnonRpcDependent>> {
+    use crate::rpc::registry::RpcKind;
+    let rows: Vec<(String, String, String, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT name, sql, COALESCE(mode, 'read'), COALESCE(kind, 'sql'), query_json
+               FROM _system_rpc WHERE anon_callable != 0 ORDER BY name",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut out = Vec::new();
+    for (name, sql, mode_s, kind_s, query_json) in rows {
+        let kind = RpcKind::from_db_str(&kind_s);
+        let mode = RpcMode::from_db_str(&mode_s);
+        let depends = match kind {
+            RpcKind::Query => query_json
+                .as_deref()
+                .and_then(|raw| crate::rpc::query_template::parse_template(raw).ok())
+                .is_some_and(|tpl| tpl.collection.eq_ignore_ascii_case(collection)),
+            RpcKind::Sql => match referenced_user_tables(conn, &sql, mode) {
+                Ok(tables) => tables.iter().any(|t| t.eq_ignore_ascii_case(collection)),
+                Err(_) => sql.to_ascii_lowercase().contains(collection),
+            },
+        };
+        if depends {
+            out.push(AnonRpcDependent { name, kind, mode });
+        }
+    }
+    Ok(out)
+}
+
 /// The select-policy half of the CLEAR guard, transition-gated — the ONE place
 /// the "does this write widen the read filter?" rule lives, so the five policy
 /// faces that can effect a clear cannot drift apart (#950 T5b/T5c).
@@ -1175,5 +1234,112 @@ mod tests {
         let PrepareError::Rejected(msg) =
             guard_clear_against_anon_query_rpcs(&conn, "orders", "the select policy").unwrap_err();
         assert!(msg.contains("qlive"), "{msg}");
+    }
+
+    // ── E4 — anon_rpc_dependents (advisory scan behind drop_collection's warnings) ──
+
+    fn seed_sql_row(conn: &Connection, name: &str, sql: &str, anon_callable: bool) {
+        use crate::rpc::registry::{self, RpcCreate, RpcKind};
+        registry::create(
+            conn,
+            RpcCreate {
+                name,
+                sql,
+                params_json: "[]",
+                description: None,
+                anon_callable,
+                mode: RpcMode::Read,
+                kind: RpcKind::Sql,
+                query_json: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn dependent_names(conn: &Connection, collection: &str) -> Vec<String> {
+        anon_rpc_dependents(conn, collection)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect()
+    }
+
+    #[test]
+    fn anon_rpc_dependents_lists_both_kinds_and_skips_the_rest() {
+        use crate::rpc::registry::RpcKind;
+        let (_t, conn) = fresh();
+        conn.execute_batch("CREATE TABLE other (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        seed_query_row(&conn, "q", r#"{"collection":"posts"}"#, true);
+        seed_query_row(&conn, "q_off", r#"{"collection":"posts"}"#, false);
+        // A template that does not parse (missing the required `collection`)
+        // cannot execute, so it grants nothing — skipped, as the clear guard does.
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, anon_callable, kind, query_json)
+             VALUES ('q_broken', '', '[]', 1, 'query', '{}')",
+            [],
+        )
+        .unwrap();
+        seed_sql_row(&conn, "s", "SELECT id FROM posts", true);
+        seed_sql_row(&conn, "s_other", "SELECT id FROM other", true);
+        seed_sql_row(&conn, "s_off", "SELECT id FROM posts", false);
+
+        let deps = anon_rpc_dependents(&conn, "posts").unwrap();
+        let got: Vec<(&str, RpcKind)> = deps.iter().map(|d| (d.name.as_str(), d.kind)).collect();
+        assert_eq!(
+            got,
+            [("q", RpcKind::Query), ("s", RpcKind::Sql)],
+            "{deps:?}"
+        );
+    }
+
+    #[test]
+    fn anon_rpc_dependents_survives_a_row_with_bad_params_json() {
+        let (_t, conn) = fresh();
+        seed_sql_row(&conn, "s", "SELECT id FROM posts", true);
+        conn.execute(
+            "INSERT INTO _system_rpc (name, sql, params_json, anon_callable, kind, mode)
+             VALUES ('s_badparams', 'SELECT body FROM posts', 'not json', 1, 'sql', 'read')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(dependent_names(&conn, "posts"), ["s", "s_badparams"]);
+        // Control: the registry listing fails the whole batch on that one row,
+        // which is exactly why the scan reads `_system_rpc` itself.
+        assert!(crate::rpc::registry::list(&conn).is_err());
+    }
+
+    #[test]
+    fn anon_rpc_dependents_falls_back_to_text_when_sql_cannot_prepare() {
+        let (_t, conn) = fresh();
+        seed_sql_row(
+            &conn,
+            "s_ghost",
+            "SELECT * FROM posts JOIN ghost ON 1",
+            true,
+        );
+        seed_sql_row(&conn, "s_ghost_only", "SELECT * FROM ghost", true);
+        // An unpreparable body errs toward LISTING when its text names the table.
+        assert_eq!(dependent_names(&conn, "posts"), ["s_ghost"]);
+    }
+
+    #[test]
+    fn anon_rpc_dependents_leaves_no_capturing_authorizer() {
+        let (_t, conn) = fresh();
+        seed_sql_row(&conn, "s", "SELECT id FROM posts", true);
+        anon_rpc_dependents(&conn, "posts").unwrap();
+        let r = conn.prepare("SELECT 1 FROM posts");
+        assert!(r.is_ok(), "authorizer leaked: {:?}", r.err());
+        drop(r);
+        conn.execute("INSERT INTO posts(body) VALUES('x')", [])
+            .expect("a write after the scan must not be authorizer-gated");
+    }
+
+    #[test]
+    fn anon_rpc_dependents_matches_sql_that_spells_the_table_in_upper_case() {
+        let (_t, conn) = fresh();
+        seed_sql_row(&conn, "s_upper", "SELECT id FROM POSTS", true);
+        assert_eq!(dependent_names(&conn, "posts"), ["s_upper"]);
     }
 }

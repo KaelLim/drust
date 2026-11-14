@@ -750,7 +750,12 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
     // still answered MATCH with pre-drop rowids (a false-positive / deleted-term
     // existence oracle, though owner/RLS still gated returned rows). A tx makes
     // the drop all-or-nothing, so the divergent state can never exist.
-    pool.with_writer_tx(move |c| {
+    let dropping = pool.with_writer_tx(move |c| {
+        // E4 — scan BEFORE the DROP (sql RPCs are judged by preparing them,
+        // which needs the table). Inside the writer tx, so no MCP `create_rpc`
+        // can land between the scan and the DROP. Deliberately NOT `?`: a
+        // failed scan becomes one warning, never a failed drop.
+        let deps = crate::rpc::prepare::anon_rpc_dependents(c, &coll_for_sweep);
         // Wave 2 M3 — sweep this collection's fts heads. Sourced from
         // `snapshot_search_tables` (the AUTHORITATIVE pragma_table_list, never
         // the registry, which could disagree), filtered to this collection's
@@ -780,15 +785,63 @@ pub async fn drop_collection(s: &DrustMcp, name: &str) -> anyhow::Result<serde_j
         }
         // Drop the anon_caps row in the same writer transaction so meta
         // and table go together.
-        delete_collection_meta(c, &meta_name)
-    })
-    .await?;
+        delete_collection_meta(c, &meta_name)?;
+        Ok(deps)
+    });
+    let deps = dropping.await?;
 
     // Drop the cached schema so subsequent reads see the collection as
     // gone.
     pool.schema_cache.invalidate(name);
+    // E4 (S-44) — invariant 5: a dropped collection's in-flight subscribers
+    // captured their gate against the OLD table and `publish` never re-checks
+    // it, so a same-name recreate would feed them the new table's rows. Evict
+    // AFTER the commit and AFTER `invalidate` (never before: a connect racing
+    // in between would re-subscribe on the stale cached schema). dry_run never
+    // reaches here (handler.rs returns before calling this fn).
+    let tenant = s.inner().tenant_id.clone();
+    s.inner().bus.evict_collection(&tenant, name);
 
-    Ok(json!({ "ok": true, "dropped_collection": name }))
+    let mut out = json!({ "ok": true, "dropped_collection": name });
+    let warnings: Vec<serde_json::Value> = match deps {
+        Ok(v) => v
+            .iter()
+            .map(|d| {
+                let why = match d.kind {
+                    crate::rpc::registry::RpcKind::Query => {
+                        "its template runs under RpcGrant, which skips anon_caps, and no \
+                         clear guard fires on a drop"
+                    }
+                    crate::rpc::registry::RpcKind::Sql => {
+                        "its stored SQL runs verbatim against whatever table bears this name; \
+                         anon_caps do not gate it"
+                    }
+                };
+                json!({
+                    "code": "ANON_RPC_DEPENDS_ON_COLLECTION",
+                    "rpc": d.name,
+                    "kind": d.kind.as_str(),
+                    "mode": d.mode.as_str(),
+                    "message": format!(
+                        "anon-callable RPC '{}' depends on '{name}'. If you recreate '{name}', \
+                         it will run against the new table under its current grant: {why}. \
+                         Set anon_callable=false or re-check it before recreating.",
+                        d.name
+                    ),
+                })
+            })
+            .collect(),
+        Err(e) => vec![json!({
+            "code": "ANON_RPC_SCAN_FAILED",
+            "message": format!("could not scan stored RPCs for dependents of '{name}': {e}"),
+        })],
+    };
+    // Present only when there is something to report, so a drop with no
+    // dependents keeps the service response shape unchanged.
+    if !warnings.is_empty() {
+        out["warnings"] = serde_json::Value::Array(warnings);
+    }
+    Ok(out)
 }
 
 /// Replace the anon-role DML capability set for one collection.
@@ -1290,5 +1343,47 @@ mod field_spec_vector_tests {
         };
         let expr = column_expr(&f).unwrap();
         assert_eq!(expr, "\"title\" TEXT");
+    }
+}
+
+/// E4 (S-44) — structural pin on `drop_collection`'s eviction ORDER.
+///
+/// Not optional and not deletable: (1) swapping `invalidate` and the evict keeps
+/// every behavioral test green (it only opens a race window — the rooms analogue
+/// measured green), and (2) "evict only after the COMMIT" has no behavioral
+/// observer — the one refusable drop path (FK) fails on the reader before the
+/// write tx, and the tx-failure path is not triggerable from a test. An evict
+/// moved INTO the write closure sorts before `schema_cache.invalidate(` in the
+/// body text, so this pin is the actual guard for both properties.
+#[cfg(test)]
+mod drop_collection_order_pin {
+    use crate::tenant::rooms::srcpin::{code_only, prod_fn_body};
+
+    #[test]
+    fn drop_collection_evicts_after_commit_and_after_invalidate() {
+        let stripped = code_only(include_str!("schema.rs"));
+        let body = prod_fn_body(
+            &stripped,
+            "pub async fn drop_collection(s: &DrustMcp, name: &str)",
+        );
+        let tx = body
+            .find("with_writer_tx(")
+            .expect("drop_collection must run its DROP in with_writer_tx");
+        let inv = body
+            .find("schema_cache.invalidate(")
+            .expect("drop_collection must invalidate the schema cache");
+        let evict = body
+            .find("bus.evict_collection(")
+            .expect("drop_collection must evict the collection's SSE channel (invariant 5)");
+        assert!(
+            tx < inv && inv < evict,
+            "order must be with_writer_tx( < schema_cache.invalidate( < bus.evict_collection( \
+             (tx={tx}, invalidate={inv}, evict={evict})"
+        );
+        assert_eq!(
+            body.matches("bus.evict_collection(").count(),
+            1,
+            "drop_collection must evict exactly once"
+        );
     }
 }

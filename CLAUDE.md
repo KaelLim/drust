@@ -196,7 +196,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    handler captures caps and the select policy **once at connect**, so invalidating the
    cache alone only affects the *next* connect and leaves in-flight subscribers reading
    revoked data. Applies to realtime-disable, `anon_caps` revoke, policy attach or clear,
-   `set_owner_field`, and **token reroll** (`reroll_token_json` revokes the old bearer, so
+   `set_owner_field`, **`drop_collection`** (MCP-only — the subscribe gate was captured
+   against a table that no longer exists, and `publish` never re-checks it; its `dry_run`
+   preview evicts nothing), and **token reroll** (`reroll_token_json` revokes the old bearer, so
    in-flight SSE/rooms subscribers holding it must be dropped — a tenant-wide `evict_tenant`,
    not `evict_collection`, since the revoked identity spans all collections; **since v1.65
    `evict_tenant` also bumps the tenant's rooms epoch, so a live WS socket is CLOSED —
@@ -287,7 +289,8 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     keys its per-connection statement cache by SQL **text**, which is stable across
     `add_field` / `drop_field`, so a cached `SELECT *` — whose `column_names()` is read
     before stepping — serves a **stale column set** on a long-lived reader. DDL flushes the
-    schema cache and the SSE bus but never the reader's statement cache. Only an explicit
+    schema cache (and `drop_collection` also the SSE channel) but never the reader's
+    statement cache. Only an explicit
     schema-derived projection (whose SQL text changes on DDL, so the cache self-heals) or
     `COUNT(*)` may be `prepare_cached`. The `RETURNING *` read-back equals the committed row
     only because the only AFTER trigger that MODIFIES THE PARENT ROW is the convergent
