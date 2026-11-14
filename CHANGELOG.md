@@ -37,6 +37,21 @@ schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon an
   them or re-insert them without an `id` — and re-apply the collection's caps, policies and
   indexes; or, with drust stopped, delete the offending row and set `seq` back to
   `MAX(id)`.
+- **`GET /t/<id>/collections/<c>` no longer describes `_system_*` / `sqlite_*` tables to
+  anon or user callers — it answers `404 NOT_FOUND`, the same code `/records/*` and SSE
+  subscribe give a protected collection (E8).** The describe handler was the one read
+  surface that never consulted `is_protected_collection`: `GET /collections` and the three
+  codegen endpoints already skipped these tables, but describe ran `describe_collection` for
+  any bearer, so the public anon key could read `_system_users`' columns and an exact
+  `row_count` (the tenant's user count), `_system_sessions`' live session count, and so
+  on — and each such request ran an uncached, deadline-free `COUNT(*)` over tables like
+  `_system_record_history`. The check runs before any database read, so a missing
+  `_system_*` name, a case variant and an existing table answer identically. Service keys
+  and admin PATs still describe every table; ordinary collections are unchanged for every
+  role, `row_count` included, and describe's plain-text 404 for a missing ordinary name is
+  unchanged; the admin plane is untouched. A frontend that read `_system_users`'
+  `row_count` with an anon or user key must move that read server-side behind a service
+  key.
 
 ## v1.66.1 — 2026-08-17
 

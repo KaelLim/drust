@@ -145,3 +145,34 @@ async fn service_sees_description() {
         "service body should contain the description; body was:\n{body}"
     );
 }
+
+/// E8 (S-08) pin — passes today and must stay green: the three codegen
+/// endpoints never name an internal table to an anon caller (`build_ir`
+/// excludes `_system_%` / `sqlite_%`).
+#[tokio::test]
+async fn anon_codegen_never_names_system_tables() {
+    let (app, _dir, _svc_tok, anon_tok) = build_fixture_with_anon().await;
+    for path in ["openapi.json", "types.ts", "zod.ts"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/t/{TENANT}/{path}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {anon_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let bytes = to_bytes(resp.into_body(), 4 * 1024 * 1024).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        for internal in ["_system_users", "_system_sessions", "sqlite_sequence"] {
+            assert!(
+                !body.contains(internal),
+                "{path} names internal table {internal}; body was:\n{body}"
+            );
+        }
+    }
+}

@@ -25,6 +25,22 @@ pub async fn describe_handler(
     Extension(t): Extension<TenantRef>,
     Path((_tenant, coll)): Path<(String, String)>,
 ) -> Response {
+    // E8 (S-08) — `_system_*` / `sqlite_*` are internal storage. A non-service
+    // caller gets the same 404 `NOT_FOUND` that /records/* (records.rs) and SSE
+    // subscribe (sse.rs) give a protected collection, decided BEFORE any DB read
+    // so the protected namespace is not an existence oracle. Service is trusted
+    // and keeps describing them; `/collections` and codegen already skip them.
+    // Keep this gate in the handler: `describe_collection` is shared by service,
+    // admin and write paths (schema cache, write allowlist) that need it.
+    if !matches!(t.role, TokenRole::Service)
+        && crate::storage::schema::is_protected_collection(&coll)
+    {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        );
+    }
     let pool = t.pool.clone();
     let out = pool
         .with_reader(move |c| describe_collection(c, &coll))
