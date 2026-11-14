@@ -275,6 +275,17 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   loop, same saturating decrement), two `chunks_exact(4)` (now `as_chunks::<4>()`), and
   `AuditWriter::send_backfill`'s `Result<(), ()>` (now `Result<(), AuditWriterClosed>`).
   No behaviour change; the minimum supported Rust version is unchanged.
+- **Dependencies refreshed to the latest compatible versions (`Cargo.lock` only;
+  `Cargo.toml` is unchanged).** `cargo audit` had gone red on advisories published since
+  v1.66.1. This refresh clears the ones a compatible update can reach — `cap-primitives`
+  (RUSTSEC-2026-0482), `h2`, `pulldown-cmark`, `quinn-proto` / `quinn-udp`, `rustls`,
+  `rustls-webpki`, `webpki-roots`, `zstd`, and the two `wasmtime` advisories fixed in
+  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0, `rusqlite` 0.40.0 → 0.40.2 and `tokio`
+  1.52 → 1.54. **Still open, and why CI's `cargo audit` step stays red after this
+  release:** the remaining `wasmtime` / `wasmtime-wasi` advisories are patched only on
+  the 48+ lines, `libsqlite3-sys` needs 0.39 (a `rusqlite` minor bump), and `rmcp`'s
+  advisory is fixed only in 3.9 (it concerns the Streamable HTTP *client*, which drust
+  does not build). Those cross-major upgrades follow separately.
 
 ## v1.66.1 — 2026-08-17
 
