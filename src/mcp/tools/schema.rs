@@ -694,11 +694,49 @@ pub async fn drop_field(
         .with_reader(move |c| describe_collection(c, &coll))
         .await?
         .ok_or_else(|| anyhow::anyhow!("collection missing after alter"))?;
-    Ok(json!({
+    // E6′ — a stored policy clause still naming the dropped field does not
+    // block the drop (service is trusted) and is not evicted for: the SQL faces
+    // answer POLICY_COMPILE_ERROR and anon SSE fails closed per event
+    // (`eval_policy_materialized`). The response says so, and only then.
+    let warnings: Vec<serde_json::Value> =
+        crate::query::policy::policies_referencing_field(&schema.policies, field)
+            .into_iter()
+            .map(|(verb, clause)| {
+                let op = verb.as_str();
+                let message = if verb == DmlVerb::Select && clause == "using" {
+                    format!(
+                        "the select policy's using clause still references dropped field \
+                         {field:?}; non-service selects on this collection are refused (anon \
+                         realtime receives no events) until the policy is replaced (set_policy) \
+                         or cleared (clear_policy)"
+                    )
+                } else {
+                    format!(
+                        "the {op} policy's {clause} clause still references dropped field \
+                         {field:?}; it no longer behaves as written until replaced (set_policy) \
+                         or cleared (clear_policy)"
+                    )
+                };
+                json!({
+                    "code": "FIELD_REFERENCED_BY_POLICY",
+                    "op": op,
+                    "clause": clause,
+                    "field": field,
+                    "message": message,
+                })
+            })
+            .collect();
+    let mut out = json!({
         "collection": collection,
         "dropped_field": field,
         "fields": schema.fields,
-    }))
+    });
+    // Present only when there is something to report, so an unreferenced drop
+    // keeps the service response shape unchanged.
+    if !warnings.is_empty() {
+        out["warnings"] = serde_json::Value::Array(warnings);
+    }
+    Ok(out)
 }
 
 /// Drop an entire collection (table + its `<name>_updated_at` trigger).

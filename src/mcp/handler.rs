@@ -923,7 +923,8 @@ impl DrustMcpService {
         `created_at`, `updated_at` (drust maintains them automatically). \
         SQLite will also reject the drop if the column is part of an \
         index, UNIQUE, foreign key, CHECK, trigger, or view — fix those \
-        first. Irreversible."
+        first. Irreversible. If a stored policy still names the field, the \
+        response carries a `warnings` array (the drop still happens)."
     )]
     async fn drop_field(
         &self,

@@ -3,7 +3,10 @@
 //! throwaway in-memory table, and check whether the row survives the WHERE;
 //! (b) run eval_policy in memory. They must return the same bool.
 
-use drust::query::policy::{Policy, PolicyCtx, compile_policy_using, eval_policy, validate_policy};
+use drust::query::policy::{
+    Policy, PolicyCtx, compile_policy_using, eval_policy, eval_policy_materialized,
+    policy_field_refs, validate_policy,
+};
 use drust::query::vector_filter::FilterAst;
 use drust::storage::schema::{CollectionSchema, DmlVerb, Field};
 use rusqlite::Connection;
@@ -441,4 +444,130 @@ fn clause_less_select_policy_denies_on_both_evaluators() {
             .is_none(),
         "a using-less UPDATE policy must NOT deny — its using is a row pre-flight"
     );
+}
+
+/// E6′ — the "field is gone" axis. After `drop_field x`, a stored policy still
+/// naming `x` makes the SQL face refuse the whole read (`UnknownField` → 500
+/// `POLICY_COMPILE_ERROR`); the in-memory face over a fully materialized
+/// `RETURNING *` row (every column present, NULL as `null`) must refuse too —
+/// including the shapes where the plain kernel, reading the absent key as NULL,
+/// would admit the row (`$is_null`, `$nin: []`, an `or` with a live branch).
+#[test]
+fn evaluators_agree_when_a_policy_field_is_missing_from_the_table() {
+    let s = schema(&[("status", "TEXT"), ("n", "INTEGER")]);
+    let asts = [
+        r#"{"x":{"$is_null":true}}"#,
+        r#"{"x":{"$is_not_null":true}}"#,
+        r#"{"not":{"x":"a"}}"#,
+        r#"{"or":[{"x":"a"},{"status":"published"}]}"#,
+        r#"{"x":{"$nin":[]}}"#,
+        r#"{"x":{"$in":[]}}"#,
+        r#"{"and":[{"$authenticated":true},{"x":{"$eq":{"$auth":"id"}}}]}"#,
+    ];
+    let rows = [
+        r#"{"status":"published","n":5}"#,
+        r#"{"status":null,"n":null}"#,
+        r#"{"status":"draft","n":3}"#,
+    ];
+    let ctxs = [
+        PolicyCtx {
+            auth_id: Some("u-1".into()),
+            data: None,
+        },
+        PolicyCtx {
+            auth_id: None,
+            data: None,
+        },
+    ];
+    for a in asts {
+        let ast: FilterAst = serde_json::from_str(a).unwrap();
+        let refs = policy_field_refs(&ast);
+        for ctx in &ctxs {
+            assert!(
+                matches!(
+                    compile_policy_using(&s, &ast, ctx),
+                    Err(drust::query::policy::PolicyError::UnknownField(_))
+                ),
+                "SQL face must refuse the whole read: {a}"
+            );
+            for r in rows {
+                let row: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(r).unwrap();
+                assert!(
+                    !eval_policy_materialized(&ast, &refs, &row, ctx),
+                    "in-memory face must refuse too: ast={a} row={r} auth={:?}",
+                    ctx.auth_id
+                );
+            }
+        }
+    }
+}
+
+/// E6′ regression pin — on fully materialized rows (every schema column
+/// present, NULL as `null`) the materialized evaluator agrees with SQL over the
+/// whole `evaluators_agree_on_corpus` corpus (copied: those are local arrays).
+/// Guards present-and-NULL semantics and that the subset check never
+/// over-denies a normal row.
+#[test]
+fn materialized_evaluator_agrees_with_sql_on_fully_materialized_rows() {
+    let s = schema(&[("status", "TEXT"), ("author", "TEXT"), ("n", "INTEGER")]);
+    let asts = [
+        r#"{"status":"published"}"#,
+        r#"{"status":{"$ne":"draft"}}"#,
+        r#"{"n":{"$gte":5}}"#,
+        r#"{"author":{"$eq":{"$auth":"id"}}}"#,
+        r#"{"$authenticated":true}"#,
+        r#"{"or":[{"status":"published"},{"author":{"$eq":{"$auth":"id"}}}]}"#,
+        r#"{"and":[{"$authenticated":true},{"n":{"$lt":10}}]}"#,
+        r#"{"status":{"$in":["published","featured"]}}"#,
+        r#"{"author":{"$is_null":true}}"#,
+        r#"{"not":{"author":{"$eq":{"$auth":"id"}}}}"#,
+        r#"{"not":{"author":{"$ne":"u-1"}}}"#,
+        r#"{"not":{"author":{"$in":["u-1","u-2"]}}}"#,
+        r#"{"not":{"author":{"$nin":["u-1"]}}}"#,
+        r#"{"not":{"author":{"$is_null":true}}}"#,
+        r#"{"not":{"and":[{"author":{"$eq":"u-1"}},{"n":{"$gt":0}}]}}"#,
+        r#"{"not":{"or":[{"author":{"$eq":"u-1"}},{"n":{"$lt":0}}]}}"#,
+        r#"{"not":{"not":{"author":{"$eq":"u-1"}}}}"#,
+        r#"{"and":[{"n":{"$gte":0}},{"not":{"author":{"$eq":"u-1"}}}]}"#,
+    ];
+    let rows = [
+        r#"{"status":"published","author":"u-1","n":5}"#,
+        r#"{"status":"draft","author":"u-2","n":20}"#,
+        r#"{"status":"featured","author":null,"n":3}"#,
+        r#"{"status":"archived","author":"u-1"}"#,
+    ];
+    let ctxs = [
+        PolicyCtx {
+            auth_id: Some("u-1".into()),
+            data: None,
+        },
+        PolicyCtx {
+            auth_id: None,
+            data: None,
+        },
+    ];
+    for a in asts {
+        let ast: FilterAst = serde_json::from_str(a).unwrap();
+        let refs = policy_field_refs(&ast);
+        for r in rows {
+            let mut row: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(r).unwrap();
+            // Materialize: an absent schema column is a SQL NULL, so carry it
+            // as an explicit `null` the way `RETURNING *` would.
+            for f in &s.fields {
+                row.entry(f.name.clone()).or_insert(serde_json::Value::Null);
+            }
+            let full = serde_json::Value::Object(row.clone()).to_string();
+            for ctx in &ctxs {
+                let mem = eval_policy_materialized(&ast, &refs, &row, ctx);
+                let sql = sql_says_match(&s, &ast, ctx, &full);
+                assert_eq!(
+                    mem, sql,
+                    "DISAGREE ast={a} row={full} auth={:?}",
+                    ctx.auth_id
+                );
+            }
+        }
+    }
 }

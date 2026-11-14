@@ -241,6 +241,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
    and never-expiring tenant bearers deliberately carry no deadline.
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
+   `drop_field` deliberately does NOT evict, even when the dropped column is named by a
+   select policy: the per-event filter (`eval_policy_materialized`) drops every
+   Created/Updated whose row lacks a policy-referenced field, so in-flight subscribers fail
+   closed without a disconnect.
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks
    deletion id and timing for policy-hidden rows.
@@ -309,9 +313,12 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     must mean "reads are restricted", never fail open. `validate_policy` rejects a new
     clause-less SELECT policy (`POLICY_SELECT_REQUIRES_USING`); the read-path deny covers any
     legacy row. This closed a latent fail-open that `RpcGrant` (which skips caps) turned into
-    a cross-tenant leak. `eval_policy` also gates the anon/user UPDATE response read-back
-    (`records::readback_for`), so an evaluator divergence there is a read leak, not just an
-    SSE one.
+    a cross-tenant leak. The in-memory read faces — anon SSE filtering and the anon/user
+    UPDATE response read-back (`records::readback_for`) — evaluate through
+    `eval_policy_materialized`, which denies a policy whole when the materialized
+    `RETURNING *` row lacks a field it names (the in-memory twin of `UnknownField`);
+    `eval_policy`'s absent-reads-as-NULL stays for the CHECK and file callers. An evaluator
+    divergence on either face is a read leak.
 
 13. **Every `DrustMcp` construction site decides `functions:` consciously.** The executor's
     host state is built with `functions: None` (`HostStateSeed::build_mcp`); restoring a

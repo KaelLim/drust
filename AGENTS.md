@@ -43,7 +43,7 @@ that forgets is a real bug, and it will look locally correct.
 | `check_tenant_quota` before the growth | write or upload path that can grow a tenant, for **all** caller roles |
 | `record_history::capture` in the **same transaction** | path that mutates tenant data-collection rows (three shapes: structured writes, owner-cascade pre-DELETE, the write-RPC preupdate hook) |
 | Auth-cache eviction after commit | write that sets `revoked_at`, changes a tenant's `deleted_at`/id, deletes `_system_sessions` rows, cascade-deletes `_admin_tokens`, mutates a publish flag, or changes an admin's `role` or a tenant's `owner_admin_id` |
-| `bus.evict_collection` after `schema_cache.invalidate` | write that **reduces** anon read access to a realtime collection — the SSE handler captures caps once at connect, so invalidating the cache alone only affects the next connect |
+| `bus.evict_collection` after `schema_cache.invalidate` | write that **reduces** anon read access to a realtime collection — the SSE handler captures caps once at connect, so invalidating the cache alone only affects the next connect (`drop_field` is adjudicated exempt — see Adjudicated verdicts) |
 | **Both** `check_egress` **and** `PinnedPublicResolver`, per attempt, fail-closed | host-outbound HTTP path. They are orthogonal; dropping either reopens SSRF |
 | `tenant_authz::sees_all_tenants` (never a bare `is_owner`) | new tenant-visibility decision |
 | `require_owner_layer` | new **host-wide** admin surface with no `{id}` in its path — the ownership guard cannot catch those, which is exactly how `/admin/files*` was missed |
@@ -153,6 +153,15 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   defaults — no exploit path, and narrowing it breaks insert-only anon forms. DELETE's
   204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
 
+**Deliberate — schema DDL vs stored policies (not the PAT family):**
+
+- `drop_field` neither refuses (409) nor evicts when it drops a policy-referenced field.
+  Compensated by `query::policy::eval_policy_materialized` in `tenant/sse.rs` (per-event
+  fail-closed; see also the `bus.evict_collection` row of Enumerated invariants) and the
+  response's `warnings`; the SQL faces already answer `POLICY_COMPILE_ERROR`. A 409 would
+  block a trusted caller with no exploit path left (`FTS_FIELD_INDEXED` differs: there the
+  sync triggers break every write).
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |
@@ -171,7 +180,8 @@ the other side:
 
 - `/list` and `/aggregate` — both call `compute_read_auth` and `build_where_clause` verbatim.
 - `compile_policy_using` (SQL) and `eval_policy` (in-memory) — same grammar, two evaluators,
-  with `tests/policy_expression.rs` as the corpus proving they agree.
+  with `tests/policy_expression.rs` as the corpus proving they agree (the SSE and UPDATE
+  read-back faces via `eval_policy_materialized`, which adds the missing-field deny).
 - `has_dml_cap` and the `records_list.rs` cap matrix — both read `user_caps` for the User role.
 - `storage::files::is_unsafe_inline_type` and the Caddy `@markup` matcher in
   `../garage/deploy/Caddyfile` — the Rust side is case-insensitive, Caddy's is not.

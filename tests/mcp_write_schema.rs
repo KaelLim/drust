@@ -1092,3 +1092,109 @@ async fn drop_collection_omits_warnings_without_anon_dependents() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["dropped_collection"], "posts");
 }
+
+fn nullable_text(name: &str) -> FieldSpec {
+    FieldSpec {
+        name: name.into(),
+        sql_type: "text".into(),
+        nullable: true,
+        unique: false,
+        default_value: None,
+        foreign_key: None,
+        dim: None,
+        description: None,
+        ..Default::default()
+    }
+}
+
+/// E6′ — dropping a field a stored policy still names is NOT refused (service
+/// is trusted, no 409), but the response says so: one warning per clause, in
+/// verb order, `$data` CHECK operands included.
+#[tokio::test]
+async fn drop_field_warns_about_every_policy_that_still_names_it() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[nullable_text("status"), nullable_text("x")])
+        .await
+        .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "select",
+        Some(serde_json::json!({"x": {"$is_null": true}})),
+        None,
+    )
+    .await
+    .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "update",
+        None,
+        Some(serde_json::json!({"status": {"$eq": {"$data": "x"}}})),
+    )
+    .await
+    .unwrap();
+
+    let v = drop_field(&s, "posts", "x").await.unwrap();
+    assert_eq!(v["dropped_field"], "x");
+    let names: Vec<&str> = v["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"x"), "the drop still happened: {v}");
+    let w = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("warnings expected: {v}"));
+    assert_eq!(w.len(), 2, "{v}");
+    assert_eq!(w[0]["code"], "FIELD_REFERENCED_BY_POLICY");
+    assert_eq!(w[0]["op"], "select");
+    assert_eq!(w[0]["clause"], "using");
+    assert_eq!(w[0]["field"], "x");
+    assert_eq!(w[1]["code"], "FIELD_REFERENCED_BY_POLICY");
+    assert_eq!(w[1]["op"], "update");
+    assert_eq!(w[1]["clause"], "check");
+    assert_eq!(w[1]["field"], "x");
+    for one in w {
+        let msg = one["message"].as_str().unwrap();
+        assert!(
+            !msg.to_lowercase().contains("error"),
+            "a warning is not an error: {msg}"
+        );
+    }
+}
+
+/// E6′ — an unreferenced drop answers exactly as before: no `warnings` key.
+#[tokio::test]
+async fn drop_field_without_a_policy_reference_has_no_warnings() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[nullable_text("status"), nullable_text("draft")],
+    )
+    .await
+    .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "select",
+        Some(serde_json::json!({"status": "p"})),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let v = drop_field(&s, "posts", "draft").await.unwrap();
+    assert!(v.get("warnings").is_none(), "nothing to report: {v}");
+    let keys: std::collections::BTreeSet<&str> =
+        v.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from(["collection", "dropped_field", "fields"]),
+        "service response shape must be unchanged: {v}"
+    );
+}

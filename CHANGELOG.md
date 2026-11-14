@@ -116,6 +116,22 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   nothing. Only subscribers of the dropped collection are affected (service streams on it
   included); other collections, other tenants and rooms are untouched.
 
+- **Dropping a field that a select policy names no longer opens the anon SSE stream
+  (E6′).** The realtime face filters anon events in memory with `eval_policy`, which
+  reads a key absent from the event row as NULL — so after `drop_field x`, a policy such
+  as `{"x":{"$is_null":true}}` admitted every row and anon subscribers (in-flight and
+  newly connected alike) received the rows the policy hid, while `/list` for the same
+  caller already refused the read (`POLICY_COMPILE_ERROR`). SSE now evaluates through
+  `eval_policy_materialized`: a policy naming a field the materialized `RETURNING *` row
+  does not carry is denied whole, the in-memory twin of `compile_policy_using`'s
+  `UnknownField`. A present-but-NULL column evaluates exactly as before, and
+  `eval_policy` itself — which the write-side CHECKs and the corpus rely on reading an
+  absent key as NULL — is unchanged. The drop still succeeds and nobody is
+  disconnected: affected subscribers stay connected and receive no events for that
+  collection until the policy is replaced or cleared. The anon/user UPDATE response
+  read-back (`records::readback_for`) now calls the same function. No new environment
+  variable, no schema change.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
@@ -147,6 +163,13 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   itself cannot read the RPC registry, one `ANON_RPC_SCAN_FAILED` warning is returned
   instead and the drop still succeeds. The key is absent when there is nothing to report,
   so existing callers see an unchanged shape. No new environment variable, no schema change.
+
+- **`drop_field` may return `warnings` (E6′).** The result carries
+  `warnings: [{code: "FIELD_REFERENCED_BY_POLICY", op, clause, field, message}]` — one per
+  stored policy clause (any of the four verbs, `using` or `check`, `$data` CHECK operands
+  included) that still names the dropped field. The drop is never refused for it, and no
+  subscriber is evicted. The key is absent when there is nothing to report, so an
+  unreferenced drop answers exactly as before.
 
 ## v1.66.1 — 2026-08-17
 

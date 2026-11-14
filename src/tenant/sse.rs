@@ -22,8 +22,13 @@ enum AnonSelectFilter {
     PassAll,
     /// A clause-less (deny-all) select policy: every event is dropped.
     DenyAll,
-    /// A `using` clause: filter each event's record in memory.
-    Using(crate::query::vector_filter::FilterAst),
+    /// A `using` clause: filter each event's record in memory. `refs` is the
+    /// clause's column set (`policy_field_refs`), computed once at connect, so
+    /// an event row lacking one of them (a dropped column) fails closed.
+    Using {
+        ast: crate::query::vector_filter::FilterAst,
+        refs: std::collections::BTreeSet<String>,
+    },
 }
 
 pub async fn subscribe_handler(
@@ -141,9 +146,10 @@ pub async fn subscribe_handler(
     let anon_select = if matches!(ctx, AuthCtx::Anon) {
         match crate::query::policy::select_read_access(&ctx, &schema) {
             crate::query::policy::SelectReadAccess::Unrestricted => AnonSelectFilter::PassAll,
-            crate::query::policy::SelectReadAccess::Filtered(ast) => {
-                AnonSelectFilter::Using(ast.clone())
-            }
+            crate::query::policy::SelectReadAccess::Filtered(ast) => AnonSelectFilter::Using {
+                refs: crate::query::policy::policy_field_refs(ast),
+                ast: ast.clone(),
+            },
             crate::query::policy::SelectReadAccess::DenyAll => AnonSelectFilter::DenyAll,
         }
     } else {
@@ -158,11 +164,22 @@ pub async fn subscribe_handler(
             // A clause-less (deny-all) select policy hides every row, so drop
             // every event — including Deleted (F3 covers it a fortiori).
             AnonSelectFilter::DenyAll => false,
-            AnonSelectFilter::Using(using) => match ev {
+            // E6′ — every Created/Updated record is a fully materialized
+            // `RETURNING *` row (each column present, NULL as `null`), so a
+            // policy column missing from it is a column dropped after the
+            // policy was saved. `eval_policy_materialized` then denies the
+            // whole policy — the same direction as the SQL faces' `UnknownField`
+            // (`/list` answers POLICY_COMPILE_ERROR). The stream stays open and
+            // the policy is not compiled at connect (no new 4xx on reconnect);
+            // `drop_field` does not evict. A future event source carrying a
+            // partial row would make a policy collection's anon stream go
+            // silent (the fail-closed direction).
+            AnonSelectFilter::Using { ast, refs } => match ev {
                 Event::Created { record } | Event::Updated { record } => {
                     let map = record.as_object().cloned().unwrap_or_default();
-                    crate::query::policy::eval_policy(
-                        using,
+                    crate::query::policy::eval_policy_materialized(
+                        ast,
+                        refs,
                         &map,
                         &crate::query::policy::PolicyCtx {
                             auth_id: None,

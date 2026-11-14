@@ -296,17 +296,18 @@ pub(crate) enum ReadBack {
 /// caps/owner come from the cached schema via the SAME matrix `/list` uses
 /// (`records_list::compute_read_auth`, not a third cap-gate site), the select
 /// policy via the shared `select_read_access` classifier and the in-memory
-/// `eval_policy` over this row (the evaluator + row shape the SSE face uses).
-/// Fails closed on every doubt — including a policy that names a column the
-/// row lacks (the cache was loaded outside the write tx, and `eval_leaf`
-/// reads a missing key as NULL, which `$is_null` would admit).
+/// `eval_policy_materialized` over this row (the evaluator + row shape the SSE
+/// face uses). Fails closed on every doubt — including a policy that names a
+/// column the row lacks (the cache was loaded outside the write tx, and
+/// `eval_leaf` reads a missing key as NULL, which `$is_null` would admit).
 pub(crate) fn readback_for(
     ctx: &AuthCtx,
     schema: &CollectionSchema,
     row: &serde_json::Value,
 ) -> ReadBack {
     use crate::query::policy::{
-        PolicyCtx, SelectReadAccess, eval_policy, policy_field_refs, select_read_access,
+        PolicyCtx, SelectReadAccess, eval_policy_materialized, policy_field_refs,
+        select_read_access,
     };
     if matches!(ctx, AuthCtx::Service { .. }) {
         return ReadBack::Full;
@@ -328,11 +329,14 @@ pub(crate) fn readback_for(
     match select_read_access(ctx, schema) {
         SelectReadAccess::Unrestricted => ReadBack::Full,
         SelectReadAccess::DenyAll => ReadBack::IdOnly,
+        // The same missing-field-denies-whole decision the SSE face makes.
         SelectReadAccess::Filtered(ast) => {
-            if policy_field_refs(ast).iter().any(|f| !map.contains_key(f)) {
-                return ReadBack::IdOnly;
-            }
-            if eval_policy(ast, map, &PolicyCtx::from_auth(ctx)) {
+            if eval_policy_materialized(
+                ast,
+                &policy_field_refs(ast),
+                map,
+                &PolicyCtx::from_auth(ctx),
+            ) {
                 ReadBack::Full
             } else {
                 ReadBack::IdOnly
