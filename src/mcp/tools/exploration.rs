@@ -18,7 +18,10 @@ pub async fn describe_collection(s: &DrustMcp, name: &str) -> anyhow::Result<ser
         .await?;
     match out {
         Some(schema) => Ok(serde_json::to_value(schema)?),
-        None => Ok(json!({ "error_code": "COLLECTION_NOT_FOUND" })),
+        None => Ok(json!({
+            "error_code": "COLLECTION_NOT_FOUND",
+            "message": format!("no such collection: {name}"),
+        })),
     }
 }
 

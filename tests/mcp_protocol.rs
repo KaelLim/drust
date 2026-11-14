@@ -453,3 +453,37 @@ async fn tools_list_wire_annotations_for_retry_sensitive_tools() {
         );
     }
 }
+
+/// M1 (B6): a tool-execution failure leaves the server as an `isError: true`
+/// result — not `isError: false` with an error object in the text.
+#[tokio::test]
+async fn tools_call_describe_missing_collection_is_error_on_wire() {
+    let (app, service_tok, _anon, _dir) = mcp_stack("mcpiserr").await;
+    let (sid, _) = open_session(&app, "mcpiserr", &service_tok).await;
+    let req = session_request(
+        "mcpiserr",
+        &service_tok,
+        &sid,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "describe_collection", "arguments": {"collection": "nope"} }
+        }),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let result = parse_mcp_body(resp)
+        .await
+        .into_iter()
+        .find_map(|m| m.get("result").cloned())
+        .expect("tools/call must return a result");
+    assert_eq!(
+        result["isError"],
+        Value::Bool(true),
+        "result on the wire: {result}"
+    );
+    let text = result["content"][0]["text"].as_str().expect("text content");
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["error_code"], "COLLECTION_NOT_FOUND", "{parsed}");
+}

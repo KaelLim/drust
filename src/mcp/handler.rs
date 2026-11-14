@@ -701,6 +701,53 @@ fn bail_mcp<T>(e: anyhow::Error) -> Result<T, McpError> {
     Err(McpError::internal_error(msg, data_val))
 }
 
+/// The tool-EXECUTION-error face (MCP `isError: true`). Body is the JSON text
+/// `{"error_code", "message", "suggested_fix"?}` — the keys `bail_mcp` puts in
+/// JSON-RPC `data`, plus the message. MA1's outer `call_tool` (design §3.8)
+/// converts protocol errors through THIS function, so every isError body has
+/// one shape; do not fork it. `fix`: pass the fix the error already carries
+/// (`mcp_error_from_response` forwards REST's possibly CONTEXTUAL fix); `None`
+/// falls back to the catalogue, and an uncatalogued code simply has no fix.
+fn tool_error(
+    code: &str,
+    message: String,
+    fix: Option<String>,
+) -> Result<CallToolResult, McpError> {
+    let mut body = serde_json::Map::new();
+    body.insert("error_code".into(), Value::String(code.to_string()));
+    body.insert("message".into(), Value::String(message));
+    let fix = fix.or_else(|| crate::safety::error_fixes::lookup(code).map(str::to_string));
+    if let Some(fix) = fix {
+        body.insert("suggested_fix".into(), Value::String(fix));
+    }
+    let text = serde_json::to_string(&Value::Object(body))
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::error(vec![Content::text(text)]))
+}
+
+/// M1 (B6) — for the tools whose inner fn reports failure as an `Ok` object
+/// with a top-level string `error_code` (describe_collection, delete_record,
+/// delete_file, get_file_url, set_file_visibility, list_files). NEVER route a
+/// tool that returns caller data (list_records, query, get_record, …) through
+/// here: a user column may legitimately be named `error_code`.
+fn sentinel_or_json(v: Value) -> Result<CallToolResult, McpError> {
+    if let Some(code) = v.get("error_code").and_then(Value::as_str) {
+        let message = v
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or(code)
+            .to_string();
+        // None of today's six sentinels carries a fix, so this is None and the
+        // catalogue answers; forwarding it keeps a future inner fix intact.
+        let fix = v
+            .get("suggested_fix")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        return tool_error(code, message, fix);
+    }
+    json_content(v)
+}
+
 #[cfg(test)]
 mod bail_mcp_tests {
     use super::*;
@@ -785,14 +832,14 @@ impl DrustMcpService {
         annotations(read_only_hint = true, open_world_hint = false),
         description = "Return the full schema for one collection: all fields \
         (name, sql_type, nullable, pk, default, foreign_key), all indices, and row count. \
-        Returns {\"error_code\": \"COLLECTION_NOT_FOUND\"} if the collection does not exist."
+        Errors (isError result) with COLLECTION_NOT_FOUND if the collection does not exist."
     )]
     async fn describe_collection(
         &self,
         Parameters(DescribeCollectionArgs { collection }): Parameters<DescribeCollectionArgs>,
     ) -> Result<CallToolResult, McpError> {
         match exploration::describe_collection(&self.state, &collection).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -1721,7 +1768,7 @@ impl DrustMcpService {
             }
         }
         match write_tools::delete_record(&self.state, &collection, id).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -1729,7 +1776,9 @@ impl DrustMcpService {
     #[tool(
         annotations(read_only_hint = true, open_world_hint = false),
         description = "List files stored by this tenant in Garage. \
-        Optional `visibility` filter (\"public\" | \"private\"); anything else returns all. \
+        Optional `visibility` filter: exactly \"public\" or \"private\" (lowercase); omit it to \
+        list every file. A misspelt public/private (e.g. \"Public\") errors with \
+        INVALID_VISIBILITY; other values are ignored. \
         Paginate with `limit` (1–500, default 50) and `offset`. \
         Returns {files, total_count} where each file has id, original_name, size_bytes, \
         content_type, visibility, content_disposition, uploaded_at, and `path` — the \
@@ -1742,7 +1791,7 @@ impl DrustMcpService {
         Parameters(args): Parameters<file_tools::ListFilesArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_tools::list_files(&self.state, args).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -1756,15 +1805,15 @@ impl DrustMcpService {
         ),
         description = "Delete a file by its id (the UUID key). \
         Removes the S3 object from the tenant's bucket first (idempotent on 404) \
-        then deletes the metadata row. Returns {\"ok\": true} on success or \
-        {\"error_code\": \"NOT_FOUND\" | \"STORAGE_UNAVAILABLE\"}."
+        then deletes the metadata row. Returns {\"ok\": true}. \
+        Errors (isError result): NOT_FOUND, STORAGE_UNAVAILABLE."
     )]
     async fn delete_file(
         &self,
         Parameters(args): Parameters<file_tools::DeleteFileArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_tools::delete_file(&self.state, args).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -1779,16 +1828,16 @@ impl DrustMcpService {
         description = "Change a file's visibility between public and private by \
         its id (the UUID key). Moves the S3 object to the target bucket and updates \
         the metadata row (cache_control is reset to the target's default). Returns \
-        {\"ok\": true, \"from\", \"to\"} on change, {\"ok\": true, \"noop\": true} if \
-        already that visibility, or {\"error_code\": \"NOT_FOUND\" | \
-        \"INVALID_VISIBILITY\" | \"STORAGE_UNAVAILABLE\"}."
+        {\"ok\": true, \"from\", \"to\"} on change, or {\"ok\": true, \"noop\": true} if \
+        already that visibility. Errors (isError result): INVALID_VISIBILITY, \
+        NOT_FOUND, STORAGE_UNAVAILABLE."
     )]
     async fn set_file_visibility(
         &self,
         Parameters(args): Parameters<file_tools::SetFileVisibilityArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_tools::set_file_visibility(&self.state, args).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -1907,14 +1956,15 @@ impl DrustMcpService {
         Public files → stable public URL (expires_at is null). \
         Private files → pre-signed URL with TTL (1..=604800s, default 3600); \
         pass `download: true` to inject Content-Disposition=attachment so \
-        browsers download instead of previewing."
+        browsers download instead of previewing. \
+        Errors (isError result): NOT_FOUND, STORAGE_UNAVAILABLE."
     )]
     async fn get_file_url(
         &self,
         Parameters(args): Parameters<file_tools::GetFileUrlArgs>,
     ) -> Result<CallToolResult, McpError> {
         match file_tools::get_file_url(&self.state, args).await {
-            Ok(v) => json_content(v),
+            Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
     }
@@ -3695,6 +3745,25 @@ mod description_tests {
             .to_string()
     }
 
+    /// M1 (B6): the tools whose failures became isError results say so, and
+    /// `list_files` documents the misspelt-visibility refusal while keeping
+    /// "other values are ignored".
+    #[test]
+    fn failing_file_tools_document_iserror() {
+        for name in [
+            "describe_collection",
+            "delete_file",
+            "set_file_visibility",
+            "get_file_url",
+        ] {
+            let d = desc_of(name);
+            assert!(d.contains("isError"), "{name} must document isError: {d}");
+        }
+        let d = desc_of("list_files");
+        assert!(d.contains("INVALID_VISIBILITY"), "list_files: {d}");
+        assert!(!d.contains("anything else returns all"), "list_files: {d}");
+    }
+
     #[test]
     fn router_exposes_read_cluster_descriptions() {
         for name in ["list_records", "query", "search_collection"] {
@@ -4459,5 +4528,355 @@ mod annotation_tests {
             Some(true),
             "call_rpc runs on the read-only executor on MCP"
         );
+    }
+}
+
+/// M1 (B6) — the five false-success tools and `list_files`' visibility gate,
+/// asserted through the real `#[tool]` wrappers (not the inner fns, whose
+/// sentinel shape edge functions / resources / prompts still depend on).
+/// The tool methods are private to the impl, so this must live in-file.
+#[cfg(test)]
+mod is_error_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Mirrors `functions::enforce`'s private `mcp_with_garage`. `functions:
+    /// None` is deliberate (invariant 13): these tests need no dispatcher.
+    async fn svc(
+        tenant: &str,
+        with_garage: bool,
+    ) -> (DrustMcpService, DrustMcp, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
+        ));
+        let garage = with_garage.then(|| {
+            Arc::new(crate::storage::garage::GarageClient::from_store(
+                Arc::new(object_store::memory::InMemory::new()),
+                "unused",
+            ))
+        });
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let mcp = DrustMcp::new(
+            tenant,
+            tenants.get_or_create(tenant).unwrap(),
+            crate::tenant::events::EventBus::new(),
+            crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            garage,
+            String::new(),
+            Arc::new([0u8; 32]),
+            None,
+            52_428_800,
+            1_000_000,
+            Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            None,
+            None,
+        );
+        (DrustMcpService::new(mcp.clone()), mcp, tmp)
+    }
+
+    /// `content[0].text` parsed as JSON.
+    fn body(r: &CallToolResult) -> Value {
+        let c = serde_json::to_value(&r.content[0]).unwrap();
+        let text = c["text"].as_str().expect("text content");
+        serde_json::from_str(text).expect("content text is JSON")
+    }
+
+    fn assert_is_error(r: &CallToolResult, code: &str, want_fix: bool, ctx: &str) {
+        let b = body(r);
+        assert_eq!(
+            r.is_error,
+            Some(true),
+            "{ctx}: must be an isError result; body {b}"
+        );
+        assert_eq!(b["error_code"], code, "{ctx}: body {b}");
+        assert!(
+            b["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "{ctx}: an isError body carries a message; body {b}"
+        );
+        assert_eq!(
+            b.get("suggested_fix").is_some_and(Value::is_string),
+            want_fix,
+            "{ctx}: suggested_fix presence (catalogued codes only); body {b}"
+        );
+        assert!(
+            b.get("ok").is_none(),
+            "{ctx}: the unified body has no `ok`; {b}"
+        );
+    }
+
+    async fn posts(mcp: &DrustMcp) {
+        schema_tools::create_collection(
+            mcp,
+            "posts",
+            &[schema_tools::FieldSpec {
+                name: "title".into(),
+                sql_type: "text".into(),
+                nullable: true,
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn insert_file(mcp: &DrustMcp, sql: &'static str) {
+        mcp.inner()
+            .pool
+            .with_writer(move |c| c.execute(sql, []).map(|_| ()))
+            .await
+            .unwrap();
+    }
+
+    fn list_args(v: Option<&str>) -> file_tools::ListFilesArgs {
+        file_tools::ListFilesArgs {
+            visibility: v.map(str::to_string),
+            limit: 50,
+            offset: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn describe_missing_collection_is_error() {
+        let (s, mcp, _d) = svc("iserr-desc", false).await;
+        let r = s
+            .describe_collection(Parameters(DescribeCollectionArgs {
+                collection: "nope".into(),
+            }))
+            .await
+            .unwrap();
+        assert_is_error(&r, "COLLECTION_NOT_FOUND", true, "describe nope");
+        assert!(body(&r)["message"].as_str().unwrap().contains("nope"));
+
+        posts(&mcp).await;
+        let r = s
+            .describe_collection(Parameters(DescribeCollectionArgs {
+                collection: "posts".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            r.is_error,
+            Some(false),
+            "describe of an existing collection"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_missing_record_is_error() {
+        let (s, mcp, _d) = svc("iserr-delrec", false).await;
+        posts(&mcp).await;
+        let r = s
+            .delete_record(Parameters(DeleteRecordArgs {
+                collection: "posts".into(),
+                id: 999,
+                dry_run: None,
+            }))
+            .await
+            .unwrap();
+        assert_is_error(&r, "RECORD_NOT_FOUND", true, "delete id 999");
+
+        let ins = write_tools::insert_record(&mcp, "posts", serde_json::json!({"title": "a"}))
+            .await
+            .unwrap();
+        let id = ins["id"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("inserted id in {ins}"));
+        let r = s
+            .delete_record(Parameters(DeleteRecordArgs {
+                collection: "posts".into(),
+                id,
+                dry_run: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(false));
+        assert_eq!(body(&r), serde_json::json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn delete_record_dry_run_on_missing_id_stays_protocol_error() {
+        let (s, mcp, _d) = svc("iserr-dry", false).await;
+        posts(&mcp).await;
+        let e = s
+            .delete_record(Parameters(DeleteRecordArgs {
+                collection: "posts".into(),
+                id: 999,
+                dry_run: Some(true),
+            }))
+            .await
+            .expect_err("dry_run on a missing id stays a JSON-RPC error in M1");
+        assert_eq!(e.code.0, -32603);
+    }
+
+    #[tokio::test]
+    async fn delete_file_errors() {
+        let (s, _mcp, _d) = svc("iserr-delf-a", false).await;
+        let r = s
+            .delete_file(Parameters(file_tools::DeleteFileArgs { id: "x".into() }))
+            .await
+            .unwrap();
+        assert_is_error(&r, "STORAGE_UNAVAILABLE", false, "delete_file, no garage");
+
+        let (s, _mcp, _d) = svc("iserr-delf-b", true).await;
+        let r = s
+            .delete_file(Parameters(file_tools::DeleteFileArgs { id: "x".into() }))
+            .await
+            .unwrap();
+        assert_is_error(&r, "NOT_FOUND", false, "delete_file, unknown id");
+    }
+
+    #[tokio::test]
+    async fn get_file_url_errors() {
+        let args = || file_tools::GetFileUrlArgs {
+            id: "x".into(),
+            expires_in: None,
+            download: None,
+        };
+        let (s, _mcp, _d) = svc("iserr-url-a", false).await;
+        let r = s.get_file_url(Parameters(args())).await.unwrap();
+        assert_is_error(&r, "STORAGE_UNAVAILABLE", false, "get_file_url, no garage");
+
+        let (s, _mcp, _d) = svc("iserr-url-b", true).await;
+        let r = s.get_file_url(Parameters(args())).await.unwrap();
+        assert_is_error(&r, "NOT_FOUND", false, "get_file_url, unknown id");
+    }
+
+    #[tokio::test]
+    async fn set_file_visibility_errors() {
+        let args = |vis: &str| file_tools::SetFileVisibilityArgs {
+            id: "x".into(),
+            visibility: vis.into(),
+        };
+        for garage in [false, true] {
+            let (s, _mcp, _d) = svc(&format!("iserr-vis-{garage}"), garage).await;
+            let r = s
+                .set_file_visibility(Parameters(args("bogus")))
+                .await
+                .unwrap();
+            assert_is_error(
+                &r,
+                "INVALID_VISIBILITY",
+                false,
+                &format!("bogus, garage={garage}"),
+            );
+            let r = s
+                .set_file_visibility(Parameters(args("public")))
+                .await
+                .unwrap();
+            let want = if garage {
+                "NOT_FOUND"
+            } else {
+                "STORAGE_UNAVAILABLE"
+            };
+            assert_is_error(&r, want, false, &format!("public, garage={garage}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn set_file_visibility_noop_is_success() {
+        let (s, mcp, _d) = svc("iserr-noop", true).await;
+        insert_file(
+            &mcp,
+            "INSERT INTO _system_files \
+               (key, original_name, content_type, size_bytes, visibility, uploader) \
+             VALUES ('k.txt', 'k.txt', 'text/plain', 1, 'private', 'service')",
+        )
+        .await;
+        let r = s
+            .set_file_visibility(Parameters(file_tools::SetFileVisibilityArgs {
+                id: "k.txt".into(),
+                visibility: "private".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(r.is_error, Some(false), "NoOp must not read as an error");
+        assert_eq!(body(&r), serde_json::json!({"ok": true, "noop": true}));
+    }
+
+    #[tokio::test]
+    async fn list_files_rejects_bad_visibility() {
+        let (s, _mcp, _d) = svc("iserr-lsbad", false).await;
+        for v in ["Public", "pub", "PRIVATE", " private", "publc"] {
+            let r = s.list_files(Parameters(list_args(Some(v)))).await.unwrap();
+            assert_is_error(
+                &r,
+                "INVALID_VISIBILITY",
+                false,
+                &format!("visibility {v:?}"),
+            );
+        }
+    }
+
+    async fn two_files(mcp: &DrustMcp) {
+        insert_file(
+            mcp,
+            "INSERT INTO _system_files \
+               (key, original_name, content_type, size_bytes, visibility, uploader) \
+             VALUES ('p.txt', 'p.txt', 'text/plain', 1, 'public', 'service'), \
+                    ('q.txt', 'q.txt', 'text/plain', 1, 'private', 'service')",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_files_all_aliases_still_list_everything() {
+        let (s, mcp, _d) = svc("iserr-lsall", false).await;
+        two_files(&mcp).await;
+        for v in [
+            None,
+            Some(""),
+            Some("all"),
+            Some("ALL"),
+            Some("any"),
+            Some("both"),
+            Some("*"),
+        ] {
+            let r = s.list_files(Parameters(list_args(v))).await.unwrap();
+            let b = body(&r);
+            assert_eq!(r.is_error, Some(false), "visibility {v:?}: {b}");
+            assert_eq!(b["total_count"], 2, "visibility {v:?}: {b}");
+            assert_eq!(
+                b["files"].as_array().unwrap().len(),
+                2,
+                "visibility {v:?}: {b}"
+            );
+        }
+        for v in ["public", "private"] {
+            let r = s.list_files(Parameters(list_args(Some(v)))).await.unwrap();
+            let b = body(&r);
+            assert_eq!(r.is_error, Some(false), "visibility {v:?}: {b}");
+            assert_eq!(b["total_count"], 1, "visibility {v:?}: {b}");
+            assert_eq!(b["files"][0]["visibility"], v, "visibility {v:?}: {b}");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_files_propagates_row_decode_errors() {
+        let (_s, mcp, _d) = svc("iserr-lsdec", false).await;
+        two_files(&mcp).await;
+        // `_system_files` is not STRICT: INTEGER affinity keeps a non-numeric
+        // text verbatim, so this row cannot decode into `size_bytes: i64`.
+        insert_file(
+            &mcp,
+            "INSERT INTO _system_files \
+               (key, original_name, content_type, size_bytes, visibility, uploader) \
+             VALUES ('bad.txt', 'bad.txt', 'text/plain', 'not-a-number', 'public', 'service')",
+        )
+        .await;
+        for v in [None, Some("public")] {
+            let out = file_tools::list_files(&mcp, list_args(v)).await;
+            assert!(
+                out.is_err(),
+                "visibility {v:?}: an undecodable row must fail the list, got {out:?}"
+            );
+        }
     }
 }

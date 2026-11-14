@@ -1,9 +1,10 @@
 //! Y-scope MCP file tools — list / delete / get_file_url.
 //!
 //! Backed by the per-tenant `_system_files` table and the tenant's two
-//! Garage buckets (`tenant-<id>-pub` / `tenant-<id>-prv`). Returns
-//! `{"error_code": "STORAGE_UNAVAILABLE"}` when drust was started without
-//! a Garage client.
+//! Garage buckets (`tenant-<id>-pub` / `tenant-<id>-prv`). Failures (no
+//! Garage, unknown id, bad visibility) are reported as
+//! `{"error_code","message"}` objects that the `handler.rs` wrappers turn
+//! into `isError: true` results.
 use crate::mcp::server::DrustMcp;
 use crate::storage::files::{Owner, Visibility, bucket_for, build_public_url, compose_key};
 use schemars::JsonSchema;
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFilesArgs {
-    /// Optional filter: "public" or "private". Anything else is ignored.
+    /// Optional filter: exactly "public" or "private" (lowercase). Omit it to list every file. A misspelt public/private (e.g. "Public", "pub") is refused with INVALID_VISIBILITY; any other value is ignored and every file is listed.
     #[serde(default)]
     pub visibility: Option<String>,
     #[serde(default = "default_limit")]
@@ -47,15 +48,32 @@ struct FileBrief {
 }
 
 fn storage_unavailable() -> serde_json::Value {
-    serde_json::json!({ "error_code": "STORAGE_UNAVAILABLE" })
+    serde_json::json!({
+        "error_code": "STORAGE_UNAVAILABLE",
+        "message": "file storage is not configured on this drust instance",
+    })
 }
 
 pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<serde_json::Value> {
     let limit = args.limit.clamp(1, 500) as i64;
     let offset = args.offset as i64;
+    // M1 (B6): a value that plainly MEANT a filter but is not spelt exactly
+    // (`"Public"`, `"PRIVATE"`, `" private"`, `"pub"`) used to widen silently to
+    // "all files" — the private files came back as if they were the public list.
+    // That is refused. Every OTHER value keeps the documented "anything else
+    // returns all" contract (`"all"`, `""`, `"any"`, `"*"` …): those callers
+    // asked for everything and got it (plan-M1 §11 records the stricter option).
     let vis_filter = match args.visibility.as_deref() {
         Some("public") => Some("public".to_string()),
         Some("private") => Some("private".to_string()),
+        Some(v) if looks_like_misspelt_visibility(v) => {
+            return Ok(serde_json::json!({
+                "error_code": "INVALID_VISIBILITY",
+                "message": format!(
+                    "visibility must be exactly 'public' or 'private' (lowercase); omit it to list every file; got {v:?}"
+                ),
+            }));
+        }
         _ => None,
     };
 
@@ -90,8 +108,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
                         path: r.get(7)?,
                     })
                 })?
-                .filter_map(Result::ok)
-                .collect()
+                .collect::<rusqlite::Result<Vec<_>>>()?
             } else {
                 let mut stmt = conn.prepare(
                     "SELECT key, original_name, size_bytes, content_type, visibility, \
@@ -111,8 +128,7 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
                         path: r.get(7)?,
                     })
                 })?
-                .filter_map(Result::ok)
-                .collect()
+                .collect::<rusqlite::Result<Vec<_>>>()?
             };
             Ok((total, rows))
         })
@@ -122,6 +138,13 @@ pub async fn list_files(s: &DrustMcp, args: ListFilesArgs) -> anyhow::Result<ser
         files: rows,
         total_count: total,
     })?)
+}
+
+/// Case/space variants and prefixes of `public` / `private` — never an exact
+/// match (the caller above handles those first).
+fn looks_like_misspelt_visibility(v: &str) -> bool {
+    let t = v.trim().to_ascii_lowercase();
+    t.starts_with("pub") || t.starts_with("priv")
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -155,7 +178,10 @@ pub async fn delete_file(s: &DrustMcp, args: DeleteFileArgs) -> anyhow::Result<s
         .await?;
 
     let Some(vis_str) = vis_opt else {
-        return Ok(serde_json::json!({ "error_code": "NOT_FOUND" }));
+        return Ok(serde_json::json!({
+            "error_code": "NOT_FOUND",
+            "message": format!("no file with id {key}"),
+        }));
     };
     let vis = if vis_str == "public" {
         Visibility::Public
@@ -218,7 +244,10 @@ pub async fn get_file_url(s: &DrustMcp, args: GetFileUrlArgs) -> anyhow::Result<
         .await?;
 
     let Some((visibility, original_name)) = row_opt else {
-        return Ok(serde_json::json!({ "error_code": "NOT_FOUND" }));
+        return Ok(serde_json::json!({
+            "error_code": "NOT_FOUND",
+            "message": format!("no file with id {key}"),
+        }));
     };
 
     if visibility == "public" {
@@ -289,7 +318,12 @@ pub async fn set_file_visibility(
     let target = match args.visibility.as_str() {
         "public" => Visibility::Public,
         "private" => Visibility::Private,
-        _ => return Ok(serde_json::json!({ "error_code": "INVALID_VISIBILITY" })),
+        _ => {
+            return Ok(serde_json::json!({
+                "error_code": "INVALID_VISIBILITY",
+                "message": "visibility must be 'public' or 'private'",
+            }));
+        }
     };
     let Some(garage) = s.garage().cloned() else {
         return Ok(storage_unavailable());
@@ -302,6 +336,9 @@ pub async fn set_file_visibility(
             Ok(serde_json::json!({ "ok": true, "from": from, "to": to }))
         }
         VisibilityOutcome::NoOp => Ok(serde_json::json!({ "ok": true, "noop": true })),
-        VisibilityOutcome::NotFound => Ok(serde_json::json!({ "error_code": "NOT_FOUND" })),
+        VisibilityOutcome::NotFound => Ok(serde_json::json!({
+            "error_code": "NOT_FOUND",
+            "message": format!("no file with id {}", args.id),
+        })),
     }
 }
