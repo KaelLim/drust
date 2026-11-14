@@ -158,6 +158,75 @@ async fn write_edge_function_embeds_the_wit_contract_and_egress_gotcha() {
     );
 }
 
+/// M1 (B2, B5): `insert_record` / `update_record` have no `dry_run`, and
+/// `recent_writes` is not populated yet — neither may be offered as a fix.
+#[tokio::test]
+async fn debug_write_makes_no_dry_run_or_recent_writes_promise() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let r = render_prompt(&s, "debug_write", &args(&[("collection", "posts")]))
+        .await
+        .unwrap();
+    let body = body_of(&r);
+    assert!(
+        !body.contains("Re-run the write with `dry_run: true`"),
+        "debug_write: {body}"
+    );
+    assert!(!body.contains("recent_writes"), "debug_write: {body}");
+    assert!(body.contains("suggested_fix"), "debug_write: {body}");
+    assert!(body.contains("list_records"), "debug_write: {body}");
+}
+
+/// M1 (PR-04): every URL in the recipe goes through `crate::base_path`, and the
+/// egress step uses the MCP tools instead of a raw PUT that would replace the
+/// whole allowlist.
+#[tokio::test]
+async fn write_edge_function_urls_honour_the_base_path() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let r = render_prompt(
+        &s,
+        "write_edge_function",
+        &args(&[("trigger", "record.created")]),
+    )
+    .await
+    .unwrap();
+    let body = body_of(&r);
+    let fn_path = drust::base_path::base("/t/blog/functions");
+    assert!(body.contains(&fn_path), "must carry {fn_path}: {body}");
+    for bad in ["curl -X POST /t/", "curl -X PUT", "/egress-allowlist"] {
+        assert!(!body.contains(bad), "must not contain {bad:?}: {body}");
+    }
+    assert!(body.contains("get_egress_allowlist"), "{body}");
+    assert!(body.contains("set_egress_allowlist"), "{body}");
+    assert!(body.contains("EGRESS_NOT_ALLOWLISTED"), "{body}");
+}
+
+/// M1 (T7): on MCP the caller is the service identity — nothing is
+/// owner-enforced for it.
+#[tokio::test]
+async fn bootstrap_does_not_claim_owner_enforcement() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let r = render_prompt(&s, "bootstrap", &None).await.unwrap();
+    let body = body_of(&r);
+    assert!(!body.contains("owner-enforced"), "bootstrap: {body}");
+    assert!(body.contains("dry_run"), "bootstrap: {body}");
+}
+
+/// M1: the type list matches `create_collection` (`type_to_sqlite`).
+#[tokio::test]
+async fn design_collection_lists_every_field_type() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    let r = render_prompt(&s, "design_collection", &args(&[("purpose", "events")]))
+        .await
+        .unwrap();
+    let body = body_of(&r);
+    assert!(body.contains("datetime"), "design_collection: {body}");
+    assert!(body.contains("json"), "design_collection: {body}");
+}
+
 #[tokio::test]
 async fn missing_required_arg_is_invalid_params() {
     let d = tempfile::tempdir().unwrap();

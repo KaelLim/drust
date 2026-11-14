@@ -120,11 +120,13 @@ pub async fn render_prompt(
                 "You are connected to drust tenant `{t}` — a multi-tenant SQLite BaaS. \
                  Here is its current data model:\n\n{md}\n\
                  Core rules for acting here:\n\
-                 1. To READ, prefer `list_records` (structured filter/sort/paginate, owner-enforced) \
-                    over `query` (raw SELECT, service-only, no owner enforcement).\n\
+                 1. To READ, prefer `list_records` (structured filter/sort/paginate) over `query` \
+                    (raw SELECT). On MCP you are the service identity, so owner_field, caps and \
+                    RLS policies narrow neither of them.\n\
                  2. `_system_*` collections are off-limits to the record tools.\n\
                  3. Before any destructive op (`delete_record`, `drop_collection`, `drop_index`), \
-                    call it with `dry_run: true` first and read the blast radius.\n\
+                    call it with `dry_run: true` first and read the blast radius. No other tool \
+                    has `dry_run`: insert, update and upsert always run for real.\n\
                  4. Everything here is also addressable as a resource: `resources/list` + \
                     `resources/templates/list`; `drust://{t}/schema` is this overview and \
                     `drust://{t}/collections/<c>/records/<id>` is a single row.\n"
@@ -135,7 +137,7 @@ pub async fn render_prompt(
             Ok(one_user_message(format!(
                 "Design a new drust collection for: {purpose}\n\n\
                  Use `create_collection` with typed fields (text / integer / real / boolean / \
-                 vector). Add inline constraints where they apply (min / max / enum / max_length), \
+                 datetime / json / vector). Add inline constraints where they apply (min / max / enum / max_length), \
                  foreign keys (`foreign_key`), and SQL defaults for timestamps. Read \
                  `drust://{t}/schema.md` first to avoid name clashes, then `create_index` on the \
                  columns you will filter or sort by. Decide access up front: `set_anon_caps` / \
@@ -171,10 +173,12 @@ pub async fn render_prompt(
                 "A write to `{coll}` (tenant `{t}`) is failing. Work it methodically:\n\
                  1. `describe_collection {coll}` — confirm field names, types, NOT NULL, CHECK \
                     constraints (min/max/enum/max_length) and foreign keys.\n\
-                 2. Re-run the write with `dry_run: true` to see the exact error and its \
-                    `suggested_fix` without mutating anything.\n\
-                 3. `recent_writes` — see what previous attempts already committed (avoid dupes on a \
-                    retry).\n\
+                 2. Read the failed call's `error_code` and `suggested_fix` (the JSON-RPC error's \
+                    `data`, or the JSON text of an isError result). Of the record tools only \
+                    `delete_record` has `dry_run`; `insert_record` / `update_record` do not, so \
+                    re-sending one runs it for real.\n\
+                 3. If an earlier attempt's reply was lost, check with `list_records` (or \
+                    `get_record_history`) whether it already committed before writing again.\n\
                  4. Usual causes: a CHECK / enum / max_length violation, a missing FK parent, a \
                     missing required field, or a service insert that did not populate `owner_field` \
                     on an owner-scoped collection."
@@ -182,6 +186,12 @@ pub async fn render_prompt(
         }
         "write_edge_function" => {
             let trigger = arg("trigger")?;
+            // Invariant 15: the external mount goes through `crate::base_path`.
+            let fn_url = format!(
+                "{}{}",
+                s.public_base_url(),
+                crate::base_path::base(&format!("/t/{t}/functions"))
+            );
             Ok(one_user_message(format!(
                 "Author a drust edge function for trigger: {trigger} (tenant `{t}`).\n\n\
                  Edge functions are wasm32-wasip2 Component-Model guests, run in-process on \
@@ -200,20 +210,21 @@ pub async fn render_prompt(
                  design (the `whoami` tool echoes the upload path + a service bearer):\n\
                  rustup target add wasm32-wasip2\n\
                  cargo build --target wasm32-wasip2 --release\n\
-                 curl -X POST /t/{t}/functions -H 'Authorization: Bearer <service-token>' \
+                 curl -X POST {fn_url} -H 'Authorization: Bearer <service-token>' \
                  -F name=my_fn -F wasm=@target/wasm32-wasip2/release/*.wasm \
                  -F 'triggers=[{{\"collection\":\"posts\",\"events\":[\"created\"]}}]'\n\n\
                  GOTCHA — the #1 first-run failure: `http-fetch` is DENY-BY-DEFAULT. The upload \
                  succeeds, but every `http-fetch` returns `EGRESS_NOT_ALLOWLISTED` until you \
-                 allowlist the EXACT origin (scheme://host[:port]) with system=function first \
-                 (private/loopback IPs stay blocked regardless):\n\
-                 curl -X PUT /t/{t}/egress-allowlist -H 'Authorization: Bearer <service-token>' \
-                 -H 'Content-Type: application/json' \
-                 -d '{{\"entries\":[{{\"system\":\"function\",\"uri\":\"https://api.example.com\"}}]}}'\n\n\
+                 allowlist the EXACT origin (scheme://host[:port]) for system `function` \
+                 (private/loopback IPs stay blocked regardless). Call `get_egress_allowlist`, \
+                 append {{\"system\":\"function\",\"uri\":\"https://api.example.com\"}} to its \
+                 `entries`, then call `set_egress_allowlist` with the FULL list — it REPLACES the \
+                 whole allowlist, never merges.\n\n\
                  Once uploaded: manage/observe with `list_functions` / `set_function_active` / \
                  `invoke_function` / `get_function_logs`.",
                 wit = EDGE_WIT,
                 lib = EDGE_LIB_RS,
+                fn_url = fn_url,
             )))
         }
         "review_history" => {

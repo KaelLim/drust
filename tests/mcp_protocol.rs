@@ -487,3 +487,23 @@ async fn tools_call_describe_missing_collection_is_error_on_wire() {
     let parsed: Value = serde_json::from_str(text).unwrap();
     assert_eq!(parsed["error_code"], "COLLECTION_NOT_FOUND", "{parsed}");
 }
+
+/// M1 (B2/B3): the `initialize` result the client actually receives fits
+/// Claude Code's 4,096-character read and opens with the dry_run rule.
+#[tokio::test]
+async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
+    let (app, service_tok, _anon, _dir) = mcp_stack("mcpinstr").await;
+    let (_sid, result) = open_session(&app, "mcpinstr", &service_tok).await;
+    let s = result["instructions"]
+        .as_str()
+        .expect("initialize result must carry string instructions");
+    let n = s.encode_utf16().count();
+    assert!(
+        n <= 4096,
+        "instructions on the wire are {n} UTF-16 units (cap 4096)"
+    );
+    assert!(
+        s.contains("Only delete_record, drop_collection and drop_index accept"),
+        "instructions on the wire: {s}"
+    );
+}

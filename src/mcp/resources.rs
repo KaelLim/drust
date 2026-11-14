@@ -707,6 +707,7 @@ MCP has no upload tool by design — uploads are HTTP.
 creates a session (`Upload-Length`, `Upload-Metadata` carries `path`, `visibility`,
 `filename`, `filetype`), then `PATCH` each chunk, `HEAD` to resume. Visibility is
 decided at CREATE and frozen on the session; finalize does not re-check.
+Use Mode B when a file is larger than `limits.max_upload_bytes` (from `whoami`) or you need resume-on-disconnect; `OPTIONS {base}{bp}/t/{tenant_id}/uploads` (service bearer) reports `Tus-Max-Size`.
 
 `path` is immutable after upload — there is no rename or move API.
 
