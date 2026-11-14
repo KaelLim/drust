@@ -172,6 +172,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Operation requires a service-key bearer token. This is the canonical code; older responses may use WRITE_DENIED as the primary.",
     ),
     (
+        "SYSTEM_FIELD_READONLY",
+        "drust assigns `id`. Anon and user tokens must omit it on insert, and on update may only send the record's own id (or omit it). Service tokens may still set ids, e.g. for imports.",
+    ),
+    (
         "TENANT_NOT_FOUND",
         "Tenant id is not registered or has been deleted. Check the tenant id in the URL path.",
     ),

@@ -148,6 +148,8 @@ the other side:
 - The four config-time `RPC_ANON_OWNER_SCOPED` sites (create, update, `set_owner_field`,
   policy-attach). The runtime path is deliberately not re-checked, so a missed config site
   is a real bypass — one shipped this way once.
+- REST `create_handler`/`update_handler` and edge `enforced_insert`/`enforced_update` — all
+  four call `records::reject_system_id`; a fifth anon/user-reachable structured write must too.
 
 ## Where the deployment contract lives — and why code review cannot see it
 

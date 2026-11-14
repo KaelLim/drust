@@ -225,6 +225,63 @@ pub(crate) fn compute_owner_write_filter(
     }
 }
 
+/// E1′ — anon/user may not choose a row's `id` on INSERT nor change it on
+/// UPDATE. Every collection is `id INTEGER PRIMARY KEY AUTOINCREMENT`, and a
+/// single INSERT of `i64::MAX` (or an UPDATE to `i64::MAX - 1` followed by any
+/// normal insert) pins `sqlite_sequence` at the max, after which every
+/// auto-id INSERT on that table fails with SQLITE_FULL; no ordinary write can
+/// undo it (the write-RPC authorizer denies `sqlite_sequence`).
+/// Service is unrestricted (imports supply ids; `records:batch`/`upsert` and
+/// MCP are service-only and do not call this).
+/// Parallel sites (keep in lockstep until the write core absorbs this):
+/// REST `create_handler` / `update_handler`, edge `enforced_insert` / `enforced_update`.
+///
+/// Validate-only: on `Ok` the body is sent exactly as today. Allowed: INSERT
+/// `"id": null` (already means "assign one"); UPDATE an `id` SQLite coerces to
+/// `path_id` (a no-op SET — pinned by `accepted_update_ids_are_sqlite_noops`).
+/// `path_id`: `None` = INSERT, `Some(id)` = UPDATE of that row.
+/// `Err` → 400 `SYSTEM_FIELD_READONLY`.
+pub(crate) fn reject_system_id(
+    data: &serde_json::Map<String, serde_json::Value>,
+    ctx: &AuthCtx,
+    path_id: Option<i64>,
+) -> Result<(), &'static str> {
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return Ok(());
+    }
+    let Some(v) = data.get("id") else {
+        return Ok(());
+    };
+    match path_id {
+        None if v.is_null() => Ok(()),
+        None => {
+            Err("id is assigned by drust; omit it (anon and user tokens cannot choose a row id)")
+        }
+        Some(p) if exact_integer(v) == Some(p) => Ok(()),
+        Some(_) => Err("id cannot be changed; omit it or send the record's own id"),
+    }
+}
+
+/// `Some(n)` only when SQLite is guaranteed to coerce `v` to exactly `n` on an
+/// INTEGER PRIMARY KEY: a JSON integer, an integer-valued float below 2^53, or
+/// a string that (trimmed) parses as either. Anything else → `None`, which only
+/// ever over-refuses (e.g. `true` for id 1), never lets an id change through.
+fn exact_integer(v: &serde_json::Value) -> Option<i64> {
+    const EXACT: f64 = 9_007_199_254_740_992.0; // 2^53
+    let from_f64 =
+        |f: f64| (f.is_finite() && f.fract() == 0.0 && f.abs() < EXACT).then_some(f as i64);
+    match v {
+        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().and_then(from_f64)),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            t.parse::<i64>()
+                .ok()
+                .or_else(|| t.parse::<f64>().ok().and_then(from_f64))
+        }
+        _ => None,
+    }
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -916,6 +973,10 @@ pub async fn create_handler(
             );
         }
     };
+    // E1′ — anon/user may not choose the row id (service unrestricted).
+    if let Err(msg) = reject_system_id(&data, &ctx, None) {
+        return json_error(StatusCode::BAD_REQUEST, "SYSTEM_FIELD_READONLY", msg);
+    }
 
     // For user tokens with an owner_field, overwrite whatever the client sent.
     if let (Some(owner_field), AuthCtx::User { user_id, .. }) = (&schema.owner_field, &ctx) {
@@ -1203,6 +1264,10 @@ pub async fn update_handler(
     // PATCH {"data": {"user_id": "u-other"}}.
     if let (AuthCtx::User { .. }, Some(field)) = (&ctx, schema.owner_field.as_deref()) {
         data.shift_remove(field);
+    }
+    // E1′ — anon/user may not change the row id (service unrestricted).
+    if let Err(msg) = reject_system_id(&data, &ctx, Some(id)) {
+        return json_error(StatusCode::BAD_REQUEST, "SYSTEM_FIELD_READONLY", msg);
     }
     if data.is_empty() {
         return json_error(
@@ -1962,5 +2027,214 @@ mod deny_message_tests {
     fn anon_deny_message_unchanged() {
         let m = cap_deny_message(TokenRole::Anon, DmlVerb::Delete, "todos");
         assert_eq!(m, "anon role lacks 'delete' on collection 'todos'");
+    }
+}
+
+#[cfg(test)]
+mod system_id_tests {
+    use super::{json_to_sql_value, reject_system_id};
+    use crate::auth::middleware::AuthCtx;
+    use rusqlite::ErrorCode;
+    use serde_json::{Value, json};
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn non_service() -> [AuthCtx; 2] {
+        [
+            AuthCtx::Anon,
+            AuthCtx::User {
+                user_id: "u-1".into(),
+                token_hash: String::new(),
+            },
+        ]
+    }
+
+    /// The UPDATE `id` shapes `reject_system_id` accepts for `path_id = 5`.
+    /// Shared with `accepted_update_ids_are_sqlite_noops`, which proves each
+    /// one is a no-op SET on the bundled SQLite.
+    fn update_ok_ids() -> Vec<Value> {
+        vec![
+            json!(5),
+            json!("5"),
+            json!(" 5"),
+            json!("05"),
+            json!("+5"),
+            json!("5.0"),
+            json!(5.0),
+        ]
+    }
+
+    #[test]
+    fn reject_system_id_service_always_ok() {
+        let svc = AuthCtx::Service { admin_id: None };
+        let max = obj(json!({"id": 9223372036854775807i64, "b": 1}));
+        assert_eq!(reject_system_id(&max, &svc, None), Ok(()));
+        assert_eq!(reject_system_id(&max, &svc, Some(5)), Ok(()));
+        let six = obj(json!({"id": 6}));
+        assert_eq!(reject_system_id(&six, &svc, Some(5)), Ok(()));
+    }
+
+    #[test]
+    fn reject_system_id_insert_matrix() {
+        for ctx in non_service() {
+            assert_eq!(
+                reject_system_id(&obj(json!({"b": 1})), &ctx, None),
+                Ok(()),
+                "no id → Ok ({ctx:?})"
+            );
+            assert_eq!(
+                reject_system_id(&obj(json!({"id": null, "b": 1})), &ctx, None),
+                Ok(()),
+                "null id → Ok ({ctx:?})"
+            );
+            for v in [
+                json!(5),
+                json!("5"),
+                json!(9223372036854775807i64),
+                json!(-5),
+                json!(5.0),
+                json!(true),
+                json!(""),
+                json!([]),
+            ] {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert!(
+                    reject_system_id(&d, &ctx, None).is_err(),
+                    "insert id {v} must be refused ({ctx:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reject_system_id_update_matrix() {
+        for ctx in non_service() {
+            assert_eq!(
+                reject_system_id(&obj(json!({"b": 1})), &ctx, Some(5)),
+                Ok(()),
+                "no id → Ok ({ctx:?})"
+            );
+            for v in update_ok_ids() {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert_eq!(
+                    reject_system_id(&d, &ctx, Some(5)),
+                    Ok(()),
+                    "update id {v} is the row's own id → Ok ({ctx:?})"
+                );
+            }
+            for v in [
+                json!(6),
+                json!("6"),
+                json!(null),
+                json!(5.5),
+                json!("5.5"),
+                json!("0x5"),
+                json!("inf"),
+                json!(true),
+                json!(9223372036854775806i64),
+                json!(9223372036854775808u64),
+                json!("abc"),
+                json!([]),
+            ] {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert!(
+                    reject_system_id(&d, &ctx, Some(5)).is_err(),
+                    "update id {v} must be refused ({ctx:?})"
+                );
+            }
+        }
+    }
+
+    fn seeded_table() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT) STRICT;
+             INSERT INTO t (x) VALUES ('a'), ('b'), ('c'), ('d'), ('e');",
+        )
+        .unwrap();
+        c
+    }
+
+    fn auto_insert(c: &rusqlite::Connection) -> rusqlite::Result<i64> {
+        c.query_row("INSERT INTO t (x) VALUES ('n') RETURNING id", [], |r| {
+            r.get(0)
+        })
+    }
+
+    fn is_full(r: rusqlite::Result<i64>) -> bool {
+        matches!(r, Err(ref e) if e.sqlite_error_code() == Some(ErrorCode::DiskFull))
+    }
+
+    /// Differential pin: every UPDATE `id` shape `reject_system_id` lets
+    /// through for `path_id = 5` is a no-op SET on the bundled SQLite. If a
+    /// future widening of the comparison admits a shape SQLite would turn into
+    /// a DIFFERENT id, this turns red.
+    #[test]
+    fn accepted_update_ids_are_sqlite_noops() {
+        let ctx = AuthCtx::Anon;
+        for v in update_ok_ids() {
+            let d = obj(json!({"id": v.clone()}));
+            assert_eq!(reject_system_id(&d, &ctx, Some(5)), Ok(()), "{v}");
+            let c = seeded_table();
+            let got: i64 = c
+                .query_row(
+                    "UPDATE t SET id = ?1 WHERE id = 5 RETURNING id",
+                    [json_to_sql_value(&v)],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("UPDATE with {v} failed: {e}"));
+            assert_eq!(got, 5, "accepted id {v} must leave the row at 5");
+            let n: i64 = c
+                .query_row("SELECT count(*) FROM t WHERE id = 5", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "row 5 must still exist after id {v}");
+        }
+    }
+
+    /// SQLite behavior pin (U18) on the bundled SQLite. If this turns red, the
+    /// bundled SQLite changed AUTOINCREMENT semantics and both the E1′
+    /// rationale and the CHANGELOG recovery instructions must be re-evaluated.
+    #[test]
+    fn autoincrement_exhaustion_semantics() {
+        // (a) explicit INSERT of i64::MAX pins sqlite_sequence permanently.
+        let a = seeded_table();
+        a.execute("INSERT INTO t (id, x) VALUES (?1, 'max')", [i64::MAX])
+            .unwrap();
+        assert!(is_full(auto_insert(&a)), "(a) next auto insert is FULL");
+        a.execute("DELETE FROM t WHERE id = ?1", [i64::MAX])
+            .unwrap();
+        assert!(
+            is_full(auto_insert(&a)),
+            "(a) deleting the row does not recover"
+        );
+
+        // (b) UPDATE to i64::MAX: FULL while the row exists, recovers on delete.
+        let b = seeded_table();
+        b.execute("UPDATE t SET id = ?1 WHERE id = 2", [i64::MAX])
+            .unwrap();
+        assert!(is_full(auto_insert(&b)), "(b) next auto insert is FULL");
+        b.execute("DELETE FROM t WHERE id = ?1", [i64::MAX])
+            .unwrap();
+        assert!(auto_insert(&b).is_ok(), "(b) deleting the row recovers");
+
+        // (c) UPDATE to i64::MAX - 1: the next normal insert takes MAX and pins
+        // sqlite_sequence, the one after is FULL.
+        let c = seeded_table();
+        c.execute("UPDATE t SET id = ?1 WHERE id = 2", [i64::MAX - 1])
+            .unwrap();
+        assert_eq!(auto_insert(&c).unwrap(), i64::MAX, "(c) first takes MAX");
+        assert!(is_full(auto_insert(&c)), "(c) second auto insert is FULL");
+
+        // (d) continuing (a): DROP TABLE clears the sqlite_sequence entry, so a
+        // recreate + re-import with original ids auto-assigns normally again.
+        a.execute_batch(
+            "DROP TABLE t;
+             CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT) STRICT;
+             INSERT INTO t (id, x) VALUES (3, 'imported');",
+        )
+        .unwrap();
+        assert_eq!(auto_insert(&a).unwrap(), 4, "(d) recreate recovers");
     }
 }

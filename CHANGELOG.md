@@ -1,3 +1,43 @@
+## Unreleased
+
+Fixes from the access-gate convergence review (E track). No new environment variable, no
+schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+
+### Fixed
+
+- **Anon and user tokens can no longer choose or change a row's `id` (E1′).** Every
+  collection is `id INTEGER PRIMARY KEY AUTOINCREMENT`, and the REST and edge-function write
+  paths took `id` straight from the request body. One anon INSERT of
+  `id = 9223372036854775807` on a collection whose `anon_caps` include `insert` pinned
+  `sqlite_sequence` at the maximum, and from then on every INSERT without an explicit id
+  failed with `SQLITE_FULL`. Deleting the row did not help, and no ordinary write can repair
+  it (the write-RPC authorizer correctly refuses `sqlite_sequence` writes). UPDATE reached
+  the same end in two steps: move a row to `9223372036854775806`, and the next ordinary
+  insert takes the maximum.
+  Now, for anon and user callers on `POST`/`PATCH /t/<id>/records/<c>[/<id>]` and the
+  edge-function `insert-record` / `update-record` host ops: an INSERT carrying a non-null
+  `id` → **400 `SYSTEM_FIELD_READONLY`**; an UPDATE carrying an `id` that is not the row's
+  own id → 400. Requests that are accepted are sent to SQLite exactly as before: `"id": null`
+  on INSERT still means "assign one", and an UPDATE whose `id` equals the path id (as a
+  number or a numeric string) is still a no-op, so read-modify-write PATCHes of the whole
+  record — including a PATCH whose body is only that id — keep working. **Service tokens are
+  unchanged**: imports may still set ids on insert, `records:batch` and `records:upsert`,
+  and change them on update. `created_at` / `updated_at` handling is unchanged.
+  Already-affected collections come in two states. (1) `sqlite_sequence` already pinned:
+  `SELECT name, seq FROM sqlite_sequence WHERE seq > 4611686018427387904` on a tenant's
+  `data.sqlite` lists them. (2) A row moved to the maximum by UPDATE, with no insert since:
+  `sqlite_sequence` is untouched, but auto-id INSERTs still fail with `SQLITE_FULL` for as
+  long as that row exists, so also run `SELECT max(id) FROM "<c>"` per collection and treat
+  a result above `4611686018427387904` as affected. State (2) recovers by deleting (or
+  re-inserting without an `id`) the offending row with a service token — no drop needed.
+  To recover state (1), either export the rows with a service token, `drop_collection` and
+  recreate it (dropping the table also drops its `sqlite_sequence` entry), then re-import
+  with `records:batch` keeping the original ids **except the offending near-maximum
+  row(s)** — re-importing one of those with its id pins `sqlite_sequence` again, so drop
+  them or re-insert them without an `id` — and re-apply the collection's caps, policies and
+  indexes; or, with drust stopped, delete the offending row and set `seq` back to
+  `MAX(id)`.
+
 ## v1.66.1 — 2026-08-17
 
 The single finding of the v1.66.0 codex second-engine review (MED), fixed same-day. No new

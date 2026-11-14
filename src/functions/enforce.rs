@@ -86,6 +86,11 @@ pub async fn enforced_insert(
     if !has_dml_cap(role, DmlVerb::Insert, &schema) {
         anyhow::bail!(cap_deny_msg(role, DmlVerb::Insert, coll));
     }
+    // E1′ — anon/user may not choose the row id (mirrors create_handler).
+    if let Some(o) = data.as_object() {
+        crate::tenant::records::reject_system_id(o, ctx, None)
+            .map_err(|m| anyhow::anyhow!("SYSTEM_FIELD_READONLY: {m}"))?;
+    }
 
     if let Some(owner_field) = schema.owner_field.as_deref() {
         match ctx {
@@ -159,6 +164,11 @@ pub async fn enforced_update(
         && let Some(o) = data.as_object_mut()
     {
         o.remove(field);
+    }
+    // E1′ — anon/user may not change the row id (mirrors update_handler).
+    if let Some(o) = data.as_object() {
+        crate::tenant::records::reject_system_id(o, ctx, Some(id))
+            .map_err(|m| anyhow::anyhow!("SYSTEM_FIELD_READONLY: {m}"))?;
     }
 
     // Reject an update with no fields left (mirrors update_handler's post-strip

@@ -687,3 +687,110 @@ async fn event_path_is_god_mode() {
     );
     assert!(ok.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+// ───────────────────── E1′: anon/user cannot choose or change `id` ─────────────────────
+
+/// Anon invoke INSERT carrying an explicit `id` is refused (it would pin
+/// `sqlite_sequence` at i64::MAX); the table keeps auto-assigning normally.
+#[tokio::test(flavor = "multi_thread")]
+async fn anon_invoke_insert_with_explicit_id_is_refused() {
+    let (_reg, mcp, _t) = tenant_mcp("t-enf-sid-anon").await;
+    drust::mcp::tools::schema::create_collection(&mcp, "n", &[field("b", "text")])
+        .await
+        .unwrap();
+    drust::mcp::tools::schema::set_anon_caps(&mcp, "n", &[DmlVerb::Select, DmlVerb::Insert])
+        .await
+        .unwrap();
+
+    let refused = enforce::enforced_insert(
+        &mcp,
+        &anon(),
+        "n",
+        serde_json::json!({"id": i64::MAX, "b": "x"}),
+    )
+    .await;
+    let e = refused.unwrap_err().to_string();
+    assert!(
+        e.contains("SYSTEM_FIELD_READONLY"),
+        "explicit id must be refused, got: {e}"
+    );
+
+    let ok = enforce::enforced_insert(&mcp, &anon(), "n", serde_json::json!({"b": "y"}))
+        .await
+        .unwrap();
+    let id = ok["record"]["id"].as_i64().unwrap();
+    assert!(id < 1000, "auto id stays small, got {id}");
+}
+
+/// User invoke UPDATE echoing the row's own id is unchanged; changing it is
+/// refused and the row stays where it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_invoke_update_same_id_ok_changed_id_refused() {
+    let (_reg, mcp, _t) = tenant_mcp("t-enf-sid-user").await;
+    make_owner_scoped(&mcp, "todos", "own").await;
+    seed_user(&mcp, "u-1").await;
+
+    let inserted = enforce::enforced_insert(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        serde_json::json!({"title": "mine"}),
+    )
+    .await
+    .unwrap();
+    let id = inserted["record"]["id"].as_i64().unwrap();
+
+    let same = enforce::enforced_update(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        id,
+        serde_json::json!({"id": id, "title": "r"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(same["record"]["id"].as_i64(), Some(id), "{same}");
+
+    let changed = enforce::enforced_update(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        id,
+        serde_json::json!({"id": id + 1, "title": "r2"}),
+    )
+    .await;
+    let e = changed.unwrap_err().to_string();
+    assert!(
+        e.contains("SYSTEM_FIELD_READONLY"),
+        "changing id must be refused, got: {e}"
+    );
+
+    // The row was not moved: updating the original id still succeeds.
+    let again = enforce::enforced_update(
+        &mcp,
+        &user("u-1"),
+        "todos",
+        id,
+        serde_json::json!({"title": "r3"}),
+    )
+    .await;
+    assert!(again.is_ok(), "row must still be at {id}: {again:?}");
+}
+
+/// Service context through the enforcement helpers keeps choosing ids.
+#[tokio::test(flavor = "multi_thread")]
+async fn service_ctx_enforced_insert_with_id_is_unchanged() {
+    let (_reg, mcp, _t) = tenant_mcp("t-enf-sid-svc").await;
+    drust::mcp::tools::schema::create_collection(&mcp, "n", &[field("b", "text")])
+        .await
+        .unwrap();
+    let ok = enforce::enforced_insert(
+        &mcp,
+        &service(),
+        "n",
+        serde_json::json!({"id": 42, "b": "x"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ok["record"]["id"].as_i64(), Some(42), "{ok}");
+}
