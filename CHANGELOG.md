@@ -2,7 +2,14 @@
 
 Fixes from the access-gate convergence review (E track). No new environment variable, no
 schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
-One caller-visible response narrowing on the data plane (E9), anon and user only.
+Two caller-visible response narrowings on the data plane, anon and user only: describing a
+`_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
+only the row's `id` (E9). The other caller-visible changes are described in their entries:
+SSE streams opened with an admin PAT end when that admin's access is revoked (E2′),
+`drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
+`drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
+whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
+it (E3), and recycling a tenant id ends the old tenant's MCP sessions (E5).
 
 ### Fixed
 
@@ -16,21 +23,24 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   the same end in two steps: move a row to `9223372036854775806`, and the next ordinary
   insert takes the maximum.
   Now, for anon and user callers on `POST`/`PATCH /t/<id>/records/<c>[/<id>]` and the
-  edge-function `insert-record` / `update-record` host ops: an INSERT carrying a non-null
-  `id` → **400 `SYSTEM_FIELD_READONLY`**; an UPDATE carrying an `id` that is not the row's
-  own id → 400. Requests that are accepted are sent to SQLite exactly as before: `"id": null`
-  on INSERT still means "assign one", and an UPDATE whose `id` equals the path id (as a
-  number or a numeric string) is still a no-op, so read-modify-write PATCHes of the whole
-  record — including a PATCH whose body is only that id — keep working. **Service tokens are
-  unchanged**: imports may still set ids on insert, `records:batch` and `records:upsert`,
-  and change them on update. `created_at` / `updated_at` handling is unchanged.
+  edge-function `insert-record` / `update-record` host ops, an INSERT carrying a non-null
+  `id`, or an UPDATE carrying an `id` that is not the row's own id, is refused: REST answers
+  **400 `SYSTEM_FIELD_READONLY`**, and the edge host op returns the guest an error prefixed
+  `SYSTEM_FIELD_READONLY:`. Requests that are accepted are sent to SQLite exactly as
+  before: `"id": null` on INSERT still means "assign one", and an UPDATE whose `id` equals
+  the path id (as a number or a numeric string) is still a no-op, so read-modify-write
+  PATCHes of the whole record — including a PATCH whose body is only that id — keep
+  working. **Service tokens are unchanged**: imports may still set ids on insert,
+  `records:batch` and `records:upsert`, and change them on update. `created_at` /
+  `updated_at` handling is unchanged.
   Already-affected collections come in two states. (1) `sqlite_sequence` already pinned:
   `SELECT name, seq FROM sqlite_sequence WHERE seq > 4611686018427387904` on a tenant's
   `data.sqlite` lists them. (2) A row moved to the maximum by UPDATE, with no insert since:
   `sqlite_sequence` is untouched, but auto-id INSERTs still fail with `SQLITE_FULL` for as
   long as that row exists, so also run `SELECT max(id) FROM "<c>"` per collection and treat
-  a result above `4611686018427387904` as affected. State (2) recovers by deleting (or
-  re-inserting without an `id`) the offending row with a service token — no drop needed.
+  a result above `4611686018427387904` as affected. State (2) recovers by deleting the
+  offending row with a service token and then, if it is still needed, re-inserting it
+  without an `id` — no drop needed.
   To recover state (1), either export the rows with a service token, `drop_collection` and
   recreate it (dropping the table also drops its `sqlite_sequence` entry), then re-import
   with `records:batch` keeping the original ids **except the offending near-maximum
@@ -44,7 +54,7 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   surface that never consulted `is_protected_collection`: `GET /collections` and the three
   codegen endpoints already skipped these tables, but describe ran `describe_collection` for
   any bearer, so the public anon key could read `_system_users`' columns and an exact
-  `row_count` (the tenant's user count), `_system_sessions`' live session count, and so
+  `row_count` (the tenant's user count), `_system_sessions`' session row count, and so
   on — and each such request ran an uncached, deadline-free `COUNT(*)` over tables like
   `_system_record_history`. The check runs before any database read, so a missing
   `_system_*` name, a case variant and an existing table answer identically. Service keys
@@ -66,7 +76,11 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   existing refusal (bearer `404 TENANT_NOT_FOUND`, register `404 TENANT_NOT_FOUND`, login
   `401 INVALID_CREDENTIALS`, OAuth `404`). No status code changes for a live tenant; no
   extra `meta` query. A live tenant whose `data.sqlite` has gone missing is no longer
-  silently rebuilt empty: its data plane now answers 404. The remaining tenant-plane
+  silently rebuilt empty by a data-plane request: a request that has to open it gets the
+  refusals above (a pool already cached keeps serving, as before). Admin-plane pages and
+  actions that open it through the create-on-open accessor (the cron and functions pages and
+  collection settings changes, among others) still rebuild it empty, as before; the
+  read-only overview and collection browse pages do not. The remaining tenant-plane
   handlers that re-open the pool (or create a `tenants/<id>/_uploads` / `_functions`
   directory) after the bearer layer are race-only and stay for a later liveness refactor.
 - **Revoking, demoting or removing an admin — or moving a tenant away from a `member`
@@ -102,7 +116,10 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   a deleted tenant, whose requests were already refused), and a create that recycles an
   id runs the same eviction sequence as soft-delete (`evict_tenant_everywhere`) after the
   meta lock is released, which also clears anything a request racing the soft-delete
-  re-populated. Creating a tenant with a fresh id is unchanged. No new environment
+  re-populated. One residual window remains, and it needs both a leftover old-incarnation
+  pool from such a race and an admin-PAT request reaching the id at the moment of the
+  recycle: that request can re-insert the old pool into the MCP cache after the sweep.
+  Creating a tenant with a fresh id is unchanged. No new environment
   variable, no new API, no schema or wire-format change.
 
 - **`drop_collection` now closes the collection's live SSE subscriptions (E4).** It
@@ -128,7 +145,8 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   `eval_policy` itself — which the write-side CHECKs and the corpus rely on reading an
   absent key as NULL — is unchanged. The drop still succeeds and nobody is
   disconnected: affected subscribers stay connected and receive no events for that
-  collection until the policy is replaced or cleared. The anon/user UPDATE response
+  collection until the policy is replaced or cleared (both evict them to reconnect under
+  the changed policy) or a field of that name is added back. The anon/user UPDATE response
   read-back (`records::readback_for`) now calls the same function. No new environment
   variable, no schema change.
 
@@ -152,10 +170,12 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
   `update-record` host op invoked under an anon/user caller — now returns the updated row
   only where that caller could READ it (E9).** The response used to be the full
-  `UPDATE … RETURNING *` row unconditionally, so a caller holding `update` but not `select`
-  (`anon_caps = ["update"]`, or a user on an owner-scoped `read_scope="all"` collection
-  with `user_caps` lacking `select`), or one whose select policy hides the post-image row,
-  read columns GET would have refused. Now such a caller gets `{"record": {"id": <id>}}` —
+  `UPDATE … RETURNING *` row unconditionally, so a caller with no read access to the
+  updated row read columns GET would have refused — for example one holding `update` but
+  not `select` (`anon_caps = ["update"]`, or a user on an owner-scoped `read_scope="all"`
+  collection with `user_caps` lacking `select`), or one whose select policy hides the
+  post-image row. Now any caller that could not read the updated row gets
+  `{"record": {"id": <id>}}` —
   the `record` key is kept so `record.id` reads still work. The write itself is unchanged
   (it commits; status stays 200). The decision is zero-query: caps/owner via the same
   matrix `/list` uses (`compute_read_auth`), the select policy via the in-memory

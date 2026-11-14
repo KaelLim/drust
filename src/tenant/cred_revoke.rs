@@ -8,7 +8,12 @@
 //! every row event of its collection indefinitely. The PAT-revocation family
 //! (the seven sites pinned in `mgmt::pat_evict_pin`) now sends
 //! [`CredRevocations::revoke_admin`] after its auth-cache clear, and the stream
-//! ends on it.
+//! ends on it. Each site signals only when something actually changed:
+//! `change_role` only on a reach-narrowing demotion (sees-all → not), owner
+//! transfer only when the owner really moved and the old owner is not
+//! sees-all, `cli_token_logout` only when `n > 0`, and `cli_token_revoke` only
+//! past its `changed == 0` 404 arm (`reroll`, `cli_token_refresh` and
+//! `remove_admin` revoke on every successful call).
 //!
 //! ## Shape
 //!

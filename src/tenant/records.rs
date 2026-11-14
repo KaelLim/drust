@@ -416,8 +416,9 @@ fn list_bound_rows(
     // Plain `prepare`, NOT `prepare_cached`: the legacy list projects
     // `SELECT *`, whose column set changes under `add_field`/`drop_field`.
     // A cached statement's pre-step `column_names()` would go stale on the
-    // long-lived reader connection (DDL flushes the drust schema cache + SSE
-    // bus, never rusqlite's per-connection statement cache), silently dropping
+    // long-lived reader connection (DDL flushes the drust schema cache, plus
+    // the SSE channel on `drop_collection`, never rusqlite's per-connection
+    // statement cache), silently dropping
     // an added column or erroring on a removed one. Recompiling per call keeps
     // the read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql)?;

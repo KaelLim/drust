@@ -140,9 +140,14 @@ empty head-set is fail-OPEN, so callers propagate a snapshot error, never substi
   columns to anon.
 
 Reader-side attaches go through `AuthzGuard::{readonly, search_readonly, none}` (RAII:
-detaches on `?`, return and panic); bare attach/detach pairs remain only where ordering is
-load-bearing — `run_write_rpc` (detach before `RELEASE`) and `validate_rpc_sql` /
-`referenced_user_tables`.
+detaches on `?`, return and panic). Bare attach/detach pairs remain in two places, for two
+different reasons. `run_write_rpc` keeps them because the detach ORDER is load-bearing (it
+must detach before `RELEASE`). `validate_rpc_sql` and `referenced_user_tables` keep them
+because the guard has no constructor for the authorizer they need: `validate_rpc_sql`'s
+write mode attaches the writable arm (its read mode attaches the readonly arm, which the
+guard could build, but shares the same per-statement attach/detach loop), and
+`referenced_user_tables` installs its own table-capturing authorizer. Both detach explicitly
+after each statement's prepare, before propagating its error.
 
 **Row authorization is on the PARENT.** `$fts` compiles to `"id" IN (SELECT rowid FROM
 "<head>" WHERE "<head>" MATCH ?)`; the unchanged owner/RLS/caps `WHERE` on the parent decides

@@ -302,8 +302,9 @@ fn execute_read_query_with_named_inner(
     // column set changes under add_field/drop_field. Because this path reads
     // `column_names()` BEFORE stepping, a cached statement on the long-lived
     // reader connection would serve a STALE column set after DDL (DDL flushes
-    // only the drust schema cache + SSE bus, never rusqlite's per-connection
-    // statement cache) — silently dropping an added column from the result or
+    // only the drust schema cache, plus the SSE channel on `drop_collection`,
+    // never rusqlite's per-connection statement cache) — silently
+    // dropping an added column from the result or
     // erroring on a dropped one. Same defect class as the get_handler /
     // list_bound_rows reads; keep this read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql).map_err(classify)?;

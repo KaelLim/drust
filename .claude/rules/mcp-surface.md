@@ -41,7 +41,7 @@ Capabilities declare `resources` + `prompts` but **`listChanged` is NOT declared
 
 Every REST error JSON includes a `suggested_fix` field with a context-aware remediation hint; same applied to MCP `ErrorData.data`. Catalog of fixes in `src/safety/error_fixes.rs`; blast-radius probes in `src/storage/blast_radius.rs`.
 
-Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_run: true` and return `would_*` counts + blast radius without mutating. A real `drop_collection` also closes that collection's SSE subscriptions and may return `warnings` naming dependent anon-callable RPCs; `dry_run` does neither.
+Destructive ops `delete_record` / `drop_collection` / `drop_index` accept `dry_run: true` and return `would_*` counts + blast radius without mutating. A real `drop_collection` also closes that collection's SSE subscriptions and may return `warnings` naming dependent anon-callable RPCs; `dry_run` does neither. `drop_field` may likewise return `warnings` (`FIELD_REFERENCED_BY_POLICY`, one per stored policy clause still naming the dropped field); it neither refuses nor evicts.
 
 `recent_writes` (service-only) reads mutation rows from `meta_logs.sqlite` filtered to the calling tenant — lets a retrying model recover what its previous attempt already did. Default limit is **100**, matching what the tool description and the MCP prologue tell the model; an explicit `limit` wins and is clamped to `1..=200`.
 

@@ -113,7 +113,7 @@ reachable by an untrusted caller.
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
 | `/t/<id>/mcp` | **service only** — anon `WRITE_DENIED`, user `MCP_USER_DENIED` |
 | `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
-| `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — `_system_*` / `sqlite_*` are hidden from non-service callers (the list skips them, describe answers 404 `NOT_FOUND`); service may describe them |
+| `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
 | `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |

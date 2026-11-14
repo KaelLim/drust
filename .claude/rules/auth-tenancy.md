@@ -39,9 +39,10 @@ Because the hit path skips the CTE, it skips the only `deleted_at IS NULL` filte
 request — so **all three arms — both cache arms and the DB arm — open the pool with
 `get_if_live`, never `get_or_create`**, and 404 on `None`. The DB arm needs it too: the CTE
 proves `deleted_at IS NULL` but releases the `meta` lock before the open, and
-`soft_delete_tenant`'s UPDATE + rename + pool evict can all land in between. `soft_delete_tenant` renames the tenant directory and evicts the pool
-*before* it clears the cache, and a request that read its entry earlier can arrive at the
-open at any later point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
+`soft_delete_tenant`'s UPDATE + rename + pool evict can all land in between.
+`soft_delete_tenant` renames the tenant directory and evicts the pool *before* it clears
+the cache, and a request that read its entry earlier can arrive at the open at any later
+point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
 where the janitor never sweeps, and then serves the request against the fresh database.
 
 The bearer CTE's column numbering is load-bearing and **must not be renumbered**: cols 8/9
@@ -208,8 +209,13 @@ and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud`
 tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
 so a survivor would raise the *new* tenant's tier. The same rule covers process memory: a
 create that recycled an id runs `crud::evict_tenant_everywhere` after the meta lock is
-released, so no pool, MCP state or session, bus channel, cache entry or cron index entry of
-the old incarnation survives the boundary.
+released, which drops the old incarnation's pool cache entry, both MCP cache layers and
+their live rmcp sessions, the SSE and rooms bus channels for the id, its auth-cache
+entries, its cron index entry, and bumps its egress-allowlist version. One residual window
+remains (the crud.rs doc on that function): between releasing the lock and the first
+evictions, an admin PAT request can already reach the id, and if a request racing the
+soft-delete had left an old-incarnation pool cached, it can see that pool and, at worst,
+re-insert it into the MCP cache after the sweep — two races and a trusted caller.
 
 ## Provenance
 

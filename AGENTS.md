@@ -115,7 +115,11 @@ does not cover.
   the routine `cli_token_refresh`, roughly daily with the default 24 h CLI-PAT lifetime —
   also ends the same admin's UI-PAT SSE streams once (they reconnect with the still-valid
   key). Per-token signalling was rejected in design: it needs the token id in
-  `CachedRole::AdminPat` and a `bearer_auth_layer` change. Do not "narrow" it.
+  `CachedRole::AdminPat` and a `bearer_auth_layer` change. Do not "narrow" it. The same
+  per-admin granularity applies to the two reach-narrowing sites: transferring a tenant away
+  from a `member` old owner, and demoting an admin (sees-all → not), each also end that
+  admin's PAT streams on the OTHER tenants they can still reach (they reconnect and are
+  re-admitted). This is deliberate, not over-eviction to fix.
 - Owner transfer does **not** send the SSE signal when the old owner is sees-all
   (`owner`/`admin`): their reach did not change, so signalling would only restart their
   streams host-wide for nothing. The role is snapshotted under the transfer's own meta guard
@@ -190,6 +194,9 @@ the other side:
   is a real bypass — one shipped this way once.
 - REST `create_handler`/`update_handler` and edge `enforced_insert`/`enforced_update` — all
   four call `records::reject_system_id`; a fifth anon/user-reachable structured write must too.
+- REST `update_handler` and edge `enforced_update` — both hand the `RETURNING *` post-image to
+  `records::readback_for` before answering; a third anon/user-reachable UPDATE response site
+  must do the same.
 
 ## Where the deployment contract lives — and why code review cannot see it
 

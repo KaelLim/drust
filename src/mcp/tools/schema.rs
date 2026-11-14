@@ -708,13 +708,15 @@ pub async fn drop_field(
                         "the select policy's using clause still references dropped field \
                          {field:?}; non-service selects on this collection are refused (anon \
                          realtime receives no events) until the policy is replaced (set_policy) \
-                         or cleared (clear_policy)"
+                         or cleared (clear_policy); adding a field of that name back \
+                         (add_field) also puts the policy back into effect"
                     )
                 } else {
                     format!(
                         "the {op} policy's {clause} clause still references dropped field \
                          {field:?}; it no longer behaves as written until replaced (set_policy) \
-                         or cleared (clear_policy)"
+                         or cleared (clear_policy); adding a field of that name back \
+                         (add_field) also puts the policy back into effect"
                     )
                 };
                 json!({

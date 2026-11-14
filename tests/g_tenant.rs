@@ -9,9 +9,9 @@
 //! land in the winner's file; `tenant_oauth` asserts nothing about the writer,
 //! so it stays. Backing the file out is the only permitted fix (鐵律 1).
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: every member still
-//! carries its own `#[path = "helpers.rs"] mod helpers;`, and once they share a
-//! crate clippy sees helpers.rs loaded 17 times. Deduping it would mean editing
+//! `duplicate_mod` is inherent to the merge, not a defect: 5 of the members
+//! declare their own `mod helpers;`, so once they share a crate clippy sees
+//! tests/helpers.rs loaded 5 times. Deduping it would mean editing
 //! test bodies (spec 鐵律 1 forbids that) for no gain — rustc compiles the file
 //! once per module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.

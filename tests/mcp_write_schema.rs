@@ -1093,6 +1093,41 @@ async fn drop_collection_omits_warnings_without_anon_dependents() {
     assert_eq!(v["dropped_collection"], "posts");
 }
 
+/// E4 — a scan that cannot read the RPC registry is one warning, never a
+/// failed drop. `_system_rpc` is dropped to make the scan's prepare fail.
+#[tokio::test]
+async fn drop_collection_still_drops_when_the_rpc_scan_fails() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
+    s.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE _system_rpc;"))
+        .await
+        .unwrap();
+    assert!(
+        !table_exists(&s, "_system_rpc").await,
+        "fixture: the RPC registry must be gone"
+    );
+
+    let v = drop_collection(&s, "posts")
+        .await
+        .unwrap_or_else(|e| panic!("a failed RPC scan must not fail the drop: {e}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_collection"], "posts");
+    let warnings = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a warnings array, got {v}"));
+    assert_eq!(warnings.len(), 1, "{v}");
+    assert_eq!(warnings[0]["code"], "ANON_RPC_SCAN_FAILED", "{v}");
+    assert!(
+        !table_exists(&s, "posts").await,
+        "the drop must still happen"
+    );
+}
+
 fn nullable_text(name: &str) -> FieldSpec {
     FieldSpec {
         name: name.into(),

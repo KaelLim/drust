@@ -428,6 +428,7 @@ async fn oauth_start_when_the_dir_vanished_recreates_nothing() {
     assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
     assert_eq!(body, "tenant not found");
     assert!(!fx.tenant_dir(tenant).exists());
+    assert_eq!(fx.tenants.cached_count(), 0);
 }
 
 #[tokio::test]
@@ -447,6 +448,7 @@ async fn oauth_callback_when_the_dir_vanished_recreates_nothing() {
     assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
     assert_eq!(body, "tenant not found");
     assert!(!fx.tenant_dir(tenant).exists());
+    assert_eq!(fx.tenants.cached_count(), 0);
 }
 
 // --- Unchanged behaviour (green today, must stay green).

@@ -64,9 +64,11 @@ async fn load_schema(
 /// 1. protected-table 404 + schema load,
 /// 2. anon-on-owner-scoped → `ANON_FORBIDDEN_OWNER_SCOPED`,
 /// 3. cap gate (`has_dml_cap`),
-/// 4. owner stamp (User overwrites owner_field with its id) / owner-required
+/// 4. `reject_system_id` (anon/user may not supply a non-null `id` →
+///    `SYSTEM_FIELD_READONLY`),
+/// 5. owner stamp (User overwrites owner_field with its id) / owner-required
 ///    409 (Service must supply owner_field on an owner-scoped collection),
-/// 5. delegate to `insert_record_checked` with the insert-policy CHECK threaded
+/// 6. delegate to `insert_record_checked` with the insert-policy CHECK threaded
 ///    into the writer tx (rollback on fail).
 pub async fn enforced_insert(
     mcp: &DrustMcp,
@@ -135,8 +137,10 @@ pub async fn enforced_insert(
 
 /// UPDATE under the caller's identity. Decision order mirrors
 /// `records.rs::update_handler`: cap gate, owner write-filter (User: own rows
-/// only, regardless of read_scope), strip client-supplied owner_field, explicit
-/// USING pre-flight + in-tx CHECK. A foreign / policy-hidden row → not-found.
+/// only, regardless of read_scope), strip client-supplied owner_field,
+/// `reject_system_id` (anon/user may not change the row `id` →
+/// `SYSTEM_FIELD_READONLY`), explicit USING pre-flight + in-tx CHECK. A
+/// foreign / policy-hidden row → not-found.
 pub async fn enforced_update(
     mcp: &DrustMcp,
     ctx: &AuthCtx,

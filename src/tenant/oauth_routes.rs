@@ -433,8 +433,9 @@ pub(crate) async fn oauth_callback(
 
     // Validate tenant exists in meta BEFORE opening the pool (create-free
     // `get_if_live`) — prevents disk-fill from arbitrary tenant IDs creating
-    // junk tenant DBs (mirrors login_handler and oauth_start). The rate-limit above is defense-in-depth; this gate is
-    // what structurally closes the disk-fill vector.
+    // junk tenant DBs (mirrors login_handler and oauth_start). The rate-limit
+    // above is defense-in-depth; this gate is what structurally closes the
+    // disk-fill vector.
     let tenant_exists = {
         let conn = state.meta.lock().await;
         conn.query_row(

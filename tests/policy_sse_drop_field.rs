@@ -335,7 +335,9 @@ async fn inflight_anon_sse_goes_silent_after_a_policy_field_is_dropped() {
     );
     assert_silent_but_open(&mut events, "in-flight anon after drop").await;
 
-    // The drop still succeeded, and said why the stream went quiet.
+    // The drop still succeeded, and said why the stream went quiet — exactly
+    // once: only the select policy's `using` clause names `x`.
+    assert_eq!(drop["warnings"].as_array().map(Vec::len), Some(1), "{drop}");
     let w = &drop["warnings"][0];
     assert_eq!(w["code"], "FIELD_REFERENCED_BY_POLICY", "{drop}");
     assert_eq!(w["op"], "select", "{drop}");
