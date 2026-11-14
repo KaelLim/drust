@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-08-17
+updated: 2026-11-14
 generated_by: docs/gen-architecture.py
 ---
 
@@ -31,11 +31,11 @@ generated_by: docs/gen-architecture.py
 | [`mcp/`](#srcmcp) | 26 | 206 | 83 | 43 |
 | [`mgmt/`](#srcmgmt) | 44 | 380 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 10 | 65 | 14 | 39 |
+| [`query/`](#srcquery) | 10 | 66 | 14 | 40 |
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
-| [`tenant/`](#srctenant) | 38 | 286 | 121 | 75 |
+| [`tenant/`](#srctenant) | 38 | 290 | 122 | 75 |
 
 ## Group dependency graph
 
@@ -280,7 +280,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
 - [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 8 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
-- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 15 pub
+- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 16 pub
 - [`rpc_rls_spike.rs`](../src/query/rpc_rls_spike.rs) — RPC-RLS Phase-0 spike — raw SQLite FACTS the TEMP-VIEW-shadowing design
 - [`search_vtable_spike.rs`](../src/query/search_vtable_spike.rs) — FTS5 / R-tree vtables × the SQL authorizers — the surviving regression
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub
@@ -357,7 +357,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`policy_routes.rs`](../src/tenant/policy_routes.rs) — RLS Phase 8 (Config) — service-only REST surface for per-collection, · 4 pub
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
-- [`records.rs`](../src/tenant/records.rs) — 19 pub
+- [`records.rs`](../src/tenant/records.rs) — 23 pub
 - [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 11 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub

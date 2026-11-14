@@ -297,7 +297,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     must mean "reads are restricted", never fail open. `validate_policy` rejects a new
     clause-less SELECT policy (`POLICY_SELECT_REQUIRES_USING`); the read-path deny covers any
     legacy row. This closed a latent fail-open that `RpcGrant` (which skips caps) turned into
-    a cross-tenant leak.
+    a cross-tenant leak. `eval_policy` also gates the anon/user UPDATE response read-back
+    (`records::readback_for`), so an evaluator divergence there is a read leak, not just an
+    SSE one.
 
 13. **Every `DrustMcp` construction site decides `functions:` consciously.** The executor's
     host state is built with `functions: None` (`HostStateSeed::build_mcp`); restoring a

@@ -282,6 +282,75 @@ fn exact_integer(v: &serde_json::Value) -> Option<i64> {
     }
 }
 
+/// E9 — what an anon/user caller may see of the row its UPDATE returned.
+/// Parallel response sites (keep in lockstep): REST `update_handler` and edge
+/// `functions::enforce::enforced_update`. INSERT responses are deliberately
+/// NOT narrowed — they echo the caller's own write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadBack {
+    Full,
+    IdOnly,
+}
+
+/// Could `ctx` READ `row` (the `UPDATE … RETURNING *` post-image)? Zero-query:
+/// caps/owner come from the cached schema via the SAME matrix `/list` uses
+/// (`records_list::compute_read_auth`, not a third cap-gate site), the select
+/// policy via the shared `select_read_access` classifier and the in-memory
+/// `eval_policy` over this row (the evaluator + row shape the SSE face uses).
+/// Fails closed on every doubt — including a policy that names a column the
+/// row lacks (the cache was loaded outside the write tx, and `eval_leaf`
+/// reads a missing key as NULL, which `$is_null` would admit).
+pub(crate) fn readback_for(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    row: &serde_json::Value,
+) -> ReadBack {
+    use crate::query::policy::{
+        PolicyCtx, SelectReadAccess, eval_policy, policy_field_refs, select_read_access,
+    };
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return ReadBack::Full;
+    }
+    // Cap / owner matrix + policy compile (the SQL fragment is discarded).
+    let Ok((owner_pair, _)) =
+        crate::tenant::records_list::compute_read_auth(ctx, schema, &schema.name)
+    else {
+        return ReadBack::IdOnly;
+    };
+    let Some(map) = row.as_object() else {
+        return ReadBack::IdOnly;
+    };
+    if let Some((field, uid)) = owner_pair
+        && map.get(&field).and_then(|v| v.as_str()) != Some(uid.as_str())
+    {
+        return ReadBack::IdOnly;
+    }
+    match select_read_access(ctx, schema) {
+        SelectReadAccess::Unrestricted => ReadBack::Full,
+        SelectReadAccess::DenyAll => ReadBack::IdOnly,
+        SelectReadAccess::Filtered(ast) => {
+            if policy_field_refs(ast).iter().any(|f| !map.contains_key(f)) {
+                return ReadBack::IdOnly;
+            }
+            if eval_policy(ast, map, &PolicyCtx::from_auth(ctx)) {
+                ReadBack::Full
+            } else {
+                ReadBack::IdOnly
+            }
+        }
+    }
+}
+
+/// `Full` → the row unchanged; `IdOnly` → `{"id": row.id}`.
+pub(crate) fn shape_readback(rb: ReadBack, row: &serde_json::Value) -> serde_json::Value {
+    match rb {
+        ReadBack::Full => row.clone(),
+        ReadBack::IdOnly => {
+            json!({ "id": row.get("id").cloned().unwrap_or(serde_json::Value::Null) })
+        }
+    }
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -1515,7 +1584,12 @@ pub async fn update_handler(
     match res {
         Ok(rec) => {
             // Build response first; dispatch only after payload exists.
-            let r = Json(json!({ "record": rec.clone() })).into_response();
+            // E9: an anon/user caller sees the post-image only where it could
+            // read it; the event fan-out below keeps the full row (its
+            // consumers are gated on their own — SSE per subscriber,
+            // webhooks/functions trusted).
+            let body = shape_readback(readback_for(&ctx, &schema, &rec), &rec);
+            let r = Json(json!({ "record": body })).into_response();
             let ev = Event::Updated { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
             functions.dispatch(&tenant_id, &coll, &ev);
@@ -2236,5 +2310,283 @@ mod system_id_tests {
         )
         .unwrap();
         assert_eq!(auto_insert(&a).unwrap(), 4, "(d) recreate recovers");
+    }
+}
+
+#[cfg(test)]
+mod readback_tests {
+    //! E9 — `readback_for` truth table. Every policy-arm case grants the caps
+    //! explicitly and pairs an `IdOnly` with a `Full` control on the same
+    //! schema + policy, so an `IdOnly` is proven to come from the arm under
+    //! test, not from a cap deny upstream of it.
+    use super::{ReadBack, readback_for, shape_readback};
+    use crate::auth::middleware::AuthCtx;
+    use crate::query::policy::Policy;
+    use crate::storage::schema::{CollectionSchema, DmlVerb, Field};
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    fn schema(fields: &[&str]) -> CollectionSchema {
+        CollectionSchema {
+            name: "posts".into(),
+            fields: fields
+                .iter()
+                .map(|n| Field {
+                    name: n.to_string(),
+                    sql_type: "TEXT".into(),
+                    nullable: true,
+                    pk: false,
+                    default_value: None,
+                    foreign_key: None,
+                    description: None,
+                    ..Default::default()
+                })
+                .collect(),
+            indices: vec![],
+            row_count: 0,
+            anon_caps: BTreeSet::new(),
+            user_caps: BTreeSet::new(),
+            owner_field: None,
+            read_scope: None,
+            vector_fields: vec![],
+            fts_indexes: vec![],
+            realtime_enabled: true,
+            audit_enabled: true,
+            description: None,
+            policies: Default::default(),
+        }
+    }
+
+    fn caps(verbs: &[DmlVerb]) -> BTreeSet<DmlVerb> {
+        verbs.iter().copied().collect()
+    }
+
+    fn select_using(s: &mut CollectionSchema, using: Value) {
+        s.policies.select = Some(Policy {
+            using: Some(serde_json::from_value(using).unwrap()),
+            check: None,
+        });
+    }
+
+    fn owner_scoped(read_scope: Option<&str>) -> CollectionSchema {
+        let mut s = schema(&["owner"]);
+        s.owner_field = Some("owner".into());
+        s.read_scope = read_scope.map(str::to_string);
+        s
+    }
+
+    fn row(status: &str) -> Value {
+        json!({
+            "id": 1,
+            "status": status,
+            "created_at": "2026-11-14 00:00:00",
+            "updated_at": "2026-11-14 00:00:00"
+        })
+    }
+
+    fn owned_row(owner: &str) -> Value {
+        json!({
+            "id": 1,
+            "owner": owner,
+            "created_at": "2026-11-14 00:00:00",
+            "updated_at": "2026-11-14 00:00:00"
+        })
+    }
+
+    fn anon() -> AuthCtx {
+        AuthCtx::Anon
+    }
+
+    fn user(id: &str) -> AuthCtx {
+        AuthCtx::User {
+            user_id: id.into(),
+            token_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn service_is_always_full() {
+        let mut s = schema(&["status"]);
+        select_using(&mut s, json!({"status": "never"}));
+        for ctx in [
+            AuthCtx::Service { admin_id: None },
+            AuthCtx::Service { admin_id: Some(1) },
+        ] {
+            assert_eq!(readback_for(&ctx, &s, &row("draft")), ReadBack::Full);
+        }
+    }
+
+    #[test]
+    fn anon_without_select_cap_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn anon_with_select_cap_no_policy_is_full() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn anon_on_owner_scoped_is_id_only() {
+        let mut s = owner_scoped(Some("own"));
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&anon(), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn select_policy_filtered_pass_is_full() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"status": {"$ne": "secret"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn select_policy_filtered_fail_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"status": {"$ne": "secret"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("secret")), ReadBack::IdOnly);
+    }
+
+    #[test]
+    fn clause_less_select_policy_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::Full,
+            "control: no select policy"
+        );
+        s.policies.select = Some(Policy {
+            using: None,
+            check: None,
+        });
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+    }
+
+    #[test]
+    fn policy_on_field_missing_from_row_is_id_only() {
+        let mut s = schema(&["status", "x"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"x": {"$is_null": true}}));
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::IdOnly,
+            "row lacks `x` → fail closed, not NULL"
+        );
+        let mut with_x = row("draft");
+        with_x["x"] = Value::Null;
+        assert_eq!(
+            readback_for(&anon(), &s, &with_x),
+            ReadBack::Full,
+            "control: `x` present and NULL"
+        );
+    }
+
+    #[test]
+    fn policy_on_unknown_field_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"ghost": {"$eq": "a"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+        select_using(&mut s, json!({"status": {"$eq": "draft"}}));
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::Full,
+            "control: known field"
+        );
+    }
+
+    #[test]
+    fn user_read_scope_own_owner_match_is_full() {
+        let s = owner_scoped(Some("own"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_read_scope_own_owner_mismatch_is_id_only() {
+        let s = owner_scoped(Some("own"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-2")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn user_read_scope_all_without_select_is_id_only() {
+        let mut s = owner_scoped(Some("all"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_read_scope_null_without_select_is_id_only() {
+        let mut s = owner_scoped(None);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_non_owner_scoped_follows_user_caps() {
+        let mut s = schema(&["status"]);
+        s.user_caps = caps(&[DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &row("draft")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &row("draft")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_select_policy_sees_auth_id() {
+        let mut s = schema(&["owner"]);
+        s.user_caps = caps(&[DmlVerb::Select]);
+        select_using(&mut s, json!({"owner": {"$auth": "id"}}));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-2")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn shape_readback_id_only_keeps_only_id() {
+        let r = row("draft");
+        assert_eq!(shape_readback(ReadBack::IdOnly, &r), json!({"id": 1}));
+        assert_eq!(shape_readback(ReadBack::Full, &r), r);
     }
 }

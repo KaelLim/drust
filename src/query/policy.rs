@@ -874,6 +874,26 @@ pub fn select_read_access<'a>(ctx: &AuthCtx, schema: &'a CollectionSchema) -> Se
     }
 }
 
+/// Every column a policy AST compares against — the leaf KEYS, minus the
+/// `$`-prefixed pseudo-keys (`$authenticated`, `$fts`). `$data` operands are
+/// CHECK-only (`validate_policy` rejects them in `using`), so a select `using`
+/// references columns only through its keys. Used by in-memory callers that
+/// must fail CLOSED when the row map lacks a referenced column (`eval_leaf`
+/// reads a missing key as NULL, which `$is_null` would admit).
+pub(crate) fn policy_field_refs(ast: &FilterAst) -> std::collections::BTreeSet<String> {
+    fn walk(node: &FilterAst, out: &mut std::collections::BTreeSet<String>) {
+        match node {
+            FilterAst::And { and } => and.iter().for_each(|n| walk(n, out)),
+            FilterAst::Or { or } => or.iter().for_each(|n| walk(n, out)),
+            FilterAst::Not { not } => walk(not, out),
+            FilterAst::Leaf(map) => out.extend(map.keys().filter(|k| !k.starts_with('$')).cloned()),
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(ast, &mut out);
+    out
+}
+
 /// Convenience: resolve + compile the USING for `op` into `(sql_fragment, binds)`.
 /// `None` when there is no explicit policy (or the caller is service).
 ///
@@ -1561,5 +1581,32 @@ mod tests {
         // No explicit policy → resolver returns None; owner_field is handled by
         // compute_owner_filter at the call site, not here.
         assert!(effective_policy_using(&user, &s, DmlVerb::Select).is_none());
+    }
+
+    fn refs(src: &str) -> BTreeSet<String> {
+        policy_field_refs(&serde_json::from_str::<FilterAst>(src).unwrap())
+    }
+
+    fn set(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn policy_field_refs_walks_and_or_not() {
+        assert_eq!(
+            refs(r#"{"and":[{"a":1},{"or":[{"b":{"$gt":1}},{"not":{"c":{"$is_null":true}}}]}]}"#),
+            set(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn policy_field_refs_skips_dollar_keys() {
+        assert_eq!(refs(r#"{"$authenticated":true}"#), set(&[]));
+        assert_eq!(refs(r#"{"$fts":{"index":"i","query":"q"}}"#), set(&[]));
+        assert_eq!(refs(r#"{"owner":{"$auth":"id"}}"#), set(&["owner"]));
+        assert_eq!(
+            refs(r#"{"and":[{"$authenticated":true},{"owner":{"$eq":{"$auth":"id"}}}]}"#),
+            set(&["owner"])
+        );
     }
 }

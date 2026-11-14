@@ -2,6 +2,7 @@
 
 Fixes from the access-gate convergence review (E track). No new environment variable, no
 schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+One caller-visible response narrowing on the data plane (E9), anon and user only.
 
 ### Fixed
 
@@ -52,6 +53,28 @@ schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon an
   unchanged; the admin plane is untouched. A frontend that read `_system_users`'
   `row_count` with an anon or user key must move that read server-side behind a service
   key.
+
+### Changed
+
+- **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
+  `update-record` host op invoked under an anon/user caller — now returns the updated row
+  only where that caller could READ it (E9).** The response used to be the full
+  `UPDATE … RETURNING *` row unconditionally, so a caller holding `update` but not `select`
+  (`anon_caps = ["update"]`, or a user on an owner-scoped `read_scope="all"` collection
+  with `user_caps` lacking `select`), or one whose select policy hides the post-image row,
+  read columns GET would have refused. Now such a caller gets `{"record": {"id": <id>}}` —
+  the `record` key is kept so `record.id` reads still work. The write itself is unchanged
+  (it commits; status stays 200). The decision is zero-query: caps/owner via the same
+  matrix `/list` uses (`compute_read_auth`), the select policy via the in-memory
+  `eval_policy` on the returned row, failing closed when the policy names a column the row
+  lacks. **Unchanged:** service/admin-PAT callers (full row), MCP `update_record`,
+  privileged edge calls, INSERT responses (still `{"id","record"}` — an insert-only anon
+  form keeps working), DELETE (204/404), and the SSE / webhook / function event fan-out
+  (still the full row; each consumer is gated on its own). Migration: a front end that
+  reads fields other than `id` from a PATCH response must grant the caller `select` (or
+  relax the select policy), or re-read the row. The generated `/openapi.json` does not
+  describe the id-only shape (its update operation already documents the bare row rather
+  than `{"record": …}`; that pre-existing mismatch is left as is).
 
 ## v1.66.1 — 2026-08-17
 

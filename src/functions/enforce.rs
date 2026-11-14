@@ -206,7 +206,14 @@ pub async fn enforced_update(
     )
     .await
     {
-        Ok(v) => Ok(v),
+        Ok(mut v) => {
+            // E9 — same read-back narrowing as REST update_handler.
+            let rb = crate::tenant::records::readback_for(ctx, &schema, &v["record"]);
+            if rb == crate::tenant::records::ReadBack::IdOnly {
+                v["record"] = crate::tenant::records::shape_readback(rb, &v["record"]);
+            }
+            Ok(v)
+        }
         Err(e) if is_no_rows(&e) => anyhow::bail!("RECORD_NOT_FOUND: no such record"),
         Err(e) => Err(e),
     }
@@ -1356,5 +1363,156 @@ mod tests {
             refused_anon.contains(crate::storage::files::FILE_PUBLIC_UPLOAD_DENIED),
             "got {refused_anon}"
         );
+    }
+
+    // ── E9: the update read-back never exceeds the caller's select reach ──
+
+    /// `notes(body, secret)` with the given anon caps and one service-seeded
+    /// row; returns its id.
+    async fn notes_with_row(mcp: &DrustMcp, anon_caps: &[DmlVerb], body: &str) -> i64 {
+        create_collection(
+            mcp,
+            "notes",
+            &[field("body", "text"), field("secret", "text")],
+        )
+        .await
+        .unwrap();
+        set_anon_caps(mcp, "notes", anon_caps).await.unwrap();
+        let v = enforced_insert(
+            mcp,
+            &service(),
+            "notes",
+            serde_json::json!({"body": body, "secret": "s3cr3t"}),
+        )
+        .await
+        .unwrap();
+        v["id"].as_i64().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_without_select_cap_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Update], "b").await;
+        let v = enforced_update(&mcp, &anon(), "notes", id, serde_json::json!({"body": "c"}))
+            .await
+            .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_with_select_cap_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Select, DmlVerb::Update], "b").await;
+        let v = enforced_update(&mcp, &anon(), "notes", id, serde_json::json!({"body": "c"}))
+            .await
+            .unwrap();
+        assert_eq!(v["record"]["secret"], "s3cr3t", "full row: {v}");
+        assert_eq!(v["record"]["body"], "c", "full row: {v}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_hidden_by_select_policy_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Select, DmlVerb::Update], "hidden").await;
+        crate::mcp::tools::policy::set_policy(
+            &mcp,
+            "notes",
+            "select",
+            Some(serde_json::json!({"body": {"$ne": "hidden"}})),
+            None,
+        )
+        .await
+        .unwrap();
+        let v = enforced_update(
+            &mcp,
+            &anon(),
+            "notes",
+            id,
+            serde_json::json!({"secret": "x"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_user_read_scope_all_without_select_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        make_owner_scoped(&mcp, "pub", "all").await;
+        set_user_caps(&mcp, "pub", &[]).await.unwrap();
+        seed_user(&mcp, "u-1").await;
+        let v = enforced_insert(&mcp, &user("u-1"), "pub", serde_json::json!({"title": "a"}))
+            .await
+            .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &user("u-1"),
+            "pub",
+            id,
+            serde_json::json!({"title": "b"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_user_read_scope_own_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        make_owner_scoped(&mcp, "todos", "own").await;
+        seed_user(&mcp, "u-1").await;
+        let v = enforced_insert(
+            &mcp,
+            &user("u-1"),
+            "todos",
+            serde_json::json!({"title": "a"}),
+        )
+        .await
+        .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &user("u-1"),
+            "todos",
+            id,
+            serde_json::json!({"title": "b"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["record"]["title"], "b", "own row is readable: {v}");
+        assert_eq!(v["record"]["owner"], "u-1", "own row is readable: {v}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_service_ctx_update_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        create_collection(
+            &mcp,
+            "notes",
+            &[field("body", "text"), field("secret", "text")],
+        )
+        .await
+        .unwrap();
+        // anon_caps default ([select]); service ignores caps either way.
+        let v = enforced_insert(
+            &mcp,
+            &service(),
+            "notes",
+            serde_json::json!({"body": "b", "secret": "s3cr3t"}),
+        )
+        .await
+        .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &service(),
+            "notes",
+            id,
+            serde_json::json!({"body": "c"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["record"]["secret"], "s3cr3t", "full row: {v}");
     }
 }

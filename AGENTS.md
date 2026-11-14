@@ -123,6 +123,16 @@ does not cover.
 - `pat_evict_pin` keys on the `clear_admin_pat(` needle — a future site that forgets the
   cache clear *too* is invisible to the pin; the guard there is invariant-4 review.
 
+**Deliberate — data-plane response shape (not the PAT family):**
+
+These entries are outside the #975 scope above; they record response shapes on the
+anon/user data plane that were judged deliberate during the E-track access-gate review.
+
+- INSERT responses still return the full `record` for anon/user (only UPDATE is narrowed,
+  by `records::readback_for`): the row is the caller's own write plus id/timestamps/schema
+  defaults — no exploit path, and narrowing it breaks insert-only anon forms. DELETE's
+  204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |
