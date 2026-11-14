@@ -469,6 +469,103 @@ async fn owner_transfer_to_the_same_owner_does_not_evict() {
     );
 }
 
+// ─── E2′ — owner transfer signals a MEMBER old owner's SSE streams ───────────
+
+/// E2′ — a `member` old owner loses this tenant, so their PAT-backed SSE
+/// streams end; the new owner's do not.
+#[tokio::test]
+async fn owner_transfer_signals_a_member_old_owner_only() {
+    let (app, dir, _cache, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (m2_id, m2_cookie) = insert_admin(&dir, "alice@example.com", "member");
+    let (m3_id, _) = insert_admin(&dir, "bob@example.com", "member");
+    create_tenant_json(&app, &m2_cookie, "t-b", "BetaCorp").await;
+    assert_eq!(owner_of(&dir, "t-b"), Some(m2_id), "seed: m2 owns t-b");
+    let g0 = bus.cred().current_gen();
+    let rx_m2 = bus.cred().subscribe_admin(m2_id);
+    let rx_m3 = bus.cred().subscribe_admin(m3_id);
+
+    let (status, body) = patch_owner(
+        &app,
+        &owner_cookie,
+        "/admin/api/tenants/t-b/owner",
+        serde_json::json!({"owner_admin_id": m3_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "transfer failed: {body}");
+
+    assert!(
+        *rx_m2.borrow() > g0,
+        "the member old owner's SSE streams must end"
+    );
+    assert!(
+        !rx_m3.has_changed().unwrap(),
+        "the new owner gained reach — their streams must not be signalled"
+    );
+}
+
+#[tokio::test]
+async fn owner_transfer_to_the_same_owner_does_not_signal() {
+    let (app, dir, _cache, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (m2_id, m2_cookie) = insert_admin(&dir, "alice@example.com", "member");
+    create_tenant_json(&app, &m2_cookie, "t-b", "BetaCorp").await;
+    let rx = bus.cred().subscribe_admin(m2_id);
+
+    let (status, body) = patch_owner(
+        &app,
+        &owner_cookie,
+        "/admin/api/tenants/t-b/owner",
+        serde_json::json!({"owner_admin_id": m2_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "no-op transfer failed: {body}");
+
+    assert!(
+        !rx.has_changed().unwrap(),
+        "a no-op transfer must not end anyone's SSE streams"
+    );
+}
+
+/// E2′ — a sees-all old owner keeps reaching the tenant after the transfer, so
+/// signalling would only restart their streams host-wide for nothing. The
+/// rooms eviction of the moved tenant is unchanged.
+#[tokio::test]
+async fn owner_transfer_away_from_a_sees_all_owner_does_not_signal() {
+    let (app, dir, _cache, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (m3_id, _) = insert_admin(&dir, "bob@example.com", "member");
+    create_tenant_json(&app, &owner_cookie, "t-x", "XCorp").await;
+    let root_id: i64 = rusqlite::Connection::open(dir.path().join("meta.sqlite"))
+        .unwrap()
+        .query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(owner_of(&dir, "t-x"), Some(root_id), "seed: root owns t-x");
+    let h = bus.tenant_epoch_handle("t-x");
+    let rx = bus.cred().subscribe_admin(root_id);
+
+    let (status, body) = patch_owner(
+        &app,
+        &owner_cookie,
+        "/admin/api/tenants/t-x/owner",
+        serde_json::json!({"owner_admin_id": m3_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "transfer failed: {body}");
+
+    assert!(
+        !rx.has_changed().unwrap(),
+        "a sees-all old owner's reach did not change — no SSE signal"
+    );
+    assert_eq!(
+        h.load(SeqCst),
+        1,
+        "the moved tenant's rooms sockets still close"
+    );
+}
+
 // ─── orphan-on-remove: FK ON DELETE SET NULL through the real meta conn ──────
 
 #[tokio::test]

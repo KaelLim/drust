@@ -36,7 +36,9 @@
 //! admin (`owner` / `admin`) the reach genuinely is the host, and
 //! [`RoomBus::evict_all_tenants`](crate::tenant::rooms::RoomBus::evict_all_tenants)
 //! stays exactly right. No per-connection credential index is needed for either
-//! — that was the deferred option (b), and it is not what this costs.
+//! — that was the deferred option (b), and it is not what this costs. (SSE
+//! streams are ended by a separate per-ADMIN signal, not a per-connection
+//! index: [`evict_reach`] sends it ahead of the reach `match`, E2′.)
 //!
 //! ## Why every caller SNAPSHOTS the reach instead of re-reading it
 //!
@@ -76,6 +78,11 @@
 //! gap needs the OUT-OF-PROCESS break-glass `set_admin_role` binary, which
 //! evicts nothing at all today and leaves those sockets live regardless of what
 //! this module does.
+//!
+//! For SSE the reach residual does not exist: the E2′ signal is keyed on the
+//! admin, not on a tenant set, so a stream opened under a wider past role ends
+//! with the rest. The out-of-process `set_admin_role` binary cannot send it
+//! either — same residual as rooms.
 
 use rusqlite::{Connection, params};
 
@@ -142,6 +149,10 @@ pub(crate) fn read_pat_reach(conn: &Connection, admin_id: i64) -> PatReach {
 /// holding, over exactly the tenants that PAT could reach, per a [`PatReach`]
 /// the caller snapshotted under its own `meta` guard.
 ///
+/// E2′ — when `signal_sse` is set (every caller today) it FIRST ends the SSE
+/// streams `admin_id`'s PATs opened, via the per-admin signal on
+/// `RoomBus::cred()`; that half does not depend on the reach.
+///
 /// **Call this AFTER `auth_cache.clear_admin_pat`, never before** (spec
 /// §隔離與資安不變量 2, pinned per-site by the test-only `mgmt::pat_evict_pin`
 /// module): the kicked client reconnects immediately and must not be
@@ -153,7 +164,16 @@ pub(crate) fn read_pat_reach(conn: &Connection, admin_id: i64) -> PatReach {
 /// answers `HostWide` — so a post-commit read would OVER-evict every tenant
 /// for a mere member removal. The pre-image snapshot is what keeps that
 /// removal scoped to the tenants the member actually owned.
-pub(crate) fn evict_reach(s: &MgmtState, reach: PatReach) {
+pub(crate) fn evict_reach(s: &MgmtState, admin_id: i64, reach: PatReach, signal_sse: bool) {
+    // E2′ — SSE streams opened with this admin's PATs end now. Independent of
+    // the reach (a member's `Owned(vec![])` still signals) and therefore kept
+    // OUTSIDE the match (pinned: `evict_reach_signals_sse_before_and_
+    // regardless_of_the_reach`). `signal_sse = false` is reserved for a
+    // credential that cannot open SSE at all, where signalling would end the
+    // same admin's UI-PAT streams for nothing; every caller today passes `true`.
+    if signal_sse {
+        s.bus_rooms.cred().revoke_admin(admin_id);
+    }
     match reach {
         PatReach::HostWide => s.bus_rooms.evict_all_tenants(),
         PatReach::Owned(ids) => {

@@ -34,13 +34,19 @@ pub async fn subscribe_handler(
     // mounted without the PAT arms (tests, dev) still subscribes, with the
     // pre-#976 behaviour of no expiry at all.
     pat_deadline: Option<Extension<PatDeadline>>,
+    // E2′ — present only when the bearer was an admin PAT (`AdminId` set):
+    // the per-admin revocation signal. Anon and tenant-key streams never
+    // carry it, so their stop condition is exactly what it was.
+    pat_revocation: Option<Extension<crate::tenant::cred_revoke::PatRevocation>>,
     Path((tenant, coll)): Path<(String, String)>,
 ) -> Response {
     // #976 F2, the SSE face of the credential-expiry kick: an admin PAT
     // carrying `expires_at` must not hold an event stream past it. Only the
     // deadline is consumed here — epochs do NOT apply to SSE, whose eviction
     // is a channel drop that ends the stream by itself, and which has no
-    // inbound frame or close code to carry a `CONN_EXPIRED` on.
+    // inbound frame or close code to carry a `CONN_EXPIRED` on. E2′ adds the
+    // per-admin revocation signal as a second way to end it (composed with
+    // the deadline below); anon and tenant-key streams carry neither.
     //
     // Converted BEFORE the schema reads below for the same reason ws.rs
     // converts before `on_upgrade`: an `Instant::now()` taken later pushes the
@@ -173,24 +179,42 @@ pub async fn subscribe_handler(
         })
         .map(to_sse_event);
     // #976 F2 — a credential deadline ends the stream, which closes the
-    // response body and so the connection. Boxed rather than always arming a
-    // far-future timer: absence of the extension must mean NO timer, not one
-    // parked decades out. `take_until` is `futures`' combinator, called
-    // qualified because importing its `StreamExt` here would make every
-    // `tokio_stream` combinator above ambiguous.
+    // response body and so the connection. E2′ — so does a revocation of the
+    // admin whose PAT opened it (reroll, CLI refresh/logout/revoke, removal,
+    // demotion, owner transfer away from a member); anon and tenant-key
+    // streams carry neither extension. Boxed rather than always arming a
+    // far-future timer: absence of both extensions must mean NO stop future,
+    // not one parked decades out. A `match` over the four cases rather than a
+    // `select!` with disabled branches, which panics when every branch is
+    // disabled. `take_until` is `futures`' combinator, called qualified
+    // because importing its `StreamExt` here would make every `tokio_stream`
+    // combinator above ambiguous.
+    let revocation = pat_revocation.map(|Extension(r)| r);
+    let stop: Option<StopFuture> = match (deadline, revocation) {
+        (None, None) => None,
+        (Some(at), None) => Some(Box::pin(tokio::time::sleep_until(at))),
+        (None, Some(r)) => Some(Box::pin(r.revoked())),
+        (Some(at), Some(r)) => Some(Box::pin(async move {
+            tokio::select! {
+                () = tokio::time::sleep_until(at) => {}
+                () = r.revoked() => {}
+            }
+        })),
+    };
     let stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = Result<SseEvent, Infallible>> + Send>,
-    > = match deadline {
-        Some(at) => Box::pin(futures::StreamExt::take_until(
-            events,
-            tokio::time::sleep_until(at),
-        )),
+    > = match stop {
+        Some(s) => Box::pin(futures::StreamExt::take_until(events, s)),
         None => Box::pin(events),
     };
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)))
         .into_response()
 }
+
+/// E2′ — whatever ends a PAT-backed stream early: its deadline, its admin's
+/// revocation, or the first of the two.
+type StopFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 fn to_sse_event(ev: Event) -> Result<SseEvent, Infallible> {
     let data = match &ev {

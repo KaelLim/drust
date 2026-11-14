@@ -129,6 +129,10 @@ of `bearer_auth_layer` — cache hit and DB — also hand that expiry forward as
 `PatDeadline` request extension (v1.66.0, #976), because a
 per-request gate alone let an ALREADY-OPEN rooms socket or SSE stream outlive the credential
 — see `.claude/rules/background-jobs.md` §Realtime for what the realtime faces do with it.
+The `AdminId` extension those same two arms insert is also what `ws_baseline_capture` keys
+the E2′ `PatRevocation` on (the per-admin signal that ends a revoked admin's SSE streams).
+A new credential source that resolves to `AuthCtx::Service{admin_id: Some(..)}` must insert
+`AdminId` as well, or its SSE streams fall outside that signal.
 
 Lifecycle routes live on the **public** router via a self-contained `resolve_cli_caller`
 that returns JSON 401 and never a 302.

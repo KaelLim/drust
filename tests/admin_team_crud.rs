@@ -439,6 +439,124 @@ async fn remove_admin_of_a_sees_all_admin_evicts_host_wide() {
     );
 }
 
+// ─── E2′ — role flips / removal signal the target's SSE streams ──────────────
+
+/// The bootstrapped owner's id, read rather than assumed.
+fn root_id(dir: &tempfile::TempDir) -> i64 {
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    conn.query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+/// DELETE `/admin/team/{id}` as `cookie`; asserts 200.
+async fn remove(app: &axum::Router, cookie: &str, target_id: i64) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/team/{target_id}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "remove should return 200");
+}
+
+#[tokio::test]
+async fn role_demotion_signals_the_demoted_admins_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (alice_id, _) = insert_admin(&dir, "alice-demote-sse@example.com", "admin");
+    let g0 = bus.cred().current_gen();
+    let rx_alice = bus.cred().subscribe_admin(alice_id);
+    let rx_root = bus.cred().subscribe_admin(root_id(&dir));
+
+    assert_eq!(
+        patch_role(&app, &owner_cookie, alice_id, "member").await,
+        StatusCode::OK
+    );
+
+    assert!(
+        *rx_alice.borrow() > g0,
+        "a sees-all → member demotion must end the demoted admin's SSE streams"
+    );
+    assert!(
+        !rx_root.has_changed().unwrap(),
+        "the caller's own SSE streams must not be signalled"
+    );
+}
+
+#[tokio::test]
+async fn role_promotion_does_not_signal() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (alice_id, _) = insert_admin(&dir, "alice-promote-sse@example.com", "member");
+    let rx = bus.cred().subscribe_admin(alice_id);
+
+    assert_eq!(
+        patch_role(&app, &owner_cookie, alice_id, "admin").await,
+        StatusCode::OK
+    );
+
+    assert!(
+        !rx.has_changed().unwrap(),
+        "a promotion widens reach — it must not end the promoted admin's streams"
+    );
+}
+
+#[tokio::test]
+async fn lateral_role_move_inside_sees_all_does_not_signal() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let (alice_id, _) = insert_admin(&dir, "alice-lateral-sse@example.com", "owner");
+    let rx = bus.cred().subscribe_admin(alice_id);
+
+    assert_eq!(
+        patch_role(&app, &owner_cookie, alice_id, "admin").await,
+        StatusCode::OK
+    );
+
+    assert!(
+        !rx.has_changed().unwrap(),
+        "owner → admin keeps sees-all reach — no signal"
+    );
+}
+
+/// E2′ — both a member and a sees-all removal signal the REMOVED admin, never
+/// the caller. `remove_admin` has `caller_id` and `target_id` in scope, both
+/// `i64`, and the structural pin cannot tell them apart; this can.
+#[tokio::test]
+async fn remove_admin_signals_the_removed_admins_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let owner_cookie = login(&app, "root", "hunter2").await;
+    let rx_root = bus.cred().subscribe_admin(root_id(&dir));
+
+    for (email, role) in [
+        ("alice-remove-sse@example.com", "member"),
+        ("bob-remove-sse@example.com", "admin"),
+    ] {
+        let (target_id, _) = insert_admin(&dir, email, role);
+        let g0 = bus.cred().current_gen();
+        let rx = bus.cred().subscribe_admin(target_id);
+
+        remove(&app, &owner_cookie, target_id).await;
+
+        assert!(
+            *rx.borrow() > g0,
+            "removing a {role} must end that admin's SSE streams"
+        );
+    }
+    assert!(
+        !rx_root.has_changed().unwrap(),
+        "the caller's own SSE streams must not be signalled by a removal"
+    );
+}
+
 #[tokio::test]
 async fn member_cannot_invite() {
     let (app, dir) = spin_up().await;

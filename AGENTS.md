@@ -111,6 +111,15 @@ does not cover.
   `read_pat_reach`). The duplicate point-read is the price of keeping `read_pat_reach` a
   sealed single decision point; passing the role in would split the reach logic across
   call sites.
+- The E2′ SSE revocation signal is **per ADMIN, not per token**: `cli_token_revoke` — and
+  the routine `cli_token_refresh`, roughly daily with the default 24 h CLI-PAT lifetime —
+  also ends the same admin's UI-PAT SSE streams once (they reconnect with the still-valid
+  key). Per-token signalling was rejected in design: it needs the token id in
+  `CachedRole::AdminPat` and a `bearer_auth_layer` change. Do not "narrow" it.
+- Owner transfer does **not** send the SSE signal when the old owner is sees-all
+  (`owner`/`admin`): their reach did not change, so signalling would only restart their
+  streams host-wide for nothing. The role is snapshotted under the transfer's own meta guard
+  (`tenant_settings::patch_tenant_owner`).
 
 **Accepted residuals — what remains after #976 (v1.66.0); re-report only if the exposure changes:**
 
@@ -119,7 +128,18 @@ does not cover.
   between the auth decision and that layer's capture is still adopted as the socket's
   baseline. The `evict_all_tenants` shard-walk-vs-concurrent-first-connect race is the
   **same window** — a socket can only be missed if its bearer auth passed before
-  `clear_admin_pat` — not a new hole. Capture may only ever move EARLIER.
+  `clear_admin_pat` — not a new hole. Capture may only ever move EARLIER. **For SSE this
+  window is closed (E2′)**: `ws_auth::pat_gen_capture` reads the revocation generation
+  before any auth read; rooms keep the one-hop window above.
+- The auth-cache "insert after clear" race (pre-dates E2′, applies to SSE and rooms alike):
+  the bearer DB arm releases the `meta` lock after its CTE and inserts into the auth cache
+  later; a revocation that commits, clears and signals exactly between those two points
+  lets that request re-insert the revoked entry (`AuthCache::insert` has no generation
+  check against `clear_admin_pat`). Precondition: a concurrent request with the same PAT at
+  the moment of revocation. Bound: the 10 s safety TTL for new requests — but an SSE stream
+  newly opened from that entry inside those 10 s takes a post-revocation `g0`, so it gets no
+  signal, and a UI PAT has no `PatDeadline`. A fix touches `bearer_auth_layer` and
+  `AuthCache`; out of E2′ scope.
 - `pat_evict_pin` keys on the `clear_admin_pat(` needle — a future site that forgets the
   cache clear *too* is invisible to the pin; the guard there is invariant-4 review.
 

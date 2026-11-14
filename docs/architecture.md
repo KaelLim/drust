@@ -35,7 +35,7 @@ generated_by: docs/gen-architecture.py
 | [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
-| [`tenant/`](#srctenant) | 38 | 290 | 122 | 75 |
+| [`tenant/`](#srctenant) | 39 | 295 | 122 | 75 |
 
 ## Group dependency graph
 
@@ -343,13 +343,14 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`auth_cache.rs`](../src/tenant/auth_cache.rs) — v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`. · 4 pub
 - [`auth_routes.rs`](../src/tenant/auth_routes.rs) — 11 pub
 - [`collections.rs`](../src/tenant/collections.rs) — 11 pub
+- [`cred_revoke.rs`](../src/tenant/cred_revoke.rs) — E2′ — per-ADMIN revocation signal for the SSE streams an admin PAT opened. · 3 pub
 - [`egress.rs`](../src/tenant/egress.rs) — Per-tenant egress allowlist (v1.49). · 8 pub
 - [`egress_config.rs`](../src/tenant/egress_config.rs) — v1.49 — transport-agnostic egress-allowlist config core (spec §Config). · 10 pub
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
 - [`file_caps.rs`](../src/tenant/file_caps.rs) — Per-tenant file-storage capabilities (v1.42). · 7 pub
 - [`file_policy_routes.rs`](../src/tenant/file_policy_routes.rs) — Files RLS (#950-B) — the service-only REST face of the per-tenant prefix · 4 pub
 - [`mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs) — Axum handler that forwards `/t/:tenant/mcp` traffic to the · 1 pub
-- [`mod.rs`](../src/tenant/mod.rs) — 29 pub
+- [`mod.rs`](../src/tenant/mod.rs) — 30 pub
 - [`oauth_admin_routes.rs`](../src/tenant/oauth_admin_routes.rs) — Service-only admin endpoints for managing this tenant's OAuth provider · 7 pub
 - [`oauth_config.rs`](../src/tenant/oauth_config.rs) — 10 pub
 - [`oauth_routes.rs`](../src/tenant/oauth_routes.rs) — Per-tenant OAuth start + callback handlers. End users of a tenant's · 15 pub
@@ -368,7 +369,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the STRUCTURAL PINS (#955, #975). · 3 pub
 - [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 7 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
-- [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 4 pub
+- [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 5 pub
 - [`router.rs`](../src/tenant/router.rs) — 7 pub
 - [`sse.rs`](../src/tenant/sse.rs) — 1 pub
 - [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 10 pub

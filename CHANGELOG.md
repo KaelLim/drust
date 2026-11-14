@@ -69,6 +69,25 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   silently rebuilt empty: its data plane now answers 404. The remaining tenant-plane
   handlers that re-open the pool (or create a `tenants/<id>/_uploads` / `_functions`
   directory) after the bearer layer are race-only and stay for a later liveness refactor.
+- **Revoking, demoting or removing an admin — or moving a tenant away from a `member`
+  owner — now ends the SSE streams that admin's PATs opened (E2′).** The seven
+  PAT-revocation paths closed rooms WS sockets (#975) but never touched SSE, and an SSE
+  stream opened with an admin PAT is unfiltered (`AuthCtx::Service`), so a stream opened
+  before the revocation kept receiving every row event of that collection indefinitely
+  (UI PATs carry no `expires_at`, so #976's deadline never fired for them). Each path now
+  sends a per-ADMIN revocation signal after its auth-cache clear: `ws_router` records a
+  global revocation generation BEFORE bearer auth (`pat_gen_capture`) and subscribes the
+  admin's signal after it, so a revocation landing between that generation read and the
+  auth read is not missed; the SSE stream ends on that signal or on its `PatDeadline`,
+  whichever comes first. **Anon and tenant-service-key streams are untouched** — they
+  carry no admin identity — and rooms eviction is unchanged. The signal is per admin, not
+  per token: revoking one CLI PAT — and also the routine `cli token refresh` (CLI PATs
+  live 24 h by default, so roughly once a day) — restarts that same admin's other PAT
+  streams once (they reconnect, the still-valid key is admitted). This is expected, not a
+  fault. Owner transfer away from an `owner`/`admin` does not signal — their reach did not
+  change. The out-of-process `set_admin_role` binary still cannot signal (same residual as
+  rooms), and the pre-existing auth-cache "insert after clear" race is unchanged (see
+  AGENTS.md Accepted residuals). No new environment variable, API or wire format.
 
 ### Changed
 

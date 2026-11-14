@@ -224,7 +224,16 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    otherwise. `read_pat_reach` answers off `admins.role` as it stands when it reads, so at
    that site it would answer with the NEW, narrower reach and leave the demoted PAT's
    foreign-tenant sockets open — the exact under-evict this shape exists to prevent. Owner
-   transfer stays a precise single-tenant evict. Passive expiry never evicts — but **since
+   transfer stays a precise single-tenant evict. **The PAT family also ends that admin's SSE
+   streams (E2′)**: every site sends a per-ADMIN signal (`RoomBus::cred().revoke_admin`)
+   after its `clear_admin_pat` — the five snapshot sites through `evict_reach`'s
+   `signal_sse` (always `true` today; `false` is only for a credential that cannot open SSE),
+   `change_role` inline on the same demotion predicate, owner transfer only when the old
+   owner is NOT sees-all. `ws_router` reads the revocation generation BEFORE bearer auth
+   (`pat_gen_capture`) and subscribes after it, so a revocation landing between that read
+   and the auth read is not missed. The signal ignores reach and is per admin, not per
+   token; anon and tenant-key streams carry no admin identity and are untouched; rooms still
+   evict by reach. Passive expiry never evicts — but **since
    v1.66.0 an admin PAT's own `expires_at` closes the realtime connection it authenticated**
    (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
