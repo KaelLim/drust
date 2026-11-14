@@ -53,6 +53,22 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   unchanged; the admin plane is untouched. A frontend that read `_system_users`'
   `row_count` with an anon or user key must move that read server-side behind a service
   key.
+- **A request can no longer rebuild a deleted tenant's database outside `_trash`
+  (E3).** Self-registration read `allow_self_register` without `deleted_at IS NULL`, so an
+  unauthenticated `POST /t/<id>/auth/register` against a soft-deleted tenant that had
+  self-registration on recreated `tenants/<id>/data.sqlite` (full schema) and wrote a user
+  into it — no race needed — leaving an orphan database and a cached pool that nothing
+  evicts. It now answers the same `403 SELF_REGISTER_DISABLED` as an unknown id. The bearer
+  layer's DB arm, `login`, and both tenant OAuth endpoints proved liveness in `meta` and
+  then opened the pool with the create-on-open accessor after releasing the lock, so a soft
+  delete landing in between did the same; all five now open with the create-free
+  `get_if_live`, exactly as the two auth-cache arms already did, and answer with their
+  existing refusal (bearer `404 TENANT_NOT_FOUND`, register `404 TENANT_NOT_FOUND`, login
+  `401 INVALID_CREDENTIALS`, OAuth `404`). No status code changes for a live tenant; no
+  extra `meta` query. A live tenant whose `data.sqlite` has gone missing is no longer
+  silently rebuilt empty: its data plane now answers 404. The remaining tenant-plane
+  handlers that re-open the pool (or create a `tenants/<id>/_uploads` / `_functions`
+  directory) after the bearer layer are race-only and stay for a later liveness refactor.
 
 ### Changed
 

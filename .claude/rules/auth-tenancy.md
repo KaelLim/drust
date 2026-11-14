@@ -36,8 +36,10 @@ is also why the out-of-process `set_admin_role` break-glass CLI takes effect on 
 plane within 10 s without any eviction call.
 
 Because the hit path skips the CTE, it skips the only `deleted_at IS NULL` filter in the
-request — so **both cache arms open the pool with `get_if_live`, never `get_or_create`**,
-and 404 on `None`. `soft_delete_tenant` renames the tenant directory and evicts the pool
+request — so **all three arms — both cache arms and the DB arm — open the pool with
+`get_if_live`, never `get_or_create`**, and 404 on `None`. The DB arm needs it too: the CTE
+proves `deleted_at IS NULL` but releases the `meta` lock before the open, and
+`soft_delete_tenant`'s UPDATE + rename + pool evict can all land in between. `soft_delete_tenant` renames the tenant directory and evicts the pool
 *before* it clears the cache, and a request that read its entry earlier can arrive at the
 open at any later point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
 where the janitor never sweeps, and then serves the request against the fresh database.
@@ -100,8 +102,12 @@ Google's `id_token` is base64-decoded **without signature verification**, which 
 here per OIDC Core §3.1.3.7: confidential client, token endpoint reached over TLS.
 
 Allowlisted redirect URIs are exact-match and **re-checked at callback**, TOCTOU-safe.
-Both callbacks are per-IP rate-limited at 5/min. The per-tenant callback also validates that
-the tenant exists in `meta` **before** `get_or_create`, which is what prevents a disk-fill DoS.
+Both callbacks are per-IP rate-limited at 5/min. The per-tenant start and callback also
+validate that the tenant exists in `meta` **before** opening the pool, and open it with the
+create-free `get_if_live` — the meta check prevents the disk-fill DoS from arbitrary ids, the
+accessor closes the soft-delete race after it. `register` filters `deleted_at IS NULL` in the
+same `allow_self_register` read, so a deleted tenant answers like an unknown id, and `login`
+opens with `get_if_live` too.
 
 ## CLI device flow
 

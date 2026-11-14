@@ -598,15 +598,19 @@ SELECT \
         }
         // Open the tenant pool. Needed regardless of bearer kind (user
         // session lookup, downstream handlers).
-        let pool = match state.registry.get_or_create(&tenant_id) {
-            Ok(p) => p,
-            Err(_) => {
-                return json_error(
-                    StatusCode::NOT_FOUND,
-                    "TENANT_NOT_FOUND",
-                    "tenant data missing",
-                );
-            }
+        //
+        // `get_if_live`, NOT `get_or_create` — same reason as both cache arms
+        // above, narrower window: the CTE proved `deleted_at IS NULL` but
+        // released the meta lock at the end of the block above, and
+        // soft_delete_tenant's UPDATE + rename + pool evict can all land
+        // before this line. Creating here would rebuild tenants/<id> outside
+        // _trash and cache a pool nothing evicts.
+        let Some(pool) = state.registry.get_if_live(&tenant_id) else {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "TENANT_NOT_FOUND",
+                "tenant data missing",
+            );
         };
         // --- User-session path ---
         // Per-tenant _system_sessions, in a separate connection — not

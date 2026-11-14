@@ -177,8 +177,9 @@ pub(crate) async fn oauth_start(
         return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }
 
-    // Validate tenant exists in meta BEFORE get_or_create — prevents disk-fill
-    // from arbitrary tenant IDs creating junk tenant DBs (mirrors login_handler).
+    // Validate tenant exists in meta BEFORE opening the pool (create-free
+    // `get_if_live`) — prevents disk-fill from arbitrary tenant IDs creating
+    // junk tenant DBs (mirrors login_handler).
     let tenant_exists = {
         let conn = state.meta.lock().await;
         conn.query_row(
@@ -193,9 +194,8 @@ pub(crate) async fn oauth_start(
     }
 
     // Look up provider config from the tenant DB.
-    let pool = match state.registry.get_or_create(&tid) {
-        Ok(p) => p,
-        Err(_) => return plain_text(StatusCode::NOT_FOUND, "tenant not found"),
+    let Some(pool) = state.registry.get_if_live(&tid) else {
+        return plain_text(StatusCode::NOT_FOUND, "tenant not found");
     };
 
     let provider_name_for_lookup = provider_name.clone();
@@ -431,9 +431,9 @@ pub(crate) async fn oauth_callback(
     }
     let ip_str = ip.to_string();
 
-    // Validate tenant exists in meta BEFORE get_or_create — prevents disk-fill
-    // from arbitrary tenant IDs creating junk tenant DBs (mirrors login_handler
-    // and oauth_start). The rate-limit above is defense-in-depth; this gate is
+    // Validate tenant exists in meta BEFORE opening the pool (create-free
+    // `get_if_live`) — prevents disk-fill from arbitrary tenant IDs creating
+    // junk tenant DBs (mirrors login_handler and oauth_start). The rate-limit above is defense-in-depth; this gate is
     // what structurally closes the disk-fill vector.
     let tenant_exists = {
         let conn = state.meta.lock().await;
@@ -449,11 +449,8 @@ pub(crate) async fn oauth_callback(
     }
 
     // Step 1: provider exists.
-    let pool = match state.registry.get_or_create(&tid) {
-        Ok(p) => p,
-        Err(_) => {
-            return plain_text_clear_cookies(StatusCode::NOT_FOUND, "tenant not found", &tid);
-        }
+    let Some(pool) = state.registry.get_if_live(&tid) else {
+        return plain_text_clear_cookies(StatusCode::NOT_FOUND, "tenant not found", &tid);
     };
     let provider_name_for_lookup = provider_name.clone();
     let cfg_opt = pool
