@@ -29,7 +29,14 @@ impl GoogleAdapter {
             client_secret,
             authorize_endpoint,
             token_endpoint,
-            http: reqwest::Client::new(),
+            // HTTP/1.1 only: object_store 0.14 turns on reqwest's `http2`
+            // feature through feature unification; pin the pre-upgrade protocol.
+            // `Client::new()` panicked on a build failure too, so `expect` keeps
+            // the failure mode.
+            http: reqwest::Client::builder()
+                .http1_only()
+                .build()
+                .expect("reqwest client build"),
         }
     }
 

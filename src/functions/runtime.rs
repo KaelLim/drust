@@ -719,7 +719,12 @@ impl host::Host for StoreData {
             .resolver_override
             .clone()
             .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
+        //    HTTP/1.1 only: object_store 0.14 turns on reqwest's `http2` feature
+        //    through feature unification, which would otherwise let a TLS origin
+        //    negotiate h2 via ALPN. Pinning keeps the wire protocol (and the
+        //    parser a tenant-chosen origin can reach) exactly what it was.
         let client = reqwest::Client::builder()
+            .http1_only()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(self.host.http.timeout_secs))
             .redirect(reqwest::redirect::Policy::none())

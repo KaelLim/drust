@@ -1,3 +1,55 @@
+## Unreleased
+
+The three cross-major dependency upgrades that v1.67.0 left open. Together they clear the
+advisories that kept CI's `cargo audit` step red: `cargo audit` now reports 0
+vulnerabilities, and `.cargo/audit.toml` lists exactly one documented ignore. No new
+environment variable, no schema change and no data migration. Across the three deployment
+targets, the only deploy-file change is a comment in the `Dockerfile`. One caller-visible
+change, noted under D1. Building from source
+now needs **Rust 1.97 or newer**, because wasmtime 50 declares that as its minimum. The
+Docker builder uses the latest stable toolchain, so the image is unaffected.
+
+### Build
+
+- **D1: `rusqlite` 0.40.2 → 0.42.0 (`libsqlite3-sys` 0.38.2 → 0.40.0, bundled SQLite
+  3.53.2 → 3.54.1).** Clears RUSTSEC-2026-0459. Since rusqlite 0.41, installing a
+  connection hook (authorizer, progress handler, preupdate hook) takes `&mut Connection`.
+  The authorizer guard, the query deadline guard and the record-history capture therefore
+  hold the connection exclusively. Writer transactions run on a drust `WriterTx`, which
+  keeps `rusqlite::Transaction`'s default semantics: deferred `BEGIN`, rollback on drop.
+  Authorization behaviour is unchanged. The authorizer action-code set and
+  `SQLITE_DBCONFIG_DEFENSIVE` are identical across the two SQLite versions, and every
+  authorizer pin test passes. The on-disk format is unchanged and existing
+  `data.sqlite` / `meta.sqlite` files open as-is. **Caller-visible:** SQLite 3.54 refuses
+  `ALTER TABLE` on a column named `rowid`, `_rowid_` or `oid`. An `add_field` with one of
+  those names now fails with SQLite's error. It used to succeed and shadow the row id.
+- **D2: `wasmtime` / `wasmtime-wasi` 46.0.3 → 50.0.1.** Clears 21 advisories, 15 in
+  `wasmtime` and 6 in `wasmtime-wasi`. Newer wasmtime turns more wasm proposals on by
+  default. drust turns them back off, so tenant-uploaded edge functions are compiled
+  against the same proposal set as before: GC, function references and wide arithmetic
+  are off; component-model-async is off; `wasmtime-wasi` is built without `p3`. A unit
+  test pins that exact set, so a future bump that widens it fails the build. Every
+  function that uploads and runs today keeps working unchanged. Minimum Rust for a source
+  build is now 1.97.
+- **D3: `object_store` 0.13.2 → 0.14.2 (`quick-xml` 0.39.4 → 0.41.0), and the `rmcp`
+  advisory documented as not applicable.** The quick-xml DoS advisories RUSTSEC-2026-0194
+  and RUSTSEC-2026-0195 are now fixed by upgrading, and their two `.cargo/audit.toml`
+  ignores are removed. Their removal condition was "object_store allows quick-xml
+  >= 0.41", and 0.14.1 met it. drust's S3 calls compile unchanged against 0.14. Its
+  SigV4 signing now uses `aws-lc-rs`, already in the build through reqwest's rustls,
+  instead of `ring`. The upgrade also drops the last `reqwest` 0.12 from the drust
+  binary. object_store 0.14 depends on reqwest 0.13 with the `http2` feature, and
+  Cargo's feature unification turns that feature on for drust's own reqwest too, which
+  would have let every outbound HTTPS client negotiate HTTP/2 through ALPN. drust's
+  outbound clients — edge `http-fetch`, webhook delivery, the Google and GitHub OAuth
+  adapters and the Garage admin client — now call `http1_only()`, so they still offer
+  only `http/1.1` and the wire protocol is unchanged. RUSTSEC-2026-0462 (`rmcp` 1.8.0)
+  is fixed only in rmcp 3.9. It affects rmcp's Streamable HTTP *client* transports,
+  which are behind the `transport-streamable-http-client*` features. drust is an MCP
+  server and enables none of those features, so the affected code is not compiled. The
+  advisory is ignored with that justification, and the ignore comes out with the move to
+  rmcp >= 3.9. No operator action is needed.
+
 ## v1.67.0 — 2026-11-14
 
 Fixes from the access-gate convergence review (E track). No new environment variable, no

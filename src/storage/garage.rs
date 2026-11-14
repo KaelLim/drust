@@ -73,7 +73,12 @@ impl GarageClient {
             .with_virtual_hosted_style_request(false)
             .build()
             .context("failed to build S3 client for Garage")?;
+        // HTTP/1.1 only: object_store 0.14 turns on reqwest's `http2` feature
+        // through feature unification; pin the pre-upgrade protocol. (The S3
+        // client inside `AmazonS3` is object_store's own; its `ClientOptions`
+        // default to `http1_only` in both 0.13 and 0.14, so it is unaffected.)
         let admin = reqwest::Client::builder()
+            .http1_only()
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .context("failed to build admin HTTP client")?;
