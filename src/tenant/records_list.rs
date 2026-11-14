@@ -11,7 +11,7 @@
 
 use crate::auth::middleware::AuthCtx;
 use crate::error::json_error;
-use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authorizer};
+use crate::query::authorizer::AuthzGuard;
 use crate::query::list_builder::{
     AggregateRequest, ListError, ListRequest, build_aggregate_sql, build_structured_list_sql,
 };
@@ -309,10 +309,8 @@ async fn run_structured_list_inner(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = run_bound_select(c, &list_sql_owned, &binds_for_list);
-            detach_authorizer(c);
-            r
+            let _authz = AuthzGuard::search_readonly(c);
+            run_bound_select(c, &list_sql_owned, &binds_for_list)
         })
         .await;
     let (col_names, rows) = match records_res {
@@ -345,17 +343,15 @@ async fn run_structured_list_inner(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = (|| -> rusqlite::Result<i64> {
+            let _authz = AuthzGuard::search_readonly(c);
+            (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare_cached(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
                     .iter()
                     .map(|v| v as &dyn rusqlite::ToSql)
                     .collect();
                 stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get(0))
-            })();
-            detach_authorizer(c);
-            r
+            })()
         })
         .await;
     let total: i64 = match count_res {
@@ -482,10 +478,8 @@ pub async fn post_aggregate(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = run_bound_select(c, &sql_owned, &binds_owned);
-            detach_authorizer(c);
-            r
+            let _authz = AuthzGuard::search_readonly(c);
+            run_bound_select(c, &sql_owned, &binds_owned)
         })
         .await;
     let (_col_names, rows) = match rows_res {
@@ -565,8 +559,8 @@ pub async fn post_list_explain(
     let plan_sql = format!("EXPLAIN QUERY PLAN {list_sql}");
     let plan: Vec<String> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<String>> {
-            attach_search_readonly_authorizer(c);
-            let r = (|| -> rusqlite::Result<Vec<String>> {
+            let _authz = AuthzGuard::search_readonly(c);
+            (|| -> rusqlite::Result<Vec<String>> {
                 let mut stmt = c.prepare(&plan_sql)?;
                 let refs: Vec<&dyn rusqlite::ToSql> =
                     binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -577,9 +571,7 @@ pub async fn post_list_explain(
                     out.push(row?);
                 }
                 Ok(out)
-            })();
-            detach_authorizer(c);
-            r
+            })()
         })
         .await
         .unwrap_or_default();

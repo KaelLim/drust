@@ -286,7 +286,7 @@ pub async fn enforced_list(
     coll: &str,
     req: ListRequest,
 ) -> anyhow::Result<serde_json::Value> {
-    use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authorizer};
+    use crate::query::authorizer::AuthzGuard;
     let schema = load_schema(mcp, coll).await?;
 
     // ── Auth matrix (lockstep with records_list.rs::post_list) ──────────
@@ -354,10 +354,8 @@ pub async fn enforced_list(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = run_list_rows(c, &list_sql_owned, &binds_list);
-            detach_authorizer(c);
-            r
+            let _authz = AuthzGuard::search_readonly(c);
+            run_list_rows(c, &list_sql_owned, &binds_list)
         })
         .await?;
     let records_out: Vec<serde_json::Value> = rows
@@ -380,8 +378,8 @@ pub async fn enforced_list(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = (|| -> rusqlite::Result<i64> {
+            let _authz = AuthzGuard::search_readonly(c);
+            (|| -> rusqlite::Result<i64> {
                 // COUNT(*) text is stable for a given (schema, filter) shape and
                 // re-derives on DDL, so `prepare_cached` is allowed here (matches
                 // the REST `/list` oracle + the drust CLAUDE.md cache invariant).
@@ -391,9 +389,7 @@ pub async fn enforced_list(
                     .map(|v| v as &dyn rusqlite::ToSql)
                     .collect();
                 stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get(0))
-            })();
-            detach_authorizer(c);
-            r
+            })()
         })
         // Propagate a count failure instead of masking it as `total: 0` beside a
         // non-empty `records` page (REST `/list` returns 500 DB_ERROR here).

@@ -187,10 +187,8 @@ pub fn execute_read_query(
             limit: max_sql_bytes,
         });
     }
-    crate::query::authorizer::attach_readonly_authorizer(conn);
-    let result = execute_read_query_inner(conn, sql, row_cap);
-    crate::query::authorizer::detach_authorizer(conn);
-    result
+    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_inner(conn, sql, row_cap)
 }
 
 /// Like [`execute_read_query`] but skips the read-only authorizer. Only
@@ -282,10 +280,8 @@ pub fn execute_read_query_with_named(
             limit: max_sql_bytes,
         });
     }
-    crate::query::authorizer::attach_readonly_authorizer(conn);
-    let result = execute_read_query_with_named_inner(conn, sql, binds, row_cap);
-    crate::query::authorizer::detach_authorizer(conn);
-    result
+    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_with_named_inner(conn, sql, binds, row_cap)
 }
 
 fn execute_read_query_with_named_inner(

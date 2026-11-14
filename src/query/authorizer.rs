@@ -1,15 +1,70 @@
 use rusqlite::Connection;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
+/// Install the permissive allow-all callback. Non-panicking so
+/// [`AuthzGuard`]'s `Drop` can call it during an unwind (a second panic there
+/// would abort the process).
+fn install_allow_all(conn: &Connection) -> rusqlite::Result<()> {
+    conn.authorizer(Some(|_ctx: AuthContext<'_>| -> Authorization {
+        Authorization::Allow
+    }))
+}
+
 /// Replace the connection's authorizer with a permissive allow-all callback.
 /// Called after user-SQL execution so the connection can safely be returned
 /// to the pool without leaking the restrictive authorizer to subsequent
 /// internal requests (schema introspection, counts, etc.).
+///
+/// On a POOLED READER use [`AuthzGuard`] instead of a bare attach/detach
+/// pair: a `?` or a panic between the two skips this call and returns the
+/// reader to the pool still restricted.
 pub fn detach_authorizer(conn: &Connection) {
-    conn.authorizer(Some(|_ctx: AuthContext<'_>| -> Authorization {
-        Authorization::Allow
-    }))
-    .expect("detach (allow-all) authorizer must install");
+    install_allow_all(conn).expect("detach (allow-all) authorizer must install");
+}
+
+/// RAII: attach on construction, allow-all on Drop — on `?`, early `return`
+/// AND panic unwind. Bind to a NAMED local (`let _authz = …`); `let _ = …`
+/// drops it on the spot and runs the statement unguarded.
+///
+/// The constructors call the existing [`attach_readonly_authorizer`] /
+/// [`attach_search_readonly_authorizer`] verbatim, so the allowed set of each
+/// arm is exactly that function's. Bare attach/detach pairs remain only where
+/// the detach ORDER is load-bearing (`run_write_rpc` must detach before
+/// `RELEASE`) and in `validate_rpc_sql` / `referenced_user_tables`.
+#[must_use = "bind to a named local (`let _authz = …`); `let _ = …` detaches immediately"]
+pub(crate) struct AuthzGuard<'c>(Option<&'c Connection>);
+
+impl<'c> AuthzGuard<'c> {
+    /// The strict read-only arm — caller-SQL sites and drust SQL that never
+    /// needs a search shadow.
+    pub(crate) fn readonly(c: &'c Connection) -> Self {
+        attach_readonly_authorizer(c);
+        Self(Some(c))
+    }
+
+    /// The additive search-reader arm — drust-BUILT SQL only (see
+    /// [`attach_search_readonly_authorizer`]'s WARNING).
+    pub(crate) fn search_readonly(c: &'c Connection) -> Self {
+        attach_search_readonly_authorizer(c);
+        Self(Some(c))
+    }
+
+    /// No authorizer attached and none removed on Drop — for sites that
+    /// attach conditionally (admin `_list` on a protected collection).
+    pub(crate) fn none() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for AuthzGuard<'_> {
+    fn drop(&mut self) {
+        // Never panic here: Drop runs during unwind, and a second panic
+        // aborts. `authorizer()` only errors on a non-owned connection; if it
+        // ever did, what stays installed is the STRICTER arm (fail-closed).
+        if let Some(c) = self.0 {
+            let _ = install_allow_all(c);
+        }
+    }
 }
 
 /// Attach the read-only authorizer. Every SQL action is inspected; anything
@@ -341,6 +396,113 @@ mod auth_tests {
                 r.get(0)
             });
         assert!(r.is_err(), "expected denial, got {:?}", r);
+    }
+
+    /// `SQLITE_AUTH` specifically — a reader is `SQLITE_OPEN_READ_ONLY` +
+    /// `query_only`, so DDL fails with or without an authorizer; only the
+    /// error CODE proves the authorizer is what refused.
+    fn is_auth_denied<T: std::fmt::Debug>(r: &rusqlite::Result<T>) -> bool {
+        matches!(
+            r.as_ref().err().and_then(|e| e.sqlite_error_code()),
+            Some(rusqlite::ErrorCode::AuthorizationForStatementDenied)
+        )
+    }
+
+    fn master_count(c: &Connection) -> rusqlite::Result<i64> {
+        c.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+    }
+
+    #[test]
+    fn guard_detaches_on_question_mark_early_return() {
+        let tmp = fresh_with_rpc_table();
+        let conn = open_read(tmp.path(), "rpcauth").unwrap();
+
+        fn probe(c: &Connection) -> rusqlite::Result<()> {
+            let _authz = AuthzGuard::readonly(c);
+            let m = master_count(c);
+            assert!(is_auth_denied(&m), "guard must be attached, got {m:?}");
+            c.query_row("SELECT 1 FROM no_such_table", [], |_| Ok(()))?;
+            Ok(())
+        }
+
+        assert!(probe(&conn).is_err(), "probe must early-return on `?`");
+        master_count(&conn).expect("allow-all must be back after a `?` early return");
+        let rpc: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0))
+            .expect("_system_rpc readable once the guard dropped");
+        assert_eq!(rpc, 1);
+    }
+
+    #[test]
+    fn guard_detaches_on_panic() {
+        let tmp = fresh_with_rpc_table();
+        let conn = open_read(tmp.path(), "rpcauth").unwrap();
+
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _authz = AuthzGuard::readonly(&conn);
+            assert!(is_auth_denied(&master_count(&conn)));
+            panic!("boom");
+        }));
+        assert!(r.is_err(), "the closure must really have panicked");
+        master_count(&conn).expect("allow-all must be back after a panic unwind");
+    }
+
+    /// Sampled pin, not the proof: the full allowed-set guarantee is that
+    /// the constructor calls `attach_readonly_authorizer` verbatim.
+    #[test]
+    fn guard_readonly_matches_attach_readonly_on_sampled_actions() {
+        let tmp = fresh_with_rpc_table();
+        {
+            let w = crate::storage::tenant_db::open_write(tmp.path(), "rpcauth").unwrap();
+            w.execute_batch(
+                "CREATE TABLE plain (id INTEGER PRIMARY KEY); INSERT INTO plain VALUES (1);",
+            )
+            .unwrap();
+        }
+        let conn = open_read(tmp.path(), "rpcauth").unwrap();
+        let _authz = AuthzGuard::readonly(&conn);
+        for t in [
+            "_system_rpc",
+            "_system_files",
+            "_system_collection_meta",
+            "sqlite_master",
+        ] {
+            let r: rusqlite::Result<i64> =
+                conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0));
+            assert!(is_auth_denied(&r), "{t} must be SQLITE_AUTH, got {r:?}");
+        }
+        let attach = conn.execute("ATTACH DATABASE ':memory:' AS x", []);
+        assert!(
+            is_auth_denied(&attach),
+            "ATTACH must be SQLITE_AUTH, got {attach:?}"
+        );
+        let ddl = conn.execute("CREATE TABLE t(x)", []);
+        assert!(
+            is_auth_denied(&ddl),
+            "CREATE TABLE must be SQLITE_AUTH, got {ddl:?}"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plain", [], |r| r.get(0))
+            .expect("an ordinary table stays readable");
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn pooled_reader_is_clean_after_an_errored_guarded_closure() {
+        let tmp = TempDir::new().unwrap();
+        // ONE reader, so the second borrow is necessarily the same connection.
+        let pool =
+            crate::storage::pool::TenantPool::new(tmp.path().to_path_buf(), "e7pool", 1).unwrap();
+        let first = pool
+            .with_reader(|c| {
+                let _authz = AuthzGuard::readonly(c);
+                c.query_row("SELECT 1 FROM missing", [], |_| Ok(()))
+            })
+            .await;
+        assert!(first.is_err());
+        pool.with_reader(master_count)
+            .await
+            .expect("the pooled reader must come back unrestricted");
     }
 }
 
@@ -674,5 +836,51 @@ mod search_arm_tests {
             RpcMode::Read,
         )
         .expect_err("a read RPC must not reach an ordinary _system_search_ table");
+    }
+
+    fn is_auth_denied<T: std::fmt::Debug>(r: &rusqlite::Result<T>) -> bool {
+        matches!(
+            r.as_ref().err().and_then(|e| e.sqlite_error_code()),
+            Some(rusqlite::ErrorCode::AuthorizationForStatementDenied)
+        )
+    }
+
+    #[test]
+    fn search_guard_admits_fts_and_strict_guard_denies_it_and_both_detach() {
+        let tmp = fts_fixture();
+        let conn = open_read(tmp.path(), TENANT).unwrap();
+        let q = fts_query();
+        let master = |c: &Connection| -> rusqlite::Result<i64> {
+            c.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+        };
+
+        {
+            let _authz = AuthzGuard::readonly(&conn);
+            let strict: rusqlite::Result<i64> = conn.query_row(&q, ["alpha"], |r| r.get(0));
+            assert!(
+                is_auth_denied(&strict),
+                "strict guard must deny $fts, got {strict:?}"
+            );
+        }
+        {
+            let _authz = AuthzGuard::search_readonly(&conn);
+            let hit: i64 = conn
+                .query_row(&q, ["alpha"], |r| r.get(0))
+                .expect("search guard admits the compiled $fts shape");
+            assert_eq!(hit, 1);
+            let m = master(&conn);
+            assert!(is_auth_denied(&m), "sqlite_master stays denied, got {m:?}");
+            let rpc: rusqlite::Result<i64> =
+                conn.query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0));
+            assert!(
+                is_auth_denied(&rpc),
+                "_system_rpc stays denied, got {rpc:?}"
+            );
+        }
+        {
+            let _authz = AuthzGuard::none();
+            master(&conn).expect("none() attaches nothing");
+        }
+        master(&conn).expect("allow-all after every guard dropped");
     }
 }

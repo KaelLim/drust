@@ -181,6 +181,100 @@ async fn user_delete_dry_run_foreign_owner_row_is_404() {
     );
 }
 
+/// E7 — a dry-run target probe that FAILS (here: the table is gone but the
+/// app's schema cache still has it) must not return its pooled reader to the
+/// pool with the strict read-only authorizer still attached. Before the
+/// `AuthzGuard` fix the probe's `?` skipped its detach, and the NEXT request
+/// on that reader that reads `sqlite_master` itself (`GET /collections`, a
+/// schema-cache miss) failed with a 500.
+#[tokio::test]
+async fn rest_delete_dry_run_db_error_does_not_leave_authorizer_on_pooled_reader() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    let (app, svc, dir) = test_helpers::spin_up_tenant_with_role("acme-e7", "service").await;
+    // A SEPARATE registry: its DDL never invalidates the app's schema cache,
+    // which is exactly the "cache has it, table is gone" state we need.
+    let pool = test_helpers::grab_pool("acme-e7", &dir).await;
+    pool.with_writer(|c| {
+        c.execute_batch(
+            "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL);
+             INSERT INTO posts (id, title) VALUES (1, 'hello');
+             CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT);",
+        )
+    })
+    .await
+    .unwrap();
+
+    let send = |method: &'static str, uri: &'static str| {
+        let app = app.clone();
+        let svc = svc.clone();
+        async move {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            (status, bytes)
+        }
+    };
+
+    // 1. Baseline dry-run succeeds (and loads `posts` into the app's cache).
+    let (st, b) = send("DELETE", "/t/acme-e7/records/posts/1?dry_run=true").await;
+    assert_eq!(st, 200, "baseline dry-run: {}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["would_delete"], true);
+
+    // 2. Baseline collection list.
+    let (st, b) = send("GET", "/t/acme-e7/collections").await;
+    assert_eq!(st, 200, "baseline list: {}", String::from_utf8_lossy(&b));
+
+    // 3. Drop `posts` behind the app's back.
+    pool.with_writer(|c| c.execute_batch("DROP TABLE posts"))
+        .await
+        .unwrap();
+
+    // 4. The probe now fails — that request's own behaviour is unchanged.
+    let (st, b) = send("DELETE", "/t/acme-e7/records/posts/1?dry_run=true").await;
+    assert_eq!(st, 500, "failed probe: {}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error_code"], "INTERNAL_ERROR", "{v}");
+
+    // 5. The next borrower of that reader reads `sqlite_master` itself.
+    let (st, b) = send("GET", "/t/acme-e7/collections").await;
+    assert_eq!(
+        st,
+        200,
+        "GET /collections after a failed dry-run must not inherit the probe's \
+         authorizer: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let cols = v["collections"].as_array().expect("collections array");
+    assert!(
+        cols.iter().any(|c| c["name"] == "notes"),
+        "notes must be listed: {v}"
+    );
+    assert!(
+        !cols.iter().any(|c| c["name"] == "posts"),
+        "dropped posts must not be listed: {v}"
+    );
+
+    // 6. A schema-cache miss (`notes` never loaded) resolves via sqlite_master.
+    let (st, b) = send("GET", "/t/acme-e7/records/notes/1").await;
+    assert_eq!(
+        st,
+        404,
+        "a missing row on a resolvable collection is 404, not 500: {}",
+        String::from_utf8_lossy(&b)
+    );
+}
+
 #[tokio::test]
 async fn drop_collection_dry_run_does_not_drop() {
     let (pool, _dir) = helpers::make_tenant_with_posts();

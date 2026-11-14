@@ -139,6 +139,11 @@ empty head-set is fail-OPEN, so callers propagate a snapshot error, never substi
   `anon_callable` read-RPC `SELECT … FROM "<head>"` dodge owner-scope and leak indexed
   columns to anon.
 
+Reader-side attaches go through `AuthzGuard::{readonly, search_readonly, none}` (RAII:
+detaches on `?`, return and panic); bare attach/detach pairs remain only where ordering is
+load-bearing — `run_write_rpc` (detach before `RELEASE`) and `validate_rpc_sql` /
+`referenced_user_tables`.
+
 **Row authorization is on the PARENT.** `$fts` compiles to `"id" IN (SELECT rowid FROM
 "<head>" WHERE "<head>" MATCH ?)`; the unchanged owner/RLS/caps `WHERE` on the parent decides
 row access, so a User only searches their own rows. The head name is always

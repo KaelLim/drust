@@ -132,6 +132,21 @@ One caller-visible response narrowing on the data plane (E9), anon and user only
   read-back (`records::readback_for`) now calls the same function. No new environment
   variable, no schema change.
 
+- **A failed `DELETE …?dry_run=true` no longer leaves the read-only authorizer on a pooled
+  reader (E7).** The dry-run target probe attached the strict authorizer and early-returned
+  on a query error (`?`) before its detach, so the reader went back to the pool still
+  restricted: the next request that borrowed it and read `sqlite_master` itself — a
+  schema-cache miss, `GET /collections`, the dry-run FK blast-radius scan — failed with a
+  500 until some later request happened to detach. Reachable only when the probe's prepare
+  fails, e.g. a collection dropped between the cap check and the probe. Every reader-side
+  attach/detach pair (19 sites: REST `/list`, `/aggregate`, explain, legacy list, the
+  dry-run, admin `_list`, MCP read/aggregate/explain, edge `query-list`, the `/query` and
+  stored-RPC executors) now goes through `query::authorizer::AuthzGuard`, which detaches on
+  Drop — on `?`, early return and panic unwind alike. The allowed set of both reader arms is
+  unchanged; each site keeps the arm it had (caller-SQL sites stay strict). The writer-side
+  `run_write_rpc` pairs are deliberately untouched: their detach must precede `RELEASE`.
+  No API, env, schema or wire change.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's

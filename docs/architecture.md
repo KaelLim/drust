@@ -28,14 +28,14 @@ generated_by: docs/gen-architecture.py
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 26 | 206 | 84 | 43 |
+| [`mcp/`](#srcmcp) | 26 | 206 | 85 | 43 |
 | [`mgmt/`](#srcmgmt) | 44 | 382 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 10 | 66 | 14 | 40 |
-| [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
+| [`query/`](#srcquery) | 10 | 69 | 14 | 40 |
+| [`rpc/`](#srcrpc) | 8 | 61 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
 | [`storage/`](#srcstorage) | 18 | 189 | 24 | 108 |
-| [`tenant/`](#srctenant) | 39 | 295 | 122 | 75 |
+| [`tenant/`](#srctenant) | 39 | 295 | 122 | 76 |
 
 ## Group dependency graph
 
@@ -275,12 +275,12 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/query/`
 
-- [`authorizer.rs`](../src/query/authorizer.rs) — 4 pub
+- [`authorizer.rs`](../src/query/authorizer.rs) — 5 pub
 - [`executor.rs`](../src/query/executor.rs) — 11 pub
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
 - [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 8 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
-- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 16 pub
+- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 18 pub
 - [`rpc_rls_spike.rs`](../src/query/rpc_rls_spike.rs) — RPC-RLS Phase-0 spike — raw SQLite FACTS the TEMP-VIEW-shadowing design
 - [`search_vtable_spike.rs`](../src/query/search_vtable_spike.rs) — FTS5 / R-tree vtables × the SQL authorizers — the surviving regression
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub
@@ -295,7 +295,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`handler.rs`](../src/rpc/handler.rs) — REST handler for `POST /t/{tenant}/rpc/{name}`. · 2 pub
 - [`mod.rs`](../src/rpc/mod.rs) — RPC subsystem: stored Supabase-style named SQL functions. · 7 pub
 - [`params.rs`](../src/rpc/params.rs) — RPC parameter schema and request validation. · 7 pub
-- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 14 pub
+- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 16 pub
 - [`query_template.rs`](../src/rpc/query_template.rs) — Stored **query-kind** RPC templates (#950 Phase 1). · 9 pub
 - [`registry.rs`](../src/rpc/registry.rs) — Persistence wrapper around the `_system_rpc` table. · 12 pub
 

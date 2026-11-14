@@ -1,6 +1,6 @@
 use crate::auth::middleware::AuthCtx;
 use crate::error::{json_error, json_error_with_aliases, json_error_with_context};
-use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+use crate::query::authorizer::AuthzGuard;
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
@@ -628,10 +628,8 @@ pub async fn list_handler(
         let list_sql_owned = list_sql.clone();
         let rows_res: rusqlite::Result<Vec<serde_json::Value>> = pool
             .with_reader(move |c| {
-                attach_readonly_authorizer(c);
-                let r = list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500);
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500)
             })
             .await;
         let records_out = match rows_res {
@@ -647,18 +645,14 @@ pub async fn list_handler(
         let count_sql_owned = count_sql.clone();
         let total = pool
             .with_reader(move |c| -> rusqlite::Result<i64> {
-                attach_readonly_authorizer(c);
-                let r = {
-                    let refs: Vec<&dyn rusqlite::ToSql> = binds_count
-                        .iter()
-                        .map(|v| v as &dyn rusqlite::ToSql)
-                        .collect();
-                    c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| {
-                        r.get(0)
-                    })
-                };
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                let refs: Vec<&dyn rusqlite::ToSql> = binds_count
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::ToSql)
+                    .collect();
+                c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| {
+                    r.get(0)
+                })
             })
             .await
             .unwrap_or(0);
@@ -686,10 +680,8 @@ pub async fn list_handler(
         let total = {
             let sql = count_sql.clone();
             pool.with_reader(move |c| {
-                attach_readonly_authorizer(c);
-                let r = c.query_row(&sql, [], |r| r.get::<_, i64>(0));
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                c.query_row(&sql, [], |r| r.get::<_, i64>(0))
             })
             .await
             .unwrap_or(0)
@@ -1700,7 +1692,9 @@ pub async fn delete_handler(
             .pool
             .with_reader(move |c| -> rusqlite::Result<bool> {
                 use rusqlite::OptionalExtension;
-                attach_readonly_authorizer(c);
+                // Detaches on Drop — the `?` below can no longer return this
+                // pooled reader with the strict authorizer still attached.
+                let _authz = AuthzGuard::readonly(c);
                 let mut sql = format!(
                     "SELECT 1 FROM \"{}\" WHERE id = ?1",
                     coll_pf.replace('"', "\"\"")
@@ -1723,7 +1717,6 @@ pub async fn delete_handler(
                     .query_row(&sql, &refs[..], |_| Ok(()))
                     .optional()?
                     .is_some();
-                detach_authorizer(c);
                 Ok(found)
             })
             .await;
