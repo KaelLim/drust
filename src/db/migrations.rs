@@ -287,7 +287,10 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
     let mut conn = Connection::open(&path)?;
     // Same DEFENSIVE posture as pooled writers — a rebuild/migration must not be the one door left open.
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-    let tx = conn.transaction()?;
+    // `WriterTx`, not `conn.transaction()`: the v1.41.3 scan below installs an
+    // authorizer, which rusqlite needs `&mut Connection` for, and it must run
+    // INSIDE this tx (it reads the columns added above).
+    let mut tx = crate::storage::pool::WriterTx::begin(&mut conn)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_SESSIONS_IF_NOT_EXISTS)?;
     tx.execute_batch(SQL_CREATE_SYSTEM_OAUTH_PROVIDERS_IF_NOT_EXISTS)?;
@@ -458,7 +461,7 @@ pub fn migrate_tenant_db(tenants_dir: &Path, tid: &str) -> rusqlite::Result<()> 
         // upgrade; an admin can re-enable after declaring :user_id. Best-effort —
         // a scan error (e.g. malformed legacy params_json) must never break the
         // startup migration, so it is logged and skipped, not propagated.
-        match crate::rpc::prepare::scan_unsafe_anon_rpcs(&tx) {
+        match crate::rpc::prepare::scan_unsafe_anon_rpcs(&mut tx) {
             Ok(names) if !names.is_empty() => {
                 for name in &names {
                     tx.execute(

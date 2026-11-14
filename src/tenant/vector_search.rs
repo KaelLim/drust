@@ -257,13 +257,13 @@ pub async fn search_handler(
     let k_owned = body.k;
     let exec_res: rusqlite::Result<Vec<serde_json::Value>> = pool
         .with_reader(move |c| {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
+            let c: &rusqlite::Connection = &deadline;
             let mut stmt = c.prepare(&sql)?;
-            let col_names: Vec<String> =
-                stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
             let mut rows_iter = stmt.query(rusqlite::params_from_iter(binds.iter()))?;
             let mut out = Vec::new();
             while let Some(r) = rows_iter.next()? {

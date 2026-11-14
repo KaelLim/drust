@@ -242,7 +242,7 @@ pub async fn create_job(
 
 /// Reader lane; each job carries a freshly computed `next_fire`.
 pub async fn list_jobs(pool: &SharedTenantPool) -> Result<Vec<CronJobOut>, OpsError> {
-    pool.with_reader(store::list_jobs_reader)
+    pool.with_reader(|c| store::list_jobs_reader(c))
         .await
         .map(|v| v.into_iter().map(job_out).collect())
         .map_err(|e| OpsError::Db(e.to_string()))

@@ -175,7 +175,7 @@ pub async fn create(
     let quota_tier = crate::mgmt::tenant_files::resolve_quota_tier(&state, &tenant).await;
     match t
         .pool
-        .with_reader(crate::storage::quota::usage_on_conn)
+        .with_reader(|c| crate::storage::quota::usage_on_conn(c))
         .await
     {
         Ok(usage) => {
@@ -265,7 +265,7 @@ pub async fn create(
     let policies = if crate::storage::files::publish_grant_lookup_required(upload_caller, requested)
     {
         t.pool
-            .with_reader(crate::storage::file_policy::load_file_policies)
+            .with_reader(|c| crate::storage::file_policy::load_file_policies(c))
             .await
             .map_err(|e| e.to_string())
     } else {
@@ -492,7 +492,7 @@ pub async fn patch(
         let quota_tier = crate::mgmt::tenant_files::resolve_quota_tier(&state, &tenant).await;
         match t
             .pool
-            .with_reader(crate::storage::quota::usage_on_conn)
+            .with_reader(|c| crate::storage::quota::usage_on_conn(c))
             .await
         {
             Ok(usage) => {

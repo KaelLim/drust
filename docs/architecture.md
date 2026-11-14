@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-11-14
+updated: 2026-11-15
 generated_by: docs/gen-architecture.py
 ---
 
@@ -34,7 +34,7 @@ generated_by: docs/gen-architecture.py
 | [`query/`](#srcquery) | 10 | 69 | 14 | 40 |
 | [`rpc/`](#srcrpc) | 8 | 61 | 31 | 15 |
 | [`safety/`](#srcsafety) | 8 | 43 | 1 | 12 |
-| [`storage/`](#srcstorage) | 18 | 189 | 24 | 108 |
+| [`storage/`](#srcstorage) | 18 | 190 | 24 | 108 |
 | [`tenant/`](#srctenant) | 39 | 295 | 122 | 76 |
 
 ## Group dependency graph
@@ -325,7 +325,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`janitor.rs`](../src/storage/janitor.rs) — 7 pub
 - [`meta.rs`](../src/storage/meta.rs) — 3 pub
 - [`mod.rs`](../src/storage/mod.rs) — 17 pub
-- [`pool.rs`](../src/storage/pool.rs) — 3 pub
+- [`pool.rs`](../src/storage/pool.rs) — 4 pub
 - [`quota.rs`](../src/storage/quota.rs) — Per-tenant unified quota (v1.50, Spec B). · 7 pub
 - [`record_history.rs`](../src/storage/record_history.rs) — v1.46 — supa_audit-style record-history capture. One shared helper wired · 19 pub
 - [`schema.rs`](../src/storage/schema.rs) — 46 pub

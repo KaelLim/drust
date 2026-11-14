@@ -1,6 +1,6 @@
 use crate::storage::schema_cache::SchemaCache;
 use crate::storage::tenant_db::{open_read, open_write, open_write_existing, tenant_data_path};
-use rusqlite::{Connection, Transaction};
+use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,66 @@ use tokio::sync::{Mutex, Semaphore};
 /// a per-pool write counter drives it instead. `analysis_limit = 400`
 /// (set in `apply_common_pragmas`) bounds each run's cost.
 const DRUST_OPTIMIZE_EVERY: u64 = 1000;
+
+/// The writer transaction handed to [`TenantPool::with_writer_tx`]: a deferred
+/// `BEGIN … COMMIT` over a connection held `&mut`.
+///
+/// It replaces `rusqlite::Transaction` because rusqlite (0.41+) needs
+/// `&mut Connection` to install or swap a connection hook (replacing an
+/// authorizer frees the previous boxed closure), while `rusqlite::Transaction`
+/// only ever lends `&Connection`. In-transaction steps that install an
+/// authorizer — `drop_collection`'s dependent-RPC scan (`anon_rpc_dependents`,
+/// which must share the DROP's snapshot) and the boot-time
+/// `scan_unsafe_anon_rpcs` (which must see the columns added earlier in the same
+/// migration tx) — therefore reach the connection through `DerefMut`; everything
+/// else derefs to `&Connection` exactly as it did through `Transaction`.
+///
+/// Semantics mirror `rusqlite::Transaction` with its defaults
+/// (`TransactionBehavior::Deferred`, `DropBehavior::Rollback`): [`commit`]
+/// consumes, and Drop — an early `?`, an `Err` from the closure, a failed
+/// `COMMIT`, a panic unwind — issues `ROLLBACK` whenever the connection is still
+/// inside a transaction (the same `is_autocommit` test rusqlite's `finish_`
+/// makes).
+///
+/// [`commit`]: WriterTx::commit
+pub struct WriterTx<'c> {
+    conn: &'c mut Connection,
+}
+
+impl<'c> WriterTx<'c> {
+    pub(crate) fn begin(conn: &'c mut Connection) -> rusqlite::Result<Self> {
+        conn.execute_batch("BEGIN DEFERRED")?;
+        Ok(Self { conn })
+    }
+
+    pub(crate) fn commit(self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("COMMIT")
+        // `self` drops here: a no-op after a successful COMMIT (autocommit is
+        // back on), a ROLLBACK after a failed one.
+    }
+}
+
+impl std::ops::Deref for WriterTx<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl std::ops::DerefMut for WriterTx<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn
+    }
+}
+
+impl Drop for WriterTx<'_> {
+    fn drop(&mut self) {
+        if !self.conn.is_autocommit() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
 
 pub struct TenantPool {
     data_root: PathBuf,
@@ -119,9 +179,10 @@ impl TenantPool {
         Ok(v)
     }
 
-    /// Like `with_writer`, but the closure receives a `&Transaction`. The
-    /// transaction commits on `Ok`, rolls back on `Err` (or panic — rusqlite's
-    /// `Transaction::drop` is rollback-by-default). Use this for any
+    /// Like `with_writer`, but the closure receives a `&mut WriterTx` (derefs to
+    /// the connection). The transaction commits on `Ok`, rolls back on `Err`
+    /// (or panic — `WriterTx::drop` is rollback-by-default, like rusqlite's
+    /// `Transaction`). Use this for any
     /// multi-statement write where partial-commit would leave a half-state
     /// (collection-without-meta, record-without-readback, etc.).
     ///
@@ -131,12 +192,12 @@ impl TenantPool {
     /// back internally in that case.
     pub async fn with_writer_tx<F, T>(&self, f: F) -> rusqlite::Result<T>
     where
-        F: for<'a> FnOnce(&'a Transaction<'a>) -> rusqlite::Result<T> + Send,
+        F: FnOnce(&mut WriterTx<'_>) -> rusqlite::Result<T> + Send,
         T: Send,
     {
         let mut g = self.writer.lock().await;
-        let tx = g.transaction()?;
-        match f(&tx) {
+        let mut tx = WriterTx::begin(&mut g)?;
+        match f(&mut tx) {
             Ok(v) => {
                 tx.commit()?;
                 // Commit returned and `tx` is consumed, so the connection is
@@ -146,7 +207,7 @@ impl TenantPool {
                 Ok(v)
             }
             Err(e) => {
-                // Explicit drop runs Transaction::drop = rollback.
+                // Explicit drop runs WriterTx::drop = rollback.
                 drop(tx);
                 Err(e)
             }
@@ -155,18 +216,21 @@ impl TenantPool {
 
     pub async fn with_reader<F, T>(&self, f: F) -> rusqlite::Result<T>
     where
-        F: FnOnce(&Connection) -> rusqlite::Result<T> + Send,
+        F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send,
         T: Send,
     {
+        // `&mut`: the reader is exclusively held under its slot mutex anyway,
+        // and rusqlite (0.41+) needs exclusive access to swap the authorizer /
+        // progress handler that guarded reads install (`AuthzGuard`).
         let _permit = self.reader_sema.acquire().await.expect("semaphore closed");
         for slot in &self.readers {
-            if let Ok(g) = slot.try_lock() {
-                return f(&g);
+            if let Ok(mut g) = slot.try_lock() {
+                return f(&mut g);
             }
         }
         // All readers busy? Wait on the first one (rare, semaphore should prevent this).
-        let g = self.readers[0].lock().await;
-        f(&g)
+        let mut g = self.readers[0].lock().await;
+        f(&mut g)
     }
 }
 

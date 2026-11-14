@@ -864,7 +864,7 @@ async fn read_one_record(
             coll.replace('"', "\"\"")
         );
         let mut stmt = c.prepare(&sql)?;
-        let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
         stmt.query_row([id], |r| {
             crate::mcp::tools::write::materialize_row(r, &cols, &vector_names)
         })

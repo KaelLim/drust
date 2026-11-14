@@ -381,7 +381,7 @@ pub(crate) fn insert_row_in_tx(
     let refs: Vec<&dyn rusqlite::ToSql> =
         params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut stmt = tx.prepare(&sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let rec = stmt
         .query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
         .map_err(map_check_violation)?;
@@ -618,7 +618,7 @@ pub(crate) fn upsert_row_in_tx(
         .collect();
     let pre = {
         let mut st = tx.prepare(&sel)?;
-        let cn: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let cn: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         st.query_row(&krefs[..], |r| materialize_row(r, &cn, vector_names))
             .optional()?
     };
@@ -697,7 +697,7 @@ pub(crate) fn upsert_row_in_tx(
     // this connection.
     let rec = {
         let mut stmt = tx.prepare(&sql)?;
-        let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
         stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, vector_names))
             .map_err(map_check_violation)?
     };
@@ -979,8 +979,7 @@ pub async fn update_record_checked(
             // re-queries this connection.
             let updated = {
                 let mut stmt = tx.prepare(&sql)?;
-                let col_names: Vec<String> =
-                    stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
                 stmt.query_row(&refs[..], |r| materialize_row(r, &col_names, &vector_names))
                     .map_err(map_check_violation)
                     .optional()?

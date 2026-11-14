@@ -13,8 +13,8 @@ fn seed(name: &str) -> tempfile::TempDir {
 #[test]
 fn select_allowed() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     let mut stmt = conn.prepare("SELECT id, title FROM posts").unwrap();
     let _ = stmt.query_map([], |_| Ok(())).unwrap().count();
 }
@@ -22,8 +22,8 @@ fn select_allowed() {
 #[test]
 fn attach_denied() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     let err = conn
         .prepare("ATTACH DATABASE '/tmp/x.db' AS x")
         .unwrap_err();
@@ -34,16 +34,16 @@ fn attach_denied() {
 #[test]
 fn drop_table_denied() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     assert!(conn.prepare("DROP TABLE posts").is_err());
 }
 
 #[test]
 fn insert_denied_at_authorizer() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     assert!(
         conn.prepare("INSERT INTO posts (title) VALUES ('x')")
             .is_err()
@@ -53,8 +53,8 @@ fn insert_denied_at_authorizer() {
 #[test]
 fn pragma_whitelisted() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     // Whitelisted pragmas should still work; we probe via a SELECT-style query
     let mut stmt = conn
         .prepare("SELECT * FROM pragma_table_info('posts')")
@@ -65,8 +65,8 @@ fn pragma_whitelisted() {
 #[test]
 fn sqlite_master_read_denied() {
     let d = seed("t");
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     // Reading sqlite_master directly (not via pragma_*) is blocked.
     assert!(conn.prepare("SELECT name FROM sqlite_master").is_err());
 }

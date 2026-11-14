@@ -418,8 +418,9 @@ pub async fn probe_fts_queries(
         // under LIMIT 1, so arm the same wall-clock deadline every other read
         // face uses (v1.58.5 DoS). Without this, the probe is the one $fts
         // reader that could pin a worker (2 workers on this host).
-        let _deadline =
+        let deadline =
             crate::query::executor::DeadlineGuard::arm(c, crate::query::executor::query_deadline());
+        let c: &rusqlite::Connection = &deadline;
         for p in &probes {
             if let Err(e) = run_fts_probe(c, p) {
                 return Ok(Err(crate::error::sqlite_error_without_sql(&e)));

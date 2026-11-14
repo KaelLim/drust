@@ -383,15 +383,16 @@ async fn admin_list_inner(
                 // panic can return this pooled reader with the read-only
                 // authorizer still installed (which would over-deny the next
                 // request's own `sqlite_master` / `_system_*` read).
-                let _authz = if !is_protected {
+                let authz = if !is_protected {
                     crate::query::authorizer::AuthzGuard::readonly(c)
                 } else {
-                    crate::query::authorizer::AuthzGuard::none()
+                    crate::query::authorizer::AuthzGuard::none(c)
                 };
+                let c: &rusqlite::Connection = &authz;
                 (|| -> rusqlite::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
                     let mut stmt = c.prepare(&list_sql_for_closure)?;
                     let col_names: Vec<String> =
-                        stmt.column_names().iter().map(|s| s.to_string()).collect();
+                        stmt.column_names().map(|s| s.to_string()).collect();
                     let mut rows_iter =
                         stmt.query(rusqlite::params_from_iter(binds_for_list.iter()))?;
                     let mut out: Vec<Vec<serde_json::Value>> = Vec::new();
@@ -459,11 +460,12 @@ async fn admin_list_inner(
         .with_reader(move |c| -> rusqlite::Result<i64> {
             // Same guard as the list closure: detaches on Drop, `?` and
             // panic included.
-            let _authz = if !is_protected {
+            let authz = if !is_protected {
                 crate::query::authorizer::AuthzGuard::readonly(c)
             } else {
-                crate::query::authorizer::AuthzGuard::none()
+                crate::query::authorizer::AuthzGuard::none(c)
             };
+            let c: &rusqlite::Connection = &authz;
             c.query_row(
                 &count_sql_for_closure,
                 rusqlite::params_from_iter(binds_for_count.iter()),

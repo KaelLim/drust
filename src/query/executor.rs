@@ -46,13 +46,17 @@ const VM_OPS_PER_CHECK: std::os::raw::c_int = 10_000;
 /// pooled, long-lived reader connections, so a handler left installed would keep
 /// firing (and keep a stale `Instant` alive) on every future query that
 /// connection serves. Same discipline as the authorizer install/detach pattern.
+///
+/// Holds the connection exclusively (rusqlite 0.41+ needs `&mut` to install or
+/// clear a progress handler) and derefs to it, so the guarded statements are
+/// prepared THROUGH the guard and are dropped before the handler is cleared.
 pub(crate) struct DeadlineGuard<'c> {
-    conn: &'c Connection,
+    conn: &'c mut Connection,
     armed: bool,
 }
 
 impl<'c> DeadlineGuard<'c> {
-    pub(crate) fn arm(conn: &'c Connection, budget: Option<Duration>) -> Self {
+    pub(crate) fn arm(conn: &'c mut Connection, budget: Option<Duration>) -> Self {
         let armed = match budget {
             Some(b) => {
                 let deadline = Instant::now() + b;
@@ -65,6 +69,20 @@ impl<'c> DeadlineGuard<'c> {
             None => false,
         };
         DeadlineGuard { conn, armed }
+    }
+}
+
+impl std::ops::Deref for DeadlineGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+impl std::ops::DerefMut for DeadlineGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn
     }
 }
 
@@ -176,7 +194,7 @@ pub(crate) fn type_name(v: ValueRef<'_>) -> String {
 }
 
 pub fn execute_read_query(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     row_cap: usize,
     max_sql_bytes: usize,
@@ -187,8 +205,8 @@ pub fn execute_read_query(
             limit: max_sql_bytes,
         });
     }
-    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
-    execute_read_query_inner(conn, sql, row_cap)
+    let mut authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_inner(&mut authz, sql, row_cap)
 }
 
 /// Like [`execute_read_query`] but skips the read-only authorizer. Only
@@ -197,7 +215,7 @@ pub fn execute_read_query(
 /// browser). The connection is still opened `SQLITE_OPEN_READONLY`, so
 /// mutation is impossible regardless.
 pub fn execute_read_query_admin(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     row_cap: usize,
     max_sql_bytes: usize,
@@ -212,7 +230,7 @@ pub fn execute_read_query_admin(
 }
 
 fn execute_read_query_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     row_cap: usize,
 ) -> Result<QueryResult, ExecError> {
@@ -225,10 +243,11 @@ fn execute_read_query_inner(
     // below, which arms its OWN guard — the two are parallel sites and a runaway
     // recursive CTE reaches the tenant via EITHER, so both must arm. Do not assume
     // one funnels through the other; they do not.
-    let _deadline = DeadlineGuard::arm(conn, query_deadline());
+    let deadline = DeadlineGuard::arm(conn, query_deadline());
+    let conn: &Connection = &deadline;
     let hash = sql_hash(sql);
     let mut stmt = conn.prepare(sql).map_err(classify)?;
-    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let col_count = column_names.len();
 
     let mut rows: Vec<Vec<Cell>> = Vec::new();
@@ -268,7 +287,7 @@ fn execute_read_query_inner(
 /// Returns the same [`QueryResult`] envelope; the read-only authorizer is
 /// attached for the duration of the call.
 pub fn execute_read_query_with_named(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     binds: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
     row_cap: usize,
@@ -280,12 +299,12 @@ pub fn execute_read_query_with_named(
             limit: max_sql_bytes,
         });
     }
-    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
-    execute_read_query_with_named_inner(conn, sql, binds, row_cap)
+    let mut authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_with_named_inner(&mut authz, sql, binds, row_cap)
 }
 
 fn execute_read_query_with_named_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     binds: &std::collections::BTreeMap<String, crate::rpc::params::BoundValue>,
     row_cap: usize,
@@ -295,7 +314,8 @@ fn execute_read_query_with_named_inner(
     // caller-supplied SQL that can hold a recursive CTE, and RPC is anon/user
     // callable when `anon_callable`, so it needs the CPU ceiling just as much as
     // raw /query. Dropped on return → handler removed from the pooled connection.
-    let _deadline = DeadlineGuard::arm(conn, query_deadline());
+    let deadline = DeadlineGuard::arm(conn, query_deadline());
+    let conn: &Connection = &deadline;
     let hash = sql_hash(sql);
     // Plain `prepare`, NOT `prepare_cached` (matches the non-named variant
     // above): a stored RPC / named-bind query body can be `SELECT *`, whose
@@ -308,7 +328,7 @@ fn execute_read_query_with_named_inner(
     // erroring on a dropped one. Same defect class as the get_handler /
     // list_bound_rows reads; keep this read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql).map_err(classify)?;
-    let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let col_count = column_names.len();
 
     // rusqlite's named-binding API expects param names to include the
@@ -472,7 +492,7 @@ mod named_tests {
 
         // Open a separate read connection on the same DB. Path:
         // <tmp>/tenants/namedtest/data.sqlite (matches open_write layout).
-        let read = rusqlite::Connection::open_with_flags(
+        let mut read = rusqlite::Connection::open_with_flags(
             tmp.path()
                 .join("tenants")
                 .join("namedtest")
@@ -484,7 +504,7 @@ mod named_tests {
         let mut binds = BTreeMap::new();
         binds.insert("min".into(), crate::rpc::params::BoundValue::Int(2));
         let qr = execute_read_query_with_named(
-            &read,
+            &mut read,
             "SELECT id, body FROM posts WHERE n >= :min ORDER BY n",
             &binds,
             100,
@@ -510,7 +530,7 @@ mod named_tests {
             .join("tenants")
             .join("cachetest")
             .join("data.sqlite");
-        let read = rusqlite::Connection::open_with_flags(
+        let mut read = rusqlite::Connection::open_with_flags(
             &dbpath,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
@@ -519,7 +539,7 @@ mod named_tests {
         let binds = std::collections::BTreeMap::new();
         // First call: prepares and caches `SELECT count(*) ...`.
         let q1 = execute_read_query_with_named(
-            &read,
+            &mut read,
             "SELECT count(*) AS c FROM posts",
             &binds,
             100,
@@ -537,7 +557,7 @@ mod named_tests {
             )
             .unwrap();
         let q2 = execute_read_query_with_named(
-            &read,
+            &mut read,
             "SELECT count(*) AS c FROM posts",
             &binds,
             100,
@@ -569,7 +589,7 @@ mod named_tests {
     #[test]
     fn a_prepare_failure_never_carries_the_stored_rpc_body() {
         const SECRET: &str = "sk-live-9f2c";
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY, api_key TEXT);")
             .unwrap();
 
@@ -579,7 +599,7 @@ mod named_tests {
             "st".into(),
             crate::rpc::params::BoundValue::Text("ok".into()),
         );
-        let err = execute_read_query_with_named(&conn, sql, &binds, 100, 32_768).unwrap_err();
+        let err = execute_read_query_with_named(&mut conn, sql, &binds, 100, 32_768).unwrap_err();
 
         // `wire` is verbatim the `message` an anon caller reads out of the
         // 400 SQL_ERROR body (rpc/handler.rs `ExecError::Sql` arm).
@@ -609,12 +629,12 @@ mod named_tests {
     /// `SqliteFailure` and was never carrying SQL in the first place.
     #[test]
     fn an_authorizer_denial_is_still_forbidden_after_redaction() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE _system_secrets (v TEXT);")
             .unwrap();
         let binds = BTreeMap::new();
         let err = execute_read_query_with_named(
-            &conn,
+            &mut conn,
             "SELECT v FROM _system_secrets",
             &binds,
             100,

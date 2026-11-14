@@ -521,7 +521,7 @@ pub async fn tenant_settings_page(
     // fresh/unopenable tenant still renders. `pending` hides the request form.
     let usage_bytes: u64 = match state.tenants.get_or_create(&tenant_id) {
         Ok(pool) => pool
-            .with_reader(crate::storage::quota::usage_on_conn)
+            .with_reader(|c| crate::storage::quota::usage_on_conn(c))
             .await
             .unwrap_or(0),
         Err(_) => 0,

@@ -422,7 +422,7 @@ fn list_bound_rows(
     // an added column or erroring on a removed one. Recompiling per call keeps
     // the read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();
@@ -629,7 +629,8 @@ pub async fn list_handler(
         let list_sql_owned = list_sql.clone();
         let rows_res: rusqlite::Result<Vec<serde_json::Value>> = pool
             .with_reader(move |c| {
-                let _authz = AuthzGuard::readonly(c);
+                let authz = AuthzGuard::readonly(c);
+                let c: &rusqlite::Connection = &authz;
                 list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500)
             })
             .await;
@@ -646,7 +647,8 @@ pub async fn list_handler(
         let count_sql_owned = count_sql.clone();
         let total = pool
             .with_reader(move |c| -> rusqlite::Result<i64> {
-                let _authz = AuthzGuard::readonly(c);
+                let authz = AuthzGuard::readonly(c);
+                let c: &rusqlite::Connection = &authz;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_count
                     .iter()
                     .map(|v| v as &dyn rusqlite::ToSql)
@@ -681,7 +683,8 @@ pub async fn list_handler(
         let total = {
             let sql = count_sql.clone();
             pool.with_reader(move |c| {
-                let _authz = AuthzGuard::readonly(c);
+                let authz = AuthzGuard::readonly(c);
+                let c: &rusqlite::Connection = &authz;
                 c.query_row(&sql, [], |r| r.get::<_, i64>(0))
             })
             .await
@@ -801,7 +804,7 @@ pub async fn get_handler(
                 params.push(rusqlite::types::Value::Text(user_id.clone()));
             }
             let mut stmt = c.prepare(&sql)?;
-            let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
             let rec = stmt.query_row(rusqlite::params_from_iter(refs), |r| row_to_json(r, &cols));
@@ -1185,7 +1188,7 @@ pub async fn create_handler(
             let refs: Vec<&dyn rusqlite::ToSql> =
                 params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
             let mut stmt = tx.prepare(&sql)?;
-            let cols_out: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let cols_out: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
             let mut rec = stmt.query_row(&refs[..], |r| row_to_json(r, &cols_out))?;
             // Read back excludes vector columns so the response is small and the
             // BLOB never leaks as {"__blob_bytes": n}.
@@ -1505,8 +1508,7 @@ pub async fn update_handler(
             // re-queries this connection.
             let updated = {
                 let mut stmt = tx.prepare(&sql)?;
-                let cols_out: Vec<String> =
-                    stmt.column_names().iter().map(|s| s.to_string()).collect();
+                let cols_out: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
                 stmt.query_row(&refs[..], |r| row_to_json(r, &cols_out))
                     .optional()?
             };
@@ -1695,7 +1697,8 @@ pub async fn delete_handler(
                 use rusqlite::OptionalExtension;
                 // Detaches on Drop — the `?` below can no longer return this
                 // pooled reader with the strict authorizer still attached.
-                let _authz = AuthzGuard::readonly(c);
+                let authz = AuthzGuard::readonly(c);
+                let c: &rusqlite::Connection = &authz;
                 let mut sql = format!(
                     "SELECT 1 FROM \"{}\" WHERE id = ?1",
                     coll_pf.replace('"', "\"\"")

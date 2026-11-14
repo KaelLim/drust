@@ -164,7 +164,7 @@ pub fn select_row_json_owner(
         owner_clause
     );
     let mut stmt = tx.prepare(&sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     stmt.query_row(rusqlite::params![id], |r| {
         crate::mcp::tools::write::materialize_row(r, &col_names, vector_names)
     })
@@ -205,7 +205,7 @@ pub fn capture_owner_cascade(
         owner_field.replace('"', "\"\"")
     );
     let mut stmt = tx.prepare(&sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let mut rows = stmt.query(rusqlite::params![owner_value])?;
     let mut captured = 0usize;
     while let Some(r) = rows.next()? {
@@ -438,7 +438,7 @@ pub(crate) fn audited_data_tables(conn: &Connection) -> rusqlite::Result<HashSet
 /// [`remove_preupdate_capture`] on every exit path — a leaked hook would
 /// buffer unrelated later writes.
 pub(crate) fn install_preupdate_capture(
-    conn: &Connection,
+    conn: &mut Connection,
     audited: HashSet<String>,
     limits: CaptureLimits,
 ) -> rusqlite::Result<SharedCaptureBuffer> {
@@ -581,7 +581,7 @@ pub(crate) fn install_preupdate_capture(
 /// Remove the preupdate capture hook. Must run on EVERY exit path of a
 /// caller that installed it (success and error) BEFORE `flush_captured` /
 /// savepoint resolution.
-pub(crate) fn remove_preupdate_capture(conn: &Connection) -> rusqlite::Result<()> {
+pub(crate) fn remove_preupdate_capture(conn: &mut Connection) -> rusqlite::Result<()> {
     use rusqlite::hooks::{Action, PreUpdateCase};
     conn.preupdate_hook(None::<fn(Action, &str, &str, &PreUpdateCase)>)
 }
@@ -922,17 +922,17 @@ mod tests {
 
     #[test]
     fn preupdate_capture_roundtrip_insert_update_delete() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, data BLOB);")
             .unwrap();
-        let buf = install_preupdate_capture(&c, audited(&["notes"]), unlimited()).unwrap();
+        let buf = install_preupdate_capture(&mut c, audited(&["notes"]), unlimited()).unwrap();
         c.execute_batch(
             "INSERT INTO notes (id, body, data) VALUES (1, 'a', x'0102');
              UPDATE notes SET body = 'b' WHERE id = 1;
              DELETE FROM notes WHERE id = 1;",
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         let actor = AuditActor::service();
         let n = flush_captured(&c, &buf, &actor).unwrap();
         assert_eq!(n, 3, "insert + update + delete each captured");
@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn preupdate_capture_skips_system_and_gate_off_tables() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch(
             "CREATE TABLE _system_collection_meta (collection_name TEXT PRIMARY KEY, audit_enabled INTEGER NOT NULL DEFAULT 1);
              CREATE TABLE loud (id INTEGER PRIMARY KEY, x TEXT);
@@ -988,14 +988,15 @@ mod tests {
         // `quiet` is deliberately in the audited set here: this test pins the
         // FLUSH-side gate (defense in depth), which stays the authority even
         // when the hook-side set is wrong.
-        let buf = install_preupdate_capture(&c, audited(&["loud", "quiet"]), unlimited()).unwrap();
+        let buf =
+            install_preupdate_capture(&mut c, audited(&["loud", "quiet"]), unlimited()).unwrap();
         c.execute_batch(
             "INSERT INTO loud (id, x) VALUES (1, 'a');
              INSERT INTO quiet (id, x) VALUES (1, 'b');
              INSERT INTO _system_collection_meta (collection_name, audit_enabled) VALUES ('other', 1);",
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         {
             let g = buf.lock().unwrap();
             assert_eq!(
@@ -1018,11 +1019,11 @@ mod tests {
 
     #[test]
     fn capture_row_limit_sets_error_and_flush_fails_closed() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
             .unwrap();
         let buf = install_preupdate_capture(
-            &c,
+            &mut c,
             audited(&["notes"]),
             CaptureLimits {
                 max_rows: 2,
@@ -1036,7 +1037,7 @@ mod tests {
              INSERT INTO notes (id, body) VALUES (3, 'c');",
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
         assert!(
             matches!(err, FlushError::LimitExceeded(_)),
@@ -1062,11 +1063,11 @@ mod tests {
 
     #[test]
     fn capture_byte_limit_sets_error_and_flush_fails_closed() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
             .unwrap();
         let buf = install_preupdate_capture(
-            &c,
+            &mut c,
             audited(&["notes"]),
             CaptureLimits {
                 max_rows: 0,
@@ -1080,7 +1081,7 @@ mod tests {
             rusqlite::params![big],
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         let err = flush_captured(&c, &buf, &AuditActor::service()).unwrap_err();
         assert!(
             matches!(err, FlushError::LimitExceeded(_)),
@@ -1099,11 +1100,11 @@ mod tests {
 
     #[test]
     fn capture_at_row_limit_boundary_succeeds() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);")
             .unwrap();
         let buf = install_preupdate_capture(
-            &c,
+            &mut c,
             audited(&["notes"]),
             CaptureLimits {
                 max_rows: 2,
@@ -1116,20 +1117,20 @@ mod tests {
              INSERT INTO notes (id, body) VALUES (2, 'b');",
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         let n = flush_captured(&c, &buf, &AuditActor::service()).unwrap();
         assert_eq!(n, 2, "exactly max_rows changes are still fine");
     }
 
     #[test]
     fn capture_buffers_blob_length_never_content() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch("CREATE TABLE notes (id INTEGER PRIMARY KEY, data BLOB);")
             .unwrap();
         // Byte budget FAR smaller than the blob: only its length may be
         // buffered, so the insert must fit.
         let buf = install_preupdate_capture(
-            &c,
+            &mut c,
             audited(&["notes"]),
             CaptureLimits {
                 max_rows: 0,
@@ -1143,7 +1144,7 @@ mod tests {
             rusqlite::params![blob],
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         {
             let g = buf.lock().unwrap();
             assert!(
@@ -1175,19 +1176,19 @@ mod tests {
 
     #[test]
     fn capture_skips_tables_not_in_audited_set() {
-        let c = hist_conn();
+        let mut c = hist_conn();
         c.execute_batch(
             "CREATE TABLE loud (id INTEGER PRIMARY KEY, x TEXT);
              CREATE TABLE quiet (id INTEGER PRIMARY KEY, x TEXT);",
         )
         .unwrap();
-        let buf = install_preupdate_capture(&c, audited(&["loud"]), unlimited()).unwrap();
+        let buf = install_preupdate_capture(&mut c, audited(&["loud"]), unlimited()).unwrap();
         c.execute_batch(
             "INSERT INTO loud (id, x) VALUES (1, 'a');
              INSERT INTO quiet (id, x) VALUES (1, 'b');",
         )
         .unwrap();
-        remove_preupdate_capture(&c).unwrap();
+        remove_preupdate_capture(&mut c).unwrap();
         let g = buf.lock().unwrap();
         assert_eq!(
             g.changes.len(),

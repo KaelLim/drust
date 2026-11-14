@@ -354,11 +354,12 @@ pub async fn enforced_list(
     let binds_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             run_list_rows(c, &list_sql_owned, &binds_list)
         })
         .await?;
@@ -378,11 +379,12 @@ pub async fn enforced_list(
     let binds_count = binds.clone();
     let total: i64 = pool
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             (|| -> rusqlite::Result<i64> {
                 // COUNT(*) text is stable for a given (schema, filter) shape and
                 // re-derives on DDL, so `prepare_cached` is allowed here (matches
@@ -420,7 +422,7 @@ fn run_list_rows(
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
     use rusqlite::types::ValueRef;
     let mut stmt = conn.prepare(sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();
@@ -796,7 +798,7 @@ pub async fn enforced_put_file(
     {
         mcp.inner()
             .pool
-            .with_reader(crate::storage::file_policy::load_file_policies)
+            .with_reader(|c| crate::storage::file_policy::load_file_policies(c))
             .await
             .map_err(|e| e.to_string())
     } else {

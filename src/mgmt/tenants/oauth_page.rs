@@ -91,7 +91,10 @@ async fn render_oauth_providers_page(
     // Read the providers via the shared pool's reader (consistent with the
     // REST admin endpoints, and uses the same connection cache).
     let providers: Vec<TenantOauthProviderRow> = match state.tenants.get_or_create(&tenant_id) {
-        Ok(pool) => match pool.with_reader(crate::tenant::oauth_config::list).await {
+        Ok(pool) => match pool
+            .with_reader(|c| crate::tenant::oauth_config::list(c))
+            .await
+        {
             Ok(rows) => rows
                 .into_iter()
                 .map(TenantOauthProviderRow::from_config)

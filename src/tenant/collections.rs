@@ -14,7 +14,7 @@ pub struct DryRunQuery {
 
 pub async fn list_handler(Extension(t): Extension<TenantRef>) -> Response {
     let pool = t.pool.clone();
-    let out = pool.with_reader(list_collections).await;
+    let out = pool.with_reader(|c| list_collections(c)).await;
     match out {
         Ok(list) => Json(serde_json::json!({ "collections": list })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),

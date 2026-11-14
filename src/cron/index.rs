@@ -66,7 +66,7 @@ impl CronIndex {
     pub async fn reload(&self, tenant: &str, pool: &SharedTenantPool) {
         let lock = self.locks.entry(tenant.to_string()).or_default().clone();
         let _guard = lock.lock().await;
-        let jobs = match pool.with_reader(store::list_jobs_reader).await {
+        let jobs = match pool.with_reader(|c| store::list_jobs_reader(c)).await {
             Ok(jobs) => jobs,
             Err(e) => {
                 tracing::warn!(tenant = %tenant, err = ?e, "cron index reload failed; clearing tenant entry");
