@@ -396,4 +396,88 @@ mod tx_tests {
             .unwrap();
         assert_eq!(persisted, 0, "rolled-back transaction must leave 0 rows");
     }
+
+    /// `WriterTx` replaced `rusqlite::Transaction`, so its two non-`Err` exits
+    /// are drust's to pin. A failed `COMMIT` leaves SQLite inside the
+    /// transaction; `WriterTx::drop` must roll it back, or the writer would
+    /// stay mid-transaction and every later `BEGIN` would fail.
+    #[tokio::test]
+    async fn with_writer_tx_rolls_back_when_commit_fails() {
+        let (_t, pool) = pool().await;
+        pool.with_writer(|c| {
+            c.execute_batch(
+                "CREATE TABLE parent (id INTEGER PRIMARY KEY);
+                 CREATE TABLE child (
+                     id INTEGER PRIMARY KEY,
+                     p  INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED
+                 );",
+            )
+        })
+        .await
+        .unwrap();
+
+        // The dangling reference is only checked at COMMIT (deferred FK), so
+        // the closure returns Ok and it is the COMMIT itself that fails.
+        let res = pool
+            .with_writer_tx(|tx| -> rusqlite::Result<()> {
+                tx.execute("INSERT INTO kv (k, v) VALUES ('a', '1')", [])?;
+                tx.execute("INSERT INTO child (id, p) VALUES (1, 999)", [])?;
+                Ok(())
+            })
+            .await;
+        assert!(res.is_err(), "COMMIT must fail on the deferred FK: {res:?}");
+
+        // Nothing from the failed transaction is visible ...
+        let (kv, child): (i64, i64) = pool
+            .with_reader(|c| {
+                Ok((
+                    c.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0))?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!((kv, child), (0, 0), "failed COMMIT must roll back");
+
+        // ... and the writer is back in autocommit: a fresh transaction works.
+        pool.with_writer_tx(|tx| -> rusqlite::Result<()> {
+            tx.execute("INSERT INTO kv (k, v) VALUES ('b', '2')", [])?;
+            Ok(())
+        })
+        .await
+        .expect("writer must be usable after a failed COMMIT");
+    }
+
+    /// A panic inside the closure unwinds through `WriterTx::drop`, which must
+    /// roll back; the tokio writer mutex does not poison, so the next caller
+    /// would otherwise inherit an open transaction holding the partial write.
+    #[tokio::test]
+    async fn with_writer_tx_rolls_back_on_panic() {
+        let (_t, pool) = pool().await;
+        let pool = std::sync::Arc::new(pool);
+
+        let p = pool.clone();
+        let joined = tokio::spawn(async move {
+            p.with_writer_tx(|tx| -> rusqlite::Result<()> {
+                tx.execute("INSERT INTO kv (k, v) VALUES ('a', '1')", [])?;
+                panic!("boom inside the writer transaction");
+            })
+            .await
+        })
+        .await;
+        assert!(joined.is_err_and(|e| e.is_panic()), "the task must panic");
+
+        let persisted: i64 = pool
+            .with_reader(|c| c.query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0)))
+            .await
+            .unwrap();
+        assert_eq!(persisted, 0, "a panicking transaction must leave 0 rows");
+
+        pool.with_writer_tx(|tx| -> rusqlite::Result<()> {
+            tx.execute("INSERT INTO kv (k, v) VALUES ('b', '2')", [])?;
+            Ok(())
+        })
+        .await
+        .expect("writer must be usable after a panic");
+    }
 }

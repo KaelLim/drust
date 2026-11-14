@@ -2,7 +2,7 @@
 name = "drust"
 version = "1.67.0"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.97"
 autotests = false
 
 [[bin]]

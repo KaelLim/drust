@@ -6,8 +6,10 @@ vulnerabilities, and `.cargo/audit.toml` lists exactly one documented ignore. No
 environment variable, no schema change and no data migration. Across the three deployment
 targets, the only deploy-file change is a comment in the `Dockerfile`. One caller-visible
 change, noted under D1. Building from source
-now needs **Rust 1.97 or newer**, because wasmtime 50 declares that as its minimum. The
-Docker builder uses the latest stable toolchain, so the image is unaffected.
+now needs **Rust 1.97 or newer**, because wasmtime 50 declares that as its minimum
+(`Cargo.toml`'s `rust-version` says so, and cargo refuses an older compiler up front). The
+Docker builder uses the latest stable toolchain, so the image is unaffected; a bare-metal
+host that runs `cargo build --release` itself must update its toolchain first.
 
 ### Build
 
