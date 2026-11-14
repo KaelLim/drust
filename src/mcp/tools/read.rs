@@ -1,7 +1,5 @@
 use crate::mcp::server::DrustMcp;
-use crate::query::authorizer::{
-    attach_readonly_authorizer, attach_search_readonly_authorizer, detach_authorizer,
-};
+use crate::query::authorizer::AuthzGuard;
 use crate::query::executor::{ExecError, execute_read_query};
 use crate::query::list_builder::{self, ListError, ListRequest, SortSpec};
 use crate::query::vector_filter::{FilterAst, FilterError, parse_filter_value};
@@ -168,10 +166,8 @@ pub async fn list_records(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let result = run_bound_select(c, &list_sql_owned, &binds_for_list);
-            detach_authorizer(c);
-            result
+            let _authz = AuthzGuard::search_readonly(c);
+            run_bound_select(c, &list_sql_owned, &binds_for_list)
         })
         .await?;
     // Default-hide vector columns.
@@ -197,17 +193,15 @@ pub async fn list_records(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = (|| -> rusqlite::Result<i64> {
+            let _authz = AuthzGuard::search_readonly(c);
+            (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
                     .iter()
                     .map(|v| v as &dyn rusqlite::ToSql)
                     .collect();
                 stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get(0))
-            })();
-            detach_authorizer(c);
-            r
+            })()
         })
         .await
         .unwrap_or(0);
@@ -317,10 +311,8 @@ pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serd
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = run_bound_select(c, &sql_owned, &binds_owned);
-            detach_authorizer(c);
-            r
+            let _authz = AuthzGuard::search_readonly(c);
+            run_bound_select(c, &sql_owned, &binds_owned)
         })
         .await?;
 
@@ -438,9 +430,9 @@ pub async fn explain(s: &DrustMcp, sql: &str, _analyze: bool) -> anyhow::Result<
             // `explain` tool takes a raw statement, same camp as `/query`), so
             // it never carries a drust-compiled `$fts` and must not be able to
             // name a `_system_search_*` table by hand.
-            attach_readonly_authorizer(c);
+            let _authz = AuthzGuard::readonly(c);
             let explain_sql = format!("EXPLAIN QUERY PLAN {sql_owned}");
-            let result = (|| -> rusqlite::Result<String> {
+            (|| -> rusqlite::Result<String> {
                 let mut stmt = c.prepare(&explain_sql)?;
                 let lines: Vec<String> = stmt
                     .query_map([], |r| {
@@ -449,9 +441,7 @@ pub async fn explain(s: &DrustMcp, sql: &str, _analyze: bool) -> anyhow::Result<
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(lines.join("\n"))
-            })();
-            detach_authorizer(c);
-            result
+            })()
         })
         .await?;
     Ok(json!({ "plan": plan }))

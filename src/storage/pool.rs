@@ -38,8 +38,9 @@ impl TenantPool {
     }
 
     /// Like [`TenantPool::new`], but opens the writer via
-    /// `open_write_existing` — never creates the tenant directory, the
-    /// database file, or schema. Fails if `data.sqlite` is gone, which is the
+    /// `open_write_existing` — never creates the tenant directory or the
+    /// database file (the idempotent schema catch-up still runs on the
+    /// existing file, see `open_write_existing`). Fails if `data.sqlite` is gone, which is the
     /// atomic (no check-then-act) guarantee `TenantRegistry::get_if_live`
     /// builds on.
     pub fn open_existing(
@@ -196,8 +197,13 @@ impl TenantRegistry {
     /// The old name (`get_or_open`) read as "get or open" while the behaviour
     /// is "get or CREATE", which is how a row of background loops ended up
     /// resurrecting soft-deleted tenants. Background and scheduled paths want
-    /// [`TenantRegistry::get_if_live`]; this one belongs to tenant creation and
-    /// to request paths that have already proved the tenant exists in `meta`.
+    /// [`TenantRegistry::get_if_live`]; this one belongs to tenant creation (and
+    /// to tests/offline tools). Request paths use `get_if_live` even after a
+    /// `meta` liveness check: the check releases the `meta` lock before the
+    /// open, and a soft delete can land in between. (Some tenant-plane handlers
+    /// that run after the bearer layer — which already opened the pool via
+    /// `get_if_live` — still call this; they are race-only and not yet
+    /// migrated.)
     pub fn get_or_create(&self, tenant_id: &str) -> anyhow::Result<SharedTenantPool> {
         if let Some(p) = self.pools.get(tenant_id) {
             return Ok(p.clone());
@@ -211,10 +217,11 @@ impl TenantRegistry {
         Ok(pool)
     }
 
-    /// Liveness-guarded pool lookup for background dispatch paths (the
-    /// functions executor): returns the cached pool if present; otherwise
+    /// Liveness-guarded pool lookup for request and background paths that
+    /// must never create: returns the cached pool if present; otherwise
     /// opens WITHOUT creating anything (`open_write_existing` — no
-    /// `create_dir_all`, no `SQLITE_OPEN_CREATE`, no schema apply), so a
+    /// `create_dir_all`, no `SQLITE_OPEN_CREATE`; the idempotent
+    /// `apply_schema` catch-up still runs on the existing file), so a
     /// tenant soft-deleted mid-flight can never have its `data.sqlite`
     /// resurrected outside `_trash`. `None` = tenant gone. Live tenants
     /// cache on success exactly like `get_or_create`.

@@ -113,6 +113,7 @@ reachable by an untrusted caller.
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
 | `/t/<id>/mcp` | **service only** — anon `WRITE_DENIED`, user `MCP_USER_DENIED` |
 | `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
+| `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
 | `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |
@@ -195,7 +196,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    handler captures caps and the select policy **once at connect**, so invalidating the
    cache alone only affects the *next* connect and leaves in-flight subscribers reading
    revoked data. Applies to realtime-disable, `anon_caps` revoke, policy attach or clear,
-   `set_owner_field`, and **token reroll** (`reroll_token_json` revokes the old bearer, so
+   `set_owner_field`, **`drop_collection`** (MCP-only — the subscribe gate was captured
+   against a table that no longer exists, and `publish` never re-checks it; its `dry_run`
+   preview evicts nothing), and **token reroll** (`reroll_token_json` revokes the old bearer, so
    in-flight SSE/rooms subscribers holding it must be dropped — a tenant-wide `evict_tenant`,
    not `evict_collection`, since the revoked identity spans all collections; **since v1.65
    `evict_tenant` also bumps the tenant's rooms epoch, so a live WS socket is CLOSED —
@@ -223,12 +226,25 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    otherwise. `read_pat_reach` answers off `admins.role` as it stands when it reads, so at
    that site it would answer with the NEW, narrower reach and leave the demoted PAT's
    foreign-tenant sockets open — the exact under-evict this shape exists to prevent. Owner
-   transfer stays a precise single-tenant evict. Passive expiry never evicts — but **since
+   transfer stays a precise single-tenant evict. **The PAT family also ends that admin's SSE
+   streams (E2′)**: every site sends a per-ADMIN signal (`RoomBus::cred().revoke_admin`)
+   after its `clear_admin_pat` — the five snapshot sites through `evict_reach`'s
+   `signal_sse` (always `true` today; `false` is only for a credential that cannot open SSE),
+   `change_role` inline on the same demotion predicate, owner transfer only when the old
+   owner is NOT sees-all. `ws_router` reads the revocation generation BEFORE bearer auth
+   (`pat_gen_capture`) and subscribes after it, so a revocation landing between that read
+   and the auth read is not missed. The signal ignores reach and is per admin, not per
+   token; anon and tenant-key streams carry no admin identity and are untouched; rooms still
+   evict by reach. Passive expiry never evicts — but **since
    v1.66.0 an admin PAT's own `expires_at` closes the realtime connection it authenticated**
    (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
    and never-expiring tenant bearers deliberately carry no deadline.
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
+   `drop_field` deliberately does NOT evict, even when the dropped column is named by a
+   select policy: the per-event filter (`eval_policy_materialized`) drops every
+   Created/Updated whose row lacks a policy-referenced field, so in-flight subscribers fail
+   closed without a disconnect.
    When a select policy is active for an anon subscriber, `Deleted{id}` events are dropped —
    an id-only event cannot be policy-evaluated against the gone row, and passing it leaks
    deletion id and timing for policy-hidden rows.
@@ -277,7 +293,8 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     keys its per-connection statement cache by SQL **text**, which is stable across
     `add_field` / `drop_field`, so a cached `SELECT *` — whose `column_names()` is read
     before stepping — serves a **stale column set** on a long-lived reader. DDL flushes the
-    schema cache and the SSE bus but never the reader's statement cache. Only an explicit
+    schema cache (and `drop_collection` also the SSE channel) but never the reader's
+    statement cache. Only an explicit
     schema-derived projection (whose SQL text changes on DDL, so the cache self-heals) or
     `COUNT(*)` may be `prepare_cached`. The `RETURNING *` read-back equals the committed row
     only because the only AFTER trigger that MODIFIES THE PARENT ROW is the convergent
@@ -296,7 +313,12 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     must mean "reads are restricted", never fail open. `validate_policy` rejects a new
     clause-less SELECT policy (`POLICY_SELECT_REQUIRES_USING`); the read-path deny covers any
     legacy row. This closed a latent fail-open that `RpcGrant` (which skips caps) turned into
-    a cross-tenant leak.
+    a cross-tenant leak. The in-memory read faces — anon SSE filtering and the anon/user
+    UPDATE response read-back (`records::readback_for`) — evaluate through
+    `eval_policy_materialized`, which denies a policy whole when the materialized
+    `RETURNING *` row lacks a field it names (the in-memory twin of `UnknownField`);
+    `eval_policy`'s absent-reads-as-NULL stays for the CHECK and file callers. An evaluator
+    divergence on either face is a read leak.
 
 13. **Every `DrustMcp` construction site decides `functions:` consciously.** The executor's
     host state is built with `functions: None` (`HostStateSeed::build_mcp`); restoring a

@@ -26,15 +26,19 @@ The `owner_field.is_some()` short-circuit in the User arm is **read_scope-aware*
 
 - **Known gap, being fixed in v1.58:** MCP `insert_record` (`src/mcp/tools/write.rs`) does NOT enforce `OWNER_FIELD_REQUIRED`, while REST, edge (`functions/enforce.rs`) and batch (`mcp/tools/batch.rs`) all do.
 
+**System `id` is service-only to set.** Every collection is `id INTEGER PRIMARY KEY AUTOINCREMENT`; one INSERT of `id = i64::MAX` pins `sqlite_sequence` at the max (an UPDATE to `i64::MAX - 1` gets there on the next ordinary insert), after which every auto-id INSERT on that table is `SQLITE_FULL`, and no ordinary write can repair it because the write-RPC authorizer denies `sqlite_sequence`. So `records::reject_system_id` refuses an anon/user INSERT carrying a non-null `id` and an anon/user UPDATE whose `id` is not the row's own, with `400 SYSTEM_FIELD_READONLY`. It is called at **four parallel sites** — REST `create_handler` / `update_handler` and edge `enforced_insert` / `enforced_update` — each AFTER the cap gate (an uncapped caller still gets the cap 403 first) and outside the write tx. It is **validate-only**: on `Ok` the body is untouched, so an accepted request sends byte-identical SQL — INSERT `"id": null` still auto-assigns, and an UPDATE `id` that SQLite coerces to the path id (integer, integer-valued float, trimmed numeric string) is a no-op SET, so a whole-record read-modify-write PATCH, or one carrying only that id, keeps working. `accepted_update_ids_are_sqlite_noops` pins that each listed accepted shape (`update_ok_ids`) is a no-op on the bundled SQLite, and `autoincrement_exhaustion_semantics` pins the exhaustion mechanism itself. Service, `records:batch`, `records:upsert`, MCP and the edge `Privileged` arm do not call it — all service-only, and imports legitimately supply ids. `created_at` / `updated_at` are outside this rule.
+
 **`_system_*` tables** are blocked from `/records/*` AND from MCP write tools (`insert_record` / `update_record` / `delete_record` return `PROTECTED_COLLECTION`) for both anon and service (404 / 403); independent of cap setting.
 
 - **Known gap, being fixed in v1.58:** `storage::schema::is_protected_collection` currently matches only `name.starts_with("_system_")`, while the read authorizer separately blocks `sqlite_` — so `sqlite_*` is read-blocked but write-allowed.
+
+**An anon/user UPDATE response is narrowed to what the caller could read.** REST `PATCH /records/<c>/<id>` (`update_handler`) and edge `update-record` (`enforce::enforced_update`) pass the `RETURNING *` post-image through `records::readback_for`; unless the caller could read that row it answers `{"record":{"id"}}` (status and the committed write unchanged). The decision is zero-query: caps/owner via the same `records_list::compute_read_auth` matrix `/list` uses (no third cap-gate site), the select policy via `select_read_access` + in-memory `eval_policy_materialized` on the row, so a policy naming a column the row lacks (`query::policy::policy_field_refs`) fails closed. Service is always the full row, and the event fan-out (SSE / webhooks / functions) keeps the full row — each consumer is gated on its own. INSERT responses are deliberately NOT narrowed — they echo the caller's own write.
 
 ## RLS policies (`src/query/policy.rs`)
 
 Per-operation `Policy {using, check}` in four nullable `{select,insert,update,delete}_policy_json` columns, expressed as the existing `FilterAst` extended with three operands — `{"$auth":"id"}` (caller's `_system_users` id, or SQL `NULL` for anon), `{"$data":"<field>"}` (post-image field, CHECK only), `{"$authenticated":true}`. Service bypasses.
 
-Two evaluators share the grammar: `compile_policy_using` → `?`-bound SQL `WHERE` (reads + update/delete target pre-flights), `eval_policy` → in-memory bool (insert/update CHECK + anon SSE filtering); a consistency corpus (`tests/policy_expression.rs`) proves they agree. **Any grammar change updates both `compile_policy_using` and `eval_policy` and the corpus.**
+Two evaluators share the grammar: `compile_policy_using` → `?`-bound SQL `WHERE` (reads + update/delete target pre-flights), `eval_policy` → in-memory bool (insert/update CHECK; and, wrapped in `eval_policy_materialized` — which denies the whole policy when the materialized `RETURNING *` row lacks a field it names, the in-memory twin of `UnknownField` — anon SSE filtering and the anon/user UPDATE response read-back, `records::readback_for`); a consistency corpus (`tests/policy_expression.rs`) proves they agree. **Any grammar change updates both `compile_policy_using` and `eval_policy` and the corpus.**
 
 The two evaluators order a **cross-storage-class comparison** differently (SQLite affinity vs in-memory `value_cmp`), so `validate_policy` rejects at config time any operand whose class mismatches the target column. As of v1.61.1 (#954) that check (`operand_class` + `check_operand_class`) covers **dynamic** refs too, not just literals: `$auth` classes as `text` (the `_system_users` id), `$data:"<field>"` as that field's column class. So a numeric column compared to `$auth` (always text) is refused at save — closing a fail-closed-pre-existing gap where a mismatched-class dynamic operand reached `eval_leaf` and its `value_cmp` `None`→`Unknown` could diverge from SQL. NULL/array operands and BLOB/system targets are never class-checked (never value-compared across a class boundary).
 
@@ -87,9 +91,9 @@ The sentinel `error::quota_exceeded_error` produces a `TENANT_QUOTA_EXCEEDED:`-p
 
 ## `prepare` vs `prepare_cached`
 
-**`SELECT *` reads on a pooled reader use plain `prepare`, never `prepare_cached`.** rusqlite's per-connection statement cache is keyed by SQL text, which is STABLE across `add_field`/`drop_field`, so a cached `SELECT *` statement (whose `column_names()` is read before stepping) serves a STALE column set on a long-lived reader — silently dropping an added column or 500-ing on a dropped one. DDL flushes the schema cache + SSE bus, NEVER the reader's rusqlite statement cache. `get_handler`, `list_bound_rows`, and the stored-RPC named-exec path (`src/query/executor.rs`) therefore use plain `prepare`; only an EXPLICIT schema-derived projection (`/list` builder, whose SQL text changes on DDL → cache self-heals) or `COUNT(*)` may be `prepare_cached`.
+**`SELECT *` reads on a pooled reader use plain `prepare`, never `prepare_cached`.** rusqlite's per-connection statement cache is keyed by SQL text, which is STABLE across `add_field`/`drop_field`, so a cached `SELECT *` statement (whose `column_names()` is read before stepping) serves a STALE column set on a long-lived reader — silently dropping an added column or 500-ing on a dropped one. DDL flushes the schema cache (drop_collection also the SSE channel), NEVER the reader's rusqlite statement cache. `get_handler`, `list_bound_rows`, and the stored-RPC named-exec path (`src/query/executor.rs`) therefore use plain `prepare`; only an EXPLICIT schema-derived projection (`/list` builder, whose SQL text changes on DDL → cache self-heals) or `COUNT(*)` may be `prepare_cached`.
 
-The `RETURNING *` read-back also feeds the post-image policy CHECK; it equals the COMMITTED row only because the sole `<coll>_updated_at` AFTER trigger is convergent (writes the same statement-stable `datetime('now')` the SET clause writes) and tenants cannot create triggers — a future non-convergent AFTER trigger would require re-reading the committed row before the CHECK.
+The `RETURNING *` read-back also feeds the post-image policy CHECK and the anon/user UPDATE response read-back (`records::readback_for`); it equals the COMMITTED row only because the sole `<coll>_updated_at` AFTER trigger is convergent (writes the same statement-stable `datetime('now')` the SET clause writes) and tenants cannot create triggers — a future non-convergent AFTER trigger would require re-reading the committed row before the CHECK.
 
 ## CHECK constraints and TOCTOU
 
@@ -134,6 +138,16 @@ empty head-set is fail-OPEN, so callers propagate a snapshot error, never substi
   strict `attach_readonly_authorizer` — widening the shared reader would let an
   `anon_callable` read-RPC `SELECT … FROM "<head>"` dodge owner-scope and leak indexed
   columns to anon.
+
+Reader-side attaches go through `AuthzGuard::{readonly, search_readonly, none}` (RAII:
+detaches on `?`, return and panic). Bare attach/detach pairs remain in two places, for two
+different reasons. `run_write_rpc` keeps them because the detach ORDER is load-bearing (it
+must detach before `RELEASE`). `validate_rpc_sql` and `referenced_user_tables` keep them
+because the guard has no constructor for the authorizer they need: `validate_rpc_sql`'s
+write mode attaches the writable arm (its read mode attaches the readonly arm, which the
+guard could build, but shares the same per-statement attach/detach loop), and
+`referenced_user_tables` installs its own table-capturing authorizer. Both detach explicitly
+after each statement's prepare, before propagating its error.
 
 **Row authorization is on the PARENT.** `$fts` compiles to `"id" IN (SELECT rowid FROM
 "<head>" WHERE "<head>" MATCH ?)`; the unchanged owner/RLS/caps `WHERE` on the parent decides

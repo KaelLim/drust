@@ -1,14 +1,14 @@
-//! #925 — merged harness for the misc test group (55 members).
+//! #925 — merged harness for the misc test group (56 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! "misc" is the plan's tail bucket, not a subject: it collects every test file
 //! whose name prefix had fewer than three siblings, so membership here means
 //! "no group of its own", never "related to its neighbours".
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: 21 of the members
-//! load tests/helpers.rs (20 as `mod helpers;`, sse_realtime_gating as
+//! `duplicate_mod` is inherent to the merge, not a defect: 23 of the members
+//! load tests/helpers.rs (22 as `mod helpers;`, sse_realtime_gating as
 //! `mod tests_helpers;`), so once they share a crate clippy sees that one file
-//! loaded 21 times. Deduping it would mean editing test bodies (spec 鐵律 1
+//! loaded 23 times. Deduping it would mean editing test bodies (spec 鐵律 1
 //! forbids that) for no gain — rustc compiles the file once per module path
 //! either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -102,6 +102,8 @@ mod soft_delete_no_resurrect;
 mod sqlite_internal_write_denied;
 #[path = "sse.rs"]
 mod sse;
+#[path = "sse_pat_revocation.rs"]
+mod sse_pat_revocation;
 #[path = "sse_realtime_gating.rs"]
 mod sse_realtime_gating;
 #[path = "strict_new_collection.rs"]

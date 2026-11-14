@@ -1,6 +1,6 @@
 use crate::auth::middleware::AuthCtx;
 use crate::error::{json_error, json_error_with_aliases, json_error_with_context};
-use crate::query::authorizer::{attach_readonly_authorizer, detach_authorizer};
+use crate::query::authorizer::AuthzGuard;
 use crate::query::executor::execute_read_query;
 use crate::query::filter::{ListParams, SortDir, build_count_sql, build_list_sql, parse_sort};
 use crate::storage::schema::{
@@ -225,6 +225,136 @@ pub(crate) fn compute_owner_write_filter(
     }
 }
 
+/// E1′ — anon/user may not choose a row's `id` on INSERT nor change it on
+/// UPDATE. Every collection is `id INTEGER PRIMARY KEY AUTOINCREMENT`, and a
+/// single INSERT of `i64::MAX` (or an UPDATE to `i64::MAX - 1` followed by any
+/// normal insert) pins `sqlite_sequence` at the max, after which every
+/// auto-id INSERT on that table fails with SQLITE_FULL; no ordinary write can
+/// undo it (the write-RPC authorizer denies `sqlite_sequence`).
+/// Service is unrestricted (imports supply ids; `records:batch`/`upsert` and
+/// MCP are service-only and do not call this).
+/// Parallel sites (keep in lockstep until the write core absorbs this):
+/// REST `create_handler` / `update_handler`, edge `enforced_insert` / `enforced_update`.
+///
+/// Validate-only: on `Ok` the body is sent exactly as today. Allowed: INSERT
+/// `"id": null` (already means "assign one"); UPDATE an `id` SQLite coerces to
+/// `path_id` (a no-op SET — pinned by `accepted_update_ids_are_sqlite_noops`).
+/// `path_id`: `None` = INSERT, `Some(id)` = UPDATE of that row.
+/// `Err` → 400 `SYSTEM_FIELD_READONLY`.
+pub(crate) fn reject_system_id(
+    data: &serde_json::Map<String, serde_json::Value>,
+    ctx: &AuthCtx,
+    path_id: Option<i64>,
+) -> Result<(), &'static str> {
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return Ok(());
+    }
+    let Some(v) = data.get("id") else {
+        return Ok(());
+    };
+    match path_id {
+        None if v.is_null() => Ok(()),
+        None => {
+            Err("id is assigned by drust; omit it (anon and user tokens cannot choose a row id)")
+        }
+        Some(p) if exact_integer(v) == Some(p) => Ok(()),
+        Some(_) => Err("id cannot be changed; omit it or send the record's own id"),
+    }
+}
+
+/// `Some(n)` only when SQLite is guaranteed to coerce `v` to exactly `n` on an
+/// INTEGER PRIMARY KEY: a JSON integer, an integer-valued float below 2^53, or
+/// a string that (trimmed) parses as either. Anything else → `None`, which only
+/// ever over-refuses (e.g. `true` for id 1), never lets an id change through.
+fn exact_integer(v: &serde_json::Value) -> Option<i64> {
+    const EXACT: f64 = 9_007_199_254_740_992.0; // 2^53
+    let from_f64 =
+        |f: f64| (f.is_finite() && f.fract() == 0.0 && f.abs() < EXACT).then_some(f as i64);
+    match v {
+        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().and_then(from_f64)),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            t.parse::<i64>()
+                .ok()
+                .or_else(|| t.parse::<f64>().ok().and_then(from_f64))
+        }
+        _ => None,
+    }
+}
+
+/// E9 — what an anon/user caller may see of the row its UPDATE returned.
+/// Parallel response sites (keep in lockstep): REST `update_handler` and edge
+/// `functions::enforce::enforced_update`. INSERT responses are deliberately
+/// NOT narrowed — they echo the caller's own write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadBack {
+    Full,
+    IdOnly,
+}
+
+/// Could `ctx` READ `row` (the `UPDATE … RETURNING *` post-image)? Zero-query:
+/// caps/owner come from the cached schema via the SAME matrix `/list` uses
+/// (`records_list::compute_read_auth`, not a third cap-gate site), the select
+/// policy via the shared `select_read_access` classifier and the in-memory
+/// `eval_policy_materialized` over this row (the evaluator + row shape the SSE
+/// face uses). Fails closed on every doubt — including a policy that names a
+/// column the row lacks (the cache was loaded outside the write tx, and
+/// `eval_leaf` reads a missing key as NULL, which `$is_null` would admit).
+pub(crate) fn readback_for(
+    ctx: &AuthCtx,
+    schema: &CollectionSchema,
+    row: &serde_json::Value,
+) -> ReadBack {
+    use crate::query::policy::{
+        PolicyCtx, SelectReadAccess, eval_policy_materialized, policy_field_refs,
+        select_read_access,
+    };
+    if matches!(ctx, AuthCtx::Service { .. }) {
+        return ReadBack::Full;
+    }
+    // Cap / owner matrix + policy compile (the SQL fragment is discarded).
+    let Ok((owner_pair, _)) =
+        crate::tenant::records_list::compute_read_auth(ctx, schema, &schema.name)
+    else {
+        return ReadBack::IdOnly;
+    };
+    let Some(map) = row.as_object() else {
+        return ReadBack::IdOnly;
+    };
+    if let Some((field, uid)) = owner_pair
+        && map.get(&field).and_then(|v| v.as_str()) != Some(uid.as_str())
+    {
+        return ReadBack::IdOnly;
+    }
+    match select_read_access(ctx, schema) {
+        SelectReadAccess::Unrestricted => ReadBack::Full,
+        SelectReadAccess::DenyAll => ReadBack::IdOnly,
+        // The same missing-field-denies-whole decision the SSE face makes.
+        SelectReadAccess::Filtered(ast) => {
+            if eval_policy_materialized(
+                ast,
+                &policy_field_refs(ast),
+                map,
+                &PolicyCtx::from_auth(ctx),
+            ) {
+                ReadBack::Full
+            } else {
+                ReadBack::IdOnly
+            }
+        }
+    }
+}
+
+/// `Full` → the row unchanged; `IdOnly` → `{"id": row.id}`.
+pub(crate) fn shape_readback(rb: ReadBack, row: &serde_json::Value) -> serde_json::Value {
+    match rb {
+        ReadBack::Full => row.clone(),
+        ReadBack::IdOnly => {
+            json!({ "id": row.get("id").cloned().unwrap_or(serde_json::Value::Null) })
+        }
+    }
+}
+
 fn json_to_sql_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Null,
@@ -286,8 +416,9 @@ fn list_bound_rows(
     // Plain `prepare`, NOT `prepare_cached`: the legacy list projects
     // `SELECT *`, whose column set changes under `add_field`/`drop_field`.
     // A cached statement's pre-step `column_names()` would go stale on the
-    // long-lived reader connection (DDL flushes the drust schema cache + SSE
-    // bus, never rusqlite's per-connection statement cache), silently dropping
+    // long-lived reader connection (DDL flushes the drust schema cache, plus
+    // the SSE channel on `drop_collection`, never rusqlite's per-connection
+    // statement cache), silently dropping
     // an added column or erroring on a removed one. Recompiling per call keeps
     // the read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql)?;
@@ -498,10 +629,8 @@ pub async fn list_handler(
         let list_sql_owned = list_sql.clone();
         let rows_res: rusqlite::Result<Vec<serde_json::Value>> = pool
             .with_reader(move |c| {
-                attach_readonly_authorizer(c);
-                let r = list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500);
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                list_bound_rows(c, &list_sql_owned, &binds_list, &vnames, 500)
             })
             .await;
         let records_out = match rows_res {
@@ -517,18 +646,14 @@ pub async fn list_handler(
         let count_sql_owned = count_sql.clone();
         let total = pool
             .with_reader(move |c| -> rusqlite::Result<i64> {
-                attach_readonly_authorizer(c);
-                let r = {
-                    let refs: Vec<&dyn rusqlite::ToSql> = binds_count
-                        .iter()
-                        .map(|v| v as &dyn rusqlite::ToSql)
-                        .collect();
-                    c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| {
-                        r.get(0)
-                    })
-                };
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                let refs: Vec<&dyn rusqlite::ToSql> = binds_count
+                    .iter()
+                    .map(|v| v as &dyn rusqlite::ToSql)
+                    .collect();
+                c.query_row(&count_sql_owned, rusqlite::params_from_iter(refs), |r| {
+                    r.get(0)
+                })
             })
             .await
             .unwrap_or(0);
@@ -556,10 +681,8 @@ pub async fn list_handler(
         let total = {
             let sql = count_sql.clone();
             pool.with_reader(move |c| {
-                attach_readonly_authorizer(c);
-                let r = c.query_row(&sql, [], |r| r.get::<_, i64>(0));
-                detach_authorizer(c);
-                r
+                let _authz = AuthzGuard::readonly(c);
+                c.query_row(&sql, [], |r| r.get::<_, i64>(0))
             })
             .await
             .unwrap_or(0)
@@ -916,6 +1039,10 @@ pub async fn create_handler(
             );
         }
     };
+    // E1′ — anon/user may not choose the row id (service unrestricted).
+    if let Err(msg) = reject_system_id(&data, &ctx, None) {
+        return json_error(StatusCode::BAD_REQUEST, "SYSTEM_FIELD_READONLY", msg);
+    }
 
     // For user tokens with an owner_field, overwrite whatever the client sent.
     if let (Some(owner_field), AuthCtx::User { user_id, .. }) = (&schema.owner_field, &ctx) {
@@ -1204,6 +1331,10 @@ pub async fn update_handler(
     if let (AuthCtx::User { .. }, Some(field)) = (&ctx, schema.owner_field.as_deref()) {
         data.shift_remove(field);
     }
+    // E1′ — anon/user may not change the row id (service unrestricted).
+    if let Err(msg) = reject_system_id(&data, &ctx, Some(id)) {
+        return json_error(StatusCode::BAD_REQUEST, "SYSTEM_FIELD_READONLY", msg);
+    }
     if data.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -1450,7 +1581,12 @@ pub async fn update_handler(
     match res {
         Ok(rec) => {
             // Build response first; dispatch only after payload exists.
-            let r = Json(json!({ "record": rec.clone() })).into_response();
+            // E9: an anon/user caller sees the post-image only where it could
+            // read it; the event fan-out below keeps the full row (its
+            // consumers are gated on their own — SSE per subscriber,
+            // webhooks/functions trusted).
+            let body = shape_readback(readback_for(&ctx, &schema, &rec), &rec);
+            let r = Json(json!({ "record": body })).into_response();
             let ev = Event::Updated { record: rec };
             bus.publish(&tenant_id, &coll, ev.clone());
             functions.dispatch(&tenant_id, &coll, &ev);
@@ -1557,7 +1693,9 @@ pub async fn delete_handler(
             .pool
             .with_reader(move |c| -> rusqlite::Result<bool> {
                 use rusqlite::OptionalExtension;
-                attach_readonly_authorizer(c);
+                // Detaches on Drop — the `?` below can no longer return this
+                // pooled reader with the strict authorizer still attached.
+                let _authz = AuthzGuard::readonly(c);
                 let mut sql = format!(
                     "SELECT 1 FROM \"{}\" WHERE id = ?1",
                     coll_pf.replace('"', "\"\"")
@@ -1580,7 +1718,6 @@ pub async fn delete_handler(
                     .query_row(&sql, &refs[..], |_| Ok(()))
                     .optional()?
                     .is_some();
-                detach_authorizer(c);
                 Ok(found)
             })
             .await;
@@ -1962,5 +2099,492 @@ mod deny_message_tests {
     fn anon_deny_message_unchanged() {
         let m = cap_deny_message(TokenRole::Anon, DmlVerb::Delete, "todos");
         assert_eq!(m, "anon role lacks 'delete' on collection 'todos'");
+    }
+}
+
+#[cfg(test)]
+mod system_id_tests {
+    use super::{json_to_sql_value, reject_system_id};
+    use crate::auth::middleware::AuthCtx;
+    use rusqlite::ErrorCode;
+    use serde_json::{Value, json};
+
+    fn obj(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn non_service() -> [AuthCtx; 2] {
+        [
+            AuthCtx::Anon,
+            AuthCtx::User {
+                user_id: "u-1".into(),
+                token_hash: String::new(),
+            },
+        ]
+    }
+
+    /// The UPDATE `id` shapes `reject_system_id` accepts for `path_id = 5`.
+    /// Shared with `accepted_update_ids_are_sqlite_noops`, which proves each
+    /// one is a no-op SET on the bundled SQLite.
+    fn update_ok_ids() -> Vec<Value> {
+        vec![
+            json!(5),
+            json!("5"),
+            json!(" 5"),
+            json!("05"),
+            json!("+5"),
+            json!("5.0"),
+            json!(5.0),
+        ]
+    }
+
+    #[test]
+    fn reject_system_id_service_always_ok() {
+        let svc = AuthCtx::Service { admin_id: None };
+        let max = obj(json!({"id": 9223372036854775807i64, "b": 1}));
+        assert_eq!(reject_system_id(&max, &svc, None), Ok(()));
+        assert_eq!(reject_system_id(&max, &svc, Some(5)), Ok(()));
+        let six = obj(json!({"id": 6}));
+        assert_eq!(reject_system_id(&six, &svc, Some(5)), Ok(()));
+    }
+
+    #[test]
+    fn reject_system_id_insert_matrix() {
+        for ctx in non_service() {
+            assert_eq!(
+                reject_system_id(&obj(json!({"b": 1})), &ctx, None),
+                Ok(()),
+                "no id → Ok ({ctx:?})"
+            );
+            assert_eq!(
+                reject_system_id(&obj(json!({"id": null, "b": 1})), &ctx, None),
+                Ok(()),
+                "null id → Ok ({ctx:?})"
+            );
+            for v in [
+                json!(5),
+                json!("5"),
+                json!(9223372036854775807i64),
+                json!(-5),
+                json!(5.0),
+                json!(true),
+                json!(""),
+                json!([]),
+            ] {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert!(
+                    reject_system_id(&d, &ctx, None).is_err(),
+                    "insert id {v} must be refused ({ctx:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reject_system_id_update_matrix() {
+        for ctx in non_service() {
+            assert_eq!(
+                reject_system_id(&obj(json!({"b": 1})), &ctx, Some(5)),
+                Ok(()),
+                "no id → Ok ({ctx:?})"
+            );
+            for v in update_ok_ids() {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert_eq!(
+                    reject_system_id(&d, &ctx, Some(5)),
+                    Ok(()),
+                    "update id {v} is the row's own id → Ok ({ctx:?})"
+                );
+            }
+            for v in [
+                json!(6),
+                json!("6"),
+                json!(null),
+                json!(5.5),
+                json!("5.5"),
+                json!("0x5"),
+                json!("inf"),
+                json!(true),
+                json!(9223372036854775806i64),
+                json!(9223372036854775808u64),
+                json!("abc"),
+                json!([]),
+            ] {
+                let d = obj(json!({"id": v.clone(), "b": 1}));
+                assert!(
+                    reject_system_id(&d, &ctx, Some(5)).is_err(),
+                    "update id {v} must be refused ({ctx:?})"
+                );
+            }
+        }
+    }
+
+    fn seeded_table() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT) STRICT;
+             INSERT INTO t (x) VALUES ('a'), ('b'), ('c'), ('d'), ('e');",
+        )
+        .unwrap();
+        c
+    }
+
+    fn auto_insert(c: &rusqlite::Connection) -> rusqlite::Result<i64> {
+        c.query_row("INSERT INTO t (x) VALUES ('n') RETURNING id", [], |r| {
+            r.get(0)
+        })
+    }
+
+    fn is_full(r: rusqlite::Result<i64>) -> bool {
+        matches!(r, Err(ref e) if e.sqlite_error_code() == Some(ErrorCode::DiskFull))
+    }
+
+    /// Differential pin: every UPDATE `id` shape `reject_system_id` lets
+    /// through for `path_id = 5` is a no-op SET on the bundled SQLite. If a
+    /// future widening of the comparison admits a shape SQLite would turn into
+    /// a DIFFERENT id, this turns red.
+    #[test]
+    fn accepted_update_ids_are_sqlite_noops() {
+        let ctx = AuthCtx::Anon;
+        for v in update_ok_ids() {
+            let d = obj(json!({"id": v.clone()}));
+            assert_eq!(reject_system_id(&d, &ctx, Some(5)), Ok(()), "{v}");
+            let c = seeded_table();
+            let got: i64 = c
+                .query_row(
+                    "UPDATE t SET id = ?1 WHERE id = 5 RETURNING id",
+                    [json_to_sql_value(&v)],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("UPDATE with {v} failed: {e}"));
+            assert_eq!(got, 5, "accepted id {v} must leave the row at 5");
+            let n: i64 = c
+                .query_row("SELECT count(*) FROM t WHERE id = 5", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "row 5 must still exist after id {v}");
+        }
+    }
+
+    /// SQLite behavior pin (U18) on the bundled SQLite. If this turns red, the
+    /// bundled SQLite changed AUTOINCREMENT semantics and both the E1′
+    /// rationale and the CHANGELOG recovery instructions must be re-evaluated.
+    #[test]
+    fn autoincrement_exhaustion_semantics() {
+        // (a) explicit INSERT of i64::MAX pins sqlite_sequence permanently.
+        let a = seeded_table();
+        a.execute("INSERT INTO t (id, x) VALUES (?1, 'max')", [i64::MAX])
+            .unwrap();
+        assert!(is_full(auto_insert(&a)), "(a) next auto insert is FULL");
+        a.execute("DELETE FROM t WHERE id = ?1", [i64::MAX])
+            .unwrap();
+        assert!(
+            is_full(auto_insert(&a)),
+            "(a) deleting the row does not recover"
+        );
+
+        // (b) UPDATE to i64::MAX: FULL while the row exists, recovers on delete.
+        let b = seeded_table();
+        b.execute("UPDATE t SET id = ?1 WHERE id = 2", [i64::MAX])
+            .unwrap();
+        assert!(is_full(auto_insert(&b)), "(b) next auto insert is FULL");
+        b.execute("DELETE FROM t WHERE id = ?1", [i64::MAX])
+            .unwrap();
+        assert!(auto_insert(&b).is_ok(), "(b) deleting the row recovers");
+
+        // (c) UPDATE to i64::MAX - 1: the next normal insert takes MAX and pins
+        // sqlite_sequence, the one after is FULL.
+        let c = seeded_table();
+        c.execute("UPDATE t SET id = ?1 WHERE id = 2", [i64::MAX - 1])
+            .unwrap();
+        assert_eq!(auto_insert(&c).unwrap(), i64::MAX, "(c) first takes MAX");
+        assert!(is_full(auto_insert(&c)), "(c) second auto insert is FULL");
+
+        // (d) continuing (a): DROP TABLE clears the sqlite_sequence entry, so a
+        // recreate + re-import with original ids auto-assigns normally again.
+        a.execute_batch(
+            "DROP TABLE t;
+             CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT) STRICT;
+             INSERT INTO t (id, x) VALUES (3, 'imported');",
+        )
+        .unwrap();
+        assert_eq!(auto_insert(&a).unwrap(), 4, "(d) recreate recovers");
+    }
+}
+
+#[cfg(test)]
+mod readback_tests {
+    //! E9 — `readback_for` truth table. Every policy-arm case grants the caps
+    //! explicitly and pairs an `IdOnly` with a `Full` control on the same
+    //! schema + policy, so an `IdOnly` is proven to come from the arm under
+    //! test, not from a cap deny upstream of it.
+    use super::{ReadBack, readback_for, shape_readback};
+    use crate::auth::middleware::AuthCtx;
+    use crate::query::policy::Policy;
+    use crate::storage::schema::{CollectionSchema, DmlVerb, Field};
+    use serde_json::{Value, json};
+    use std::collections::BTreeSet;
+
+    fn schema(fields: &[&str]) -> CollectionSchema {
+        CollectionSchema {
+            name: "posts".into(),
+            fields: fields
+                .iter()
+                .map(|n| Field {
+                    name: n.to_string(),
+                    sql_type: "TEXT".into(),
+                    nullable: true,
+                    pk: false,
+                    default_value: None,
+                    foreign_key: None,
+                    description: None,
+                    ..Default::default()
+                })
+                .collect(),
+            indices: vec![],
+            row_count: 0,
+            anon_caps: BTreeSet::new(),
+            user_caps: BTreeSet::new(),
+            owner_field: None,
+            read_scope: None,
+            vector_fields: vec![],
+            fts_indexes: vec![],
+            realtime_enabled: true,
+            audit_enabled: true,
+            description: None,
+            policies: Default::default(),
+        }
+    }
+
+    fn caps(verbs: &[DmlVerb]) -> BTreeSet<DmlVerb> {
+        verbs.iter().copied().collect()
+    }
+
+    fn select_using(s: &mut CollectionSchema, using: Value) {
+        s.policies.select = Some(Policy {
+            using: Some(serde_json::from_value(using).unwrap()),
+            check: None,
+        });
+    }
+
+    fn owner_scoped(read_scope: Option<&str>) -> CollectionSchema {
+        let mut s = schema(&["owner"]);
+        s.owner_field = Some("owner".into());
+        s.read_scope = read_scope.map(str::to_string);
+        s
+    }
+
+    fn row(status: &str) -> Value {
+        json!({
+            "id": 1,
+            "status": status,
+            "created_at": "2026-11-14 00:00:00",
+            "updated_at": "2026-11-14 00:00:00"
+        })
+    }
+
+    fn owned_row(owner: &str) -> Value {
+        json!({
+            "id": 1,
+            "owner": owner,
+            "created_at": "2026-11-14 00:00:00",
+            "updated_at": "2026-11-14 00:00:00"
+        })
+    }
+
+    fn anon() -> AuthCtx {
+        AuthCtx::Anon
+    }
+
+    fn user(id: &str) -> AuthCtx {
+        AuthCtx::User {
+            user_id: id.into(),
+            token_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn service_is_always_full() {
+        let mut s = schema(&["status"]);
+        select_using(&mut s, json!({"status": "never"}));
+        for ctx in [
+            AuthCtx::Service { admin_id: None },
+            AuthCtx::Service { admin_id: Some(1) },
+        ] {
+            assert_eq!(readback_for(&ctx, &s, &row("draft")), ReadBack::Full);
+        }
+    }
+
+    #[test]
+    fn anon_without_select_cap_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn anon_with_select_cap_no_policy_is_full() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn anon_on_owner_scoped_is_id_only() {
+        let mut s = owner_scoped(Some("own"));
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&anon(), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn select_policy_filtered_pass_is_full() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"status": {"$ne": "secret"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::Full);
+    }
+
+    #[test]
+    fn select_policy_filtered_fail_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"status": {"$ne": "secret"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("secret")), ReadBack::IdOnly);
+    }
+
+    #[test]
+    fn clause_less_select_policy_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::Full,
+            "control: no select policy"
+        );
+        s.policies.select = Some(Policy {
+            using: None,
+            check: None,
+        });
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+    }
+
+    #[test]
+    fn policy_on_field_missing_from_row_is_id_only() {
+        let mut s = schema(&["status", "x"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"x": {"$is_null": true}}));
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::IdOnly,
+            "row lacks `x` → fail closed, not NULL"
+        );
+        let mut with_x = row("draft");
+        with_x["x"] = Value::Null;
+        assert_eq!(
+            readback_for(&anon(), &s, &with_x),
+            ReadBack::Full,
+            "control: `x` present and NULL"
+        );
+    }
+
+    #[test]
+    fn policy_on_unknown_field_is_id_only() {
+        let mut s = schema(&["status"]);
+        s.anon_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        select_using(&mut s, json!({"ghost": {"$eq": "a"}}));
+        assert_eq!(readback_for(&anon(), &s, &row("draft")), ReadBack::IdOnly);
+        select_using(&mut s, json!({"status": {"$eq": "draft"}}));
+        assert_eq!(
+            readback_for(&anon(), &s, &row("draft")),
+            ReadBack::Full,
+            "control: known field"
+        );
+    }
+
+    #[test]
+    fn user_read_scope_own_owner_match_is_full() {
+        let s = owner_scoped(Some("own"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_read_scope_own_owner_mismatch_is_id_only() {
+        let s = owner_scoped(Some("own"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-2")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn user_read_scope_all_without_select_is_id_only() {
+        let mut s = owner_scoped(Some("all"));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_read_scope_null_without_select_is_id_only() {
+        let mut s = owner_scoped(None);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_non_owner_scoped_follows_user_caps() {
+        let mut s = schema(&["status"]);
+        s.user_caps = caps(&[DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &row("draft")),
+            ReadBack::IdOnly
+        );
+        s.user_caps = caps(&[DmlVerb::Select, DmlVerb::Update]);
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &row("draft")),
+            ReadBack::Full
+        );
+    }
+
+    #[test]
+    fn user_select_policy_sees_auth_id() {
+        let mut s = schema(&["owner"]);
+        s.user_caps = caps(&[DmlVerb::Select]);
+        select_using(&mut s, json!({"owner": {"$auth": "id"}}));
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-1")),
+            ReadBack::Full
+        );
+        assert_eq!(
+            readback_for(&user("u-1"), &s, &owned_row("u-2")),
+            ReadBack::IdOnly
+        );
+    }
+
+    #[test]
+    fn shape_readback_id_only_keeps_only_id() {
+        let r = row("draft");
+        assert_eq!(shape_readback(ReadBack::IdOnly, &r), json!({"id": 1}));
+        assert_eq!(shape_readback(ReadBack::Full, &r), r);
     }
 }

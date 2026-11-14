@@ -37,6 +37,11 @@ pub struct RoomBus {
     /// residue matter, reclaim on tenant HARD-delete — never from the
     /// periodic sweeper. (Precedent: #951 per-tenant webhook semaphore map.)
     epochs: Arc<DashMap<Arc<str>, Arc<AtomicU64>>>,
+    /// E2′ — the per-ADMIN revocation signal for SSE streams opened with an
+    /// admin PAT. Lives here only because this struct is already ONE instance
+    /// across `TenantAuthState`, `MgmtState` and `TenantsState`; rooms sockets
+    /// do not read it (their eviction stays reach-based via `epochs`).
+    cred: crate::tenant::cred_revoke::CredRevocations,
 }
 
 /// Carried by the broadcast channel. `payload` is `Arc`-wrapped so
@@ -63,6 +68,12 @@ const BUFFER: usize = 256;
 impl RoomBus {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// E2′ — the per-admin SSE revocation registry shared by every clone of
+    /// this bus. See [`crate::tenant::cred_revoke`].
+    pub fn cred(&self) -> &crate::tenant::cred_revoke::CredRevocations {
+        &self.cred
     }
 
     /// Send `msg` to every current subscriber of `(tenant, room)`.
@@ -179,7 +190,8 @@ impl RoomBus {
     ///   (`mcp::tools::owner_field::set_publish_policy`) — same
     ///   evicts-only-on-a-real-change rule as its REST twin below;
     /// - token reroll (`mgmt::tokens`);
-    /// - tenant soft-delete (`mgmt::tenants::crud`);
+    /// - tenant soft-delete and id-recycle create
+    ///   (`mgmt::tenants::crud::evict_tenant_everywhere`);
     /// - the publish-policy PATCH
     ///   (`mgmt::tenants::crud::patch_publish_policy`) — evicts only when the
     ///   effective `(user, anon)` pair MOVES; a no-op PATCH does not, so an
@@ -308,7 +320,9 @@ impl RoomBus {
     ///
     /// Why host-wide: there is no per-connection credential index, so when the
     /// revoked identity's reach IS the host the only available eviction set is
-    /// "everything" — blunt but fail-safe (the #952 precedent). Valid holders
+    /// "everything" — blunt but fail-safe (the #952 precedent). That still
+    /// holds for rooms; SSE streams have a separate per-ADMIN signal
+    /// ([`RoomBus::cred`], E2′) that rooms sockets do not read. Valid holders
     /// reconnect through `bearer_auth_layer`; a revoked PAT gets 401/403 there.
     /// It EXISTS FOR the PAT-revocation family in
     /// `mgmt::{admin_pat, admin_team}` (#975) — that is its purpose,

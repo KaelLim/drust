@@ -298,3 +298,38 @@ async fn non_pat_bearer_does_not_pollute_pat_path() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// E8 (S-08) pin — passes today and must stay green: an admin PAT resolves
+/// to `TokenRole::Service`, so it keeps describing `_system_*` after the
+/// non-service describe gate. Guards a future `AuthCtx`-based decision
+/// (P3′) from accidentally blocking admin PATs.
+#[tokio::test]
+async fn pat_bearer_describes_system_users() {
+    let (app, plaintext, _admin_id, _dir) = app_with_pat("pat-desc").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/t/pat-desc/collections/_system_users")
+                .header(header::AUTHORIZATION, format!("Bearer {plaintext}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "PAT should describe _system_users, got {}",
+        resp.status()
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["name"], "_system_users");
+    let fields = v["fields"].as_array().expect("fields array");
+    assert!(
+        fields.iter().any(|x| x["name"] == "email"),
+        "PAT describe should list `email`; got {v}"
+    );
+}

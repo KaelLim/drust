@@ -187,10 +187,8 @@ pub fn execute_read_query(
             limit: max_sql_bytes,
         });
     }
-    crate::query::authorizer::attach_readonly_authorizer(conn);
-    let result = execute_read_query_inner(conn, sql, row_cap);
-    crate::query::authorizer::detach_authorizer(conn);
-    result
+    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_inner(conn, sql, row_cap)
 }
 
 /// Like [`execute_read_query`] but skips the read-only authorizer. Only
@@ -282,10 +280,8 @@ pub fn execute_read_query_with_named(
             limit: max_sql_bytes,
         });
     }
-    crate::query::authorizer::attach_readonly_authorizer(conn);
-    let result = execute_read_query_with_named_inner(conn, sql, binds, row_cap);
-    crate::query::authorizer::detach_authorizer(conn);
-    result
+    let _authz = crate::query::authorizer::AuthzGuard::readonly(conn);
+    execute_read_query_with_named_inner(conn, sql, binds, row_cap)
 }
 
 fn execute_read_query_with_named_inner(
@@ -306,8 +302,9 @@ fn execute_read_query_with_named_inner(
     // column set changes under add_field/drop_field. Because this path reads
     // `column_names()` BEFORE stepping, a cached statement on the long-lived
     // reader connection would serve a STALE column set after DDL (DDL flushes
-    // only the drust schema cache + SSE bus, never rusqlite's per-connection
-    // statement cache) — silently dropping an added column from the result or
+    // only the drust schema cache, plus the SSE channel on `drop_collection`,
+    // never rusqlite's per-connection statement cache) — silently
+    // dropping an added column from the result or
     // erroring on a dropped one. Same defect class as the get_handler /
     // list_bound_rows reads; keep this read in lockstep with the live schema.
     let mut stmt = conn.prepare(sql).map_err(classify)?;

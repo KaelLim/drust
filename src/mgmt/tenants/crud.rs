@@ -2,7 +2,8 @@
 //! toggle, publish-policy, cmdk JSON. Relocated from `tenants.rs` by Finding #4.
 
 use super::{
-    CreateTenantForm, CreateTenantJson, CreatedResp, InitialTokens, TenantInfo, TenantsState,
+    CreateTenantForm, CreateTenantJson, CreatedResp, InitialTokens, MadeTenant, TenantInfo,
+    TenantsState,
 };
 use crate::auth::bearer::{generate_token, hash_token};
 use crate::mgmt::format::humanize_bytes;
@@ -295,7 +296,7 @@ pub fn make_tenant_inner(
     quota_mb: i64,
     quota_rows: i64,
     owner_admin_id: i64,
-) -> anyhow::Result<CreatedResp> {
+) -> anyhow::Result<MadeTenant> {
     // v1.57 — per-member tenant cap. Gated HERE, not in the two HTTP handlers,
     // for two reasons: (1) both callers already hold the meta mutex across this
     // fn, so the count is read inside the same critical section as the INSERT —
@@ -348,6 +349,7 @@ pub fn make_tenant_inner(
     // free and hard-purge the old row + its tokens + on-disk data before
     // inserting. If the existing row is still active (deleted_at IS NULL),
     // reject with a clear error.
+    let mut recycled = false;
     let existing: Option<(Option<String>, Option<i64>)> = {
         use rusqlite::OptionalExtension;
         conn.query_row(
@@ -385,6 +387,10 @@ pub fn make_tenant_inner(
             anyhow::bail!("tenant '{id}' already exists");
         }
         tracing::info!(tenant_id = %id, "recycling id from soft-deleted tenant");
+        // E5 — the caller must run `evict_tenant_everywhere` once the meta lock
+        // is released: process caches keyed by this id describe the old
+        // incarnation (or a request that raced its soft-delete).
+        recycled = true;
         conn.execute(
             "DELETE FROM tokens WHERE tenant_id = ?1",
             rusqlite::params![id],
@@ -471,19 +477,22 @@ pub fn make_tenant_inner(
          VALUES (?1, ?2, ?3, 'initial-anon', 'anon')",
         rusqlite::params![id, hash_token(&anon_token), anon_token],
     )?;
-    Ok(CreatedResp {
-        tenant: TenantInfo {
-            id: id.to_string(),
-            name: name.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            quota_db_mb: quota_mb,
-            quota_rows,
+    Ok(MadeTenant {
+        resp: CreatedResp {
+            tenant: TenantInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                created_at: Utc::now().to_rfc3339(),
+                quota_db_mb: quota_mb,
+                quota_rows,
+            },
+            initial_tokens: InitialTokens {
+                anon: anon_token,
+                service: service_token.clone(),
+            },
+            initial_token: service_token,
         },
-        initial_tokens: InitialTokens {
-            anon: anon_token,
-            service: service_token.clone(),
-        },
-        initial_token: service_token,
+        recycled,
     })
 }
 
@@ -505,7 +514,7 @@ pub async fn create_tenant_json(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let mut conn = state.session.meta.lock().await;
-    let resp = match make_tenant_inner(
+    let made = match make_tenant_inner(
         &mut conn,
         &state.data_dir,
         &id,
@@ -514,7 +523,7 @@ pub async fn create_tenant_json(
         rows,
         caller_id,
     ) {
-        Ok(resp) => resp,
+        Ok(made) => made,
         Err(e) => {
             let msg = e.to_string();
             return if msg.contains("TENANT_CAP_EXCEEDED") {
@@ -528,10 +537,17 @@ pub async fn create_tenant_json(
     };
     drop(conn);
 
-    // v1.35 hook 4 — if this create recycled a soft-deleted tenant's id,
-    // make_tenant_inner hard-DELETEd the old tokens/row; drop any cached
-    // grant for that id so no stale entry survives the incarnation boundary.
-    state.auth_cache.clear_tenant(&id);
+    if made.recycled {
+        // E5 — a recycled id is an incarnation boundary: run the soft-delete
+        // eviction sequence (which includes v1.35 hook 4's `clear_tenant`) so
+        // no pool, MCP state or session, bus channel, cache entry or cron index
+        // entry of the old incarnation survives into the new one.
+        evict_tenant_everywhere(&state, &id).await;
+    } else {
+        // v1.35 hook 4 — unchanged for a fresh id: drop any cached grant for
+        // that id so no stale entry survives the incarnation boundary.
+        state.auth_cache.clear_tenant(&id);
+    }
 
     // v1.15.0 — immediate stats sample so the new row renders with real
     // numbers on the next dashboard load, without waiting for a sampler tick.
@@ -540,7 +556,7 @@ pub async fn create_tenant_json(
     // Storage is fully shared (two buckets host-wide: `public` + `private`);
     // per-tenant bucket provisioning is no longer needed. The new tenant's
     // files will live under `<tenant-id>/<key>` inside those buckets.
-    (StatusCode::CREATED, Json(resp)).into_response()
+    (StatusCode::CREATED, Json(made.resp)).into_response()
 }
 
 pub async fn create_tenant_form(
@@ -565,7 +581,12 @@ pub async fn create_tenant_form(
     drop(conn);
 
     match created {
-        Ok(_) => {
+        Ok(made) => {
+            // E5 — same seam as `create_tenant_json`. A server-minted UUID
+            // practically never recycles, but the branch is reachable.
+            if made.recycled {
+                evict_tenant_everywhere(&state, &id).await;
+            }
             // v1.15.0 immediate sample so the new row renders with stats next load.
             crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
             Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
@@ -640,6 +661,47 @@ pub fn move_tenant_to_trash(
     }
 }
 
+/// Drop every process-local cache keyed by tenant `id`. Called after the meta
+/// lock is released by the two lifecycle edges that end an incarnation:
+/// soft-delete, and a create that RECYCLED a soft-deleted id (which also
+/// sweeps anything a request racing the soft-delete re-populated after it).
+/// Order and comments are the soft-delete sequence, unchanged.
+///
+/// Known residual (recycle only): between `drop(conn)` and the first two
+/// statements below, an admin PAT (resolves to Service on the data plane)
+/// can already reach this id; if a racing request had left an old-incarnation
+/// pool cached, that request can see it and, at worst, re-insert it into the
+/// MCP cache after this sweep. Requires two races and a trusted caller.
+pub(crate) async fn evict_tenant_everywhere(state: &TenantsState, id: &str) {
+    // Eviction order matters: pools first (release rusqlite Connection FDs
+    // on the rename target so the inode + disk space release immediately),
+    // then MCP — BOTH layers plus the live rmcp sessions, since each holds
+    // its own `Arc<TenantPool>` clone — then SSE channels (subscribers
+    // receive Closed on next recv).
+    state.tenants.evict(id);
+    state.mcp.evict(id);
+    state.bus.evict_tenant(id);
+    state.bus_rooms.evict_tenant(id);
+    // v1.35 hook 3 (soft-delete) / hook 4 (id-recycle create) — drop every
+    // cached Bearer + User bound to this tenant so no stale grant survives
+    // the incarnation boundary (on a recycle, make_tenant_inner already
+    // hard-DELETEd the old tokens/row).
+    state.auth_cache.clear_tenant(id);
+    // #953 follow-up (codex review) — a soft-delete flips the tenant's live
+    // egress decision to deny-all (`try_read_live_egress_allowlist` filters
+    // `deleted_at IS NULL`) WITHOUT going through `egress_config::set_allowlist`,
+    // so bump the allowlist version here too: a webhook delivery parked before
+    // its attempt 1 would otherwise see its snapshot version as still-current,
+    // skip the live re-read, and POST for a tenant that was just deleted.
+    crate::tenant::webhook_dispatcher::bump_egress_allowlist_version(id);
+    // v1.48 — drop the tenant's cron schedule-index entry; otherwise a
+    // deleted tenant's `* * * * *` job error-loops every minute until
+    // restart (the fire-time re-assert fails closed, but noisily). Async:
+    // takes the per-tenant reload lock so an in-flight reload cannot
+    // re-insert a ghost entry after this removal.
+    state.cron.index.invalidate(id).await;
+}
+
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
     Path(id): Path<String>,
@@ -695,30 +757,7 @@ pub async fn soft_delete_tenant(
         let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         move_tenant_to_trash(&state.data_dir, &id, &ts);
     }
-    // Eviction order matters: pools first (release rusqlite Connection FDs
-    // on the rename target so the inode + disk space release immediately),
-    // then MCP cache (drops its Arc<TenantPool> clones + session state),
-    // then SSE channels (subscribers receive Closed on next recv).
-    state.tenants.evict(&id);
-    state.mcp.evict(&id);
-    state.bus.evict_tenant(&id);
-    state.bus_rooms.evict_tenant(&id);
-    // v1.35 hook 3 — drop every cached Bearer + User bound to this
-    // tenant so no stale grant survives the soft-delete.
-    state.auth_cache.clear_tenant(&id);
-    // #953 follow-up (codex review) — a soft-delete flips the tenant's live
-    // egress decision to deny-all (`try_read_live_egress_allowlist` filters
-    // `deleted_at IS NULL`) WITHOUT going through `egress_config::set_allowlist`,
-    // so bump the allowlist version here too: a webhook delivery parked before
-    // its attempt 1 would otherwise see its snapshot version as still-current,
-    // skip the live re-read, and POST for a tenant that was just deleted.
-    crate::tenant::webhook_dispatcher::bump_egress_allowlist_version(&id);
-    // v1.48 — drop the tenant's cron schedule-index entry; otherwise a
-    // deleted tenant's `* * * * *` job error-loops every minute until
-    // restart (the fire-time re-assert fails closed, but noisily). Async:
-    // takes the per-tenant reload lock so an in-flight reload cannot
-    // re-insert a ghost entry after this removal.
-    state.cron.index.invalidate(&id).await;
+    evict_tenant_everywhere(&state, &id).await;
     StatusCode::NO_CONTENT.into_response()
 }
 

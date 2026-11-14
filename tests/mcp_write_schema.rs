@@ -4,6 +4,7 @@ use drust::mcp::tools::schema::{
     FieldSpec, add_field, create_collection, drop_collection, drop_field, set_anon_caps,
 };
 use drust::mcp::tools::write::{delete_record, insert_record, update_record};
+use drust::rpc::registry::{self, RpcCreate, RpcKind, RpcMode};
 use drust::storage::pool::TenantRegistry;
 use drust::storage::schema::DmlVerb;
 use std::sync::Arc;
@@ -863,5 +864,372 @@ async fn create_collection_defaults_audit_enabled_to_one() {
     assert!(
         schema.audit_enabled,
         "new collection inherits audit_default=1"
+    );
+}
+
+// ── E4 — drop_collection names dependent anon-callable RPCs in `warnings` ───
+
+fn title_field() -> FieldSpec {
+    FieldSpec {
+        name: "title".into(),
+        sql_type: "text".into(),
+        nullable: false,
+        ..Default::default()
+    }
+}
+
+/// Seed a `_system_rpc` row straight through the registry (same shape as
+/// `rpc_query_kind.rs::seed_query_rpc_directly`), so the fixture does not
+/// depend on any create face's guards.
+#[allow(clippy::too_many_arguments)]
+async fn seed_rpc(
+    s: &drust::mcp::server::DrustMcp,
+    name: &str,
+    kind: RpcKind,
+    sql: &str,
+    params_json: &str,
+    query_json: Option<&str>,
+    anon_callable: bool,
+    mode: RpcMode,
+) {
+    let (name, sql, params_json, query_json) = (
+        name.to_string(),
+        sql.to_string(),
+        params_json.to_string(),
+        query_json.map(str::to_string),
+    );
+    s.inner()
+        .pool
+        .with_writer(move |c| {
+            registry::create(
+                c,
+                RpcCreate {
+                    name: &name,
+                    sql: &sql,
+                    params_json: &params_json,
+                    description: None,
+                    anon_callable,
+                    mode,
+                    kind,
+                    query_json: query_json.as_deref(),
+                },
+            )
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })
+        })
+        .await
+        .unwrap();
+}
+
+async fn table_exists(s: &drust::mcp::server::DrustMcp, name: &str) -> bool {
+    let name = name.to_string();
+    s.inner()
+        .pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [&name],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .await
+        .unwrap()
+        > 0
+}
+
+#[tokio::test]
+async fn drop_collection_warns_about_anon_callable_query_rpc() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
+    seed_rpc(
+        &s,
+        "feed",
+        RpcKind::Query,
+        "",
+        "[]",
+        Some(r#"{"collection":"posts"}"#),
+        true,
+        RpcMode::Read,
+    )
+    .await;
+
+    let v = drop_collection(&s, "posts").await.unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_collection"], "posts");
+    let warnings = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a warnings array, got {v}"));
+    assert_eq!(warnings.len(), 1, "{v}");
+    let w = &warnings[0];
+    assert_eq!(w["code"], "ANON_RPC_DEPENDS_ON_COLLECTION");
+    assert_eq!(w["rpc"], "feed");
+    assert_eq!(w["kind"], "query");
+    assert!(
+        w["message"].as_str().unwrap().contains("RpcGrant"),
+        "a query-kind warning must name RpcGrant: {w}"
+    );
+    assert!(
+        !table_exists(&s, "posts").await,
+        "the drop must still happen"
+    );
+
+    // Advisory only: the RPC row is untouched.
+    let rpc = s
+        .inner()
+        .pool
+        .with_reader(|c| {
+            registry::lookup(c, "feed").map_err(|e| {
+                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+            })
+        })
+        .await
+        .unwrap()
+        .expect("the dependent RPC must not be deleted");
+    assert!(
+        rpc.anon_callable,
+        "the dependent RPC must stay anon_callable"
+    );
+}
+
+#[tokio::test]
+async fn drop_collection_warns_about_anon_callable_sql_rpcs() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
+    seed_rpc(
+        &s,
+        "count_posts",
+        RpcKind::Sql,
+        "SELECT COUNT(*) AS n FROM posts",
+        "[]",
+        None,
+        true,
+        RpcMode::Read,
+    )
+    .await;
+    seed_rpc(
+        &s,
+        "bump",
+        RpcKind::Sql,
+        "UPDATE posts SET title = title WHERE id = :id",
+        r#"[{"name":"id","type":"integer"}]"#,
+        None,
+        true,
+        RpcMode::Write,
+    )
+    .await;
+
+    let v = drop_collection(&s, "posts").await.unwrap();
+    let warnings = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a warnings array, got {v}"));
+    let names: Vec<&str> = warnings
+        .iter()
+        .map(|w| w["rpc"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["bump", "count_posts"], "{v}");
+    assert_eq!(warnings[0]["mode"], "write");
+    assert_eq!(warnings[1]["mode"], "read");
+    for w in warnings {
+        assert_eq!(w["code"], "ANON_RPC_DEPENDS_ON_COLLECTION");
+        assert_eq!(w["kind"], "sql");
+        let msg = w["message"].as_str().unwrap();
+        assert!(msg.contains("verbatim"), "sql-kind message: {msg}");
+        assert!(
+            !msg.contains("RpcGrant"),
+            "a sql-kind RPC does not run under RpcGrant: {msg}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn drop_collection_omits_warnings_without_anon_dependents() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
+    create_collection(&s, "notes", &[title_field()])
+        .await
+        .unwrap();
+    seed_rpc(
+        &s,
+        "svc_only",
+        RpcKind::Sql,
+        "SELECT * FROM posts",
+        "[]",
+        None,
+        false,
+        RpcMode::Read,
+    )
+    .await;
+    seed_rpc(
+        &s,
+        "notes_feed",
+        RpcKind::Query,
+        "",
+        "[]",
+        Some(r#"{"collection":"notes"}"#),
+        true,
+        RpcMode::Read,
+    )
+    .await;
+
+    let v = drop_collection(&s, "posts").await.unwrap();
+    assert!(v.get("warnings").is_none(), "nothing to report: {v}");
+    let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys.len(),
+        2,
+        "service response shape must be unchanged: {v}"
+    );
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_collection"], "posts");
+}
+
+/// E4 — a scan that cannot read the RPC registry is one warning, never a
+/// failed drop. `_system_rpc` is dropped to make the scan's prepare fail.
+#[tokio::test]
+async fn drop_collection_still_drops_when_the_rpc_scan_fails() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[title_field()])
+        .await
+        .unwrap();
+    s.inner()
+        .pool
+        .with_writer(|c| c.execute_batch("DROP TABLE _system_rpc;"))
+        .await
+        .unwrap();
+    assert!(
+        !table_exists(&s, "_system_rpc").await,
+        "fixture: the RPC registry must be gone"
+    );
+
+    let v = drop_collection(&s, "posts")
+        .await
+        .unwrap_or_else(|e| panic!("a failed RPC scan must not fail the drop: {e}"));
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["dropped_collection"], "posts");
+    let warnings = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a warnings array, got {v}"));
+    assert_eq!(warnings.len(), 1, "{v}");
+    assert_eq!(warnings[0]["code"], "ANON_RPC_SCAN_FAILED", "{v}");
+    assert!(
+        !table_exists(&s, "posts").await,
+        "the drop must still happen"
+    );
+}
+
+fn nullable_text(name: &str) -> FieldSpec {
+    FieldSpec {
+        name: name.into(),
+        sql_type: "text".into(),
+        nullable: true,
+        unique: false,
+        default_value: None,
+        foreign_key: None,
+        dim: None,
+        description: None,
+        ..Default::default()
+    }
+}
+
+/// E6′ — dropping a field a stored policy still names is NOT refused (service
+/// is trusted, no 409), but the response says so: one warning per clause, in
+/// verb order, `$data` CHECK operands included.
+#[tokio::test]
+async fn drop_field_warns_about_every_policy_that_still_names_it() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(&s, "posts", &[nullable_text("status"), nullable_text("x")])
+        .await
+        .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "select",
+        Some(serde_json::json!({"x": {"$is_null": true}})),
+        None,
+    )
+    .await
+    .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "update",
+        None,
+        Some(serde_json::json!({"status": {"$eq": {"$data": "x"}}})),
+    )
+    .await
+    .unwrap();
+
+    let v = drop_field(&s, "posts", "x").await.unwrap();
+    assert_eq!(v["dropped_field"], "x");
+    let names: Vec<&str> = v["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"x"), "the drop still happened: {v}");
+    let w = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("warnings expected: {v}"));
+    assert_eq!(w.len(), 2, "{v}");
+    assert_eq!(w[0]["code"], "FIELD_REFERENCED_BY_POLICY");
+    assert_eq!(w[0]["op"], "select");
+    assert_eq!(w[0]["clause"], "using");
+    assert_eq!(w[0]["field"], "x");
+    assert_eq!(w[1]["code"], "FIELD_REFERENCED_BY_POLICY");
+    assert_eq!(w[1]["op"], "update");
+    assert_eq!(w[1]["clause"], "check");
+    assert_eq!(w[1]["field"], "x");
+    for one in w {
+        let msg = one["message"].as_str().unwrap();
+        assert!(
+            !msg.to_lowercase().contains("error"),
+            "a warning is not an error: {msg}"
+        );
+    }
+}
+
+/// E6′ — an unreferenced drop answers exactly as before: no `warnings` key.
+#[tokio::test]
+async fn drop_field_without_a_policy_reference_has_no_warnings() {
+    let d = tempfile::tempdir().unwrap();
+    let s = svc(&d).await;
+    create_collection(
+        &s,
+        "posts",
+        &[nullable_text("status"), nullable_text("draft")],
+    )
+    .await
+    .unwrap();
+    drust::mcp::tools::policy::set_policy(
+        &s,
+        "posts",
+        "select",
+        Some(serde_json::json!({"status": "p"})),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let v = drop_field(&s, "posts", "draft").await.unwrap();
+    assert!(v.get("warnings").is_none(), "nothing to report: {v}");
+    let keys: std::collections::BTreeSet<&str> =
+        v.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from(["collection", "dropped_field", "fields"]),
+        "service response shape must be unchanged: {v}"
     );
 }

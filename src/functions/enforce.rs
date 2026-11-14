@@ -64,9 +64,11 @@ async fn load_schema(
 /// 1. protected-table 404 + schema load,
 /// 2. anon-on-owner-scoped → `ANON_FORBIDDEN_OWNER_SCOPED`,
 /// 3. cap gate (`has_dml_cap`),
-/// 4. owner stamp (User overwrites owner_field with its id) / owner-required
+/// 4. `reject_system_id` (anon/user may not supply a non-null `id` →
+///    `SYSTEM_FIELD_READONLY`),
+/// 5. owner stamp (User overwrites owner_field with its id) / owner-required
 ///    409 (Service must supply owner_field on an owner-scoped collection),
-/// 5. delegate to `insert_record_checked` with the insert-policy CHECK threaded
+/// 6. delegate to `insert_record_checked` with the insert-policy CHECK threaded
 ///    into the writer tx (rollback on fail).
 pub async fn enforced_insert(
     mcp: &DrustMcp,
@@ -85,6 +87,11 @@ pub async fn enforced_insert(
     }
     if !has_dml_cap(role, DmlVerb::Insert, &schema) {
         anyhow::bail!(cap_deny_msg(role, DmlVerb::Insert, coll));
+    }
+    // E1′ — anon/user may not choose the row id (mirrors create_handler).
+    if let Some(o) = data.as_object() {
+        crate::tenant::records::reject_system_id(o, ctx, None)
+            .map_err(|m| anyhow::anyhow!("SYSTEM_FIELD_READONLY: {m}"))?;
     }
 
     if let Some(owner_field) = schema.owner_field.as_deref() {
@@ -130,8 +137,10 @@ pub async fn enforced_insert(
 
 /// UPDATE under the caller's identity. Decision order mirrors
 /// `records.rs::update_handler`: cap gate, owner write-filter (User: own rows
-/// only, regardless of read_scope), strip client-supplied owner_field, explicit
-/// USING pre-flight + in-tx CHECK. A foreign / policy-hidden row → not-found.
+/// only, regardless of read_scope), strip client-supplied owner_field,
+/// `reject_system_id` (anon/user may not change the row `id` →
+/// `SYSTEM_FIELD_READONLY`), explicit USING pre-flight + in-tx CHECK. A
+/// foreign / policy-hidden row → not-found.
 pub async fn enforced_update(
     mcp: &DrustMcp,
     ctx: &AuthCtx,
@@ -159,6 +168,11 @@ pub async fn enforced_update(
         && let Some(o) = data.as_object_mut()
     {
         o.remove(field);
+    }
+    // E1′ — anon/user may not change the row id (mirrors update_handler).
+    if let Some(o) = data.as_object() {
+        crate::tenant::records::reject_system_id(o, ctx, Some(id))
+            .map_err(|m| anyhow::anyhow!("SYSTEM_FIELD_READONLY: {m}"))?;
     }
 
     // Reject an update with no fields left (mirrors update_handler's post-strip
@@ -196,7 +210,14 @@ pub async fn enforced_update(
     )
     .await
     {
-        Ok(v) => Ok(v),
+        Ok(mut v) => {
+            // E9 — same read-back narrowing as REST update_handler.
+            let rb = crate::tenant::records::readback_for(ctx, &schema, &v["record"]);
+            if rb == crate::tenant::records::ReadBack::IdOnly {
+                v["record"] = crate::tenant::records::shape_readback(rb, &v["record"]);
+            }
+            Ok(v)
+        }
         Err(e) if is_no_rows(&e) => anyhow::bail!("RECORD_NOT_FOUND: no such record"),
         Err(e) => Err(e),
     }
@@ -269,7 +290,7 @@ pub async fn enforced_list(
     coll: &str,
     req: ListRequest,
 ) -> anyhow::Result<serde_json::Value> {
-    use crate::query::authorizer::{attach_search_readonly_authorizer, detach_authorizer};
+    use crate::query::authorizer::AuthzGuard;
     let schema = load_schema(mcp, coll).await?;
 
     // ── Auth matrix (lockstep with records_list.rs::post_list) ──────────
@@ -337,10 +358,8 @@ pub async fn enforced_list(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = run_list_rows(c, &list_sql_owned, &binds_list);
-            detach_authorizer(c);
-            r
+            let _authz = AuthzGuard::search_readonly(c);
+            run_list_rows(c, &list_sql_owned, &binds_list)
         })
         .await?;
     let records_out: Vec<serde_json::Value> = rows
@@ -363,8 +382,8 @@ pub async fn enforced_list(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            attach_search_readonly_authorizer(c);
-            let r = (|| -> rusqlite::Result<i64> {
+            let _authz = AuthzGuard::search_readonly(c);
+            (|| -> rusqlite::Result<i64> {
                 // COUNT(*) text is stable for a given (schema, filter) shape and
                 // re-derives on DDL, so `prepare_cached` is allowed here (matches
                 // the REST `/list` oracle + the drust CLAUDE.md cache invariant).
@@ -374,9 +393,7 @@ pub async fn enforced_list(
                     .map(|v| v as &dyn rusqlite::ToSql)
                     .collect();
                 stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get(0))
-            })();
-            detach_authorizer(c);
-            r
+            })()
         })
         // Propagate a count failure instead of masking it as `total: 0` beside a
         // non-empty `records` page (REST `/list` returns 500 DB_ERROR here).
@@ -1346,5 +1363,156 @@ mod tests {
             refused_anon.contains(crate::storage::files::FILE_PUBLIC_UPLOAD_DENIED),
             "got {refused_anon}"
         );
+    }
+
+    // ── E9: the update read-back never exceeds the caller's select reach ──
+
+    /// `notes(body, secret)` with the given anon caps and one service-seeded
+    /// row; returns its id.
+    async fn notes_with_row(mcp: &DrustMcp, anon_caps: &[DmlVerb], body: &str) -> i64 {
+        create_collection(
+            mcp,
+            "notes",
+            &[field("body", "text"), field("secret", "text")],
+        )
+        .await
+        .unwrap();
+        set_anon_caps(mcp, "notes", anon_caps).await.unwrap();
+        let v = enforced_insert(
+            mcp,
+            &service(),
+            "notes",
+            serde_json::json!({"body": body, "secret": "s3cr3t"}),
+        )
+        .await
+        .unwrap();
+        v["id"].as_i64().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_without_select_cap_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Update], "b").await;
+        let v = enforced_update(&mcp, &anon(), "notes", id, serde_json::json!({"body": "c"}))
+            .await
+            .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_with_select_cap_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Select, DmlVerb::Update], "b").await;
+        let v = enforced_update(&mcp, &anon(), "notes", id, serde_json::json!({"body": "c"}))
+            .await
+            .unwrap();
+        assert_eq!(v["record"]["secret"], "s3cr3t", "full row: {v}");
+        assert_eq!(v["record"]["body"], "c", "full row: {v}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_anon_update_hidden_by_select_policy_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        let id = notes_with_row(&mcp, &[DmlVerb::Select, DmlVerb::Update], "hidden").await;
+        crate::mcp::tools::policy::set_policy(
+            &mcp,
+            "notes",
+            "select",
+            Some(serde_json::json!({"body": {"$ne": "hidden"}})),
+            None,
+        )
+        .await
+        .unwrap();
+        let v = enforced_update(
+            &mcp,
+            &anon(),
+            "notes",
+            id,
+            serde_json::json!({"secret": "x"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_user_read_scope_all_without_select_returns_id_only() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        make_owner_scoped(&mcp, "pub", "all").await;
+        set_user_caps(&mcp, "pub", &[]).await.unwrap();
+        seed_user(&mcp, "u-1").await;
+        let v = enforced_insert(&mcp, &user("u-1"), "pub", serde_json::json!({"title": "a"}))
+            .await
+            .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &user("u-1"),
+            "pub",
+            id,
+            serde_json::json!({"title": "b"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"record": {"id": id}}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_user_read_scope_own_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        make_owner_scoped(&mcp, "todos", "own").await;
+        seed_user(&mcp, "u-1").await;
+        let v = enforced_insert(
+            &mcp,
+            &user("u-1"),
+            "todos",
+            serde_json::json!({"title": "a"}),
+        )
+        .await
+        .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &user("u-1"),
+            "todos",
+            id,
+            serde_json::json!({"title": "b"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["record"]["title"], "b", "own row is readable: {v}");
+        assert_eq!(v["record"]["owner"], "u-1", "own row is readable: {v}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edge_service_ctx_update_returns_full_row() {
+        let (mcp, _t) = mcp_with_garage("t1").await;
+        create_collection(
+            &mcp,
+            "notes",
+            &[field("body", "text"), field("secret", "text")],
+        )
+        .await
+        .unwrap();
+        // anon_caps default ([select]); service ignores caps either way.
+        let v = enforced_insert(
+            &mcp,
+            &service(),
+            "notes",
+            serde_json::json!({"body": "b", "secret": "s3cr3t"}),
+        )
+        .await
+        .unwrap();
+        let id = v["id"].as_i64().unwrap();
+        let v = enforced_update(
+            &mcp,
+            &service(),
+            "notes",
+            id,
+            serde_json::json!({"body": "c"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["record"]["secret"], "s3cr3t", "full row: {v}");
     }
 }

@@ -307,6 +307,77 @@ async fn reroll_by_a_member_evicts_only_the_tenants_that_member_owns() {
     );
 }
 
+/// E2′ — the reroll also ends the SSE streams the caller's PATs opened: the
+/// caller's per-admin revocation signal advances, another admin's does not.
+#[tokio::test]
+async fn reroll_signals_the_callers_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (owner_id, session) = insert_admin(&dir, "kael-sse@x", "owner");
+    let (other_id, _) = insert_admin(&dir, "someone-else-sse@x", "member");
+    let g0 = bus.cred().current_gen();
+    let rx_owner = bus.cred().subscribe_admin(owner_id);
+    let rx_other = bus.cred().subscribe_admin(other_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings/token/reroll")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
+
+    assert!(
+        *rx_owner.borrow() > g0,
+        "reroll must signal the caller's PAT-backed SSE streams"
+    );
+    assert!(
+        !rx_other.has_changed().unwrap(),
+        "another admin's SSE streams must not be signalled"
+    );
+}
+
+/// E2′ — the SSE signal does not depend on the reach: a `member` who owns
+/// nothing still has their PAT streams ended, while the rooms eviction stays
+/// as narrow as before.
+#[tokio::test]
+async fn reroll_by_a_member_signals_even_when_their_reach_is_narrow() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (member_id, session) = insert_admin(&dir, "kael-member-sse@x", "member");
+    let (other_id, _) = insert_admin(&dir, "someone-else-sse2@x", "member");
+    insert_tenant(&dir, "t-theirs", Some(other_id));
+    let h_theirs = bus.tenant_epoch_handle("t-theirs");
+    let g0 = bus.cred().current_gen();
+    let rx = bus.cred().subscribe_admin(member_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/settings/token/reroll")
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "reroll must return 200");
+
+    assert!(
+        *rx.borrow() > g0,
+        "a member's reroll must signal their SSE streams regardless of reach"
+    );
+    assert_eq!(
+        h_theirs.load(SeqCst),
+        0,
+        "the rooms eviction is unchanged: another admin's tenant does not blink"
+    );
+}
+
 #[tokio::test]
 async fn reroll_requires_admin_session() {
     let (app, _dir) = spin_up().await;

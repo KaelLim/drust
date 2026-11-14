@@ -84,10 +84,12 @@ pub async fn register_handler(
             "profile JSON exceeds 64 KB",
         );
     }
+    // `deleted_at IS NULL`: a soft-deleted tenant (whose flag soft delete
+    // leaves untouched) must answer exactly like an unknown id.
     let allow: bool = {
         let conn = state.meta.lock().await;
         conn.query_row(
-            "SELECT allow_self_register FROM tenants WHERE id = ?1",
+            "SELECT allow_self_register FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
             rusqlite::params![tenant_id],
             |r| r.get::<_, i64>(0),
         )
@@ -101,9 +103,10 @@ pub async fn register_handler(
             "self-registration disabled for this tenant",
         );
     }
-    let pool = match state.registry.get_or_create(&tenant_id) {
-        Ok(p) => p,
-        Err(_) => return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", ""),
+    // Create-free open: the meta check above released its lock, and a soft
+    // delete landing in between must not rebuild tenants/<id> outside _trash.
+    let Some(pool) = state.registry.get_if_live(&tenant_id) else {
+        return json_error(StatusCode::NOT_FOUND, "TENANT_NOT_FOUND", "");
     };
     let hash = match hash_password(&body.password) {
         Ok(h) => h,
@@ -211,17 +214,15 @@ pub async fn login_handler(
             "invalid email or password",
         );
     }
-    let pool = match state.registry.get_or_create(&tenant_id) {
-        Ok(p) => p,
-        Err(_) => {
-            let _ =
-                crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
-            return json_error(
-                StatusCode::UNAUTHORIZED,
-                "INVALID_CREDENTIALS",
-                "invalid email or password",
-            );
-        }
+    // Create-free open (`get_if_live`): the meta check released its lock, and
+    // a soft delete landing in between must not rebuild tenants/<id>.
+    let Some(pool) = state.registry.get_if_live(&tenant_id) else {
+        let _ = crate::auth::user::verify_password(&body.password, crate::auth::user::dummy_hash());
+        return json_error(
+            StatusCode::UNAUTHORIZED,
+            "INVALID_CREDENTIALS",
+            "invalid email or password",
+        );
     };
 
     // Lookup user (case-insensitive). If absent, use DUMMY_HASH so argon2

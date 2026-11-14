@@ -53,14 +53,14 @@ fn recycling_an_id_leaves_the_trash_snapshot_intact() {
     let mut conn = meta_with_admins(data);
 
     // Create, then soft-delete: the row is marked and the directory moves.
-    make_tenant_inner(&mut conn, data, "acme", "Acme", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "acme", "Acme", 10, 1000, 1).unwrap();
     soft_delete_row(&conn, "acme");
     let trash = data.join("_trash").join("acme-20260802");
     fs::create_dir_all(&trash).unwrap();
     fs::write(trash.join("data.sqlite"), b"recoverable").unwrap();
 
     // Recycle the id.
-    make_tenant_inner(&mut conn, data, "acme", "Acme 2", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "acme", "Acme 2", 10, 1000, 1).unwrap();
 
     assert!(
         trash.join("data.sqlite").exists(),
@@ -94,7 +94,7 @@ fn a_member_cannot_recycle_a_foreign_soft_deleted_tenant_id() {
     let mut conn = meta_with_admins(data);
 
     // The owner's tenant, soft-deleted exactly as the handler leaves it.
-    make_tenant_inner(&mut conn, data, "victim", "Victim", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "victim", "Victim", 10, 1000, 1).unwrap();
     soft_delete_row(&conn, "victim");
     let snapshot = move_tenant_to_trash(data, "victim", "20260802T120000Z").unwrap();
     assert!(snapshot.join("data.sqlite").exists());
@@ -143,8 +143,8 @@ fn an_invisible_soft_deleted_tenant_looks_exactly_like_a_live_one() {
     let data = dir.path();
     let mut conn = meta_with_admins(data);
 
-    make_tenant_inner(&mut conn, data, "alive", "Alive", 10, 1000, 1).unwrap();
-    make_tenant_inner(&mut conn, data, "gone", "Gone", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "alive", "Alive", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "gone", "Gone", 10, 1000, 1).unwrap();
     soft_delete_row(&conn, "gone");
 
     let on_live = make_tenant_inner(&mut conn, data, "alive", "x", 10, 1000, 2)
@@ -168,11 +168,11 @@ fn a_member_can_recycle_an_id_they_own() {
     let data = dir.path();
     let mut conn = meta_with_admins(data);
 
-    make_tenant_inner(&mut conn, data, "mine", "Mine", 10, 1000, 2).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "mine", "Mine", 10, 1000, 2).unwrap();
     soft_delete_row(&conn, "mine");
     move_tenant_to_trash(data, "mine", "20260802T120000Z").unwrap();
 
-    make_tenant_inner(&mut conn, data, "mine", "Mine Again", 10, 1000, 2)
+    let _ = make_tenant_inner(&mut conn, data, "mine", "Mine Again", 10, 1000, 2)
         .expect("a member owns this id and may recycle it");
     let owner: Option<i64> = conn
         .query_row(
@@ -239,7 +239,7 @@ fn recycling_an_id_drops_the_old_tenants_quota_requests() {
     let data = dir.path();
     let mut conn = meta_with_admins(data);
 
-    make_tenant_inner(&mut conn, data, "acme", "Acme", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "acme", "Acme", 10, 1000, 1).unwrap();
     conn.execute(
         "INSERT INTO quota_requests (tenant_id, requester_admin_id, requested_tier) \
          VALUES ('acme', 1, 50)",
@@ -248,7 +248,7 @@ fn recycling_an_id_drops_the_old_tenants_quota_requests() {
     .unwrap();
     soft_delete_row(&conn, "acme");
 
-    make_tenant_inner(&mut conn, data, "acme", "Acme 2", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "acme", "Acme 2", 10, 1000, 1).unwrap();
 
     let leftover: i64 = conn
         .query_row(
@@ -271,7 +271,7 @@ fn a_refused_recycle_leaves_the_quota_requests_alone() {
     let data = dir.path();
     let mut conn = meta_with_admins(data);
 
-    make_tenant_inner(&mut conn, data, "victim", "Victim", 10, 1000, 1).unwrap();
+    let _ = make_tenant_inner(&mut conn, data, "victim", "Victim", 10, 1000, 1).unwrap();
     conn.execute(
         "INSERT INTO quota_requests (tenant_id, requester_admin_id, requested_tier) \
          VALUES ('victim', 1, 7)",

@@ -183,7 +183,15 @@ impl Executor {
     /// for the tenant.
     fn decrement_depth(&self, tenant: &str) {
         if let Some(d) = self.depth.get(tenant) {
-            let _ = d.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+            // A CAS loop rather than `fetch_update` (deprecated in Rust 1.100 in
+            // favour of `try_update`, which older toolchains do not have).
+            let mut cur = d.load(Ordering::Relaxed);
+            while cur != 0 {
+                match d.compare_exchange_weak(cur, cur - 1, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(seen) => cur = seen,
+                }
+            }
         }
     }
 

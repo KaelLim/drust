@@ -324,6 +324,24 @@ pub fn eval_policy(ast: &FilterAst, row: &serde_json::Map<String, Json>, ctx: &P
     eval_node(ast, row, ctx, 0) == Tri::True
 }
 
+/// `eval_policy` over a FULLY MATERIALIZED row (a `RETURNING *` image: every
+/// column present, NULL as `null`, vectors omitted). A policy naming a field
+/// the row does not carry — a column dropped after the policy was saved — is
+/// denied WHOLE: the in-memory twin of `compile_policy_using`'s `UnknownField`
+/// (the SQL faces refuse the read). Whole, not per leaf: under `not`, `or` or
+/// `$nin: []` a per-leaf Unknown/False would still admit the row.
+/// Present-and-NULL is unchanged. `refs` is [`policy_field_refs`]`(ast)`,
+/// passed in so a long-lived caller (SSE) computes it once.
+/// NOT for CHECK / file callers, whose maps rely on absent-reads-as-NULL.
+pub fn eval_policy_materialized(
+    ast: &FilterAst,
+    refs: &std::collections::BTreeSet<String>,
+    row: &serde_json::Map<String, Json>,
+    ctx: &PolicyCtx,
+) -> bool {
+    refs.iter().all(|f| row.contains_key(f.as_str())) && eval_policy(ast, row, ctx)
+}
+
 fn eval_node(
     node: &FilterAst,
     row: &serde_json::Map<String, Json>,
@@ -872,6 +890,90 @@ pub fn select_read_access<'a>(ctx: &AuthCtx, schema: &'a CollectionSchema) -> Se
             None => SelectReadAccess::DenyAll,
         },
     }
+}
+
+/// Every column a policy AST compares against — the leaf KEYS, minus the
+/// `$`-prefixed pseudo-keys (`$authenticated`, `$fts`). `$data` operands are
+/// CHECK-only (`validate_policy` rejects them in `using`), so a select `using`
+/// references columns only through its keys. Used by in-memory callers that
+/// must fail CLOSED when the row map lacks a referenced column (`eval_leaf`
+/// reads a missing key as NULL, which `$is_null` would admit).
+pub fn policy_field_refs(ast: &FilterAst) -> std::collections::BTreeSet<String> {
+    fn walk(node: &FilterAst, out: &mut std::collections::BTreeSet<String>) {
+        match node {
+            FilterAst::And { and } => and.iter().for_each(|n| walk(n, out)),
+            FilterAst::Or { or } => or.iter().for_each(|n| walk(n, out)),
+            FilterAst::Not { not } => walk(not, out),
+            FilterAst::Leaf(map) => out.extend(map.keys().filter(|k| !k.starts_with('$')).cloned()),
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(ast, &mut out);
+    out
+}
+
+/// Every name a stored clause mentions: [`policy_field_refs`] plus each
+/// `{"$data":"<f>"}` operand (a CHECK reads the post-image through it).
+/// Feeds `drop_field`'s `warnings` only — never a read gate, which is why the
+/// read refs above deliberately leave `$data` out.
+fn clause_field_refs(ast: &FilterAst) -> std::collections::BTreeSet<String> {
+    fn data_ref(v: &Json, out: &mut std::collections::BTreeSet<String>) {
+        if let Some(f) = v.get("$data").and_then(Json::as_str) {
+            out.insert(f.to_string());
+        }
+    }
+    // The three operand shapes `eval_leaf` reads: the leaf body itself (eq
+    // shorthand), a single-key op object's operand, and `$in`/`$nin` elements.
+    fn walk(node: &FilterAst, out: &mut std::collections::BTreeSet<String>) {
+        match node {
+            FilterAst::And { and } => and.iter().for_each(|n| walk(n, out)),
+            FilterAst::Or { or } => or.iter().for_each(|n| walk(n, out)),
+            FilterAst::Not { not } => walk(not, out),
+            FilterAst::Leaf(map) => {
+                for body in map.values() {
+                    data_ref(body, out);
+                    if let Json::Object(o) = body {
+                        for operand in o.values() {
+                            data_ref(operand, out);
+                            if let Json::Array(items) = operand {
+                                items.iter().for_each(|i| data_ref(i, out));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = policy_field_refs(ast);
+    walk(ast, &mut out);
+    out
+}
+
+/// `(verb, "using" | "check")` of every stored clause whose
+/// `clause_field_refs` names `field`, in Select/Insert/Update/Delete order,
+/// `using` before `check`. Feeds `drop_field`'s `warnings`.
+pub fn policies_referencing_field(
+    p: &CollectionPolicies,
+    field: &str,
+) -> Vec<(DmlVerb, &'static str)> {
+    let mut out = Vec::new();
+    for verb in [
+        DmlVerb::Select,
+        DmlVerb::Insert,
+        DmlVerb::Update,
+        DmlVerb::Delete,
+    ] {
+        let Some(policy) = p.get(verb) else { continue };
+        for (clause, ast) in [("using", &policy.using), ("check", &policy.check)] {
+            if ast
+                .as_ref()
+                .is_some_and(|a| clause_field_refs(a).contains(field))
+            {
+                out.push((verb, clause));
+            }
+        }
+    }
+    out
 }
 
 /// Convenience: resolve + compile the USING for `op` into `(sql_fragment, binds)`.
@@ -1561,5 +1663,138 @@ mod tests {
         // No explicit policy → resolver returns None; owner_field is handled by
         // compute_owner_filter at the call site, not here.
         assert!(effective_policy_using(&user, &s, DmlVerb::Select).is_none());
+    }
+
+    fn refs(src: &str) -> BTreeSet<String> {
+        policy_field_refs(&serde_json::from_str::<FilterAst>(src).unwrap())
+    }
+
+    fn set(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn policy_field_refs_walks_and_or_not() {
+        assert_eq!(
+            refs(r#"{"and":[{"a":1},{"or":[{"b":{"$gt":1}},{"not":{"c":{"$is_null":true}}}]}]}"#),
+            set(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn policy_field_refs_skips_dollar_keys() {
+        assert_eq!(refs(r#"{"$authenticated":true}"#), set(&[]));
+        assert_eq!(refs(r#"{"$fts":{"index":"i","query":"q"}}"#), set(&[]));
+        assert_eq!(refs(r#"{"owner":{"$auth":"id"}}"#), set(&["owner"]));
+        assert_eq!(
+            refs(r#"{"and":[{"$authenticated":true},{"owner":{"$eq":{"$auth":"id"}}}]}"#),
+            set(&["owner"])
+        );
+    }
+
+    // ── E6′ — missing-field fail-closed + drop_field warnings ────────────
+
+    fn parse_ast(src: &str) -> FilterAst {
+        serde_json::from_str(src).unwrap()
+    }
+
+    fn row_map(v: Json) -> serde_json::Map<String, Json> {
+        v.as_object().unwrap().clone()
+    }
+
+    /// The READ refs never collect `$data` operands (CHECK-only, refused in a
+    /// `using` at save, and read from `ctx.data` rather than the row): merging
+    /// the two collectors would silently change legacy SSE behaviour.
+    #[test]
+    fn policy_field_refs_omits_data_operands() {
+        assert_eq!(
+            refs(r#"{"status":{"$eq":{"$data":"z"}}}"#),
+            set(&["status"])
+        );
+    }
+
+    #[test]
+    fn clause_field_refs_includes_data_operands() {
+        let c = |s: &str| clause_field_refs(&parse_ast(s));
+        assert_eq!(
+            c(r#"{"status":{"$eq":{"$data":"x"}}}"#),
+            set(&["status", "x"])
+        );
+        assert_eq!(
+            c(r#"{"status":{"$in":["a",{"$data":"y"}]}}"#),
+            set(&["status", "y"])
+        );
+        assert_eq!(c(r#"{"status":{"$data":"z"}}"#), set(&["status", "z"]));
+    }
+
+    #[test]
+    fn materialized_eval_fails_closed_on_a_missing_policy_field() {
+        // A fully materialized row that no longer carries `x` (dropped).
+        let row = row_map(serde_json::json!({"id": 1, "status": "published"}));
+        let ctx = PolicyCtx::default();
+        // (ast, what the shared kernel `eval_policy` answers today)
+        let cases = [
+            (r#"{"x":{"$is_null":true}}"#, true),
+            (r#"{"not":{"x":"a"}}"#, false),
+            (r#"{"or":[{"x":"a"},{"status":"published"}]}"#, true),
+            (r#"{"x":{"$nin":[]}}"#, true),
+        ];
+        for (src, kernel) in cases {
+            let ast = parse_ast(src);
+            assert_eq!(
+                eval_policy(&ast, &row, &ctx),
+                kernel,
+                "eval_policy (absent-reads-as-NULL) must be unchanged for {src}"
+            );
+            assert!(
+                !eval_policy_materialized(&ast, &policy_field_refs(&ast), &row, &ctx),
+                "a policy naming a field the row lacks must deny whole: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn materialized_eval_keeps_present_null_semantics() {
+        let row = row_map(serde_json::json!({"id": 1, "status": "draft", "x": null}));
+        let ctx = PolicyCtx::default();
+        for (src, want) in [
+            (r#"{"x":{"$is_null":true}}"#, true),
+            (r#"{"x":{"$is_not_null":true}}"#, false),
+            (r#"{"not":{"x":"a"}}"#, false),
+        ] {
+            let ast = parse_ast(src);
+            let got = eval_policy_materialized(&ast, &policy_field_refs(&ast), &row, &ctx);
+            assert_eq!(got, want, "{src}");
+            assert_eq!(got, eval_policy(&ast, &row, &ctx), "{src}");
+        }
+    }
+
+    #[test]
+    fn policies_referencing_field_lists_each_clause_in_verb_order() {
+        let mut s = schema(&["status", "x"]);
+        s.policies = CollectionPolicies {
+            select: Some(Policy {
+                using: Some(parse_ast(r#"{"x":{"$is_null":true}}"#)),
+                check: None,
+            }),
+            insert: Some(Policy {
+                using: None,
+                check: Some(parse_ast(r#"{"status":"p"}"#)),
+            }),
+            update: Some(Policy {
+                using: None,
+                check: Some(parse_ast(r#"{"status":{"$eq":{"$data":"x"}}}"#)),
+            }),
+            delete: None,
+        };
+        assert_eq!(
+            policies_referencing_field(&s.policies, "x"),
+            vec![(DmlVerb::Select, "using"), (DmlVerb::Update, "check")]
+        );
+        assert_eq!(
+            policies_referencing_field(&s.policies, "status"),
+            vec![(DmlVerb::Insert, "check"), (DmlVerb::Update, "check")]
+        );
+        assert!(policies_referencing_field(&s.policies, "nope").is_empty());
     }
 }

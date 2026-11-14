@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Mirrors the drust invariant: these MCP tools accept `dry_run: true` and
-# return would_* counts + blast radius (build_instructions NOTES block +
+# return would_* counts + blast radius (build_instructions RULES block +
 # DeleteRecordArgs / DropCollectionArgs / DropIndexArgs).
 DESTRUCTIVE_TOOLS = {"delete_record", "drop_collection", "drop_index"}
 

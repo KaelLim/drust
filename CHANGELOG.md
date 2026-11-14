@@ -1,3 +1,292 @@
+## v1.67.0 — 2026-11-14
+
+Fixes from the access-gate convergence review (E track). No new environment variable, no
+schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+Two caller-visible response narrowings on the data plane, anon and user only: describing a
+`_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
+only the row's `id` (E9). The other caller-visible changes are described in their entries:
+SSE streams opened with an admin PAT end when that admin's access is revoked (E2′),
+`drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
+`drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
+whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
+it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), and the per-tenant
+MCP endpoint's model-facing surface changes as described under *MCP (M1)* below.
+
+### Fixed
+
+- **Anon and user tokens can no longer choose or change a row's `id` (E1′).** Every
+  collection is `id INTEGER PRIMARY KEY AUTOINCREMENT`, and the REST and edge-function write
+  paths took `id` straight from the request body. One anon INSERT of
+  `id = 9223372036854775807` on a collection whose `anon_caps` include `insert` pinned
+  `sqlite_sequence` at the maximum, and from then on every INSERT without an explicit id
+  failed with `SQLITE_FULL`. Deleting the row did not help, and no ordinary write can repair
+  it (the write-RPC authorizer correctly refuses `sqlite_sequence` writes). UPDATE reached
+  the same end in two steps: move a row to `9223372036854775806`, and the next ordinary
+  insert takes the maximum.
+  Now, for anon and user callers on `POST`/`PATCH /t/<id>/records/<c>[/<id>]` and the
+  edge-function `insert-record` / `update-record` host ops, an INSERT carrying a non-null
+  `id`, or an UPDATE carrying an `id` that is not the row's own id, is refused: REST answers
+  **400 `SYSTEM_FIELD_READONLY`**, and the edge host op returns the guest an error prefixed
+  `SYSTEM_FIELD_READONLY:`. Requests that are accepted are sent to SQLite exactly as
+  before: `"id": null` on INSERT still means "assign one", and an UPDATE whose `id` equals
+  the path id (as a number or a numeric string) is still a no-op, so read-modify-write
+  PATCHes of the whole record — including a PATCH whose body is only that id — keep
+  working. **Service tokens are unchanged**: imports may still set ids on insert,
+  `records:batch` and `records:upsert`, and change them on update. `created_at` /
+  `updated_at` handling is unchanged.
+  Already-affected collections come in two states. (1) `sqlite_sequence` already pinned:
+  `SELECT name, seq FROM sqlite_sequence WHERE seq > 4611686018427387904` on a tenant's
+  `data.sqlite` lists them. (2) A row moved to the maximum by UPDATE, with no insert since:
+  `sqlite_sequence` is untouched, but auto-id INSERTs still fail with `SQLITE_FULL` for as
+  long as that row exists, so also run `SELECT max(id) FROM "<c>"` per collection and treat
+  a result above `4611686018427387904` as affected. State (2) recovers by deleting the
+  offending row with a service token and then, if it is still needed, re-inserting it
+  without an `id` — no drop needed.
+  To recover state (1), either export the rows with a service token, `drop_collection` and
+  recreate it (dropping the table also drops its `sqlite_sequence` entry), then re-import
+  with `records:batch` keeping the original ids **except the offending near-maximum
+  row(s)** — re-importing one of those with its id pins `sqlite_sequence` again, so drop
+  them or re-insert them without an `id` — and re-apply the collection's caps, policies and
+  indexes; or, with drust stopped, delete the offending row and set `seq` back to
+  `MAX(id)`.
+- **`GET /t/<id>/collections/<c>` no longer describes `_system_*` / `sqlite_*` tables to
+  anon or user callers — it answers `404 NOT_FOUND`, the same code `/records/*` and SSE
+  subscribe give a protected collection (E8).** The describe handler was the one read
+  surface that never consulted `is_protected_collection`: `GET /collections` and the three
+  codegen endpoints already skipped these tables, but describe ran `describe_collection` for
+  any bearer, so the public anon key could read `_system_users`' columns and an exact
+  `row_count` (the tenant's user count), `_system_sessions`' session row count, and so
+  on — and each such request ran an uncached, deadline-free `COUNT(*)` over tables like
+  `_system_record_history`. The check runs before any database read, so a missing
+  `_system_*` name, a case variant and an existing table answer identically. Service keys
+  and admin PATs still describe every table; ordinary collections are unchanged for every
+  role, `row_count` included, and describe's plain-text 404 for a missing ordinary name is
+  unchanged; the admin plane is untouched. A frontend that read `_system_users`'
+  `row_count` with an anon or user key must move that read server-side behind a service
+  key.
+- **A request can no longer rebuild a deleted tenant's database outside `_trash`
+  (E3).** Self-registration read `allow_self_register` without `deleted_at IS NULL`, so an
+  unauthenticated `POST /t/<id>/auth/register` against a soft-deleted tenant that had
+  self-registration on recreated `tenants/<id>/data.sqlite` (full schema) and wrote a user
+  into it — no race needed — leaving an orphan database and a cached pool that nothing
+  evicts. It now answers the same `403 SELF_REGISTER_DISABLED` as an unknown id. The bearer
+  layer's DB arm, `login`, and both tenant OAuth endpoints proved liveness in `meta` and
+  then opened the pool with the create-on-open accessor after releasing the lock, so a soft
+  delete landing in between did the same; all five now open with the create-free
+  `get_if_live`, exactly as the two auth-cache arms already did, and answer with their
+  existing refusal (bearer `404 TENANT_NOT_FOUND`, register `404 TENANT_NOT_FOUND`, login
+  `401 INVALID_CREDENTIALS`, OAuth `404`). No status code changes for a live tenant; no
+  extra `meta` query. A live tenant whose `data.sqlite` has gone missing is no longer
+  silently rebuilt empty by a data-plane request: a request that has to open it gets the
+  refusals above (a pool already cached keeps serving, as before). Admin-plane pages and
+  actions that open it through the create-on-open accessor (the cron and functions pages and
+  collection settings changes, among others) still rebuild it empty, as before; the
+  read-only overview and collection browse pages do not. The remaining tenant-plane
+  handlers that re-open the pool (or create a `tenants/<id>/_uploads` / `_functions`
+  directory) after the bearer layer are race-only and stay for a later liveness refactor.
+- **Revoking, demoting or removing an admin — or moving a tenant away from a `member`
+  owner — now ends the SSE streams that admin's PATs opened (E2′).** The seven
+  PAT-revocation paths closed rooms WS sockets (#975) but never touched SSE, and an SSE
+  stream opened with an admin PAT is unfiltered (`AuthCtx::Service`), so a stream opened
+  before the revocation kept receiving every row event of that collection indefinitely
+  (UI PATs carry no `expires_at`, so #976's deadline never fired for them). Each path now
+  sends a per-ADMIN revocation signal after its auth-cache clear: `ws_router` records a
+  global revocation generation BEFORE bearer auth (`pat_gen_capture`) and subscribes the
+  admin's signal after it, so a revocation landing between that generation read and the
+  auth read is not missed; the SSE stream ends on that signal or on its `PatDeadline`,
+  whichever comes first. **Anon and tenant-service-key streams are untouched** — they
+  carry no admin identity — and rooms eviction is unchanged. The signal is per admin, not
+  per token: revoking one CLI PAT — and also the routine `cli token refresh` (CLI PATs
+  live 24 h by default, so roughly once a day) — restarts that same admin's other PAT
+  streams once (they reconnect, the still-valid key is admitted). This is expected, not a
+  fault. Owner transfer away from an `owner`/`admin` does not signal — their reach did not
+  change. The out-of-process `set_admin_role` binary still cannot signal (same residual as
+  rooms), and the pre-existing auth-cache "insert after clear" race is unchanged (see
+  AGENTS.md Accepted residuals). No new environment variable, API or wire format.
+- **Soft-deleting a tenant now releases the MCP layer's hold on its database, and
+  recycling a soft-deleted id can no longer hand the new tenant the old one's data (E5).**
+  The per-tenant MCP cache has two layers — the rmcp service and, beneath it, the
+  `DrustMcp` that owns an `Arc<TenantPool>` — and every live rmcp session holds its own
+  copy as well. Soft-delete evicted only the outer service, so the old pool's SQLite
+  connections stayed open on the file just moved into `_trash` (disk space not reclaimed
+  until restart, even after the janitor swept it), and when an admin then re-created a
+  tenant with the same id, the new service key's MCP session reused that pool — reading
+  the previous tenant's rows and writing into the `_trash` copy the janitor deletes after
+  the retention window, while REST served the new database. `McpHttpRegistry::evict` now
+  evicts the inner entry too and ends the evicted service's live sessions (they belong to
+  a deleted tenant, whose requests were already refused), and a create that recycles an
+  id runs the same eviction sequence as soft-delete (`evict_tenant_everywhere`) after the
+  meta lock is released, which also clears anything a request racing the soft-delete
+  re-populated. One residual window remains, and it needs both a leftover old-incarnation
+  pool from such a race and an admin-PAT request reaching the id at the moment of the
+  recycle: that request can re-insert the old pool into the MCP cache after the sweep.
+  Creating a tenant with a fresh id is unchanged. No new environment
+  variable, no new API, no schema or wire-format change.
+
+- **`drop_collection` now closes the collection's live SSE subscriptions (E4).** It
+  invalidated the schema cache but never called `bus.evict_collection`, so a subscriber
+  connected before the drop stayed attached to the same-name broadcast channel — and
+  because `publish` never re-checks the gate, a recreated same-name collection streamed
+  every insert/update to those old subscribers, even though a fresh connect is refused
+  (`create_collection` starts realtime OFF). The drop now evicts after the commit and after
+  `schema_cache.invalidate` (invariant 5 order, structurally pinned); reconnecting clients
+  get 404, or the recreated collection's own verdict. `dry_run: true` still closes
+  nothing. Only subscribers of the dropped collection are affected (service streams on it
+  included); other collections, other tenants and rooms are untouched.
+
+- **Dropping a field that a select policy names no longer opens the anon SSE stream
+  (E6′).** The realtime face filters anon events in memory with `eval_policy`, which
+  reads a key absent from the event row as NULL — so after `drop_field x`, a policy such
+  as `{"x":{"$is_null":true}}` admitted every row and anon subscribers (in-flight and
+  newly connected alike) received the rows the policy hid, while `/list` for the same
+  caller already refused the read (`POLICY_COMPILE_ERROR`). SSE now evaluates through
+  `eval_policy_materialized`: a policy naming a field the materialized `RETURNING *` row
+  does not carry is denied whole, the in-memory twin of `compile_policy_using`'s
+  `UnknownField`. A present-but-NULL column evaluates exactly as before, and
+  `eval_policy` itself — which the write-side CHECKs and the corpus rely on reading an
+  absent key as NULL — is unchanged. The drop still succeeds and nobody is
+  disconnected: affected subscribers stay connected and receive no events for that
+  collection until the policy is replaced or cleared (both evict them to reconnect under
+  the changed policy) or a field of that name is added back. The anon/user UPDATE response
+  read-back (`records::readback_for`) now calls the same function. No new environment
+  variable, no schema change.
+
+- **A failed `DELETE …?dry_run=true` no longer leaves the read-only authorizer on a pooled
+  reader (E7).** The dry-run target probe attached the strict authorizer and early-returned
+  on a query error (`?`) before its detach, so the reader went back to the pool still
+  restricted: the next request that borrowed it and read `sqlite_master` itself — a
+  schema-cache miss, `GET /collections`, the dry-run FK blast-radius scan — failed with a
+  500 until some later request happened to detach. Reachable only when the probe's prepare
+  fails, e.g. a collection dropped between the cap check and the probe. Every reader-side
+  attach/detach pair (19 sites: REST `/list`, `/aggregate`, explain, legacy list, the
+  dry-run, admin `_list`, MCP read/aggregate/explain, edge `query-list`, the `/query` and
+  stored-RPC executors) now goes through `query::authorizer::AuthzGuard`, which detaches on
+  Drop — on `?`, early return and panic unwind alike. The allowed set of both reader arms is
+  unchanged; each site keeps the arm it had (caller-SQL sites stay strict). The writer-side
+  `run_write_rpc` pairs are deliberately untouched: their detach must precede `RELEASE`.
+  No API, env, schema or wire change.
+
+### Changed
+
+- **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
+  `update-record` host op invoked under an anon/user caller — now returns the updated row
+  only where that caller could READ it (E9).** The response used to be the full
+  `UPDATE … RETURNING *` row unconditionally, so a caller with no read access to the
+  updated row read columns GET would have refused — for example one holding `update` but
+  not `select` (`anon_caps = ["update"]`, or a user on an owner-scoped `read_scope="all"`
+  collection with `user_caps` lacking `select`), or one whose select policy hides the
+  post-image row. Now any caller that could not read the updated row gets
+  `{"record": {"id": <id>}}` —
+  the `record` key is kept so `record.id` reads still work. The write itself is unchanged
+  (it commits; status stays 200). The decision is zero-query: caps/owner via the same
+  matrix `/list` uses (`compute_read_auth`), the select policy via the in-memory
+  `eval_policy` on the returned row, failing closed when the policy names a column the row
+  lacks. **Unchanged:** service/admin-PAT callers (full row), MCP `update_record`,
+  privileged edge calls, INSERT responses (still `{"id","record"}` — an insert-only anon
+  form keeps working), DELETE (204/404), and the SSE / webhook / function event fan-out
+  (still the full row; each consumer is gated on its own). Migration: a front end that
+  reads fields other than `id` from a PATCH response must grant the caller `select` (or
+  relax the select policy), or re-read the row. The generated `/openapi.json` does not
+  describe the id-only shape (its update operation already documents the bare row rather
+  than `{"record": …}`; that pre-existing mismatch is left as is).
+
+- **`drop_collection` may return `warnings` (E4).** When anon-callable stored RPCs
+  (kind=sql or kind=query) depend on the dropped collection, the result carries
+  `warnings: [{code: "ANON_RPC_DEPENDS_ON_COLLECTION", rpc, kind, mode, message}]`. The
+  drop is never refused for it — this is a heads-up that recreating the same name would
+  re-arm those RPCs against the new table with no clear guard firing (a kind=query RPC
+  skips `anon_caps` under RpcGrant; a kind=sql RPC runs its SQL verbatim). If the scan
+  itself cannot read the RPC registry, one `ANON_RPC_SCAN_FAILED` warning is returned
+  instead and the drop still succeeds. The key is absent when there is nothing to report,
+  so existing callers see an unchanged shape. No new environment variable, no schema change.
+
+- **`drop_field` may return `warnings` (E6′).** The result carries
+  `warnings: [{code: "FIELD_REFERENCED_BY_POLICY", op, clause, field, message}]` — one per
+  stored policy clause (any of the four verbs, `using` or `check`, `$data` CHECK operands
+  included) that still names the dropped field. The drop is never refused for it, and no
+  subscriber is evicted. The key is absent when there is nothing to report, so an
+  unreferenced drop answers exactly as before.
+
+### MCP (M1) — model-facing text, tool annotations, error results
+
+No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.
+
+- **Server instructions rewritten to fit Claude Code's 4,096-character cap.** The old text
+  was roughly 8,700–9,300 characters; Claude Code reads only the first 4,096, which kept a
+  false "insert/update accept `dry_run`" claim and cut the correct one. The new text
+  (3,963 characters at most, for the longest tenant id) leads with the rules that prevent
+  damage: only `delete_record`, `drop_collection` and `drop_index` accept `dry_run` —
+  preview with it first (any other tool ignores the argument and runs for real) — record
+  writes are not idempotent, and the service identity bypasses owner_field filtering /
+  caps / RLS but must still set the owner field when inserting into an owner-scoped
+  collection. It names every tool and no longer carries absolute upload, function or
+  cron URLs — the upload detail lives in the `drust://<tenant>/files-guide.md` resource,
+  and a function is uploaded to `whoami`'s `endpoints.rest_base` + `functions`. It no
+  longer recommends `recent_writes`, which returns no rows yet, and no longer tells the
+  model to "start with" a prompt (prompts are commands the user runs). `list_functions`'
+  description no longer points at a `whoami` field that does not exist, and `query`'s
+  description no longer says the structured read tools enforce scoping on MCP.
+- **Tool annotations are now written out per tool instead of left to defaults.** `update_record` and
+  `upsert_records` are no longer marked idempotent, so Claude Code no longer re-sends them
+  automatically after a dropped connection (a re-send fired webhooks and edge functions
+  twice); you now see "connection closed before the tool call was answered" and decide
+  yourself. `call_rpc` is marked read-only (it always runs on the read-only executor on
+  MCP), so Claude Code may re-send it or run it in parallel with other reads.
+  `update_record` and `upsert_records` (both overwrite existing field values) and fourteen
+  replace-style tools (`set_anon_caps`, `set_user_caps`, `set_policy`, `set_description`,
+  `set_file_policy`, `set_file_visibility`, `update_rpc`, `update_user`, `set_owner_field`,
+  `set_file_caps`, `set_egress_allowlist`, `set_oauth_provider`, `set_redirect_uris`,
+  `update_webhook`) are now `destructiveHint: true` — clients that ask for confirmation
+  before destructive tools may now ask before these — and every tool except
+  `invoke_function` is `openWorldHint: false`.
+- **Five tools report failure as an error result.** `describe_collection` (unknown
+  collection), `delete_record` (unknown id, non-dry-run), `delete_file` and `get_file_url`
+  (unknown id, no storage), and `set_file_visibility` (unknown id, no storage, bad
+  visibility) used to return a *successful* result whose text was `{"error_code": …}`.
+  They now return `isError: true` with the JSON text
+  `{"error_code", "message", "suggested_fix"?}` — the same error codes as before.
+  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors are
+  unchanged (JSON-RPC errors with `data.error_code`), and so are `delete_record`'s
+  `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The descriptions of
+  `describe_collection`, `delete_file`, `get_file_url` and `set_file_visibility` now say
+  how they fail, and `recent_writes`' description says it returns no rows yet, so an
+  empty result is not proof that nothing was written.
+- **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other
+  than `public` / `private` as "no filter" — so a typo such as `"Public"` or `"pub"`
+  silently returned every file, private ones included. A value that is a case or
+  whitespace variant or a prefix of `public` / `private` (anything starting `pub` / `priv`
+  once trimmed and lower-cased, other than the exact words) now returns `isError: true`
+  with `INVALID_VISIBILITY`. Every other value (`"all"`, `""`, `"any"`, …) still lists
+  every file, as documented. A stored row that fails to decode is now a JSON-RPC error
+  instead of being dropped silently from the page.
+- **Prompts.** `debug_write` no longer suggests re-running a write with `dry_run` or
+  checking `recent_writes`; `write_edge_function`'s upload URL now honours
+  `DRUST_BASE_PATH` and the egress step uses `get_egress_allowlist` / `set_egress_allowlist`
+  (the allowlist is replaced, never merged); `bootstrap` no longer says `list_records` is
+  owner-enforced on MCP; `design_collection` lists the `datetime` and `json` field types.
+  The `files-guide.md` resource now says when to switch to tus (above
+  `limits.max_upload_bytes`) and that `OPTIONS …/uploads` reports `Tus-Max-Size`.
+
+### Build
+
+- **Builds clean under Rust 1.100's clippy.** CI installs the latest stable toolchain, and
+  1.100 (2026-11-09) added four `-D warnings` failures in code this release did not
+  otherwise touch: a deprecated atomic `fetch_update` (now an explicit compare-exchange
+  loop, same saturating decrement), two `chunks_exact(4)` (now `as_chunks::<4>()`), and
+  `AuditWriter::send_backfill`'s `Result<(), ()>` (now `Result<(), AuditWriterClosed>`).
+  No behaviour change; the minimum supported Rust version is unchanged.
+- **Dependencies refreshed to the latest compatible versions (`Cargo.lock` only;
+  `Cargo.toml` is unchanged).** `cargo audit` had gone red on advisories published since
+  v1.66.1. This refresh clears the ones a compatible update can reach — `cap-primitives`
+  (RUSTSEC-2026-0482), `h2`, `pulldown-cmark`, `quinn-proto` / `quinn-udp`, `rustls`,
+  `rustls-webpki`, `webpki-roots`, `zstd`, and the two `wasmtime` advisories fixed in
+  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0, `rusqlite` 0.40.0 → 0.40.2 and `tokio`
+  1.52 → 1.54. **Still open, and why CI's `cargo audit` step stays red after this
+  release:** the remaining `wasmtime` / `wasmtime-wasi` advisories are patched only on
+  the 48+ lines, `libsqlite3-sys` needs 0.39 (a `rusqlite` minor bump), and `rmcp`'s
+  advisory is fixed only in 3.9 (it concerns the Streamable HTTP *client*, which drust
+  does not build). Those cross-major upgrades follow separately.
+
 ## v1.66.1 — 2026-08-17
 
 The single finding of the v1.66.0 codex second-engine review (MED), fixed same-day. No new

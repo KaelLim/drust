@@ -260,7 +260,7 @@ pub async fn patch_tenant_owner(
     let new_owner = body.owner_admin_id;
 
     // All DB work in one sync block; the meta guard drops before any .await.
-    let db_result: Result<(Option<i64>, Option<String>), Response> = {
+    let db_result: Result<(Option<i64>, bool, Option<String>), Response> = {
         let conn = state.session.meta.lock().await;
 
         // A concrete target must be an existing admin.
@@ -294,6 +294,20 @@ pub async fn patch_tenant_owner(
             }
         };
 
+        // E2′ — snapshot under the same guard: a sees-all old owner keeps
+        // reaching this tenant after the transfer, so signalling their SSE
+        // streams would only restart them host-wide for nothing. Unreadable ⇒
+        // false ⇒ signal (fail direction: over-end that one admin's streams).
+        let old_owner_sees_all = old_owner.is_some_and(|id| {
+            conn.query_row(
+                "SELECT role FROM admins WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .map(|role| crate::mgmt::tenant_authz::sees_all_tenants(&role))
+            .unwrap_or(false)
+        });
+
         if let Err(e) = conn.execute(
             "UPDATE tenants SET owner_admin_id = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             rusqlite::params![new_owner, tid],
@@ -314,10 +328,10 @@ pub async fn patch_tenant_owner(
             )
             .ok();
 
-        Ok((old_owner, caller_email))
+        Ok((old_owner, old_owner_sees_all, caller_email))
         // conn guard drops here — before any .await
     };
-    let (old_owner, caller_email) = match db_result {
+    let (old_owner, old_owner_sees_all, caller_email) = match db_result {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -335,7 +349,16 @@ pub async fn patch_tenant_owner(
     // `evict_all_tenants` would kick strangers. A no-op re-submit of the
     // current owner changes nothing and does not evict (#955 "real change
     // only"). Order is load-bearing: the PAT cache clear above, sockets here.
+    //
+    // E2′ — a `member` old owner loses their only reach to this tenant, so the
+    // SSE streams their PATs opened end as well (after the cache clear above).
+    // A sees-all old owner still reaches it; their streams are left alone.
     if old_owner != new_owner {
+        if let Some(old) = old_owner
+            && !old_owner_sees_all
+        {
+            state.bus_rooms.cred().revoke_admin(old);
+        }
         state.bus_rooms.evict_tenant(&tid);
     }
 

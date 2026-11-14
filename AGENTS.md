@@ -43,7 +43,7 @@ that forgets is a real bug, and it will look locally correct.
 | `check_tenant_quota` before the growth | write or upload path that can grow a tenant, for **all** caller roles |
 | `record_history::capture` in the **same transaction** | path that mutates tenant data-collection rows (three shapes: structured writes, owner-cascade pre-DELETE, the write-RPC preupdate hook) |
 | Auth-cache eviction after commit | write that sets `revoked_at`, changes a tenant's `deleted_at`/id, deletes `_system_sessions` rows, cascade-deletes `_admin_tokens`, mutates a publish flag, or changes an admin's `role` or a tenant's `owner_admin_id` |
-| `bus.evict_collection` after `schema_cache.invalidate` | write that **reduces** anon read access to a realtime collection — the SSE handler captures caps once at connect, so invalidating the cache alone only affects the next connect |
+| `bus.evict_collection` after `schema_cache.invalidate` | write that **reduces** anon read access to a realtime collection — the SSE handler captures caps once at connect, so invalidating the cache alone only affects the next connect (`drop_field` is adjudicated exempt — see Adjudicated verdicts) |
 | **Both** `check_egress` **and** `PinnedPublicResolver`, per attempt, fail-closed | host-outbound HTTP path. They are orthogonal; dropping either reopens SSRF |
 | `tenant_authz::sees_all_tenants` (never a bare `is_owner`) | new tenant-visibility decision |
 | `require_owner_layer` | new **host-wide** admin surface with no `{id}` in its path — the ownership guard cannot catch those, which is exactly how `/admin/files*` was missed |
@@ -111,6 +111,19 @@ does not cover.
   `read_pat_reach`). The duplicate point-read is the price of keeping `read_pat_reach` a
   sealed single decision point; passing the role in would split the reach logic across
   call sites.
+- The E2′ SSE revocation signal is **per ADMIN, not per token**: `cli_token_revoke` — and
+  the routine `cli_token_refresh`, roughly daily with the default 24 h CLI-PAT lifetime —
+  also ends the same admin's UI-PAT SSE streams once (they reconnect with the still-valid
+  key). Per-token signalling was rejected in design: it needs the token id in
+  `CachedRole::AdminPat` and a `bearer_auth_layer` change. Do not "narrow" it. The same
+  per-admin granularity applies to the two reach-narrowing sites: transferring a tenant away
+  from a `member` old owner, and demoting an admin (sees-all → not), each also end that
+  admin's PAT streams on the OTHER tenants they can still reach (they reconnect and are
+  re-admitted). This is deliberate, not over-eviction to fix.
+- Owner transfer does **not** send the SSE signal when the old owner is sees-all
+  (`owner`/`admin`): their reach did not change, so signalling would only restart their
+  streams host-wide for nothing. The role is snapshotted under the transfer's own meta guard
+  (`tenant_settings::patch_tenant_owner`).
 
 **Accepted residuals — what remains after #976 (v1.66.0); re-report only if the exposure changes:**
 
@@ -119,15 +132,69 @@ does not cover.
   between the auth decision and that layer's capture is still adopted as the socket's
   baseline. The `evict_all_tenants` shard-walk-vs-concurrent-first-connect race is the
   **same window** — a socket can only be missed if its bearer auth passed before
-  `clear_admin_pat` — not a new hole. Capture may only ever move EARLIER.
+  `clear_admin_pat` — not a new hole. Capture may only ever move EARLIER. **For SSE this
+  window is closed (E2′)**: `ws_auth::pat_gen_capture` reads the revocation generation
+  before any auth read; rooms keep the one-hop window above.
+- The auth-cache "insert after clear" race (pre-dates E2′, applies to SSE and rooms alike):
+  the bearer DB arm releases the `meta` lock after its CTE and inserts into the auth cache
+  later; a revocation that commits, clears and signals exactly between those two points
+  lets that request re-insert the revoked entry (`AuthCache::insert` has no generation
+  check against `clear_admin_pat`). Precondition: a concurrent request with the same PAT at
+  the moment of revocation. Bound: the 10 s safety TTL for new requests — but an SSE stream
+  newly opened from that entry inside those 10 s takes a post-revocation `g0`, so it gets no
+  signal, and a UI PAT has no `PatDeadline`. A fix touches `bearer_auth_layer` and
+  `AuthCache`; out of E2′ scope.
 - `pat_evict_pin` keys on the `clear_admin_pat(` needle — a future site that forgets the
   cache clear *too* is invisible to the pin; the guard there is invariant-4 review.
+
+**Deliberate — data-plane response shape (not the PAT family):**
+
+These entries are outside the #975 scope above; they record response shapes on the
+anon/user data plane that were judged deliberate during the E-track access-gate review.
+
+- INSERT responses still return the full `record` for anon/user (only UPDATE is narrowed,
+  by `records::readback_for`): the row is the caller's own write plus id/timestamps/schema
+  defaults — no exploit path, and narrowing it breaks insert-only anon forms. DELETE's
+  204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
+
+**Deliberate — schema DDL vs stored policies (not the PAT family):**
+
+- `drop_field` neither refuses (409) nor evicts when it drops a policy-referenced field.
+  Compensated by `query::policy::eval_policy_materialized` in `tenant/sse.rs` (per-event
+  fail-closed; see also the `bus.evict_collection` row of Enumerated invariants) and the
+  response's `warnings`; the SQL faces already answer `POLICY_COMPILE_ERROR`. A 409 would
+  block a trusted caller with no exploit path left (`FTS_FIELD_INDEXED` differs: there the
+  sync triggers break every write).
+
+**Deliberate — MCP annotations and error faces (not the PAT family):**
+
+- `openWorldHint` is `false` on every tool but `invoke_function`, even on record writes
+  that fan out to webhooks / edge functions and on `broadcast`: the hint describes the call
+  itself, and Claude Code's retry logic does not read it.
+- The 21 idempotent writes in `RETRY_SAFE_WRITES` (incl. `set_anon_caps` / `set_policy` /
+  `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
+  deliberately retry-safe: a repeat converges to the same state; the extra eviction only
+  makes subscribers reconnect and re-gate.
+- Only five tools (+ `list_files`) return `isError: true`; every other tool error is still
+  a JSON-RPC error. The blanket conversion is the planned outer `call_tool` (MA1), which
+  reuses `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s `expires_in`
+  range stay `-32603` until then.
+- Edge Privileged `delete-record` still returns `{"ok":false,"error_code":"RECORD_NOT_FOUND"}`
+  on the WIT ok-branch; M1 converted only the MCP wrapper.
+- `list_files` refuses only a misspelt `public` / `private` (`looks_like_misspelt_visibility`);
+  any other unknown `visibility` still lists every file. That is the documented "anything
+  else is ignored" contract kept on purpose — tightening it to reject every unknown value
+  turns documented successful calls into failures.
+- `set_file_visibility` is `destructiveHint: true` although it looks like a toggle: it
+  resets `cache_control`, and a publish cannot be recalled once Caddy serves the object
+  (invariant 19).
 
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |
 |---|---|
 | MCP tool count | `grep -c '#\[tool(' src/mcp/handler.rs` |
+| MCP tool annotations | `annotation_tests::TABLE` + `RETRY_SAFE_WRITES` in `src/mcp/handler.rs` |
 | Routes | the router builders in `src/mgmt/routes.rs`, `src/tenant/mod.rs` |
 | Per-file structure | `docs/architecture.md` (generated — `bash docs/gen-architecture.sh`) |
 | Edge-function host API | `sdk/edge-function-template/wit/world.wit` |
@@ -141,13 +208,19 @@ the other side:
 
 - `/list` and `/aggregate` — both call `compute_read_auth` and `build_where_clause` verbatim.
 - `compile_policy_using` (SQL) and `eval_policy` (in-memory) — same grammar, two evaluators,
-  with `tests/policy_expression.rs` as the corpus proving they agree.
+  with `tests/policy_expression.rs` as the corpus proving they agree (the SSE and UPDATE
+  read-back faces via `eval_policy_materialized`, which adds the missing-field deny).
 - `has_dml_cap` and the `records_list.rs` cap matrix — both read `user_caps` for the User role.
 - `storage::files::is_unsafe_inline_type` and the Caddy `@markup` matcher in
   `../garage/deploy/Caddyfile` — the Rust side is case-insensitive, Caddy's is not.
 - The four config-time `RPC_ANON_OWNER_SCOPED` sites (create, update, `set_owner_field`,
   policy-attach). The runtime path is deliberately not re-checked, so a missed config site
   is a real bypass — one shipped this way once.
+- REST `create_handler`/`update_handler` and edge `enforced_insert`/`enforced_update` — all
+  four call `records::reject_system_id`; a fifth anon/user-reachable structured write must too.
+- REST `update_handler` and edge `enforced_update` — both hand the `RETURNING *` post-image to
+  `records::readback_for` before answering; a third anon/user-reachable UPDATE response site
+  must do the same.
 
 ## Where the deployment contract lives — and why code review cannot see it
 

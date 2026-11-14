@@ -12,7 +12,10 @@
 use drust::mcp::server::{DrustMcp, McpRegistry};
 use drust::mcp::tools::schema::FieldSpec;
 use drust::storage::pool::TenantRegistry;
+use drust::tenant::events::Event;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
 
 async fn svc(dir: &tempfile::TempDir, tenant: &str) -> DrustMcp {
     let data = dir.path().to_path_buf();
@@ -158,5 +161,120 @@ async fn set_owner_field_evicts_in_flight_subscriber() {
     assert!(
         rx.recv().await.is_err(),
         "owner-scoping a collection must evict the in-flight anon SSE subscriber (audit3 F3)"
+    );
+}
+
+// ── E4 (S-44) — drop_collection must evict too ──────────────────────────────
+//
+// A dropped collection's in-flight subscribers captured their gate against the
+// OLD table, and `publish` never re-checks it — so without an evict, a
+// same-name recreate would stream the NEW table's rows to them (even though a
+// fresh connect is refused: `create_collection` starts realtime OFF).
+
+fn plain_text_field(name: &str) -> FieldSpec {
+    FieldSpec {
+        name: name.into(),
+        sql_type: "text".into(),
+        nullable: false,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn drop_collection_evicts_in_flight_subscriber() {
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "e4-drop").await;
+    seed_posts(&mcp).await;
+
+    let tenant = mcp.inner().tenant_id.clone();
+    let mut rx = mcp.inner().bus.subscribe(&tenant, "posts");
+
+    drust::mcp::tools::schema::drop_collection(&mcp, "posts")
+        .await
+        .unwrap();
+
+    // Bounded: before the fix the channel was never removed, so recv parks
+    // forever instead of failing.
+    let got = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+    assert!(
+        matches!(got, Ok(Err(RecvError::Closed))),
+        "drop_collection must evict the in-flight SSE subscriber (E4), got {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn drop_collection_evicts_only_its_own_channel() {
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "e4-drop-own").await;
+    seed_posts(&mcp).await;
+    drust::mcp::tools::schema::create_collection(&mcp, "notes", &[plain_text_field("title")])
+        .await
+        .unwrap();
+
+    let tenant = mcp.inner().tenant_id.clone();
+    let mut rx_posts = mcp.inner().bus.subscribe(&tenant, "posts");
+    let mut rx_notes = mcp.inner().bus.subscribe(&tenant, "notes");
+
+    drust::mcp::tools::schema::drop_collection(&mcp, "posts")
+        .await
+        .unwrap();
+
+    mcp.inner()
+        .bus
+        .publish(&tenant, "notes", Event::Deleted { id: 7 });
+    let notes = tokio::time::timeout(Duration::from_secs(2), rx_notes.recv()).await;
+    assert!(
+        matches!(notes, Ok(Ok(Event::Deleted { id: 7 }))),
+        "a sibling collection's subscriber must survive the drop, got {notes:?}"
+    );
+    let posts = tokio::time::timeout(Duration::from_secs(2), rx_posts.recv()).await;
+    assert!(
+        matches!(posts, Ok(Err(RecvError::Closed))),
+        "the dropped collection's subscriber must be evicted, got {posts:?}"
+    );
+}
+
+#[tokio::test]
+async fn failed_drop_collection_does_not_evict() {
+    // Pins only "a refused pre-check keeps the stream": the FK refusal happens on
+    // the reader, before the write tx. "Evict only after the commit" is guarded
+    // by the structural pin in src/mcp/tools/schema.rs (drop_collection_order_pin).
+    let d = tempfile::tempdir().unwrap();
+    let mcp = svc(&d, "e4-drop-fk").await;
+    drust::mcp::tools::schema::create_collection(&mcp, "authors", &[plain_text_field("name")])
+        .await
+        .unwrap();
+    drust::mcp::tools::schema::create_collection(
+        &mcp,
+        "posts",
+        &[FieldSpec {
+            name: "author_id".into(),
+            sql_type: "integer".into(),
+            nullable: false,
+            foreign_key: Some("authors".into()),
+            ..Default::default()
+        }],
+    )
+    .await
+    .unwrap();
+
+    let tenant = mcp.inner().tenant_id.clone();
+    let mut rx = mcp.inner().bus.subscribe(&tenant, "authors");
+
+    let err = drust::mcp::tools::schema::drop_collection(&mcp, "authors")
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("foreign-key references"),
+        "expected the FK refusal, got: {err}"
+    );
+
+    mcp.inner()
+        .bus
+        .publish(&tenant, "authors", Event::Deleted { id: 1 });
+    let got = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+    assert!(
+        matches!(got, Ok(Ok(Event::Deleted { id: 1 }))),
+        "a refused drop must not evict, got {got:?}"
     );
 }

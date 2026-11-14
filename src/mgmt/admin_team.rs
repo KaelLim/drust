@@ -711,6 +711,9 @@ pub async fn change_role(
     if crate::mgmt::tenant_authz::sees_all_tenants(&old_role)
         && !crate::mgmt::tenant_authz::sees_all_tenants(&new_role)
     {
+        // E2′ — the demoted admin's PAT-backed SSE streams end too (same
+        // pre-image decision; the signal is per admin, not per reach).
+        s.bus_rooms.cred().revoke_admin(target_id);
         s.bus_rooms.evict_all_tenants();
     }
 
@@ -925,7 +928,10 @@ pub async fn remove_admin(
     // A sees-all removal closes the host; a member removal closes only the
     // tenants they owned — every other tenant's socket belongs to a stranger.
     // The reach was snapshotted pre-DELETE (see above).
-    crate::mgmt::pat_evict::evict_reach(&s, removed_reach);
+    //
+    // E2′ — `target_id`, never `caller_id`: the REMOVED admin's PAT-backed SSE
+    // streams end too.
+    crate::mgmt::pat_evict::evict_reach(&s, target_id, removed_reach, true);
 
     // Emit audit (async — safe; lock already released).
     let mut entry = AuditEntry::success("-", "-", "admin.team.remove", 0);

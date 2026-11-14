@@ -166,6 +166,18 @@ fn take_string_key(
     }
     None
 }
+/// `AuditWriter::send_backfill` failed because the writer task is gone (its
+/// channel is closed), so the entry was not queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditWriterClosed;
+
+impl std::fmt::Display for AuditWriterClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("audit writer task is closed")
+    }
+}
+
+impl std::error::Error for AuditWriterClosed {}
 
 /// v1.24 — process-global audit writer handle. Cheap to clone (Arc-backed
 /// channel); one instance per drust process, lives forever after startup.
@@ -246,8 +258,14 @@ impl AuditWriter {
 
     /// Used by the backfill at startup. Same blocking-send semantics as
     /// retention — backfill is not in a request path.
-    pub async fn send_backfill(&self, entry: crate::safety::audit::AuditEntry) -> Result<(), ()> {
-        self.tx.send(WriterCmd::Insert(entry)).await.map_err(|_| ())
+    pub async fn send_backfill(
+        &self,
+        entry: crate::safety::audit::AuditEntry,
+    ) -> Result<(), AuditWriterClosed> {
+        self.tx
+            .send(WriterCmd::Insert(entry))
+            .await
+            .map_err(|_| AuditWriterClosed)
     }
 
     /// Persist a single key/value into the audit DB's `_meta` table

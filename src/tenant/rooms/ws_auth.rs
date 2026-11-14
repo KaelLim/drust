@@ -14,8 +14,12 @@
 //! #976 also puts the two request extensions the realtime faces consume here:
 //! [`WsBaselineMeta`] (produced by [`ws_baseline_capture`], mounted INSIDE
 //! `bearer_auth_layer` on `ws_router` only) and [`PatDeadline`] (produced by
-//! the two admin-PAT resolution arms of `bearer_auth_layer` itself). Both are
-//! server-side per-request state — a client cannot set a request extension.
+//! the two admin-PAT resolution arms of `bearer_auth_layer` itself). E2′ adds a
+//! third, [`PatRevocation`](crate::tenant::cred_revoke::PatRevocation): the
+//! per-admin revocation signal, subscribed by `ws_baseline_capture` for
+//! requests carrying `AdminId`, against a generation [`pat_gen_capture`] read
+//! OUTSIDE bearer auth. All are server-side per-request state — a client
+//! cannot set a request extension.
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -91,6 +95,44 @@ pub async fn ws_baseline_capture(
         req.extensions_mut()
             .insert(WsBaselineMeta { epoch, epoch0 });
     }
+    // E2′ — an admin PAT (the only credential that carries `AdminId` on the
+    // data plane) gets the per-admin revocation signal its SSE stream ends on.
+    // `g0` comes from `pat_gen_capture`, which ran BEFORE auth; without that
+    // layer (dev/test routers) it is taken here, i.e. the pre-E2′ one-hop
+    // window between the auth decision and this capture — never "no signal".
+    // `g0` first, subscription second, both before `next.run`.
+    if let Some(admin_id) = req
+        .extensions()
+        .get::<crate::auth::middleware::AdminId>()
+        .map(|a| a.0)
+    {
+        let cred = state.bus_rooms.cred();
+        let g0 = req
+            .extensions()
+            .get::<crate::tenant::cred_revoke::PatGen0>()
+            .map(|g| g.0)
+            .unwrap_or_else(|| cred.current_gen());
+        let rx = cred.subscribe_admin(admin_id);
+        req.extensions_mut()
+            .insert(crate::tenant::cred_revoke::PatRevocation::new(rx, g0));
+    }
+    next.run(req).await
+}
+
+/// E2′ — runs OUTSIDE `bearer_auth_layer`, on `ws_router` ONLY, so the
+/// revocation generation `g0` predates every auth read (cache hit or CTE). A
+/// revocation landing between this read and the auth read is then still seen
+/// by the subscription `ws_baseline_capture` takes after auth. Same rule as
+/// #976 F1: the capture may only ever move EARLIER — an older `g0` can only
+/// over-end a stream, a newer one can miss a revocation.
+pub async fn pat_gen_capture(
+    State(state): State<crate::tenant::router::TenantAuthState>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    let g0 = state.bus_rooms.cred().current_gen();
+    req.extensions_mut()
+        .insert(crate::tenant::cred_revoke::PatGen0(g0));
     next.run(req).await
 }
 
@@ -385,15 +427,22 @@ mod tests {
         let bearer = block
             .find("bearer_auth_layer")
             .expect("ws_router must mount bearer_auth_layer");
+        let gen0 = block
+            .find("pat_gen_capture")
+            .expect("ws_router must mount pat_gen_capture");
         let adapter = block
             .find("ws_query_token_adapter")
             .expect("ws_router must mount ws_query_token_adapter");
         assert!(
-            capture < bearer && bearer < adapter,
+            capture < bearer && bearer < gen0 && gen0 < adapter,
             "ws_router layer order regressed: capture must be added FIRST \
-             (innermost, runs after auth), bearer second, adapter last \
-             (outermost) — got offsets capture={capture} bearer={bearer} \
-             adapter={adapter}"
+             (innermost, runs after auth), bearer second, pat_gen_capture \
+             third (E2′: the revocation generation g0 must be read OUTSIDE \
+             bearer auth, before any auth read — moved inside it, a \
+             revocation landing between auth and the subscription is missed \
+             while every router-shaped behavioural test stays green), adapter \
+             last (outermost) — got offsets capture={capture} \
+             bearer={bearer} gen0={gen0} adapter={adapter}"
         );
     }
 

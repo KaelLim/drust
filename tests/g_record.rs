@@ -1,9 +1,9 @@
-//! #925 — merged harness for the record test group (9 members).
+//! #925 — merged harness for the record test group (11 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: 8 of the members
+//! `duplicate_mod` is inherent to the merge, not a defect: 10 of the members
 //! declare their own `mod helpers;`, so once they share a crate clippy sees
-//! tests/helpers.rs loaded 8 times. Deduping it would mean editing test bodies
+//! tests/helpers.rs loaded 10 times. Deduping it would mean editing test bodies
 //! (spec 鐵律 1 forbids that) for no gain — rustc compiles the file once per
 //! module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -25,5 +25,9 @@ mod records_crud;
 mod records_list_structured;
 #[path = "records_list_user_caps.rs"]
 mod records_list_user_caps;
+#[path = "records_system_id.rs"]
+mod records_system_id;
+#[path = "records_update_readback.rs"]
+mod records_update_readback;
 #[path = "records_user_filter_denied.rs"]
 mod records_user_filter_denied;

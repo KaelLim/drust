@@ -724,6 +724,144 @@ async fn ui_revoke_that_matches_no_row_does_not_evict() {
     );
 }
 
+// ─── E2′ — the CLI-PAT lifecycle signals the caller's SSE streams ─────────────
+
+/// E2′ — a refresh soft-revokes the old CLI PAT, so the per-admin SSE signal
+/// advances for the caller (admin 1, the bootstrapped owner).
+#[tokio::test]
+async fn refresh_signals_the_callers_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (admin_id, old_cli) = seed_cli_pat(&dir, "cli:laptop");
+    let g0 = bus.cred().current_gen();
+    let rx = bus.cred().subscribe_admin(admin_id);
+
+    let resp = app
+        .oneshot(post_bearer("/auth/cli/token/refresh", &old_cli))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(
+        *rx.borrow() > g0,
+        "refresh must signal the caller's SSE streams"
+    );
+}
+
+#[tokio::test]
+async fn logout_signals_the_callers_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (admin_id, cli) = seed_cli_pat(&dir, "cli:laptop");
+    let g0 = bus.cred().current_gen();
+    let rx = bus.cred().subscribe_admin(admin_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {cli}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(
+        *rx.borrow() > g0,
+        "logout must signal the caller's SSE streams"
+    );
+}
+
+/// E2′, the other direction — a logout that revoked nothing has no stale
+/// credential, so it must not end anyone's SSE streams.
+#[tokio::test]
+async fn logout_with_nothing_to_revoke_does_not_signal() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (admin_id, ui_pat) = ui_pat_of(&dir);
+    let rx = bus.cred().subscribe_admin(admin_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/auth/cli/token")
+                .header(header::AUTHORIZATION, format!("Bearer {ui_pat}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["revoked"], serde_json::json!(false));
+
+    assert!(
+        !rx.has_changed().unwrap(),
+        "a no-op logout must not end anyone's SSE streams"
+    );
+}
+
+#[tokio::test]
+async fn ui_revoke_signals_the_callers_sse_streams() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (admin_id, session) = insert_admin(&dir, "kael-sse-revoke@x", "owner");
+    let id = seed_cli_pat_for(&dir, admin_id, "cli:laptop");
+    let g0 = bus.cred().current_gen();
+    let rx = bus.cred().subscribe_admin(admin_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{id}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+
+    assert!(
+        *rx.borrow() > g0,
+        "ui revoke must signal the caller's SSE streams"
+    );
+}
+
+/// E2′, the other direction — a guessed id that matched no row 404s before the
+/// clear, so it must not become a "restart my SSE streams" button either.
+#[tokio::test]
+async fn ui_revoke_that_matches_no_row_does_not_signal() {
+    let (app, dir, bus) = spin_up_with_bus().await;
+    let (a_id, session) = insert_admin(&dir, "a-sse@x", "owner");
+    let (b_id, _) = insert_admin(&dir, "b-sse@x", "member");
+    let other = seed_cli_pat_for(&dir, b_id, "cli:other"); // belongs to admin B
+    let rx_a = bus.cred().subscribe_admin(a_id);
+    let rx_b = bus.cred().subscribe_admin(b_id);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/admin/settings/cli-tokens/{other}/revoke"))
+                .header(header::COOKIE, &session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    assert!(
+        !rx_a.has_changed().unwrap(),
+        "a revoke that changed nothing must not signal the caller"
+    );
+    assert!(
+        !rx_b.has_changed().unwrap(),
+        "nor the owner of the guessed token id"
+    );
+}
+
 // ─── T7 — settings page lists labeled CLI tokens ──────────────────────────────
 
 #[tokio::test]

@@ -126,7 +126,10 @@ pub async fn reroll(
     // The under-evict direction is unchanged by the snapshot: a socket opened
     // under a WIDER past role is closed by the path that NARROWS the role
     // (`change_role`, `remove_admin`, owner transfer), never by this site.
-    crate::mgmt::pat_evict::evict_reach(&s, reach);
+    //
+    // E2′ — `true`: the same call also ends the SSE streams this admin's PATs
+    // opened (per admin, independent of the reach).
+    crate::mgmt::pat_evict::evict_reach(&s, caller_id, reach, true);
 
     emit_audit_revoke(caller_id);
     emit_audit_mint(caller_id);
@@ -384,7 +387,11 @@ pub async fn cli_token_refresh(State(s): State<MgmtState>, headers: HeaderMap) -
     // the same reach-scoped set: this route is on the PUBLIC router and
     // self-authenticates against the very PAT being rotated, so a `member`'s
     // CLI could otherwise disconnect every tenant on the host at will.
-    crate::mgmt::pat_evict::evict_reach(&s, reach);
+    //
+    // E2′ — and that admin's PAT-backed SSE streams. Refresh is ROUTINE (CLI
+    // PATs live 24 h by default), so roughly once a day this restarts the same
+    // admin's other PAT streams once; deliberate — the signal is per admin.
+    crate::mgmt::pat_evict::evict_reach(&s, caller.admin_id, reach, true);
     emit_audit_revoke(caller.admin_id);
     emit_audit_mint(caller.admin_id);
 
@@ -437,8 +444,9 @@ pub async fn cli_token_logout(State(s): State<MgmtState>, headers: HeaderMap) ->
         // #975 — inside the `n > 0` arm on purpose: a logout that revoked
         // NOTHING has no stale credential to close, and evicting anyway would
         // kick subscribers for a no-op. The set is the caller's own PAT reach,
-        // so a `member` logout closes only their tenants' sockets.
-        crate::mgmt::pat_evict::evict_reach(&s, reach);
+        // so a `member` logout closes only their tenants' sockets. E2′ — and
+        // that admin's PAT-backed SSE streams, under the same `n > 0` guard.
+        crate::mgmt::pat_evict::evict_reach(&s, caller.admin_id, reach, true);
         emit_audit_revoke(caller.admin_id);
     }
     Json(serde_json::json!({ "revoked": n > 0 })).into_response()
@@ -482,8 +490,9 @@ pub async fn cli_token_revoke(
     // already returned 404), so a guessed token id cannot become a disconnect
     // button; and the set is the caller's own PAT reach, so even a real revoke
     // by a `member` on this un-`require_owner_layer`ed router cannot reach a
-    // tenant they do not own.
-    crate::mgmt::pat_evict::evict_reach(&s, reach);
+    // tenant they do not own. E2′ — and that admin's PAT-backed SSE streams,
+    // also only past the 404 arm.
+    crate::mgmt::pat_evict::evict_reach(&s, caller_id, reach, true);
     emit_audit_revoke(caller_id);
     Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
 }

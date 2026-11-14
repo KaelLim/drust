@@ -360,3 +360,150 @@ async fn tools_call_list_collections_succeeds() {
         "expected `stuff` in collections list, got {parsed:?}"
     );
 }
+
+/// initialize + notifications/initialized, returning the session id and the
+/// initialize `result` (instructions, capabilities, serverInfo).
+async fn open_session(app: &axum::Router, tenant: &str, tok: &str) -> (String, Value) {
+    let init = mcp_request(
+        tenant,
+        tok,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "drust-test", "version": "0.0.0"}
+            }
+        }),
+    );
+    let init_resp = app.clone().oneshot(init).await.unwrap();
+    assert_eq!(init_resp.status(), StatusCode::OK);
+    let session_id = init_resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must set mcp-session-id header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let result = parse_mcp_body(init_resp)
+        .await
+        .into_iter()
+        .find_map(|m| m.get("result").cloned())
+        .expect("initialize must return a result");
+    let ack = session_request(
+        tenant,
+        tok,
+        &session_id,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+    let ack = app.clone().oneshot(ack).await.unwrap();
+    assert!(ack.status() == StatusCode::ACCEPTED || ack.status() == StatusCode::OK);
+    (session_id, result)
+}
+
+fn session_request(tenant: &str, bearer: &str, session_id: &str, body: Value) -> Request<Body> {
+    let mut req = mcp_request(tenant, bearer, body);
+    req.headers_mut()
+        .insert("mcp-session-id", session_id.parse().unwrap());
+    req
+}
+
+/// The annotations Claude Code acts on (auto-resend after a dropped connection
+/// for readOnly OR idempotent tools) as they actually leave the server —
+/// `Some(false)` must serialize, not vanish into the spec default.
+#[tokio::test]
+async fn tools_list_wire_annotations_for_retry_sensitive_tools() {
+    let (app, service_tok, _anon, _dir) = mcp_stack("mcpann").await;
+    let (sid, _) = open_session(&app, "mcpann", &service_tok).await;
+    let req = session_request(
+        "mcpann",
+        &service_tok,
+        &sid,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tools = parse_mcp_body(resp)
+        .await
+        .iter()
+        .find_map(|m| m["result"]["tools"].as_array().cloned())
+        .expect("tools/list must return a tools array");
+    let ann = |name: &str| -> Value {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("tool {name} missing from tools/list"))["annotations"]
+            .clone()
+    };
+    for (tool, key, want) in [
+        ("update_record", "idempotentHint", false),
+        ("upsert_records", "idempotentHint", false),
+        ("call_rpc", "readOnlyHint", true),
+        ("list_records", "openWorldHint", false),
+        ("invoke_function", "openWorldHint", true),
+        ("set_file_visibility", "destructiveHint", true),
+    ] {
+        let a = ann(tool);
+        assert_eq!(
+            a[key],
+            Value::Bool(want),
+            "{tool}.annotations.{key} on the wire; got annotations {a}"
+        );
+    }
+}
+
+/// M1 (B6): a tool-execution failure leaves the server as an `isError: true`
+/// result — not `isError: false` with an error object in the text.
+#[tokio::test]
+async fn tools_call_describe_missing_collection_is_error_on_wire() {
+    let (app, service_tok, _anon, _dir) = mcp_stack("mcpiserr").await;
+    let (sid, _) = open_session(&app, "mcpiserr", &service_tok).await;
+    let req = session_request(
+        "mcpiserr",
+        &service_tok,
+        &sid,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "describe_collection", "arguments": {"collection": "nope"} }
+        }),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let result = parse_mcp_body(resp)
+        .await
+        .into_iter()
+        .find_map(|m| m.get("result").cloned())
+        .expect("tools/call must return a result");
+    assert_eq!(
+        result["isError"],
+        Value::Bool(true),
+        "result on the wire: {result}"
+    );
+    let text = result["content"][0]["text"].as_str().expect("text content");
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["error_code"], "COLLECTION_NOT_FOUND", "{parsed}");
+}
+
+/// M1 (B2/B3): the `initialize` result the client actually receives fits
+/// Claude Code's 4,096-character read and opens with the dry_run rule.
+#[tokio::test]
+async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
+    let (app, service_tok, _anon, _dir) = mcp_stack("mcpinstr").await;
+    let (_sid, result) = open_session(&app, "mcpinstr", &service_tok).await;
+    let s = result["instructions"]
+        .as_str()
+        .expect("initialize result must carry string instructions");
+    let n = s.encode_utf16().count();
+    assert!(
+        n <= 4096,
+        "instructions on the wire are {n} UTF-16 units (cap 4096)"
+    );
+    assert!(
+        s.contains("Only delete_record, drop_collection and drop_index accept"),
+        "instructions on the wire: {s}"
+    );
+}

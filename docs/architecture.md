@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-08-17
+updated: 2026-11-14
 generated_by: docs/gen-architecture.py
 ---
 
@@ -28,14 +28,14 @@ generated_by: docs/gen-architecture.py
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 26 | 206 | 83 | 43 |
-| [`mgmt/`](#srcmgmt) | 44 | 380 | 119 | 55 |
+| [`mcp/`](#srcmcp) | 26 | 207 | 85 | 43 |
+| [`mgmt/`](#srcmgmt) | 44 | 382 | 119 | 55 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
-| [`query/`](#srcquery) | 10 | 65 | 14 | 39 |
-| [`rpc/`](#srcrpc) | 8 | 59 | 31 | 15 |
-| [`safety/`](#srcsafety) | 8 | 42 | 1 | 12 |
-| [`storage/`](#srcstorage) | 18 | 189 | 24 | 107 |
-| [`tenant/`](#srctenant) | 38 | 286 | 121 | 75 |
+| [`query/`](#srcquery) | 10 | 69 | 14 | 40 |
+| [`rpc/`](#srcrpc) | 8 | 61 | 31 | 15 |
+| [`safety/`](#srcsafety) | 8 | 43 | 1 | 12 |
+| [`storage/`](#srcstorage) | 18 | 189 | 24 | 108 |
+| [`tenant/`](#srctenant) | 39 | 295 | 122 | 76 |
 
 ## Group dependency graph
 
@@ -184,7 +184,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 55 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 56 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
 - [`mod.rs`](../src/mcp/mod.rs) — 6 pub
 - [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
@@ -195,7 +195,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
 - [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 6 pub
-- [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url. · 8 pub
+- [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url / set_file_visibility. · 8 pub
 - [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
 - [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
@@ -249,9 +249,9 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tenant_cap.rs`](../src/mgmt/tenant_cap.rs) — v1.57 — per-member tenant creation cap. · 22 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 22 pub
 - [`tenant_settings.rs`](../src/mgmt/tenant_settings.rs) — v1.46 — per-tenant Settings backend (spec §5.6): display-name rename + · 11 pub
-- [`tenants.rs`](../src/mgmt/tenants.rs) — 9 pub
+- [`tenants.rs`](../src/mgmt/tenants.rs) — 10 pub
 - [`tenants/common.rs`](../src/mgmt/tenants/common.rs) — Cross-page helpers shared by the OAuth-providers and Webhooks admin pages. · 2 pub
-- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 16 pub
+- [`tenants/crud.rs`](../src/mgmt/tenants/crud.rs) — Tenant CRUD / lifecycle (group B): list page, create/delete, self-register · 17 pub
 - [`tenants/files_page.rs`](../src/mgmt/tenants/files_page.rs) — Tenant-files admin page (group D). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/oauth_page.rs`](../src/mgmt/tenants/oauth_page.rs) — OAuth-providers admin page (group E). Relocated from `tenants.rs` by Finding #4. · 6 pub
 - [`tenants/overview.rs`](../src/mgmt/tenants/overview.rs) — Tenant overview admin page (group C). Relocated from `tenants.rs` by Finding #4. · 1 pub
@@ -275,12 +275,12 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/query/`
 
-- [`authorizer.rs`](../src/query/authorizer.rs) — 4 pub
+- [`authorizer.rs`](../src/query/authorizer.rs) — 5 pub
 - [`executor.rs`](../src/query/executor.rs) — 11 pub
 - [`filter.rs`](../src/query/filter.rs) — 5 pub
 - [`list_builder.rs`](../src/query/list_builder.rs) — Structured list-SQL builder for `POST /t/<id>/collections/<c>/list` · 8 pub
 - [`mod.rs`](../src/query/mod.rs) — 7 pub
-- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 15 pub
+- [`policy.rs`](../src/query/policy.rs) — Row-level security policy engine. A `Policy` is a per-operation pair of · 18 pub
 - [`rpc_rls_spike.rs`](../src/query/rpc_rls_spike.rs) — RPC-RLS Phase-0 spike — raw SQLite FACTS the TEMP-VIEW-shadowing design
 - [`search_vtable_spike.rs`](../src/query/search_vtable_spike.rs) — FTS5 / R-tree vtables × the SQL authorizers — the surviving regression
 - [`vector_codec.rs`](../src/query/vector_codec.rs) — JSON ↔ packed-f32 BLOB codec for vector fields. · 3 pub
@@ -295,7 +295,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`handler.rs`](../src/rpc/handler.rs) — REST handler for `POST /t/{tenant}/rpc/{name}`. · 2 pub
 - [`mod.rs`](../src/rpc/mod.rs) — RPC subsystem: stored Supabase-style named SQL functions. · 7 pub
 - [`params.rs`](../src/rpc/params.rs) — RPC parameter schema and request validation. · 7 pub
-- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 14 pub
+- [`prepare.rs`](../src/rpc/prepare.rs) — Prepare-time SQL safety: reject anything the mode-matched authorizer · 16 pub
 - [`query_template.rs`](../src/rpc/query_template.rs) — Stored **query-kind** RPC templates (#950 Phase 1). · 9 pub
 - [`registry.rs`](../src/rpc/registry.rs) — Persistence wrapper around the `_system_rpc` table. · 12 pub
 
@@ -304,7 +304,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/safety/`
 
 - [`audit.rs`](../src/safety/audit.rs) — 5 pub
-- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 20 pub
+- [`audit_db.rs`](../src/safety/audit_db.rs) — v1.24 — SQLite-backed audit log storage. See spec · 21 pub
 - [`error_fixes.rs`](../src/safety/error_fixes.rs) — v1.26 — Static suggested_fix catalog. Maps every error_code drust · 4 pub
 - [`ip.rs`](../src/safety/ip.rs) — 1 pub
 - [`mod.rs`](../src/safety/mod.rs) — 7 pub
@@ -343,13 +343,14 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`auth_cache.rs`](../src/tenant/auth_cache.rs) — v1.35 — process-local invalidate-on-write auth cache for `bearer_auth_layer`. · 4 pub
 - [`auth_routes.rs`](../src/tenant/auth_routes.rs) — 11 pub
 - [`collections.rs`](../src/tenant/collections.rs) — 11 pub
+- [`cred_revoke.rs`](../src/tenant/cred_revoke.rs) — E2′ — per-ADMIN revocation signal for the SSE streams an admin PAT opened. · 3 pub
 - [`egress.rs`](../src/tenant/egress.rs) — Per-tenant egress allowlist (v1.49). · 8 pub
 - [`egress_config.rs`](../src/tenant/egress_config.rs) — v1.49 — transport-agnostic egress-allowlist config core (spec §Config). · 10 pub
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
 - [`file_caps.rs`](../src/tenant/file_caps.rs) — Per-tenant file-storage capabilities (v1.42). · 7 pub
 - [`file_policy_routes.rs`](../src/tenant/file_policy_routes.rs) — Files RLS (#950-B) — the service-only REST face of the per-tenant prefix · 4 pub
 - [`mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs) — Axum handler that forwards `/t/:tenant/mcp` traffic to the · 1 pub
-- [`mod.rs`](../src/tenant/mod.rs) — 29 pub
+- [`mod.rs`](../src/tenant/mod.rs) — 30 pub
 - [`oauth_admin_routes.rs`](../src/tenant/oauth_admin_routes.rs) — Service-only admin endpoints for managing this tenant's OAuth provider · 7 pub
 - [`oauth_config.rs`](../src/tenant/oauth_config.rs) — 10 pub
 - [`oauth_routes.rs`](../src/tenant/oauth_routes.rs) — Per-tenant OAuth start + callback handlers. End users of a tenant's · 15 pub
@@ -357,7 +358,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`policy_routes.rs`](../src/tenant/policy_routes.rs) — RLS Phase 8 (Config) — service-only REST surface for per-collection, · 4 pub
 - [`query_endpoint.rs`](../src/tenant/query_endpoint.rs) — 4 pub
 - [`realtime_routes.rs`](../src/tenant/realtime_routes.rs) — v1.16 — service-only endpoint to toggle SSE realtime broadcast on · 2 pub
-- [`records.rs`](../src/tenant/records.rs) — 19 pub
+- [`records.rs`](../src/tenant/records.rs) — 23 pub
 - [`records_list.rs`](../src/tenant/records_list.rs) — `POST /t/<id>/collections/<c>/list` — structured list endpoint. · 11 pub
 - [`rooms/audit.rs`](../src/tenant/rooms/audit.rs) — v1.31 audit emit for broadcast.publish. · 2 pub
 - [`rooms/bus.rs`](../src/tenant/rooms/bus.rs) — 2 pub
@@ -368,7 +369,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the STRUCTURAL PINS (#955, #975). · 3 pub
 - [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 7 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
-- [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 4 pub
+- [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 5 pub
 - [`router.rs`](../src/tenant/router.rs) — 7 pub
 - [`sse.rs`](../src/tenant/sse.rs) — 1 pub
 - [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 10 pub

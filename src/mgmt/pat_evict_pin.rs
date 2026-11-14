@@ -1,7 +1,8 @@
 //! Test-only STRUCTURAL PIN (#975): at every admin-PAT revocation site, the
 //! auth-cache clear happens BEFORE the rooms eviction — and (#976 T4) every
 //! site that snapshots a `PatReach` reads it inside the SAME critical section
-//! as its own revoking write.
+//! as its own revoking write — and (E2′) every site also sends the per-admin
+//! SSE revocation signal, after the clear.
 //!
 //! ## Why this exists
 //!
@@ -72,6 +73,17 @@
 //!    failed. The spec grounds the site set with a TREE-wide grep ("全樹
 //!    `clear_admin_pat` 呼叫者就是這 7 站"), so only a tree-wide check can
 //!    honestly carry the name of test (2).
+//!
+//! ## E2′ — the parallel SSE pin
+//!
+//! [`every_revocation_site_signals_sse_streams_after_clearing_the_pat_cache`]
+//! runs over the same [`SITES`] with its own needle set, [`SSE_SIGNALS`],
+//! deliberately NOT merged into [`EVICTS`]: the per-file completeness count
+//! above counts `EVICTS`, and folding the signal in would let a site that
+//! signals SSE but forgot the rooms eviction pass. Because one SSE spelling is
+//! the shared `evict_reach(` call, its BODY is pinned too
+//! ([`evict_reach_signals_sse_before_and_regardless_of_the_reach`]): the signal
+//! sits ahead of the reach `match`, so no `PatReach` arm can drop it.
 //!
 //! ## A fourth pin, for a different invariant: snapshot LOCALITY
 //!
@@ -146,6 +158,22 @@ const SNAPSHOT: &str = "read_pat_reach(";
 /// section is to take the lock a second time, and that is what this counts.
 /// Borrow checker plus needle count, jointly.
 const META_LOCK: &str = "s.meta.lock().await";
+
+/// E2′ — the SSE revocation signal, in every spelling a site may use: the
+/// direct per-admin call (`change_role`, `patch_tenant_owner`) or the shared
+/// reach-scoped helper, whose body sends it (pinned by
+/// [`evict_reach_signals_sse_before_and_regardless_of_the_reach`]).
+///
+/// Parallel to [`EVICTS`], deliberately NOT merged into it:
+/// [`the_pinned_site_list_is_the_whole_site_list`] counts `EVICTS` per file, and
+/// counting a signal as an evict would let a site that signals SSE but forgot
+/// the rooms eviction pass.
+const SSE_SIGNALS: &[&str] = &["revoke_admin(", "pat_evict::evict_reach("];
+
+/// Offset of the FIRST SSE signal of any spelling in `body`.
+fn first_sse_signal(body: &str) -> Option<usize> {
+    SSE_SIGNALS.iter().filter_map(|n| body.find(n)).min()
+}
 
 /// Human-readable form of [`EVICTS`] for failure messages.
 fn evicts_display() -> String {
@@ -378,6 +406,68 @@ fn every_reach_snapshot_is_read_inside_the_revoking_critical_section() {
             );
         }
     }
+}
+
+/// E2′ — every revocation site also ends the SSE streams its admin's PATs
+/// opened, and does so AFTER the auth-cache clear: the ended client reconnects
+/// at once and must meet the cleared cache, exactly the rooms argument above.
+///
+/// Fail-closed like [`every_revocation_site_clears_the_pat_cache_before_evicting_rooms_sockets`]:
+/// a site with no signal of any spelling panics. The needle is a prefix, so it
+/// cannot see the `signal_sse` boolean or WHICH admin id is passed; the
+/// per-site behavioural tests (rx advances for the revoked admin, not for the
+/// caller) cover those.
+#[test]
+fn every_revocation_site_signals_sse_streams_after_clearing_the_pat_cache() {
+    for (path, raw, heads) in SITES {
+        let stripped = code_only(raw);
+        for head in *heads {
+            let body = prod_fn_body(&stripped, head);
+            let clear = body
+                .rfind(CLEAR)
+                .unwrap_or_else(|| panic!("{path} `{head}`: no `{CLEAR}` call"));
+            let signal = first_sse_signal(body).unwrap_or_else(|| {
+                panic!(
+                    "{path} `{head}`: no SSE revocation signal (`{}`). This handler revokes an \
+                     admin PAT, and an SSE stream that PAT opened is unfiltered \
+                     (`AuthCtx::Service`) and — for a UI PAT — has no deadline, so without the \
+                     signal it keeps receiving every row event of its collection (E2′).",
+                    SSE_SIGNALS.join("` / `")
+                )
+            });
+            assert!(
+                clear < signal,
+                "{path} `{head}`: the SSE revocation signal precedes the auth-cache clear. The \
+                 ended stream reconnects immediately and would be re-admitted from the stale \
+                 cache entry (E2′, same order rule as the rooms eviction)."
+            );
+        }
+    }
+}
+
+/// E2′ — `evict_reach` sends the SSE signal independently of the reach, ahead
+/// of the `match`. Placed inside one `PatReach` arm (say only `HostWide`), a
+/// `member`'s revocation — `Owned(vec![])` included — would leave their SSE
+/// streams running, and the reach-specific behavioural tests need not notice.
+#[test]
+fn evict_reach_signals_sse_before_and_regardless_of_the_reach() {
+    let stripped = code_only(include_str!("pat_evict.rs"));
+    let body = prod_fn_body(&stripped, "pub(crate) fn evict_reach(");
+    let signal = body.find("revoke_admin(").unwrap_or_else(|| {
+        panic!(
+            "src/mgmt/pat_evict.rs `evict_reach`: no `revoke_admin(` call — the five \
+             snapshot sites rely on this body to end their admin's SSE streams (E2′)"
+        )
+    });
+    let arms = body
+        .find("match reach")
+        .expect("src/mgmt/pat_evict.rs `evict_reach`: no `match reach` — re-derive this pin");
+    assert!(
+        signal < arms,
+        "src/mgmt/pat_evict.rs `evict_reach`: the SSE signal sits inside or after the reach \
+         `match`; it must precede it so every reach — a member's empty `Owned` set included — \
+         signals (E2′)"
+    );
 }
 
 /// Files under `src/` that mention [`CLEAR`] and are NOT revocation sites, as

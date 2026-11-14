@@ -31,7 +31,7 @@
 | | |
 |---|---|
 | :bricks: **SaaS / CRUD 後端** | 在後台定義 collection，立刻拿到 REST + 型別化 TypeScript/Zod client。不必跑 DB 伺服器、不必 migration 工具。 |
-| :robot: **AI-agent 原生資料層** | 任何 MCP client 指向 `/t/<id>/mcp` —— agent 透過型別化工具檢視 schema、CRUD、向量搜尋、管理檔案。錯誤帶 `suggested_fix`、破壞性操作支援 `dry_run`。 |
+| :robot: **AI-agent 原生資料層** | 任何 MCP client 指向 `/t/<id>/mcp` —— agent 透過型別化工具檢視 schema、CRUD、向量搜尋、管理檔案。錯誤帶 `suggested_fix`、三個破壞性操作（`delete_record`、`drop_collection`、`drop_index`）支援 `dry_run`。 |
 | :office: **多租戶平台** | 單一程序、多個完全隔離的租戶。跨租戶存取由 authorizer 在 **SQL 層**就擋掉，不只是應用層。 |
 | :lock: **per-user 受保護資料** | 宣告 `owner_field`，或寫 PocketBase 風格的 row-level policy —— 每次 **record** 讀、寫、realtime 事件都自動過濾。上傳的檔案走同形狀的另一道閘：逐 verb cap 外加依檔案邏輯路徑前綴的 policy。 |
 | :zap: **Realtime 應用** | 用 SSE 訂閱，或在單一 WebSocket 上多工多個 room 並廣播 JSON。 |

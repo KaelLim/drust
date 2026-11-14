@@ -73,6 +73,63 @@ async fn pat_deadline_ends_the_stream_at_the_deadline() {
     );
 }
 
+/// E2′ × #976 F2 — the combined arm: a stream carrying BOTH a `PatDeadline`
+/// and a `PatRevocation` must still end at the deadline when the revocation
+/// never fires. The registry (and so the watch sender) is held by the test
+/// for the whole run: dropping it would end the wait fail-closed and satisfy
+/// the assertions without the deadline branch.
+#[tokio::test]
+async fn pat_deadline_ends_the_stream_even_with_a_revocation_watch_attached() {
+    let (app, tok, d) = spin_up_tenant("blog").await;
+    seed(&d).await;
+
+    let creds = drust::tenant::cred_revoke::CredRevocations::default();
+    let revocation = drust::tenant::cred_revoke::PatRevocation::new(
+        creds.subscribe_admin(1),
+        creds.current_gen(),
+    );
+
+    let started = std::time::Instant::now();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/t/blog/records/posts/subscribe")
+                .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                .header(header::ACCEPT, "text/event-stream")
+                .extension(drust::tenant::rooms::ws_auth::PatDeadline(
+                    chrono::Utc::now() + chrono::Duration::milliseconds(400),
+                ))
+                .extension(revocation)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut body = resp.into_body().into_data_stream();
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(chunk) = body.next().await {
+            let _ = chunk;
+        }
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the SSE stream was still open 5s past a 400ms credential deadline while \
+         a revocation watch was attached — the combined stop arm lost its deadline"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(250),
+        "stream ended after {:?}, well before its 400ms deadline — something \
+         other than the expiry closed it",
+        started.elapsed()
+    );
+    // Still alive here, so the revocation sender never went away mid-test.
+    drop(creds);
+}
+
 /// The control arm: no `PatDeadline` extension ⇒ no timer at all, i.e. the
 /// pre-#976 behaviour. Without this, arming every connection at
 /// `Instant::now()` would satisfy the test above.

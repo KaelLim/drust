@@ -36,10 +36,13 @@ is also why the out-of-process `set_admin_role` break-glass CLI takes effect on 
 plane within 10 s without any eviction call.
 
 Because the hit path skips the CTE, it skips the only `deleted_at IS NULL` filter in the
-request — so **both cache arms open the pool with `get_if_live`, never `get_or_create`**,
-and 404 on `None`. `soft_delete_tenant` renames the tenant directory and evicts the pool
-*before* it clears the cache, and a request that read its entry earlier can arrive at the
-open at any later point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
+request — so **all three arms — both cache arms and the DB arm — open the pool with
+`get_if_live`, never `get_or_create`**, and 404 on `None`. The DB arm needs it too: the CTE
+proves `deleted_at IS NULL` but releases the `meta` lock before the open, and
+`soft_delete_tenant`'s UPDATE + rename + pool evict can all land in between.
+`soft_delete_tenant` renames the tenant directory and evicts the pool *before* it clears
+the cache, and a request that read its entry earlier can arrive at the open at any later
+point; creating on open there rebuilds `tenants/<id>` outside `_trash`,
 where the janitor never sweeps, and then serves the request against the fresh database.
 
 The bearer CTE's column numbering is load-bearing and **must not be renumbered**: cols 8/9
@@ -100,8 +103,12 @@ Google's `id_token` is base64-decoded **without signature verification**, which 
 here per OIDC Core §3.1.3.7: confidential client, token endpoint reached over TLS.
 
 Allowlisted redirect URIs are exact-match and **re-checked at callback**, TOCTOU-safe.
-Both callbacks are per-IP rate-limited at 5/min. The per-tenant callback also validates that
-the tenant exists in `meta` **before** `get_or_create`, which is what prevents a disk-fill DoS.
+Both callbacks are per-IP rate-limited at 5/min. The per-tenant start and callback also
+validate that the tenant exists in `meta` **before** opening the pool, and open it with the
+create-free `get_if_live` — the meta check prevents the disk-fill DoS from arbitrary ids, the
+accessor closes the soft-delete race after it. `register` filters `deleted_at IS NULL` in the
+same `allow_self_register` read, so a deleted tenant answers like an unknown id, and `login`
+opens with `get_if_live` too.
 
 ## CLI device flow
 
@@ -123,6 +130,10 @@ of `bearer_auth_layer` — cache hit and DB — also hand that expiry forward as
 `PatDeadline` request extension (v1.66.0, #976), because a
 per-request gate alone let an ALREADY-OPEN rooms socket or SSE stream outlive the credential
 — see `.claude/rules/background-jobs.md` §Realtime for what the realtime faces do with it.
+The `AdminId` extension those same two arms insert is also what `ws_baseline_capture` keys
+the E2′ `PatRevocation` on (the per-admin signal that ends a revoked admin's SSE streams).
+A new credential source that resolves to `AuthCtx::Service{admin_id: Some(..)}` must insert
+`AdminId` as well, or its SSE streams fall outside that signal.
 
 Lifecycle routes live on the **public** router via a self-contained `resolve_cli_caller`
 that returns JSON 401 and never a 302.
@@ -196,7 +207,15 @@ deletes the removed admin's rows in **both** tables or the next invited teammate
 rowid and the review page renders their address as the author. Tenant ids are caller-supplied
 and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud` deletes that
 tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
-so a survivor would raise the *new* tenant's tier.
+so a survivor would raise the *new* tenant's tier. The same rule covers process memory: a
+create that recycled an id runs `crud::evict_tenant_everywhere` after the meta lock is
+released, which drops the old incarnation's pool cache entry, both MCP cache layers and
+their live rmcp sessions, the SSE and rooms bus channels for the id, its auth-cache
+entries, its cron index entry, and bumps its egress-allowlist version. One residual window
+remains (the crud.rs doc on that function): between releasing the lock and the first
+evictions, an admin PAT request can already reach the id, and if a request racing the
+soft-delete had left an old-incarnation pool cached, it can see that pool and, at worst,
+re-insert it into the MCP cache after the sweep — two races and a trusted caller.
 
 ## Provenance
 

@@ -1,6 +1,7 @@
 pub mod admin_user_routes;
 pub mod auth_routes;
 pub mod collections;
+pub mod cred_revoke;
 pub mod egress;
 pub mod egress_config;
 pub mod events;
@@ -765,10 +766,11 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             get({
                 let b = bus.clone();
                 // #976 F2 — `pat_deadline` is the same extension /realtime
-                // consumes; SSE takes only that one (no epoch — see the
-                // handler).
-                move |ext, ctx, pat_deadline, path| {
-                    sse::subscribe_handler(b.clone(), ext, ctx, pat_deadline, path)
+                // consumes; SSE takes that one (no epoch — see the handler)
+                // plus E2′'s `pat_revocation`, the per-admin PAT revocation
+                // signal `ws_baseline_capture` inserts for admin PATs only.
+                move |ext, ctx, pat_deadline, pat_revocation, path| {
+                    sse::subscribe_handler(b.clone(), ext, ctx, pat_deadline, pat_revocation, path)
                 }
             }),
         )
@@ -801,6 +803,15 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             router::bearer_auth_layer,
+        ))
+        // E2′ — OUTSIDE bearer auth: the PAT revocation generation `g0` must
+        // be read before any auth read (cache or CTE), or a revocation landing
+        // between the auth read and `ws_baseline_capture`'s subscription is
+        // missed. Mounted on `ws_router` only, so REST, MCP and files never
+        // pay for it (order pinned in ws_auth.rs).
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            rooms::ws_auth::pat_gen_capture,
         ))
         .layer(axum::middleware::from_fn(
             rooms::ws_auth::ws_query_token_adapter,

@@ -1,9 +1,9 @@
-//! #925 — merged harness for the policy test group (8 members).
+//! #925 — merged harness for the policy test group (9 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: 6 of the members
+//! `duplicate_mod` is inherent to the merge, not a defect: 7 of the members
 //! declare their own `mod helpers;`, so once they share a crate clippy sees
-//! tests/helpers.rs loaded 6 times. Deduping it would mean editing test bodies
+//! tests/helpers.rs loaded 7 times. Deduping it would mean editing test bodies
 //! (spec 鐵律 1 forbids that) for no gain — rustc compiles the file once per
 //! module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -23,5 +23,7 @@ mod policy_mcp;
 mod policy_read_enforcement;
 #[path = "policy_sse.rs"]
 mod policy_sse;
+#[path = "policy_sse_drop_field.rs"]
+mod policy_sse_drop_field;
 #[path = "policy_write_enforcement.rs"]
 mod policy_write_enforcement;
