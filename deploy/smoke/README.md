@@ -88,10 +88,13 @@ To choose the password yourself, set `SMOKE_ADMIN_PASSWORD` before the *first*
 
 ## Checks that fail today
 
-`run-all.sh` exits non-zero at this commit: 1356 assertions pass and 22 fail. Each
-failure is a confirmed defect that has not been fixed yet. The assertion states the
-intended behaviour, so it turns green when the defect is fixed. Remove a line from this
-table in the same commit that fixes it.
+None. `run-all.sh` exits zero at this commit: all 1425 assertions pass, on RustFS and on
+Garage (`SMOKE_STORE=garage`). The stack's first run, before the v1.67.0 fixes, passed 1356
+and failed 22, each on a confirmed defect; all of those are fixed.
+
+When a check fails on a confirmed defect that is not fixed yet, add a line to this table,
+and remove it in the same commit that fixes the defect. An assertion states the intended
+behaviour, so it turns green when the defect is fixed.
 
 | Script | Failing | Defect |
 |---|---|---|

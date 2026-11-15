@@ -726,13 +726,14 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   any deployment. `up.sh` builds the shipping `Dockerfile`, runs the repo's
   `docker-compose.yml` unmodified next to a real object store on loopback-only ports —
   RustFS from the repo's own `docker-compose.storage.yml` by default, Garage (what the
-  bare-metal host runs) with `SMOKE_STORE=garage` — and mints an admin token. `run-all.sh` then drives nine check scripts (about 1,380 assertions)
+  bare-metal host runs) with `SMOKE_STORE=garage` — and mints an admin token. `run-all.sh` then drives nine check scripts (about 1,420 assertions)
   against it over HTTP, and `test-linux.sh` runs `make test-shell` plus the full
   `cargo test` in a Linux container, which covers what a macOS workstation cannot run.
   It checks what `cargo test` does not reach: the built image, edge functions under the
   deployed process, and file features against a real S3 endpoint. The D1–D3 upgrades
-  showed no regression under it. 22 assertions fail at this commit, each on a defect that
-  predates this release; `deploy/smoke/README.md` lists them.
+  showed no regression under it. Its first run failed 22 assertions, each on a confirmed
+  defect. Those are the Compose and error-response entries under *Fixed*, *Deploy (Compose)*
+  and *MCP (M1)* above; at this commit every assertion passes, on RustFS and on Garage.
 
 ### Docs
 
