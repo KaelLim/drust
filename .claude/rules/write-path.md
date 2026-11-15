@@ -101,6 +101,8 @@ The `RETURNING *` read-back also feeds the post-image policy CHECK and the anon/
 
 Existence checks are done INSIDE the same `pool.with_writer` closure as the write to close TOCTOU vs `drop_collection`; sentinels `COLLECTION_NOT_FOUND` / `FIELD_NOT_FOUND` / `INDEX_NOT_FOUND` are distinct.
 
+Never use `rusqlite::Error::InvalidQuery` as a sentinel: its `Display` is fixed to `Query is not read-only`, so any classifier that reads the message misfires. Build a `SqliteFailure` carrying `<CODE>: …` and classify it by variant plus prefix (`records.rs`'s `field_not_found_of` / `is_collection_gone`). A sentinel that embeds caller-chosen text (a field name) must be matched **before** any substring classifier (`is_quota_exceeded`, `is_policy_check_failure`) in the same `match`, or a caller can steer the classification.
+
 ## FTS search (`$fts`, `_system_search_*`)
 
 Tenant-scoped FTS5 full-text search (v1.60). Three service-only MCP tools

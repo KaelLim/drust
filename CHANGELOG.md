@@ -230,6 +230,23 @@ update its toolchain first.
   object store is down. When every bucket answers, the existing `Garage reachable` line now
   carries a `buckets` field instead of `bucket`. If the warning names a bucket, create it on
   the object store; drust picks it up without a restart.
+- **An unknown field on a REST insert or update answers `400 FIELD_NOT_FOUND` instead of
+  a plain-text `Query is not read-only`.** `POST /t/<id>/records/<c>` and
+  `PATCH /t/<id>/records/<c>/<id>` reject a body key that is not a field of the
+  collection, and they always did. The refusal used `rusqlite::Error::InvalidQuery` as its
+  marker, whose message is fixed to `Query is not read-only`, and the handler looked for
+  the word `InvalidQuery` in that message, so the typed branch never ran. Callers got a
+  `text/plain` 400 that reads like a permission problem. The response is now the JSON
+  error the code always meant to send, with a `suggested_fix` that names the rejected key
+  and lists the collection's remaining fields (a key longer than 128 bytes is shortened in
+  the response). The unknown-field check is classified before the quota and policy checks,
+  so a key whose name happens to contain one of their error codes can no longer be
+  reported as a 507 or a 403. A collection dropped between the request's schema lookup and
+  its write now answers `404 NOT_FOUND`, the same as a collection that was never there.
+  The status code is unchanged for every role, and the MCP and edge-function write paths
+  are unaffected: they already reported the field by name. Other native SQLite refusals on
+  these two endpoints (UNIQUE, NOT NULL, STRICT type) are still `400 text/plain` with
+  SQLite's message. No action needed.
 
 ### Changed
 
