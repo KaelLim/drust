@@ -240,26 +240,26 @@ update its toolchain first.
   `text/plain` 400 that reads like a permission problem. The response is now the JSON
   error the code always meant to send, with a `suggested_fix` that names the rejected key
   and lists the collection's remaining fields (a key longer than 128 bytes is shortened in
-  the response). The unknown-field check is classified before the quota and policy checks,
-  so a key whose name happens to contain one of their error codes can no longer be
-  reported as a 507 or a 403. A collection dropped between the request's schema lookup and
-  its write now answers `404 NOT_FOUND`, the same as a collection that was never there.
-  The status code is unchanged for every role, and the MCP and edge-function write paths
-  are unaffected: they already reported the field by name. Other native SQLite refusals on
-  these two endpoints (UNIQUE, NOT NULL, STRICT type) are still `400 text/plain` with
-  SQLite's message. No action needed.
+  the response). The unknown-field check is matched before the quota and policy checks,
+  so a key whose name happens to contain one of their error codes is still answered
+  `400 FIELD_NOT_FOUND`. A collection dropped between the request's schema lookup and its
+  write now answers `404 NOT_FOUND`, the same as a collection that was never there. For an
+  unknown field the status stays 400 for every role, and the MCP and edge-function write
+  paths are unaffected: they already reported the field by name. Other native SQLite
+  refusals on these two endpoints (UNIQUE, NOT NULL, STRICT type) are still
+  `400 text/plain` with SQLite's message. No action needed.
 - **Creating a tenant whose id is already taken answers `400 TENANT_ID_UNAVAILABLE`
   instead of a 500.** `POST /admin/api/tenants` with the id of a live tenant, or of a
   soft-deleted tenant the caller may not recycle, fell through the error mapping into its
-  500 arm, so the CLI and automation treated a caller mistake as a server fault and
-  retried it. Both cases now answer the same 400 with the same message,
-  `tenant '<id>' already exists`, and a `suggested_fix`. A caller who cannot see that
-  tenant still learns nothing about which case it hit (CLAUDE.md invariant 7). The other
-  refusals on this route now use the same JSON error shape: an invalid id is
-  `400 INVALID_TENANT_ID` (it was `400 text/plain`), and an unexpected failure is
-  `500 INTERNAL`. The tenant-cap refusal (`403 TENANT_CAP_EXCEEDED`) and every successful
-  create are unchanged. The UUID-minting form (`POST /admin/tenants/new`) keeps its
-  plain-text answers. No action needed, unless a script matched the old 500.
+  500 arm, so the CLI and automation saw a caller mistake as a server fault. Both cases
+  now answer the same 400 with the same message, `tenant '<id>' already exists`, and a
+  `suggested_fix`. A caller who cannot see that tenant still learns nothing about which
+  case it hit (CLAUDE.md invariant 7). The other refusals on this route now use the same
+  JSON error shape: an invalid id is `400 INVALID_TENANT_ID` (it was `400 text/plain`),
+  and an unexpected failure is `500 INTERNAL`. The tenant-cap refusal
+  (`403 TENANT_CAP_EXCEEDED`) and every successful create are unchanged. The UUID-minting
+  form (`POST /admin/tenants/new`) keeps its plain-text answers. No action needed, unless a
+  script matched the old 500.
 - **Tenant create, tenant key reroll and tenant soft-delete now write a host audit row.**
   Every other admin mutation records an `admin.<area>.<verb>` entry. These three, the most
   consequential ones, recorded nothing, so a rotated service key, a deleted tenant or a

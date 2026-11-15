@@ -175,9 +175,9 @@ same="$(py 'import json,sys; d=json.load(sys.stdin); print("yes" if d["initial_t
 check_eq "create returns distinct service+anon keys; initial_token == service key" yes "$same"
 
 admin POST /admin/api/tenants "{\"id\":\"$TID\",\"name\":\"dup\"}"
-check_eq "creating a live tenant id again is a client error (400), not a 500" 400 "$STATUS"
+check_eq "creating a live tenant id again answers 400 TENANT_ID_UNAVAILABLE, not a 500" "400 TENANT_ID_UNAVAILABLE" "$STATUS $(body error_code)"
 admin POST /admin/api/tenants '{"id":"Smoke_Bad_ID","name":"bad"}'
-check_eq "an invalid tenant id (uppercase/underscore) answers 400" 400 "$STATUS"
+check_eq "an invalid tenant id (uppercase/underscore) answers 400 INVALID_TENANT_ID" "400 INVALID_TENANT_ID" "$STATUS $(body error_code)"
 
 admin GET /admin/api/tenants
 check_eq "GET /admin/api/tenants answers 200" 200 "$STATUS"

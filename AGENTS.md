@@ -156,6 +156,12 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   by `records::readback_for`): the row is the caller's own write plus id/timestamps/schema
   defaults — no exploit path, and narrowing it breaks insert-only anon forms. DELETE's
   204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
+- A native SQLite refusal (UNIQUE, NOT NULL, STRICT type) on the REST single-record write
+  (`POST /t/<id>/records/<c>`, `PATCH …/<id>`) still answers `400 text/plain` with SQLite's
+  message, while `records:batch` and MCP each report it in their own shape. Deliberate
+  until one cross-face classifier lands for all three: converting one face alone creates a
+  fourth shape. The unknown-field and dropped-collection refusals on that path are already
+  typed (`FIELD_NOT_FOUND`, `NOT_FOUND`) by `tenant/records.rs`'s sentinels.
 
 **Deliberate — schema DDL vs stored policies (not the PAT family):**
 
