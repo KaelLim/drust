@@ -494,14 +494,6 @@ AUDIT_PY='
 import json, sys
 d = json.load(sys.stdin)
 since, kind, arg, tid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-# Admin-plane entry: an "admin.*"/"tenant.*"-style op name, or an HTTP-shaped op
-# on an /admin path. Data-plane ops ("GET /collections", ...) never count.
-def admin_op(e):
-    op = e.get("op") or ""
-    parts = op.split(" ", 1)
-    if len(parts) == 2 and parts[0] in ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-        return parts[1].startswith("/admin")
-    return True
 hit = False
 for e in d.get("entries", []):
     if (e.get("ts") or "") < since:
@@ -521,18 +513,27 @@ for e in d.get("entries", []):
     elif kind == "deny":
         hit = op == "POST /auth/cli/device/deny" and arg in blob
     elif kind in ("create", "delete", "reroll"):
-        words = {"create": ("create", "post /admin/api/tenants", "/admin/tenants/new"),
-                 "delete": ("delete", "soft"),
-                 "reroll": ("reroll", "rotate", "token")}[kind]
-        hit = tid in blob and admin_op(e) and any(w in op.lower() for w in words)
+        # Exact op names, so a later rename fails loudly instead of matching
+        # some other entry that happens to contain the word.
+        want = {"create": "admin.tenant.create",
+                "delete": "admin.tenant.delete",
+                "reroll": "admin.tenant_key.reroll"}[kind]
+        hit = op == want and e.get("tenant") == tid
     if hit:
         break
 print("yes" if hit else "no")
 '
 audit_find() { # TENANT_SCOPE KIND ARG
-  local i res=no
+  local i res=no opq=""
+  # The browse page holds the 100 most recent entries: filter the tenant
+  # lifecycle kinds by their exact op so later traffic cannot push them off.
+  case "$2" in
+    create) opq="&op=admin.tenant.create" ;;
+    delete) opq="&op=admin.tenant.delete" ;;
+    reroll) opq="&op=admin.tenant_key.reroll" ;;
+  esac
   for i in 1 2 3 4 5 6 7 8; do
-    admin GET "/admin/api/audit?tab=browse&window=1h&tenant=$1"
+    admin GET "/admin/api/audit?tab=browse&window=1h&tenant=$1$opq"
     res="$(py "$AUDIT_PY" "$START_ISO" "$2" "${3:-}" "$TID" 2>/dev/null || echo no)"
     [ "$res" = yes ] && break
     sleep 1
@@ -555,12 +556,9 @@ admin GET "/admin/api/audit?tab=browse&window=1h&tenant=$TID"
 check_contains "host audit records data-plane calls on the tenant" "GET /collections" "$BODY"
 # Admin-plane tenant lifecycle + credential rotation (convention: every admin
 # mutation gets an admin.<area>.<verb> audit entry — CHANGELOG v1.31.x F15).
-c="$(audit_find - create)"; [ "$c" = no ] && c="$(audit_find "$TID" create)"
-check_eq "host audit records the admin-plane tenant create (admin.<area>.<verb> convention)" yes "$c"
-c="$(audit_find - reroll)"; [ "$c" = no ] && c="$(audit_find "$TID" reroll)"
-check_eq "host audit records the tenant service-key reroll (credential rotation)" yes "$c"
-c="$(audit_find - delete)"; [ "$c" = no ] && c="$(audit_find "$TID" delete)"
-check_eq "host audit records the tenant soft-delete" yes "$c"
+check_eq "host audit records the admin-plane tenant create (admin.<area>.<verb> convention)" yes "$(audit_find "$TID" create)"
+check_eq "host audit records the tenant service-key reroll (credential rotation)" yes "$(audit_find "$TID" reroll)"
+check_eq "host audit records the tenant soft-delete" yes "$(audit_find "$TID" delete)"
 
 # ==================================================================== logout
 OLD_SESS="$SESS"

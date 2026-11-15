@@ -613,9 +613,13 @@ async fn tenant_soft_delete_invalidates_cron_index() {
     assert_eq!(state.cron.index.snapshot().len(), 1);
 
     let cron = state.cron.clone();
-    let resp =
-        drust::mgmt::tenants::soft_delete_tenant(State(state), AxumPath("t-cr-del".to_string()))
-            .await;
+    let resp = drust::mgmt::tenants::soft_delete_tenant(
+        State(state),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
+        AxumPath("t-cr-del".to_string()),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     assert!(
         cron.index.snapshot().is_empty(),

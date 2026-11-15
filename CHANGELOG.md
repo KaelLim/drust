@@ -260,6 +260,21 @@ update its toolchain first.
   `500 INTERNAL`. The tenant-cap refusal (`403 TENANT_CAP_EXCEEDED`) and every successful
   create are unchanged. The UUID-minting form (`POST /admin/tenants/new`) keeps its
   plain-text answers. No action needed, unless a script matched the old 500.
+- **Tenant create, tenant key reroll and tenant soft-delete now write a host audit row.**
+  Every other admin mutation records an `admin.<area>.<verb>` entry. These three, the most
+  consequential ones, recorded nothing, so a rotated service key, a deleted tenant or a
+  recycled id (which hard-deletes the old row and its keys) left no trace in
+  `meta_logs.sqlite`. They now emit `admin.tenant.create` (with the display `name` and
+  `recycled`), `admin.tenant_key.reroll` (with `role`, the new key's row `token_id` and
+  `revoked_count`) and `admin.tenant.delete` (with `trashed`), all carrying the tenant id
+  and the acting admin. The rows appear in host audit (`/admin/audit`, owner-only) and on
+  that tenant's `_logs` page while it exists. Both the JSON API and the admin UI forms
+  emit them. No row contains a key, a key hash or a key hint. Refused attempts are not
+  recorded, the same as for the other admin entries. No action needed. Code that calls
+  `soft_delete_tenant`, `soft_delete_tenant_form`, `reroll_token_json`,
+  `reroll_token_form`, `create_tenant_json` or `create_tenant_form` directly, outside the
+  router, must now also pass the `AdminProfileExt` extension (and `AdminId` for the
+  delete and reroll handlers).
 
 ### Changed
 

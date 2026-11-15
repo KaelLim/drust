@@ -33,15 +33,21 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------- handlers
 
 async fn soft_delete(state: &TenantsState, id: &str) -> StatusCode {
-    drust::mgmt::tenants::soft_delete_tenant(State(state.clone()), Path(id.to_string()))
-        .await
-        .status()
+    drust::mgmt::tenants::soft_delete_tenant(
+        State(state.clone()),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
+        Path(id.to_string()),
+    )
+    .await
+    .status()
 }
 
 async fn create(state: &TenantsState, id: &str) -> axum::response::Response {
     drust::mgmt::tenants::create_tenant_json(
         State(state.clone()),
         axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
         axum::Json(drust::mgmt::tenants::CreateTenantJson {
             id: Some(id.to_string()),
             name: id.to_string(),
