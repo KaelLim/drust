@@ -67,8 +67,18 @@ impl<'c> DeadlineGuard<'c> {
                 // Returning true from the handler interrupts the statement; the
                 // next `step()` then fails with SQLITE_INTERRUPT, which `classify`
                 // maps to ExecError::Timeout.
-                conn.progress_handler(VM_OPS_PER_CHECK, Some(move || Instant::now() >= deadline))
-                    .is_ok()
+                let ok = conn
+                    .progress_handler(VM_OPS_PER_CHECK, Some(move || Instant::now() >= deadline))
+                    .is_ok();
+                if !ok {
+                    // Fail-open on availability only: the statement then runs
+                    // without a bound. Say so rather than drop it silently.
+                    tracing::warn!(
+                        budget_ms = b.as_millis() as u64,
+                        "query deadline could not be armed; running without a bound"
+                    );
+                }
+                ok
             }
             None => false,
         };

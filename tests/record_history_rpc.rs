@@ -1334,10 +1334,21 @@ async fn rest_anon_write_rpc_waits_one_deadline_for_the_gate_then_429() {
         .headers()
         .get(header::RETRY_AFTER)
         .map(|h| h.to_str().unwrap().to_string());
+    // The gate's 429 is byte-identical to the limiter's on the wire; only its
+    // audit extension tells the two apart.
+    let audit_extra = r
+        .extensions()
+        .get::<drust::safety::audit::AuditExtra>()
+        .map(|e| e.0.clone());
     let v = read_json(r).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{v} ({elapsed:?})");
     assert_eq!(v["error_code"], "RATE_LIMITED", "{v}");
     assert_eq!(retry_after.as_deref(), Some("5"));
+    assert_eq!(
+        audit_extra,
+        Some(json!({"rpc_mode": "write", "rpc_admission": "busy"})),
+        "the gate's refusal is tagged in the audit row"
+    );
     assert!(
         elapsed >= std::time::Duration::from_millis(4500)
             && elapsed < std::time::Duration::from_secs(15),

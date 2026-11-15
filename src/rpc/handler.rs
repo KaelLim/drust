@@ -362,15 +362,20 @@ pub async fn call_rpc(
                 let _admit = match &ctx_for_lookup {
                     AuthCtx::Service { .. } => None,
                     AuthCtx::Anon | AuthCtx::User { .. } => {
-                        match admit_untrusted_write(&pool, admit_wait()).await {
+                        // One value for both the wait and the Retry-After.
+                        let wait = admit_wait();
+                        match admit_untrusted_write(&pool, wait).await {
                             Ok(p) => Some(p),
                             Err(()) => {
                                 let mut resp = crate::tenant::router::rate_limited_response(
-                                    admit_wait().as_secs().max(1),
+                                    wait.as_secs().max(1),
                                 );
+                                // Same wire shape as the per-token limiter's
+                                // 429; the drust-constant `rpc_admission` tag
+                                // tells the two apart in the audit row only.
                                 resp.extensions_mut()
                                     .insert(crate::safety::audit::AuditExtra(
-                                        json!({"rpc_mode": "write"}),
+                                        json!({"rpc_mode": "write", "rpc_admission": "busy"}),
                                     ));
                                 return resp;
                             }
