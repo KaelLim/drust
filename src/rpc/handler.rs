@@ -365,8 +365,8 @@ pub async fn call_rpc(
                         // One value for both the wait and the Retry-After.
                         let wait = admit_wait();
                         match admit_untrusted_write(&pool, wait).await {
-                            Ok(p) => Some(p),
-                            Err(()) => {
+                            Some(p) => Some(p),
+                            None => {
                                 let mut resp = crate::tenant::router::rate_limited_response(
                                     wait.as_secs().max(1),
                                 );
@@ -425,17 +425,17 @@ pub async fn call_rpc(
 
 /// Take the tenant's untrusted write-RPC admission slot
 /// ([`crate::storage::pool::TenantPool::untrusted_write_rpc_gate`]), waiting at
-/// most `wait` for it. `Err(())` on a timeout or a closed semaphore; the REST
+/// most `wait` for it. `None` on a timeout or a closed semaphore; the REST
 /// write arm maps that to `429 RATE_LIMITED`. Only the Anon/User branch of that
 /// arm calls this. `pub` (not `pub(crate)`) so an integration test can drive it
 /// with a short wait against a pool it holds.
 pub async fn admit_untrusted_write(
     pool: &crate::storage::pool::SharedTenantPool,
     wait: std::time::Duration,
-) -> Result<tokio::sync::SemaphorePermit<'_>, ()> {
+) -> Option<tokio::sync::SemaphorePermit<'_>> {
     match tokio::time::timeout(wait, pool.untrusted_write_rpc_gate().acquire()).await {
-        Ok(Ok(permit)) => Ok(permit),
-        Ok(Err(_)) | Err(_) => Err(()),
+        Ok(Ok(permit)) => Some(permit),
+        Ok(Err(_)) | Err(_) => None,
     }
 }
 

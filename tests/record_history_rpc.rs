@@ -1253,7 +1253,7 @@ async fn untrusted_write_rpc_gate_admits_one_and_times_out_the_next() {
     let second =
         drust::rpc::handler::admit_untrusted_write(&pool, std::time::Duration::from_millis(50))
             .await;
-    assert!(second.is_err(), "the only permit is held");
+    assert!(second.is_none(), "the only permit is held");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(1),
         "bounded by the wait: {:?}",
@@ -1263,7 +1263,7 @@ async fn untrusted_write_rpc_gate_admits_one_and_times_out_the_next() {
     let third =
         drust::rpc::handler::admit_untrusted_write(&pool, std::time::Duration::from_millis(50))
             .await;
-    assert!(third.is_ok(), "released permit is admitted again");
+    assert!(third.is_some(), "released permit is admitted again");
 }
 
 /// A service bearer never touches the gate: with the router's own slot held,
