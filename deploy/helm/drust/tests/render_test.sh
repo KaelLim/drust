@@ -99,6 +99,10 @@ if _rec full.yaml Job rustfs-init | grep -qx '    helm.sh/hook: post-install,pos
 # Without before-hook-creation the next upgrade fails on "Job already exists".
 if _rec full.yaml Job rustfs-init | grep -qx '    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded'; then
   echo "ok: rustfs-init hook is deleted before re-creation and after success"; else echo "FAIL: rustfs-init hook-delete-policy is not before-hook-creation,hook-succeeded"; FAILS=$((FAILS+1)); fi
+# Never keeps each failed attempt's pod, so its log outlives the Job giving up; with OnFailure
+# the Job controller deletes the one pod at backoffLimit.
+if _rec full.yaml Job rustfs-init | grep -qx '      restartPolicy: Never'; then
+  echo "ok: rustfs-init keeps its failed pods (restartPolicy: Never)"; else echo "FAIL: rustfs-init restartPolicy is not Never"; FAILS=$((FAILS+1)); fi
 assert_contains full.yaml "exec /bin/sh /init/init.sh"                   "rustfs-init runs the shared Compose init.sh"
 assert_absent   minimal.yaml "name: rustfs-init"                         "no init job when storage off"
 _cm() { _render "$1" | awk -v n="name: testrel-$2" 'BEGIN{RS="---\n"} /kind: ConfigMap\n/ && index($0, n "\n"){print}'; }
@@ -220,7 +224,7 @@ else echo "FAIL: extraEnv DRUST_TRUSTED_PROXIES refused without the expected mes
 
 # --- B1: Litestream sidecar + restore init (opt-in; default OFF) ---
 assert_contains litestream.yaml "name: litestream"                              "litestream sidecar rendered"
-assert_contains litestream.yaml "litestream/litestream"                         "litestream image wired"
+assert_contains litestream.yaml "litestream/litestream:0.5.15@sha256:f45ca298a567bef6edd23d43429b5f80721473a9a9719e467f11d7888999403e" "litestream image pinned tag+digest"
 assert_contains litestream.yaml "replicate -config /etc/litestream/litestream.yml" "sidecar runs native dir-mode replicate"
 assert_contains litestream.yaml "kind: ConfigMap"                               "litestream config ConfigMap rendered"
 assert_contains litestream.yaml "dir: /data/tenants"                            "config covers tenants dir (dynamic discovery)"
@@ -327,6 +331,20 @@ if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
     if(me&&ns) ok=1
   } END{exit ok?0:1}'; then
   echo "ok: rustfs STS honors scheduling.rustfs"; else echo "FAIL: rustfs nodeSelector not wired"; FAILS=$((FAILS+1)); fi
+# The /public Caddy and the rustfs-init hook Job must be placeable too: on tainted or dedicated
+# nodes a pod with no toleration stays Pending, and a Pending hook fails every install and
+# upgrade at its timeout. The Job follows scheduling.rustfs (nodeSelector + tolerations).
+for spec in "Deployment|public-proxy|disktype: edge" "Deployment|public-proxy|value: edge" \
+            "Job|rustfs-init|disktype: ssd" "Job|rustfs-init|value: store"; do
+  IFS='|' read -r kind name needle <<<"$spec"
+  if _rec placement.yaml "$kind" "$name" | grep -qF -- "$needle"; then echo "ok: $kind/$name is placed by its scheduling values ('$needle')"
+  else echo "FAIL: $kind/$name lacks '$needle' from its scheduling values"; FAILS=$((FAILS+1)); fi
+done
+for rn in "Deployment|public-proxy" "Job|rustfs-init"; do
+  IFS='|' read -r kind name <<<"$rn"
+  if _rec full.yaml "$kind" "$name" | grep -qE '^      (nodeSelector|tolerations|affinity|topologySpreadConstraints):'; then
+    echo "FAIL: $kind/$name renders a scheduling field by default"; FAILS=$((FAILS+1)); else echo "ok: $kind/$name has no scheduling field by default"; fi
+done
 assert_absent minimal.yaml "nodeSelector"               "no nodeSelector by default (empty {} => omitted)"
 assert_absent full.yaml    "topologySpreadConstraints"  "no topologySpread by default"
 

@@ -256,8 +256,8 @@ helm uninstall group-a --namespace group-a
 workloads but **not** the StatefulSet PVCs — reinstalling the same release
 re-binds the existing `data-drust-0` / `logs-drust-0` / `rustfs-data-rustfs-0`
 volumes, so tenant data survives. This is deliberate: the PVC *is* the database.
-A `rustfs-init` hook Job that failed also stays (Helm does not delete hook resources on
-uninstall); `kubectl delete job rustfs-init` removes it.
+A `rustfs-init` hook Job that failed also stays, with the pods of its failed attempts (Helm
+does not delete hook resources on uninstall); `kubectl delete job rustfs-init` removes both.
 Because `createNamespace` defaults to **false**, the namespace you created with
 `--create-namespace` also survives. To reclaim everything for a group:
 
@@ -417,9 +417,14 @@ Caveats:
 
 ## Scheduling / placement (B3)
 
-`scheduling.drust.*` and `scheduling.rustfs.*` pass `nodeSelector` /
-`tolerations` / `affinity` / `topologySpreadConstraints` straight through to the respective
-StatefulSet pod spec. All default empty, so leaving them unset is zero behavior change.
+`scheduling.drust.*`, `scheduling.rustfs.*` and `scheduling.publicProxy.*` pass
+`nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` straight through to
+the pod spec of the drust StatefulSet, the rustfs StatefulSet and the `public-proxy`
+Deployment. The `rustfs-init` hook Job takes `scheduling.rustfs.nodeSelector` and
+`.tolerations` (nothing else): on tainted nodes a hook pod with no toleration stays Pending
+and every install and upgrade fails at the hook timeout. All default empty, so leaving them
+unset is zero behavior change. The snapshot and backup-mirror CronJobs have no scheduling
+values.
 
 > [!IMPORTANT]
 > **`tolerations` is a recovery-time control, not just placement.** Kubernetes injects

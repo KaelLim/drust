@@ -42,7 +42,11 @@
   10001 on a read-only root with no ServiceAccount token and no Service links (`RUSTFS_*`
   variables are its configuration), console off, logs to stdout. NetworkPolicy: RustFS
   admits drust, `rustfs-init`, `backup-mirror` and `public-proxy` on 9000 and nothing else;
-  `rustfs-init` may reach only DNS and RustFS.
+  `rustfs-init` may reach only DNS and RustFS. The hook Job takes
+  `scheduling.rustfs.nodeSelector` and `.tolerations` (on tainted nodes a hook pod with no
+  toleration stays Pending and the install fails at the hook timeout), and runs with
+  `restartPolicy: Never`: each failed attempt stays as its own pod, so
+  `kubectl logs job/rustfs-init` still answers after the Job has given up.
 
 ### Security
 - **`/public` served stored markup with no sandbox.** The Ingress sent `/public/*`
@@ -50,7 +54,7 @@
   no CSP, and `?response-content-type=text/html` on an anonymous GET turned any public
   object into HTML — script running on the admin UI's origin. `/public/*` now goes to a
   new `public-proxy` Caddy Deployment (`publicProxy.image`, pinned tag+digest;
-  `resources.publicProxy`)
+  `resources.publicProxy`; `scheduling.publicProxy`)
   whose `/public` block is a byte copy of the Compose one (`files/public-proxy.Caddyfile`,
   pinned by `render_test.sh`): GET/HEAD only, query string dropped, `Authorization` /
   `Cookie` stripped, `Set-Cookie` dropped, `nosniff` everywhere and the sandbox CSP on
@@ -92,6 +96,8 @@
     prefix-scoped key cannot list. Still a copy, never a sync.
   - `backup.kubectlImage` defaults to `alpine/kubectl:1.36.4`, pinned tag+digest (its
     pod holds a token that may delete VolumeSnapshots). The CronJob itself is unchanged.
+  - `backup.litestream.image` is pinned by digest as well as tag (the same 0.5.15 image):
+    the sidecar shares `/data` and holds the backup key.
   - Removed values: `backup.litestream.mcImage`, `backup.objectMirror.image` (both now
     `s3ClientImage`).
 - **`<release>-secret` is written as `data:` (base64), not `stringData:`.** The API server

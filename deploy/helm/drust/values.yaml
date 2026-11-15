@@ -151,7 +151,9 @@ backup:
   # ── B1: Litestream continuous DB replication (opt-in; independent of the CSI snapshot) ──
   litestream:
     enabled: false
-    image: "litestream/litestream:0.5.15"   # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3
+    # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3. Pinned by tag and digest: this
+    # container shares /data (plaintext tokens in meta.sqlite) and holds the backup key.
+    image: "litestream/litestream:0.5.15@sha256:f45ca298a567bef6edd23d43429b5f80721473a9a9719e467f11d7888999403e"
     watch: true                  # native watcher enrolls post-boot tenants without a restart — DO NOT disable
     tenantPattern: "*.sqlite"        # basename glob under /data/tenants (recursive:true walks <id>/ subdirs).
                                      # VERIFIED against the real litestream 0.5.15 binary: a slash-form like
@@ -260,7 +262,14 @@ scheduling:
     tolerations: []
     affinity: {}
     topologySpreadConstraints: []
+  # rustfs-init (the hook Job) takes rustfs's nodeSelector and tolerations, nothing else.
   rustfs:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  # The /public Caddy. One replica: the tolerationSeconds note above applies to it too.
+  publicProxy:
     nodeSelector: {}
     tolerations: []
     affinity: {}

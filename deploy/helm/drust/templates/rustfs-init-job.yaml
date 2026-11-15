@@ -22,7 +22,20 @@ spec:
         # drust Service's endpoints. The rustfs NetworkPolicy admits exactly these.
         {{- include "rustfsInit.selectorLabels" . | nindent 8 }}
     spec:
-      restartPolicy: OnFailure
+      # Never, not OnFailure: each failed attempt then stays as its own pod, so
+      # `kubectl logs job/rustfs-init` still answers after the Job has given up. With
+      # OnFailure the Job controller deletes the one pod at backoffLimit, logs included.
+      restartPolicy: Never
+      # Where the store may run, this Job may run: on tainted or dedicated nodes a pod with
+      # no toleration stays Pending and every install and upgrade fails at the hook timeout.
+      {{- with .Values.scheduling.rustfs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.rustfs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       automountServiceAccountToken: false
       enableServiceLinks: false   # no RUSTFS_PORT etc. from the rustfs Service (see rustfs STS)
       securityContext:
