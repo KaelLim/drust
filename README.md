@@ -152,6 +152,7 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables S3 storage features |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage-only: auto-provision buckets |
+| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the chart derives it from the ingress host |
 
 The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible service works (Garage, MinIO, R2, AWS S3, B2). Auto-bucket provisioning is Garage-specific; for other backends, pre-create the buckets.
 

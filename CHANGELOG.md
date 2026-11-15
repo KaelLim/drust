@@ -471,6 +471,19 @@ update its toolchain first.
   no request, and keeps the row for a later retry. A fresh install has no such rows. Hosts
   that set both see no change; no action needed.
 
+### Deploy (Compose)
+
+- **File URLs point at the Compose stack.** `docker-compose.yml` now sets
+  `DRUST_PUBLIC_BASE_URL` (default `http://localhost`, the bundled Caddy). Before, public,
+  signed and MCP-advertised file URLs and the `write_edge_function` prompt pointed at the
+  bare-metal default `http://localhost:8793`, which nothing in the stack serves. Set it to
+  your real origin when you change Caddy's port or put TLS in front. The k3s chart already
+  set it; bare-metal is unchanged.
+- **Compose comments corrected.** The admin UI is at `http://localhost/login`, not
+  `/drust/login` (the image serves at the root). `DRUST_HIDE_VERSION` hides the version
+  header whenever it is set, even to an empty string; to get the header back, remove the
+  line.
+
 ### MCP (M1) — model-facing text, tool annotations, error results
 
 No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.

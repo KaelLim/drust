@@ -1,18 +1,19 @@
 # drust — single-command self-host.
 #
-#   docker compose up -d            # drust only (SQLite BaaS, no object storage)
+#   docker compose up -d            # drust + Caddy (SQLite BaaS, no file storage)
 #   docker compose --profile storage up -d   # drust + MinIO (S3 file storage)
 #
 # First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
-# http://localhost/drust/login  (the bundled Caddy proxy fronts drust at
-# /drust/*). drust + Caddy speak plain HTTP — terminate TLS at your edge proxy
-# in production.
+# http://localhost/login (the bundled Caddy proxies the root path to drust; the
+# image runs at the root, DRUST_BASE_PATH=""). drust + Caddy speak plain HTTP —
+# terminate TLS at your edge proxy in production.
 
 services:
-  # Reverse proxy. drust is built to live behind a proxy mounted at /drust/*
-  # (it hardcodes that prefix in its browser-facing URLs — forms, redirects,
-  # cookie paths), so the admin UI is only usable THROUGH here, at
-  # http://localhost/drust/login — not on drust's port directly.
+  # Reverse proxy. The image serves at the ROOT path (DRUST_BASE_PATH=""). Use
+  # the admin UI through here so the rate limiter sees Caddy's normalized client
+  # address; drust's own port is bound to loopback for debugging only. To mount
+  # drust under a sub-path instead, set DRUST_BASE_PATH=/drust and switch the
+  # Caddyfile to `handle_path /drust/*`.
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -51,7 +52,10 @@ services:
       # distributed image so an unauthenticated client cannot fingerprint the
       # exact build for version-specific CVE targeting. (The in-app default
       # leaves it ON for deploy/live-smoke version checks; this opts the public
-      # image out.) Set to empty/unset if you rely on the header.
+      # image out.) Any value — even an empty string — hides it (the variable's
+      # presence is the switch). To get the header back, delete this line, or
+      # `!reset null` it in an override file as
+      # deploy/smoke/docker-compose.smoke.yml does.
       DRUST_HIDE_VERSION: "1"
       # --- client IP for the per-IP rate limits ---
       # One appending proxy: the bundled Caddy, which rebuilds X-Forwarded-For
@@ -62,6 +66,14 @@ services:
       DRUST_TRUSTED_PROXIES: "1"
       # --- public URL (required for OAuth redirect/callback links) ---
       # DRUST_PUBLIC_URL: https://drust.example.com
+      # --- client-facing origin for file / signed / MCP-advertised URLs ---
+      # The origin clients reach the bundled Caddy at, with NO path (the image runs
+      # at the root, DRUST_BASE_PATH=""). drust appends /public/<tenant>/<key>,
+      # /s/t/... and /t/<id>/... itself. Change it when you change Caddy's port or
+      # put a TLS edge in front (e.g. https://drust.example.com). Unset, drust
+      # falls back to the bare-metal default http://localhost:8793, which nothing
+      # in this stack serves.
+      DRUST_PUBLIC_BASE_URL: ${DRUST_PUBLIC_BASE_URL:-http://localhost}
       # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---
       # DRUST_CORS_ORIGINS: https://app.example.com,http://localhost:*
       # --- caller-controlled query deadline (ms); default 5000, 0 disables ---
