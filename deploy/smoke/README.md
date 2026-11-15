@@ -67,9 +67,12 @@ source address.
 Everything binds to loopback, and the ports are chosen not to collide with a
 drust (47826) or Garage (47830–47832) already running on the host. Override
 them with `SMOKE_HTTP_PORT`, `SMOKE_DRUST_PORT`, `SMOKE_GARAGE_*_PORT`. The compose
-project is `drust-smoke`; to run a second stack beside it, set
-`SMOKE_COMPOSE_PROJECT` (and move the ports) for `up.sh`, `run-all.sh` and `down.sh`
-alike — the checks that read container logs or peek into drust use it too.
+project is `drust-smoke`. If you rename it with `SMOKE_COMPOSE_PROJECT`, set the same
+value for `up.sh`, `run-all.sh` and `down.sh` alike — the checks that read container logs
+or peek into drust use it too. Renaming it does **not** let a second stack run beside the
+first from the same checkout: `deploy/smoke/.env` holds per-stack state (the admin PAT that
+`up.sh` re-mints when the stored one does not authenticate, `SMOKE_STORE`, the generated
+keys, and `down.sh --wipe` deletes it), so a concurrent second stack needs its own checkout.
 
 ## Signing in
 

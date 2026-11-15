@@ -307,7 +307,8 @@ if [ "$p_status" != 204 ]; then
   if [ $have_docker = 1 ]; then
     # The boot probe warns once per bucket it cannot list (c1).
     probe="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --no-log-prefix drust 2>/dev/null \
-      | grep 'object store bucket check failed' | grep -c 'private')"
+      | grep 'object store bucket check failed' \
+      | grep -cE 'bucket[^[:space:]]*[=:][^[:space:]]*private([^[:alnum:]_-]|$)')"
     note "drust boot log: $probe 'object store bucket check failed' warning(s) naming bucket 'private'"
     hits="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --tail 200 drust 2>/dev/null | grep "$P_KEY" | grep -c '/private/.*404 Not Found')"
     note "drust log lines showing S3 404 on bucket 'private' for this key: $hits"
