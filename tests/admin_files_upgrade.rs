@@ -315,3 +315,98 @@ async fn upload_submit_returns_503_when_garage_none() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// The host-admin upload mints its key through the rule Mode-A and tus use
+/// (`storage::files::derive_file_key`): an extension that is not 1-12 ASCII
+/// alphanumerics becomes `bin`, so the row key, the object key and the public
+/// URL are one string. Under the old rule the key kept the filename's own
+/// extension, the object store percent-encoded it, and the public URL named an
+/// object that was not there.
+#[tokio::test]
+async fn upload_submit_mints_a_bin_key_for_a_non_ascii_extension() {
+    use drust::mgmt::public_files::{PublicFilesState, upload_submit};
+    use drust::storage::files::{Owner, Visibility, build_public_url};
+    use drust::storage::garage::GarageClient;
+    use drust::storage::meta::{bootstrap_admin, open_meta};
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    let dir = tempdir().unwrap();
+    let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    let session_meta = Arc::new(Mutex::new(conn));
+    let meta = {
+        let mut c2 = open_meta(&dir.path().join("meta2.sqlite")).unwrap();
+        bootstrap_admin(&mut c2, "root", "pw").unwrap();
+        Arc::new(Mutex::new(c2))
+    };
+    // An in-memory store (no S3 endpoint): the bucket is folded into the key.
+    let garage = Arc::new(GarageClient::from_mock_admin(
+        "http://127.0.0.1:1",
+        "unused",
+    ));
+    let mut state = PublicFilesState::test_default(session_meta, meta.clone());
+    state.garage = Some(garage.clone());
+    state.disk_min_free_pct = 0; // the disk guard is not what this test is about
+
+    let (boundary, body_bytes) = make_multipart(&[("file", "hi", Some("報告書.檔案"))]);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body_bytes))
+        .unwrap();
+    let base_url = state.base_url.clone();
+    let app = axum::Router::new()
+        .route(
+            "/",
+            axum::routing::post(upload_submit)
+                .layer(axum::extract::DefaultBodyLimit::max(state.max_upload_bytes)),
+        )
+        .with_state(state);
+    let resp = app.oneshot(req).await.unwrap();
+    assert!(
+        resp.status().is_redirection(),
+        "a stored upload redirects to the list, got {}",
+        resp.status()
+    );
+
+    let (key, original_name): (String, String) = meta
+        .lock()
+        .await
+        .query_row("SELECT key, original_name FROM _system_files", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(original_name, "報告書.檔案", "the stored filename is kept");
+    assert!(
+        key.ends_with(".bin"),
+        "non-ASCII extension mints bin: {key}"
+    );
+    assert!(
+        key.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.'),
+        "the key needs no encoding: {key}"
+    );
+
+    // The object sits at exactly that key, and the public URL names it as is.
+    let listed: Vec<String> = garage
+        .list_objects()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|o| o.key)
+        .collect();
+    assert_eq!(listed, vec![format!("public/{key}")]);
+    let url = build_public_url(&base_url, &Owner::Admin, Visibility::Public, &key);
+    assert!(
+        url.ends_with(&format!("/{key}")),
+        "url {url} names key {key}"
+    );
+    assert!(!url.contains('%'), "nothing in the url is escaped: {url}");
+}

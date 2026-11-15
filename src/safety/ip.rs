@@ -595,6 +595,33 @@ mod tests {
         );
     }
 
+    /// `peer_addr` sees the real TCP peer only when the server was built with
+    /// connect-info. Without it the extension is absent, `peer_addr` answers
+    /// its loopback default, and every client of a deployment that keys on the
+    /// peer (`DRUST_TRUSTED_PROXIES=0`: the bare image, the k3s chart) shares
+    /// one rate-limit bucket again. No test drives `main.rs`, and every
+    /// behavioural test injects `ConnectInfo` by hand, so the one line that
+    /// provides it is pinned here. The Compose smoke checks the same thing
+    /// live: `40-records.sh` logs in straight to drust's port and expects a
+    /// non-loopback `ip_at_login`.
+    #[test]
+    fn main_serves_with_connect_info() {
+        use crate::tenant::rooms::srcpin::code_only;
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+            .expect("src/main.rs is readable");
+        let code = code_only(&raw);
+        assert!(
+            code.contains("into_make_service_with_connect_info::<std::net::SocketAddr>()"),
+            "main.rs must serve with `into_make_service_with_connect_info::<SocketAddr>()`: \
+             `safety::ip::peer_addr` reads that extension"
+        );
+        assert!(
+            !code.contains(".into_make_service()"),
+            "main.rs serves a router without connect-info: its handlers would see the \
+             loopback default as the TCP peer"
+        );
+    }
+
     #[test]
     fn throttle_decide_once_per_window() {
         // Never emitted: always emit.

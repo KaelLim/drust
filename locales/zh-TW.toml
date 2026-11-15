@@ -723,12 +723,12 @@ original_name = "原始檔名"
 reason = "原因"
 
 [files_reconcile.dangling_rows]
-subtitle = "存在於 drust、儲存體中無對應物件 — 刪除該列"
+subtitle = "drust 中的公開檔案、public bucket 中無對應物件 — 刪除該列"
 title = "懸空列"
 
 [files_reconcile.header]
 eyebrow = "管理 · 儲存維護"
-sub = "比對 public bucket 內容與 drust 中繼資料。勾選要清理的項目後套用。通常為空 — 在網路異常或手動編輯 S3 之後才會出現。"
+sub = "比對 public bucket 內容與 drust 中公開主機檔案的中繼資料；私有主機檔案存放在 private bucket，不在此比對。勾選要清理的項目後套用。通常為空 — 在網路異常或手動編輯 S3 之後才會出現。"
 title = "對齊"
 
 [files_reconcile.orphan_buckets]

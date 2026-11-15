@@ -76,6 +76,10 @@ check "drust's GARAGE_S3_ACCESS_KEY is its own key, not the RustFS root key" \
          ! printf "%s\n" "$1" | grep -q "RUSTFS_"' _ "$drust_block"
 check "drust waits for rustfs-init to complete" \
   sh -c 'printf "%s\n" "$1" | grep -q "condition: service_completed_successfully"' _ "$drust_block"
+check "rustfs-init runs as root (reads the bind-mounted init files under any checkout umask)" \
+  sh -c 'printf "%s\n" "$1" | grep -q "^    user: \"0:0\"$"' _ "$(service_block "$OVERLAY" rustfs-init)"
+check "rustfs itself keeps the image's unprivileged user (no user: override)" \
+  sh -c '! printf "%s\n" "$1" | grep -v "^[[:space:]]*#" | grep -q "^    user:"' _ "$(service_block "$OVERLAY" rustfs)"
 check "rustfs-init mounts tmpfs on /data (no anonymous volume per run)" \
   sh -c 'printf "%s\n" "$1" | grep -v "^[[:space:]]*#" | grep -A1 "^    tmpfs:" | grep -Eq "^      - /data$"' \
   _ "$(service_block "$OVERLAY" rustfs-init)"

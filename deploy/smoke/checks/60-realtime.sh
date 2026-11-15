@@ -402,6 +402,7 @@ ws_bg basic <<J
  {"op":"send_big","c":"s","room":"chat:lobby","size":70000,"ref":"b2"},
  {"id":"big_bad","op":"expect","c":"s","match":{"kind":"error"},"timeout":8},
  {"id":"big_bad_close","op":"expect_close","c":"s","timeout":5},
+ {"id":"big_ack","op":"expect","c":"s","match":{"kind":"ack","ref":"b2"},"timeout":2},
  {"op":"touch","path":"$TMP/ws.basic.bigsent"},
  {"op":"wait_file","path":"$TMP/ws.basic.restpub","timeout":30},
  {"id":"sentinel","op":"expect","c":"a","match":{"kind":"message","room":"chat:lobby"}},
@@ -446,7 +447,9 @@ check_eq "re-subscribing the same room is acked" subscribe "$(wsr basic resub.ms
 
 # The oversized frame: wait for the client to send it, then publish a sentinel
 # over REST; the subscriber must see the sentinel and never the 70 KB payload.
-check_ne "an over-cap WS publish (70 KB > 64 KiB) is never acked" ack "$(wsr basic big_bad.msg.kind)"
+# big_ack looks through everything that socket received (the error step pops
+# only the error frame), so an ack for b2 that arrived at any point is found.
+check_eq "an over-cap WS publish (70 KB > 64 KiB) is never acked" false "$(wsr basic big_ack.ok)"
 check_eq "an over-cap WS publish is answered PAYLOAD_TOO_LARGE before the close" PAYLOAD_TOO_LARGE \
   "$(wsr basic big_bad.msg.code)"
 check_eq "an over-cap WS publish ends that socket (frame-layer cap)" true "$(wsr basic big_bad_close.ok)"

@@ -1110,6 +1110,58 @@ async fn tenant_signed_bytes_storage_failure_hides_backend_detail() {
     assert_eq!(msg, "object store read failed");
 }
 
+/// A valid signed URL for a tenant whose database is gone (soft-deleted: the
+/// directory moved to `_trash`) answers like an absent file. The open error
+/// names the absolute path it looked for, and a signed URL is redeemed with
+/// no caller identity, so that text must not be the body.
+#[tokio::test]
+async fn tenant_signed_bytes_missing_tenant_db_hides_the_data_path() {
+    use axum::extract::{Path, Query, State};
+    use drust::mgmt::signed_bytes::{SigQs, SignedBytesState, tenant_signed_bytes};
+    use drust::storage::signed_url::{Owner as SignOwner, mint};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    // Only for a configured store; this tenant's directory is never created.
+    let files_state = failing_state(&dir, "t-other-signed", None);
+    let tid = "t-gone-signed";
+    let key = "aaaaaaaa-0000-0000-0000-00000000004f.pdf";
+    let secret = [5u8; 32];
+    let state = SignedBytesState {
+        meta: Arc::new(tokio::sync::Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )),
+        data_root: dir.path().to_path_buf(),
+        garage: files_state.garage.clone(),
+        url_sign_secret: Arc::new(secret),
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    let token = mint(
+        &secret,
+        &SignOwner::Tenant(tid.to_string()),
+        key,
+        expires,
+        false,
+    );
+    let result = tenant_signed_bytes(
+        State(state),
+        Path((tid.to_string(), key.to_string())),
+        Query(SigQs {
+            e: expires,
+            t: token,
+            d: None,
+        }),
+    )
+    .await;
+    let (status, msg) = result.expect_err("no tenant database, nothing to stream");
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(msg, "not found");
+    assert!(
+        !msg.contains(dir.path().to_string_lossy().as_ref()),
+        "the data directory must not reach the body: {msg}"
+    );
+}
+
 /// The admin arm of signed-URL redemption shares the tenant arm's fixed
 /// message: a signed URL is redeemed with no caller at all.
 #[tokio::test]

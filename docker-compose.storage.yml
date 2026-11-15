@@ -52,6 +52,12 @@ services:
   rustfs-init:
     image: rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
     restart: "no"
+    # Root, for this one-shot only: the three files below are bind-mounted from
+    # the checkout, and a checkout made under a restrictive umask (027) leaves
+    # them unreadable to the image's own uid 10001. The init would then fail and
+    # drust, which waits for it, would never start. It publishes no port, keeps
+    # no volume and already holds the store's root key.
+    user: "0:0"
     depends_on:
       rustfs:
         condition: service_healthy

@@ -727,10 +727,40 @@ fn admin_db_listed_keys(db_rows: &[(i64, String, String)]) -> HashSet<String> {
     db_rows.iter().map(|(_, k, _)| listed_form(k)).collect()
 }
 
-/// Admin rows whose object is absent from the listing. `db_rows` is already
-/// admin-only (meta.sqlite `_system_files`, keys with no slash) and
-/// `listed_keys` is the whole bucket, so no key-shape filter is needed on this
-/// direction.
+/// One admin `_system_files` row as the reconcile page reads it:
+/// `(id, key, original_name, visibility)`.
+type ReconcileRow = (i64, String, String, String);
+
+/// The rows the DANGLING direction may judge: `visibility = 'public'` only.
+/// The page lists the public bucket and nothing else, and a private host
+/// file's object lives in the `private` bucket (`files::bucket_for_upload`),
+/// so a private row is never in that listing. Judged here it would read as
+/// dangling, and "delete dangling rows" would delete the live row of an
+/// existing object. The ORPHAN direction keeps every row's key instead
+/// ([`admin_db_listed_keys`]), so an object some admin row still names is
+/// never offered for deletion, whatever that row's visibility says.
+fn public_rows(rows: &[ReconcileRow]) -> Vec<(i64, String, String)> {
+    rows.iter()
+        .filter(|(_, _, _, vis)| vis == "public")
+        .map(|(id, key, name, _)| (*id, key.clone(), name.clone()))
+        .collect()
+}
+
+/// Delete one dangling admin row. `visibility = 'public'` repeats
+/// [`public_rows`] on the apply side: the form is caller-supplied and can be
+/// stale, and this page never looked at the bucket a private row's object is
+/// in.
+fn delete_dangling_row(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM _system_files WHERE id = ?1 AND visibility = 'public'",
+        rusqlite::params![id],
+    )
+}
+
+/// Admin rows whose object is absent from the listing. `db_rows` is the
+/// admin PUBLIC rows ([`public_rows`]; meta.sqlite `_system_files`, keys with
+/// no slash) and `listed_keys` is the whole public bucket, so no key-shape
+/// filter is needed on this direction.
 fn dangling_rows(
     db_rows: Vec<(i64, String, String)>,
     listed_keys: &HashSet<String>,
@@ -772,24 +802,32 @@ pub async fn reconcile_page(
     };
     let garage_keys: HashSet<String> = garage_list.iter().map(|o| o.key.clone()).collect();
 
-    let db_rows: Vec<(i64, String, String)> = {
+    let all_rows: Vec<ReconcileRow> = {
         let conn = state.meta.lock().await;
-        let mut stmt =
-            match conn.prepare("SELECT id, key, original_name FROM _system_files ORDER BY id") {
-                Ok(s) => s,
-                Err(e) => return internal(format!("db prepare: {e}")),
-            };
+        let mut stmt = match conn
+            .prepare("SELECT id, key, original_name, visibility FROM _system_files ORDER BY id")
+        {
+            Ok(s) => s,
+            Err(e) => return internal(format!("db prepare: {e}")),
+        };
         match stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         }) {
             Ok(it) => it.filter_map(|r| r.ok()).collect(),
             Err(e) => return internal(format!("db query: {e}")),
         }
     };
+    // Dangling: public rows only. Orphans: every row's key. See `public_rows`.
+    let public_db_rows = public_rows(&all_rows);
+    let db_rows: Vec<(i64, String, String)> = all_rows
+        .into_iter()
+        .map(|(id, key, name, _)| (id, key, name))
+        .collect();
     let db_keys = admin_db_listed_keys(&db_rows);
 
     // `garage.list_objects()` lists the WHOLE shared bucket (no prefix), so it
@@ -803,7 +841,7 @@ pub async fn reconcile_page(
     let orphan_objects: Vec<(String, String)> = classify_orphans(&bucket_keys, &db_keys);
 
     // Asymmetric on purpose — see `dangling_rows`.
-    let dangling_rows: Vec<(i64, String, String)> = dangling_rows(db_rows, &garage_keys);
+    let dangling_rows: Vec<(i64, String, String)> = dangling_rows(public_db_rows, &garage_keys);
 
     let pending_revokes: Vec<PendingRevokeRow> = {
         let conn = state.meta.lock().await;
@@ -952,10 +990,7 @@ pub async fn reconcile_apply(
     {
         let conn = state.meta.lock().await;
         for id in form.delete_dangling_ids {
-            let _ = conn.execute(
-                "DELETE FROM _system_files WHERE id = ?1",
-                rusqlite::params![id],
-            );
+            let _ = delete_dangling_row(&conn, id);
         }
     }
     for tenant_id in form.retry_pending_revokes {
@@ -1273,7 +1308,10 @@ pub async fn admin_sign_url(
 
 #[cfg(test)]
 mod reconcile_key_tests {
-    use super::{admin_db_listed_keys, classify_orphans, dangling_rows, is_admin_level_key};
+    use super::{
+        admin_db_listed_keys, classify_orphans, dangling_rows, delete_dangling_row,
+        is_admin_level_key, public_rows,
+    };
     use std::collections::HashSet;
 
     /// A legacy admin row whose key object_store encoded (`x.檔案`, listed as
@@ -1303,6 +1341,69 @@ mod reconcile_key_tests {
             dangling.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
             vec![2]
         );
+    }
+
+    /// A private host file lives in the `private` bucket, which the page never
+    /// lists. It must not be judged against the public listing: it would read
+    /// as dangling and the apply step would delete the row of a live object.
+    #[test]
+    fn private_host_row_is_never_dangling_and_never_deleted_by_apply() {
+        let rows = vec![
+            (
+                1_i64,
+                "pub.png".to_string(),
+                "pub.png".to_string(),
+                "public".to_string(),
+            ),
+            (
+                2,
+                "priv.pdf".to_string(),
+                "priv.pdf".to_string(),
+                "private".to_string(),
+            ),
+            (
+                3,
+                "gone.png".to_string(),
+                "gone.png".to_string(),
+                "public".to_string(),
+            ),
+        ];
+        // The public bucket holds only the first row's object.
+        let listed_keys = keys(&["pub.png"]);
+        let dangling = dangling_rows(public_rows(&rows), &listed_keys);
+        assert_eq!(
+            dangling.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            vec![3],
+            "only the public row whose object is gone"
+        );
+
+        // The orphan direction still knows every row's key, so an object a
+        // private row names is never offered for deletion.
+        let db_rows: Vec<(i64, String, String)> = rows
+            .iter()
+            .map(|(id, k, n, _)| (*id, k.clone(), n.clone()))
+            .collect();
+        let bucket = vec![("priv.pdf".to_string(), 1_u64)];
+        assert!(classify_orphans(&bucket, &admin_db_listed_keys(&db_rows)).is_empty());
+
+        // Apply side: a stale or hand-built form naming the private row
+        // deletes nothing; the dangling public row is deleted.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _system_files (id INTEGER PRIMARY KEY, key TEXT, visibility TEXT);
+             INSERT INTO _system_files VALUES (2, 'priv.pdf', 'private'), (3, 'gone.png', 'public');",
+        )
+        .unwrap();
+        assert_eq!(delete_dangling_row(&conn, 2).unwrap(), 0);
+        assert_eq!(delete_dangling_row(&conn, 3).unwrap(), 1);
+        let left: Vec<i64> = conn
+            .prepare("SELECT id FROM _system_files ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(left, vec![2]);
     }
 
     fn keys(v: &[&str]) -> HashSet<String> {

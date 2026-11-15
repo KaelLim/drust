@@ -174,22 +174,33 @@ async fn audit_ops(tenant: &str) -> Vec<String> {
         .collect()
 }
 
-/// `(op, extra)` of every audit row for `tenant`, oldest first.
+/// `(op, extra)` of every audit row for `tenant`, oldest first. The writer
+/// flushes on a 100 ms window, so this polls (40 x 50 ms) until the tenant has
+/// a row instead of reading once after a fixed sleep, which a loaded machine
+/// can outlast.
 async fn audit_extras(tenant: &str) -> Vec<(String, Option<String>)> {
     use drust::safety::audit_db::open_audit_db_read;
     let path = ensure_global_audit_writer();
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let r = open_audit_db_read(path).unwrap();
-    let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
-    let mut stmt = r
-        .prepare("SELECT op, extra FROM audit WHERE tenant = ?1 ORDER BY id ASC")
-        .unwrap();
-    stmt.query_map(rusqlite::params![tenant], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-    })
-    .unwrap()
-    .filter_map(Result::ok)
-    .collect()
+    let mut rows = Vec::new();
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let r = open_audit_db_read(path).unwrap();
+        let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        let mut stmt = r
+            .prepare("SELECT op, extra FROM audit WHERE tenant = ?1 ORDER BY id ASC")
+            .unwrap();
+        rows = stmt
+            .query_map(rusqlite::params![tenant], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        if !rows.is_empty() {
+            break;
+        }
+    }
+    rows
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────

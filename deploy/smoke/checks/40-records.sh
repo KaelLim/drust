@@ -660,6 +660,46 @@ else
     fi
   fi
 fi
+
+# ── 9b. the real TCP peer reaches drust (main serves with connect-info) ─────
+# Sent straight to drust's own port with no X-Forwarded-For: the one-entry chain
+# is missing, so client_ip falls back to the TCP peer. With connect-info that is
+# the Docker gateway; without it, peer_addr's loopback default, and the bare
+# image (DRUST_TRUSTED_PROXIES=0) would key every client on one address. Runs
+# AFTER the warning count above, because this request logs that fallback.
+ALL_LOGIN_IPS_PY='
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ips = [(e.get("extra") or {}).get("ip_at_login") or "" for e in d.get("entries", [])
+       if e.get("op") == "POST /auth/login" and e.get("status") == "ok"
+       and (e.get("extra") or {}).get("email") == sys.argv[1]]
+print(" ".join(ips))
+'
+if [ "$LOGIN_STATUS" != 200 ]; then
+  note "skipped (the first login was rate-limited): direct-port client-IP check"
+else
+  req POST "$DIRECT/t/$TENANT_ID/auth/login" -H 'Content-Type: application/json' \
+    --data "{\"email\":\"$UEMAIL\",\"password\":\"$UPASS\"}"
+  if [ "$STATUS" = 429 ]; then
+    note "skipped (the direct login was rate-limited): direct-port client-IP check"
+  else
+    check_eq "a login sent straight to drust's port (no X-Forwarded-For) answers 200" 200 "$STATUS"
+    LOGIN_IPS=""; N_LOGIN_IPS=0
+    for i in 1 2 3 4 5 6 7 8; do
+      admin GET "/admin/api/audit?tab=browse&window=1h&tenant=$TENANT_ID"
+      LOGIN_IPS="$(printf '%s' "$BODY" | python3 -c "$ALL_LOGIN_IPS_PY" "$UEMAIL" 2>/dev/null || true)"
+      N_LOGIN_IPS="$(printf '%s\n' $LOGIN_IPS | grep -c . || true)"
+      [ "${N_LOGIN_IPS:-0}" -ge 2 ] && break
+      sleep 1
+    done
+    check_eq "both logins wrote a host audit row with ip_at_login" 2 "${N_LOGIN_IPS:-0}"
+    check_not_contains "a login with no X-Forwarded-For is keyed on the real TCP peer, not the loopback default" \
+      " 127.0.0.1 " " $LOGIN_IPS "
+  fi
+fi
 mcp_call create_user "{\"email\":\"smoke-b-$$@records.test\",\"password\":\"another-long-pass-$$\"}"
 UB_ID="$(mcp_text_q 'd["user_id"]')"
 check_contains "MCP create_user mints a second user" "u-" "$UB_ID"

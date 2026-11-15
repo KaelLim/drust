@@ -149,8 +149,13 @@ check_eq "HEAD on a public object answers 200 through the proxy" 200 \
 req GET "$PUBLIC/"
 check_ne "GET /public/ does not list the bucket (status)" 200 "$STATUS"
 check_not_contains "GET /public/ does not list the bucket (no ListBucketResult)" ListBucketResult "$BODY"
-req GET "$PUBLIC/$TA/?list-type=2&prefix=$TA/"
-check_not_contains "a prefix listing request under /public/<tenant>/ returns no ListBucketResult" ListBucketResult "$BODY"
+# Bucket-level on purpose: /public/<tenant>/?list-type=2 names the object key
+# "<tenant>/" and is a GetObject whatever the proxy does with the query, so it
+# could never list. This form lists the moment the query strip and the
+# GetObject-only policy are both lost.
+req GET "$PUBLIC/?list-type=2&prefix=$TA/"
+check_ne "a ListObjectsV2 request on /public/ does not list the bucket (status)" 200 "$STATUS"
+check_not_contains "a ListObjectsV2 request on /public/ returns no ListBucketResult" ListBucketResult "$BODY"
 # Caddy matches the CLEANED path (/public/...) but forwards the RAW one: only the
 # pinned block (handle_path + rewrite * /public{path}?) serves the public object
 # here; an unpinned `handle /public/*` hands the store bucket "private" (403).
@@ -254,12 +259,20 @@ check_eq "upload whose extension is non-ASCII answers 200" 200 "$STATUS"
 KX="$UP_KEY"; UX="$UP_URL"
 svc GET "/files/$(urlenc "$KX")/bytes"
 check_eq "non-ASCII-extension file round-trips through drust" "$(sha_file "$TMP/cjk.txt")" "$(body_sha)"
-public_get "$TA/$(urlenc "$KX")"
-check_eq "non-ASCII-extension public object is served at the key in its returned URL" 200 "$STATUS"
+# Both uploads get a <uuid>.bin key (files::derive_file_key), so nothing in the
+# key needs escaping. What is fetched is the URL drust RETURNED, as a client
+# would use it. A key that does need escaping can only come from a pre-v1.67
+# row or an edge put-file; that route (a %25-escaped path through /public/*)
+# was run by hand on both stores for this release and is recorded in the
+# CHANGELOG entry, not here.
+check_eq "a non-ASCII extension mints a .bin key" "${KX%.*}.bin" "$KX"
+req GET "$UX"
+check_eq "non-ASCII-extension public object is served at its returned URL" 200 "$STATUS"
 upload "$SA" "$TMP/cjk.txt;filename=notes.t~xt;type=text/plain"
-KT="$UP_KEY"
-public_get "$TA/$(urlenc "$KT")"
-check_eq "a '~' in the extension still yields a public object at the returned key" 200 "$STATUS"
+KT="$UP_KEY"; UT="$UP_URL"
+check_eq "a '~' in the extension mints a .bin key" "${KT%.*}.bin" "$KT"
+req GET "$UT"
+check_eq "a '~' in the extension still yields a public object at its returned URL" 200 "$STATUS"
 
 upload "$SA" "$TMP/plain.txt" --form-string "path=a/../b.txt"
 check_eq "a '..' path segment is refused 400" 400 "$STATUS"

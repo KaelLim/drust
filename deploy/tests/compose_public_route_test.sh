@@ -126,6 +126,15 @@ check "docker-compose.yml sets DRUST_PUBLIC_BASE_URL with an overridable default
   grep -qE '^      DRUST_PUBLIC_BASE_URL: \$\{DRUST_PUBLIC_BASE_URL:-' "$COMPOSE"
 check "docker-compose.yml sets PUBLIC_OBJECTS_UPSTREAM (default rustfs:9000)" \
   grep -qF 'PUBLIC_OBJECTS_UPSTREAM: ${PUBLIC_OBJECTS_UPSTREAM:-rustfs:9000}' "$COMPOSE"
+# The client-IP source per target. Neither value has another automated guard:
+# the Rust default is 2 (the bare-metal chain), and with it the bare image and
+# the k3s chart, which sets nothing, would key every per-IP limit on a
+# header the caller writes.
+DOCKERFILE="$ROOT/Dockerfile"
+check "the image's ENV sets DRUST_TRUSTED_PROXIES=0 (no proxy: key on the TCP peer)" \
+  sh -c 'grep -v "^[[:space:]]*#" "$1" | grep -qE "^[[:space:]]+DRUST_TRUSTED_PROXIES=0([[:space:]]|\\\\|$)"' _ "$DOCKERFILE"
+check "docker-compose.yml sets DRUST_TRUSTED_PROXIES to 1 (the bundled Caddy)" \
+  grep -qE '^      DRUST_TRUSTED_PROXIES: "1"$' "$COMPOSE"
 check "docker-compose.yml declares no minio service" \
   sh -c '! grep -qE "^  minio:" "$1"' _ "$COMPOSE"
 

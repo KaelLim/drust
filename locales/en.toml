@@ -703,12 +703,12 @@ original_name = "original name"
 reason = "reason"
 
 [files_reconcile.dangling_rows]
-subtitle = "in drust, object missing from the store — delete the row"
+subtitle = "public file in drust, object missing from the public bucket — delete the row"
 title = "Dangling rows"
 
 [files_reconcile.header]
 eyebrow = "Admin · storage maintenance"
-sub = "Compare the public bucket's contents to drust's metadata. Select what to clean up, then apply. Usually empty — runs after network glitches or manual S3 edits."
+sub = "Compare the public bucket's contents to drust's metadata for public host files. Private host files live in the private bucket and are not compared here. Select what to clean up, then apply. Usually empty — runs after network glitches or manual S3 edits."
 title = "Reconcile"
 
 [files_reconcile.orphan_buckets]
@@ -1439,7 +1439,7 @@ banner_body = "Uploads pause below 20% free space on the database disk. Free up 
 banner_title = "Disk at {pct}% free — uploads paused"
 total_meta = "of {gb} GB total"
 [tenants_list.delete]
-body = "This permanently removes the tenant's database, tokens, and any stored files. Type the name to confirm."
+body = "This permanently removes the database, tokens, and any stored files of this tenant. Type the name to confirm."
 confirm = "Delete"
 
 [tenants_list.head]
@@ -1745,7 +1745,7 @@ body = "Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <c
 title = "Storage not configured"
 
 [tenants_list.create]
-body = "Creates data.sqlite and the anon/service tokens. Files go under this tenant's prefix in the shared public and private buckets. Choose a display name."
+body = "Creates data.sqlite and the anon/service tokens. Files go under a per-tenant prefix in the shared public and private buckets. Choose a display name."
 ok = "Create"
 placeholder = "Event Registration"
 title = "Create a tenant"
