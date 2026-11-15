@@ -20,8 +20,8 @@ such call on the same tenant answers `429 RATE_LIMITED`), and the per-tenant MCP
 endpoint's model-facing surface changes as described under *MCP (M1)* below. Several
 entries under *Fixed* also change an error response (an unknown field on a REST write, a
 path no route matches, a failed object-store call, an IPv6 egress origin, an over-size
-WebSocket frame) or the key minted for an upload whose extension is not plain ASCII; each
-entry says who is affected and whether anything needs doing.
+WebSocket frame) or the key minted for an upload whose extension is not 1 to 12 ASCII
+letters or digits; each entry says who is affected and whether anything needs doing.
 
 It also closes the Compose deployment target's gaps the new smoke stack found, and makes
 RustFS the bundled object store for Docker Compose: see *Deploy (Compose)* below.
@@ -363,7 +363,8 @@ update its toolchain first.
   the key exactly as the object store holds it, so files uploaded before this release with
   such an extension — and edge-function `put-file` keys containing such characters, which
   the guest chooses — get a URL that resolves (wherever the proxy in front of the object
-  store forwards an escaped `%25` path unchanged); the URL of every key made only of ASCII
+  store forwards an escaped `%25` path unchanged; the Compose `/public/*` route does, checked
+  by hand on RustFS and on Garage); the URL of every key made only of ASCII
   letters, digits, `.`, `_` and `-` is unchanged. The host files reconcile page no longer
   lists such a file as both a dangling row and an orphan object (so for such a file "delete
   dangling rows" can no longer remove the live row of an existing object), and deleting a genuine orphan
@@ -376,13 +377,17 @@ update its toolchain first.
   deleted the row of a file whose object still existed, with no way back from that page. The
   page now judges public rows only, and the apply step refuses to delete a private row even
   when a stale or hand-built form names one. An object that any host row names is still
-  never offered as an orphan. Owner-only page; no action needed. If you applied "delete
-  dangling rows" on a host with private host files, those objects are still in the `private`
+  never offered as an orphan. Deleting a private host file from `/admin/files` had the
+  mirror-image fault: it deleted from the public store, where the object was not, and then
+  removed the row, so the object stayed in `private`. It now deletes from the bucket the
+  file is in. Owner-only pages; no action needed. If you deleted a private host file, from
+  the list or as a dangling row, before this release, its object is still in the `private`
   bucket without a row.
 - **The English delete-tenant confirmation showed `&#x27;` in place of an apostrophe.** The
-  sentence is reworded. A new test checks every bundle string that a template places inside
-  a JavaScript string literal, in both locales, for a character that would end the literal
-  or show up as an HTML entity.
+  sentence is reworded. A new test checks, in both locales, every bundle string that a
+  template's script uses as a whole quoted literal (`'{{ t.s("…") }}'`) for a character that
+  would end the literal or show up as an HTML entity. A string spliced into a longer literal
+  is not covered.
 - **Write-mode stored RPCs called by anon or user tokens now stop at the query deadline.**
   Since v1.58 every caller-controlled *read* has run under `DRUST_QUERY_DEADLINE_MS`
   (default 5000), but a write-mode RPC (`mode='write'`) had no deadline at all. It runs
@@ -514,8 +519,9 @@ update its toolchain first.
   your real origin when you change Caddy's port or put TLS in front. The k3s chart already
   set it; bare-metal is unchanged.
 - **`/public/*` is served on Compose.** `deploy/compose.Caddyfile` had no route for the
-  public bucket, so the public URL drust returns reached drust and answered a plain-text
-  `400 missing tenant in path`. Caddy now serves `/public/*`
+  public bucket, so a `/public/…` request to the stack reached drust and answered a
+  plain-text `400 missing tenant in path` (and the URL drust returned pointed at port 8793,
+  as above). Caddy now serves `/public/*`
   straight from the object store's `public` bucket, never through drust. It allows GET and
   HEAD only (anything else answers 405). It drops the query string, because an S3 API
   honours `?response-content-type=` on anonymous requests. It forwards neither
@@ -552,8 +558,9 @@ update its toolchain first.
     container without the exposure. Rotate away from `drustkey` / `drustsecret`. `/public/*`
     then serves that bucket from the admin UI's origin, and the proxy's markup matcher is
     case-sensitive: a public file stored before v1.56.3 with a markup type in another casing
-    (`TEXT/HTML`) would be served without the sandbox CSP. Set such a file private and public
-    again (the move lowercases its type), or upload it again; or
+    (`TEXT/HTML`) would be served without the sandbox CSP. Set such a tenant file private and
+    public again (the move lowercases its type); a host file (`/admin/files`) has no such
+    move, so upload it again; or
   - stop using it: run `docker compose up -d --remove-orphans` (or
     `docker rm -f <project>-minio-1`). The objects stay in `minio-data`. Moving them to
     RustFS is not documented in this release.
@@ -634,9 +641,9 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   reports `UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
   `CHECK_CONSTRAINT_FAILED` or `TYPE_MISMATCH`. An error with nothing to classify reports
   `INTERNAL`. New codes, on MCP only for now: `RPC_EXISTS`, `COLLECTION_EXISTS`,
-  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`, and
-  `META_UNAVAILABLE` (a tool that needs the host metadata connection where there is none;
-  no `suggested_fix`). REST responses are
+  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`. The tools that need
+  the host metadata connection now report `META_UNAVAILABLE` where there is none, as
+  `whoami` already did (no `suggested_fix`). REST responses are
   unchanged. A client that matched the old prose in `data.error_code` should match the
   code, or the `message`, instead.
 - **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other

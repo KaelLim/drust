@@ -251,8 +251,8 @@ docker compose up -d
   - 若 `public` 與 `private` 從未建立，請建立它們；
   - `/public/*` 現在會從管理後台的同一個來源提供該 bucket，而代理的 markup 比對區分大小寫。v1.56.3 之前存入、
     content type 為其他大小寫（如 `TEXT/HTML`）的公開 markup 檔案，會在沒有 sandbox CSP 的情況下被提供：
-    請把它設為 private 再設回 public（搬移時會把 type 轉成小寫），或重新上傳。這類資料列在 `_system_files`
-    的 `content_type` 與其小寫形式不同；
+    租戶檔案請設為 private 再設回 public（搬移時會把 type 轉成小寫）；主機檔案（`/admin/files`）沒有這種搬移，
+    請重新上傳。這類資料列在 `_system_files` 的 `content_type` 與其小寫形式不同；
   - 這份 override 讓 drust 使用 MinIO 的 root 金鑰，該金鑰也能更改 bucket 政策。若要最小權限的金鑰，
     請另建一個 MinIO 使用者，把 `deploy/compose-rustfs/drust-objects.json` 掛給它（僅限 `public` 與
     `private` 的物件讀寫、刪除與列舉，不能改政策——與 `rustfs-init` 給 drust 的政策相同），再把

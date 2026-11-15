@@ -262,9 +262,10 @@ one:
   - create `public` and `private` if they never existed;
   - `/public/*` now serves that bucket from the admin UI's origin, and the proxy's markup
     matcher is case-sensitive. A public file stored before v1.56.3 with a markup type in
-    another casing (`TEXT/HTML`) would be served without the sandbox CSP: set it private and
-    public again (the move lowercases its type), or upload it again. Such a row's
-    `content_type` in `_system_files` differs from its lowercase form;
+    another casing (`TEXT/HTML`) would be served without the sandbox CSP: set a tenant file
+    private and public again (the move lowercases its type); a host file (`/admin/files`)
+    has no such move, so upload it again. Such a row's `content_type` in `_system_files`
+    differs from its lowercase form;
   - the override runs drust on the MinIO root key, which can also change bucket policy. For
     a least-privilege key, create a separate MinIO user, attach
     `deploy/compose-rustfs/drust-objects.json` to it (object read/write/delete and listing on
