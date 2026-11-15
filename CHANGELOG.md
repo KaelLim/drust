@@ -295,8 +295,10 @@ update its toolchain first.
   already used) instead of plain text; downloads, deletes and signed-URL fetches keep their
   plain-text `502` with a fixed message; edge-function `get-file-bytes` / `put-file` keep
   their `GARAGE_GET_FAILED:` / `GARAGE_PUT_FAILED:` prefix with a fixed message. Status codes
-  are unchanged. The admin plane's own file pages are unchanged. To see what failed, read
-  drust's log. No action needed.
+  are unchanged. The host files page (`/admin/files`) keeps its detailed errors; the tenant
+  files admin page shares the data-plane upload, download and delete handlers, so it now
+  shows the same fixed message (an upload there answers the `GARAGE_PUT_FAILED` JSON error),
+  as does an admin signed-URL fetch. To see what failed, read drust's log. No action needed.
 - **A private IPv4 address written as an IPv6 address is now refused on every outbound
   path.** The private-address check recognised a private IPv4 inside an IPv6 address only in
   the `::ffff:a.b.c.d` form. The IPv4-compatible (`::a.b.c.d`), NAT64 (`64:ff9b::/96`) and

@@ -328,9 +328,12 @@ pub fn build_public_url(
 /// included), each segment escaped once more for the URL, so the object
 /// store's single percent-decode of the request path yields exactly the stored
 /// key. The identity on keys whose segments are non-empty, not `.`/`..`, and
-/// use only `[A-Za-z0-9._-]` — every key `derive_file_key` mints. Changes only
-/// URLs that could not resolve before (legacy keys with an encodable
-/// extension, guest-chosen edge `put-file` keys).
+/// use only `[A-Za-z0-9._-]` — every key `derive_file_key` mints. URLs that
+/// could not resolve before (legacy keys with an encodable extension,
+/// guest-chosen edge `put-file` keys) now resolve. A key holding a character
+/// object_store keeps but `urlencoding` escapes (`+ ( ) ! $ & ' , ; = : @`,
+/// space) gets new URL text for the same object — `<uuid>.c++` becomes
+/// `<uuid>.c%2B%2B`, which the object store decodes back to the stored key.
 fn public_url_key(key: &str) -> String {
     object_store::path::Path::from(key)
         .parts()
