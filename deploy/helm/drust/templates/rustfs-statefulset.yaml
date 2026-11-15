@@ -23,7 +23,7 @@ spec:
         # A changed root key restarts RustFS, which then takes the new key from env and keeps
         # its users and buckets; rustfs-init then logs in with the new key.
         # existingSecret: Helm cannot see the values — `kubectl rollout restart sts/rustfs`.
-        checksum/root-key: {{ printf "%s\n%s" .Values.storage.rustfs.rootAccessKey .Values.storage.rustfs.rootSecretKey | sha256sum }}
+        checksum/root-key: {{ printf "%s\n%s" (include "drust.key" .Values.storage.rustfs.rootAccessKey) (include "drust.key" .Values.storage.rustfs.rootSecretKey) | sha256sum }}
       {{- end }}
     spec:
       {{- with .Values.scheduling.rustfs.nodeSelector }}
@@ -43,6 +43,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       automountServiceAccountToken: false
+      # The rustfs Service would inject RUSTFS_SERVICE_HOST, RUSTFS_PORT=tcp://… and friends,
+      # and RustFS reads its configuration from RUSTFS_* variables.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001            # the image's own rustfs user

@@ -4,23 +4,23 @@ Admin UI:  https://{{ .Values.ingress.host }}/login
 Health:    kubectl -n {{ .Release.Namespace }} exec sts/drust -- curl -s localhost:47826/health
 
 VERIFY (only a live request catches these):
-  1. MCP Host rewrite — `curl -H "Host: {{ .Values.ingress.host }}" https://{{ .Values.ingress.host }}/t/<tenant>/mcp`
-     must NOT return 403/421. The ingress rewrites upstream Host to {{ .Values.ingress.hostRewrite }}.
+  - MCP Host rewrite — `curl -H "Host: {{ .Values.ingress.host }}" https://{{ .Values.ingress.host }}/t/<tenant>/mcp`
+    must NOT return 403/421. The ingress rewrites upstream Host to {{ .Values.ingress.hostRewrite }}.
 {{- if .Values.storage.enabled }}
-  2. Object store: RustFS. Buckets + drust's key are set by the rustfs-init hook Job
-     (it is deleted when it succeeds; a failure leaves it for
-     `kubectl -n {{ .Release.Namespace }} logs job/rustfs-init`).
-     On a first install drust usually starts before that Job: two "object store bucket
-     check failed" warnings in its boot log are expected; files work once the Job is done.
+  - Object store: RustFS. Buckets + drust's key are set by the rustfs-init hook Job
+    (it is deleted when it succeeds; a failure leaves it for
+    `kubectl -n {{ .Release.Namespace }} logs job/rustfs-init`).
+    On a first install drust usually starts before that Job: two "object store bucket
+    check failed" warnings in its boot log are expected; files work once the Job is done.
 {{- if .Values.publicFiles.enabled }}
-     /public/* is served by deploy/public-proxy (anonymous GET/HEAD, no listing):
-       curl -sI https://{{ .Values.ingress.host }}/public/<tenant>/<key>
+    /public/* is served by deploy/public-proxy (anonymous GET/HEAD, no listing):
+      curl -sI https://{{ .Values.ingress.host }}/public/<tenant>/<key>
 {{- end }}
 {{- end }}
 {{- if .Values.networkPolicy.enabled }}
-  3. NetworkPolicy — cross-group isolation assumes networkPolicy.clusterCIDRs matches
-     THIS cluster's real pod+service CIDRs (defaults are k3s-only). Confirm before trusting
-     isolation on Calico/GKE/EKS/custom. nginx controllers need networkPolicy.ingressControllerNamespace.
+  - NetworkPolicy — cross-group isolation assumes networkPolicy.clusterCIDRs matches
+    THIS cluster's real pod+service CIDRs (defaults are k3s-only). Confirm before trusting
+    isolation on Calico/GKE/EKS/custom. nginx controllers need networkPolicy.ingressControllerNamespace.
 {{- end }}
 {{- if not .Values.backup.volumeSnapshotClassName }}
 
@@ -40,7 +40,7 @@ EVERY tenants/*/data.sqlite, including tenants created after boot (native direct
   - restore.enabled=false: a fresh PVC will NOT be rebuilt from S3 automatically.
 {{- end }}
 {{- end }}
-{{- if .Values.backup.objectMirror.enabled }}
+{{- if and .Values.backup.objectMirror.enabled .Values.storage.enabled }}
 
 UPLOAD-BACKUP: hourly copy of this group's object store -> "{{ .Values.backup.external.bucket }}".
   kubectl -n {{ .Release.Namespace }} get cronjob {{ .Release.Name }}-backup-mirror

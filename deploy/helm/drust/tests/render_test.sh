@@ -92,8 +92,13 @@ assert_absent   minimal.yaml "rustfs"               "no rustfs when storage off"
 
 # --- Task 5 assertions (bucket/key init hook Jobs) ---
 assert_contains full.yaml "name: rustfs-init"                            "rustfs-init job rendered"
-if _render full.yaml | awk 'BEGIN{RS="---\n"} /kind: Job\n/ && /\n  name: rustfs-init\n/{print}' | grep -q 'helm.sh/hook: post-install,post-upgrade'; then
-  echo "ok: rustfs-init is a post-install/post-upgrade hook"; else echo "FAIL: rustfs-init is not a post hook"; FAILS=$((FAILS+1)); fi
+# post-rollback too: RustFS holds drust's secret as rustfs-init last set it, so a rollback that
+# restores an older storage.secretKey must re-run it. Exact line, so a dropped event fails.
+if _rec full.yaml Job rustfs-init | grep -qx '    helm.sh/hook: post-install,post-upgrade,post-rollback'; then
+  echo "ok: rustfs-init is a post-install/post-upgrade/post-rollback hook"; else echo "FAIL: rustfs-init hook events are not exactly post-install,post-upgrade,post-rollback"; FAILS=$((FAILS+1)); fi
+# Without before-hook-creation the next upgrade fails on "Job already exists".
+if _rec full.yaml Job rustfs-init | grep -qx '    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded'; then
+  echo "ok: rustfs-init hook is deleted before re-creation and after success"; else echo "FAIL: rustfs-init hook-delete-policy is not before-hook-creation,hook-succeeded"; FAILS=$((FAILS+1)); fi
 assert_contains full.yaml "exec /bin/sh /init/init.sh"                   "rustfs-init runs the shared Compose init.sh"
 assert_absent   minimal.yaml "name: rustfs-init"                         "no init job when storage off"
 _cm() { _render "$1" | awk -v n="name: testrel-$2" 'BEGIN{RS="---\n"} /kind: ConfigMap\n/ && index($0, n "\n"){print}'; }
@@ -202,6 +207,16 @@ for f in minimal.yaml full.yaml; do
   if _render "$f" | awk '/name: DRUST_TRUSTED_PROXIES,/{n++; if($0 ~ /value: "1" }$/) ok++} END{exit (n==1&&ok==1)?0:1}'; then
     echo "ok: DRUST_TRUSTED_PROXIES=\"1\" on the drust container ($f)"; else echo "FAIL: DRUST_TRUSTED_PROXIES missing, duplicated or not \"1\" in $f"; FAILS=$((FAILS+1)); fi
 done
+# Both fixtures use the default 1, so render a non-default value: a hard-coded "1" must fail.
+if helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns --set ingress.trustedProxies=2 2>/dev/null \
+     | awk '/name: DRUST_TRUSTED_PROXIES,/{n++; if($0 ~ /value: "2" }$/) ok++} END{exit (n==1&&ok==1)?0:1}'; then
+  echo "ok: DRUST_TRUSTED_PROXIES follows ingress.trustedProxies (2)"; else echo "FAIL: DRUST_TRUSTED_PROXIES does not follow ingress.trustedProxies=2"; FAILS=$((FAILS+1)); fi
+# The chart owns the variable now: the same name in extraEnv is refused, not rendered twice.
+if out=$(helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns \
+           --set-json 'extraEnv=[{"name":"DRUST_TRUSTED_PROXIES","value":"2"}]' 2>&1); then
+  echo "FAIL: extraEnv naming DRUST_TRUSTED_PROXIES was accepted"; FAILS=$((FAILS+1))
+elif printf '%s' "$out" | grep -qF 'move the value there'; then echo "ok: extraEnv naming DRUST_TRUSTED_PROXIES is refused"
+else echo "FAIL: extraEnv DRUST_TRUSTED_PROXIES refused without the expected message"; FAILS=$((FAILS+1)); fi
 
 # --- B1: Litestream sidecar + restore init (opt-in; default OFF) ---
 assert_contains litestream.yaml "name: litestream"                              "litestream sidecar rendered"
@@ -317,10 +332,21 @@ assert_absent full.yaml    "topologySpreadConstraints"  "no topologySpread by de
 
 # --- /public through the public-proxy Caddy (templates/public-proxy.yaml) ---
 assert_contains full.yaml    "name: public-proxy"                 "public-proxy rendered when storage+publicFiles on"
-assert_contains full.yaml    "docker.io/library/caddy:2.11.9"     "public-proxy runs the pinned Caddy"
+assert_contains full.yaml    "docker.io/library/caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c" "public-proxy runs Caddy pinned tag+digest"
 assert_contains full.yaml    "checksum/caddyfile:"                "a Caddyfile change rolls the proxy"
 assert_absent   storage-noPublic.yaml "public-proxy"              "no public-proxy when publicFiles off"
 assert_absent   minimal.yaml "public-proxy"                       "no public-proxy when storage off"
+# publicFiles on with storage off: no proxy and no /public path (there is no store behind them).
+NOSTORE_PUB=$(helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns --set storage.enabled=false --set publicFiles.enabled=true 2>&1) ||
+  { echo "FAIL: storage off + publicFiles on did not render"; FAILS=$((FAILS+1)); }
+if printf '%s' "$NOSTORE_PUB" | grep -qE 'public-proxy|path: /public'; then
+  echo "FAIL: public-proxy or /public rendered with storage off + publicFiles on"; FAILS=$((FAILS+1))
+else echo "ok: no public-proxy and no /public path with storage off + publicFiles on"; fi
+# The rollout trigger must follow the file, not merely exist.
+if command -v sha256sum >/dev/null; then CADDY_SHA=$(sha256sum "$CHART/files/public-proxy.Caddyfile"); else CADDY_SHA=$(shasum -a 256 "$CHART/files/public-proxy.Caddyfile"); fi
+CADDY_SHA=${CADDY_SHA%% *}
+if _rec full.yaml Deployment public-proxy | grep -qx "        checksum/caddyfile: $CADDY_SHA"; then
+  echo "ok: checksum/caddyfile is the sha256 of files/public-proxy.Caddyfile"; else echo "FAIL: checksum/caddyfile is not the sha256 of files/public-proxy.Caddyfile"; FAILS=$((FAILS+1)); fi
 _pp_dep() { _render "$1" | awk 'BEGIN{RS="---\n"} /kind: Deployment\n/ && /\n  name: public-proxy\n/{print}'; }
 if _pp_dep full.yaml | grep -q "kind: Deployment"; then
   echo "ok: public-proxy is a Deployment"; else echo "FAIL: no public-proxy Deployment in full.yaml"; FAILS=$((FAILS+1)); fi
@@ -399,8 +425,32 @@ assert_contains full.yaml "$RUSTFS_PIN" "RustFS image pinned tag+digest"
 _rustfs_sts() { _rec "$1" StatefulSet rustfs; }
 for needle in "runAsUser: 10001" "fsGroup: 10001" "fsGroupChangePolicy: OnRootMismatch" "readOnlyRootFilesystem: true" \
               'name: RUSTFS_CONSOLE_ENABLE, value: "false" }' 'name: RUSTFS_OBS_LOG_DIRECTORY, value: "" }' \
-              "path: /health/ready" "path: /health/live" "name: rustfs-data" "replicas: 1" "automountServiceAccountToken: false"; do
+              "path: /health/ready" "path: /health/live" "name: rustfs-data" "replicas: 1" "automountServiceAccountToken: false" \
+              "runAsNonRoot: true" "allowPrivilegeEscalation: false" 'capabilities: { drop: ["ALL"] }' "enableServiceLinks: false"; do
   if _rustfs_sts full.yaml | grep -qF -- "$needle"; then echo "ok: rustfs STS has '$needle'"; else echo "FAIL: rustfs STS lacks '$needle'"; FAILS=$((FAILS+1)); fi
+done
+# rustfs-init holds the root key: the same hardening, asserted on its own record.
+for needle in "runAsNonRoot: true" "runAsUser: 10001" "readOnlyRootFilesystem: true" "allowPrivilegeEscalation: false" \
+              'capabilities: { drop: ["ALL"] }' "automountServiceAccountToken: false" "enableServiceLinks: false"; do
+  if _rec full.yaml Job rustfs-init | grep -qF -- "$needle"; then echo "ok: rustfs-init Job has '$needle'"; else echo "FAIL: rustfs-init Job lacks '$needle'"; FAILS=$((FAILS+1)); fi
+done
+# Each credential env var reads the right Secret key (a swapped pair renders fine and 403s live).
+_envkey() { awk -v n="name: $1" 'index($0, n) && $0 ~ (n "$") {getline; sub(/.*key: /,""); sub(/ }.*/,""); print; exit}'; }
+for spec in "StatefulSet drust GARAGE_S3_ACCESS_KEY s3-access-key" "StatefulSet drust GARAGE_S3_SECRET_KEY s3-secret-key" \
+            "StatefulSet rustfs RUSTFS_ACCESS_KEY rustfs-root-access-key" "StatefulSet rustfs RUSTFS_SECRET_KEY rustfs-root-secret-key" \
+            "Job rustfs-init RUSTFS_ACCESS_KEY rustfs-root-access-key" "Job rustfs-init RUSTFS_SECRET_KEY rustfs-root-secret-key" \
+            "Job rustfs-init GARAGE_S3_ACCESS_KEY s3-access-key" "Job rustfs-init GARAGE_S3_SECRET_KEY s3-secret-key"; do
+  read -r kind name var want <<<"$spec"
+  got=$(_rec full.yaml "$kind" "$name" | _envkey "$var")
+  if [ "$got" = "$want" ]; then echo "ok: $kind/$name $var reads $want"; else echo "FAIL: $kind/$name $var reads '$got', not $want"; FAILS=$((FAILS+1)); fi
+done
+# The rustfs NetworkPolicy admits exactly these pods, on 9000 only.
+_np_peers() { _np_ingress "$1" rustfs | grep -oE 'app\.kubernetes\.io/name: [a-z-]+$' | sed 's/.*: //' | sort | tr '\n' ' '; }
+for fe in "full.yaml:drust public-proxy rustfs-init " "backup-mirror.yaml:backup-mirror drust rustfs-init " "storage-noPublic.yaml:drust rustfs-init "; do
+  f=${fe%%:*}; want=${fe#*:}; got=$(_np_peers "$f")
+  if [ "$got" = "$want" ]; then echo "ok: rustfs NP ingress peers are exactly '$want' ($f)"; else echo "FAIL: rustfs NP ingress peers '$got', want '$want' ($f)"; FAILS=$((FAILS+1)); fi
+  ports=$(_np_ingress "$f" rustfs | grep -oE 'port: [0-9]+' | sort -u | tr '\n' ' ')
+  if [ "$ports" = "port: 9000 " ]; then echo "ok: rustfs NP ingress opens 9000 only ($f)"; else echo "FAIL: rustfs NP ingress ports '$ports', want 9000 only ($f)"; FAILS=$((FAILS+1)); fi
 done
 assert_absent full.yaml "RUSTFS_SERVER_DOMAINS" "path-style only: RUSTFS_SERVER_DOMAINS unset"
 assert_absent full.yaml "9001"                  "no RustFS console port anywhere"
@@ -437,6 +487,22 @@ if [ -n "$S3K" ] && [ -n "$S3K2" ] && [ "$S3K" != "$S3K2" ]; then
   echo "ok: drust pod checksum/s3-key changes with storage.secretKey"; else echo "FAIL: checksum/s3-key missing or unchanged by storage.secretKey"; FAILS=$((FAILS+1)); fi
 if [ -n "$ROOTK" ] && [ -n "$ROOTK2" ] && [ "$ROOTK" != "$ROOTK2" ]; then
   echo "ok: rustfs pod checksum/root-key changes with storage.rustfs.rootSecretKey"; else echo "FAIL: checksum/root-key missing or unchanged by rootSecretKey"; FAILS=$((FAILS+1)); fi
+# ... and with the access-key half, so a hash over the secret alone fails.
+S3K3=$(helm template testrel "$CHART" -f "$FIX/full.yaml" --namespace testns --set storage.accessKey=other 2>/dev/null | _ck "checksum/s3-key:")
+ROOTK3=$(helm template testrel "$CHART" -f "$FIX/full.yaml" --namespace testns --set storage.rustfs.rootAccessKey=other 2>/dev/null | _ck "checksum/root-key:")
+if [ -n "$S3K3" ] && [ "$S3K3" != "$S3K" ] && [ -n "$ROOTK3" ] && [ "$ROOTK3" != "$ROOTK" ]; then
+  echo "ok: checksums change with storage.accessKey / storage.rustfs.rootAccessKey too"; else echo "FAIL: a checksum does not cover the access key"; FAILS=$((FAILS+1)); fi
+# Key files from the documented recipe (`openssl rand -hex 20 > f`) end in a newline, which
+# --set-file keeps. The Secret and both checksums must come out exactly as without it.
+NL_DIR="$RENDER_DIR/nl"; mkdir -p "$NL_DIR"
+for kv in accessKey:fullak secretKey:fullsk rootAccessKey:fullrootak rootSecretKey:fullrootsk; do printf '%s\n' "${kv#*:}" > "$NL_DIR/${kv%%:*}"; done
+NL_OUT=$(helm template testrel "$CHART" -f "$FIX/full.yaml" --namespace testns \
+  --set-file storage.accessKey="$NL_DIR/accessKey" --set-file storage.secretKey="$NL_DIR/secretKey" \
+  --set-file storage.rustfs.rootAccessKey="$NL_DIR/rootAccessKey" --set-file storage.rustfs.rootSecretKey="$NL_DIR/rootSecretKey" 2>&1)
+_keylines() { grep -E '^  (s3-access-key|s3-secret-key|rustfs-root-access-key|rustfs-root-secret-key): |checksum/(s3|root)-key:'; }
+if [ -n "$(_render full.yaml | _keylines)" ] && [ "$(printf '%s\n' "$NL_OUT" | _keylines)" = "$(_render full.yaml | _keylines)" ]; then
+  echo "ok: --set-file keys with a trailing newline render the same Secret values and checksums"
+else echo "FAIL: a trailing newline in a --set-file key reaches the Secret or a checksum"; FAILS=$((FAILS+1)); fi
 assert_absent existing-secret.yaml "checksum/s3-key"  "no checksum/s3-key with existingSecret (Helm cannot see the values)"
 assert_absent existing-secret.yaml "checksum/root-key" "no checksum/root-key with existingSecret (Helm cannot see the values)"
 # existingSecret: no Secret rendered, every secretKeyRef names the operator's Secret.
@@ -466,8 +532,13 @@ _must_fail() { # <label> <expect-substring or ""> <helm args...>
 # The root key is never drust's key: rustfs-init would hand drust a key that can create buckets
 # and change who may read "public". Checked in secret.yaml, the only place both values are known.
 _must_fail "storage.accessKey equal to the root access key" "must be drust's own key" -f "$FIX/full.yaml" --set storage.accessKey=fullrootak
+# What init.sh refuses at hook time is refused at render (create mode).
+_must_fail "a root secret key with a URL character" "letters and digits only" -f "$FIX/full.yaml" --set storage.rustfs.rootSecretKey=a/b
+_must_fail "a root access key with a URL character" "letters and digits only" -f "$FIX/full.yaml" --set storage.rustfs.rootAccessKey=a:b
+_must_fail "root access key rustfsadmin" "published default rustfsadmin" -f "$FIX/full.yaml" --set storage.rustfs.rootAccessKey=rustfsadmin
+_must_fail "root secret key rustfsadmin" "published default rustfsadmin" -f "$FIX/full.yaml" --set storage.rustfs.rootSecretKey=rustfsadmin
 # Each of the four storage keys is required while storage is on, with no default. An upgrade from
-# 0.1.x with its old values file stops here, before anything reaches the cluster.
+# 0.1.x with its old values file stops here with secrets.create (an existingSecret is not checked).
 for k in storage.accessKey storage.secretKey storage.rustfs.rootAccessKey storage.rustfs.rootSecretKey; do
   _must_fail "empty $k" "$k required when storage.enabled=true" -f "$FIX/full.yaml" --set "$k="
 done

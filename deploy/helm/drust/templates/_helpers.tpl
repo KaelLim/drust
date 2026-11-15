@@ -36,6 +36,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/name: public-proxy
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+{{- /* A storage key exactly as the Secret stores it. `--set-file` keeps a file's trailing
+       newline (`openssl rand -hex 20 > f` writes one); RustFS refuses it in an access key
+       and init.sh would put it inside its URL. The checksums hash the same trimmed value. */ -}}
+{{- define "drust.key" -}}{{ . | default "" | toString | trim }}{{- end -}}
 {{- define "rustfs.svcName" -}}rustfs{{- end -}}
 {{- /* The bundled RustFS's S3 endpoint, used by drust, public-proxy and backup-mirror. */ -}}
 {{- define "drust.storeEndpoint" -}}http://{{ include "rustfs.svcName" . }}.{{ .Release.Namespace }}.svc:9000{{- end -}}

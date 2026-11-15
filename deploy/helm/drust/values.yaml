@@ -29,8 +29,8 @@ ingress:
   # untrusted (Traefik forwardedHeaders.insecure; nginx use-forwarded-headers without
   # compute-full-forwarded-for): drust would then key its rate limits on a value the
   # client chose. Keeping networkPolicy.enabled=true is part of that guarantee. If you
-  # set DRUST_TRUSTED_PROXIES in extraEnv before, move it here (a duplicate env name is
-  # last-wins at runtime but can confuse helm upgrade's patch). drust refuses to boot on
+  # set DRUST_TRUSTED_PROXIES in extraEnv before, move it here: the render refuses it in
+  # extraEnv (a duplicate env name fails a server-side apply). drust refuses to boot on
   # a value outside 0..8. See the README for the k3s ServiceLB caveat.
   trustedProxies: 1
   tls:
@@ -66,10 +66,10 @@ s3ClientImage: "docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c
 publicProxy:
   # Caddy that serves /public/* (rendered only with storage.enabled AND publicFiles.enabled).
   # Its /public block is a byte-for-byte copy of deploy/compose.Caddyfile's (render_test.sh
-  # checks). Pinned like every image here; Compose floats caddy:2 instead. This container
+  # checks). Pinned by tag and digest; Compose floats caddy:2 instead. This container
   # IS the anonymous internet-facing surface: bumping this pin to the current Caddy 2.x
   # release is part of routine chart maintenance, not optional.
-  image: "docker.io/library/caddy:2.11.9"
+  image: "docker.io/library/caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c"
 
 storage:
   enabled: true
@@ -77,18 +77,20 @@ storage:
   # rustfs-init creates it and limits it to the "public" and "private" buckets: it cannot
   # create buckets or change who may read "public". Required, no default; must differ from
   # storage.rustfs.rootAccessKey. Generate with: openssl rand -hex 10 / openssl rand -hex 20,
-  # and pass with --set-file or -f (not --set: shell history). Rotate by changing
-  # secretKey (drust restarts by itself); a changed accessKey leaves the old RustFS user
-  # working until you remove it (README).
+  # and pass with --set-file or -f (not --set: shell history); the file's trailing newline
+  # is trimmed. Random keys only: the checksum annotations publish a SHA-256 of them.
+  # Rotate by changing secretKey (drust restarts by itself); a changed accessKey leaves the
+  # old RustFS user working until you remove it (README).
   accessKey: ""
   secretKey: ""
   rustfs:
     image: "docker.io/rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74"
     # Root key of the bundled RustFS. Used only by the rustfs StatefulSet and the
     # rustfs-init hook Job; never handed to drust. Required, no default. RustFS's
-    # published default (rustfsadmin) is refused by rustfs-init. init.sh puts it in an
-    # http://key:secret@host URL: letters and digits only (openssl rand -hex), never "/",
-    # "@" or ":". Changing it restarts rustfs-0, which keeps its users and buckets.
+    # published default (rustfsadmin) is refused, at render and by rustfs-init. init.sh puts
+    # it in an http://key:secret@host URL: letters and digits only (openssl rand -hex; the
+    # render refuses anything else). Changing it restarts rustfs-0, which keeps its users
+    # and buckets.
     rootAccessKey: ""
     rootSecretKey: ""
     pvcSize: 20Gi

@@ -7,7 +7,10 @@ metadata:
   labels:
     {{- include "drust.labels" . | nindent 4 }}
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    # post-rollback too: drust's RustFS secret is set by this Job, not read by RustFS from the
+    # Secret, so a rollback that restores an older storage.secretKey (or publicFiles) needs
+    # this run to put RustFS back in step with it.
+    helm.sh/hook: post-install,post-upgrade,post-rollback
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
@@ -21,6 +24,7 @@ spec:
     spec:
       restartPolicy: OnFailure
       automountServiceAccountToken: false
+      enableServiceLinks: false   # no RUSTFS_PORT etc. from the rustfs Service (see rustfs STS)
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

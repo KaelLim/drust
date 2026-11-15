@@ -115,8 +115,8 @@ enabled with `backup.external.create=false`, also pre-create the backup Secret n
 ## Object store and its keys
 
 The bundled object store is RustFS: a StatefulSet `rustfs`, Service `rustfs:9000`, PVC
-`rustfs-data-rustfs-0`, and a `rustfs-init` post-install/post-upgrade hook Job. The
-Secret holds two keys for it:
+`rustfs-data-rustfs-0`, and a `rustfs-init` post-install/post-upgrade/post-rollback hook
+Job. The Secret holds two key pairs for it:
 
 | Secret key | Values | Read by |
 |---|---|---|
@@ -130,12 +130,17 @@ The root key never reaches the drust pod. `rustfs-init` runs the same
 anonymous GetObject-only policy when `publicFiles.enabled` (and removes it when not), and
 creates drust's user limited to those two buckets — it cannot create buckets or change
 who may read `public`. With `secrets.create` the render fails when `storage.accessKey`
-equals `storage.rustfs.rootAccessKey`; `init.sh` refuses the same in every case, and
-RustFS's published default `rustfsadmin`.
+equals `storage.rustfs.rootAccessKey`, or when a root key is RustFS's published default
+`rustfsadmin` or holds anything but letters and digits; `init.sh` refuses the first two in
+every case, at hook time.
 
-- **Generate and pass keys from files**: `openssl rand -hex 10` for an access key,
-  `openssl rand -hex 20` for a secret, then `-f values.yaml` or `--set-file
-  storage.secretKey=<file>` — not `--set`, which lands in shell history.
+- **Generate and pass keys from files**: `openssl rand -hex 10 > ak` for an access key,
+  `openssl rand -hex 20 > sk` for a secret, then `-f values.yaml` or `--set-file
+  storage.secretKey=sk` — not `--set`, which lands in shell history. The chart trims the
+  trailing newline such a file ends with (`--set-file` keeps it).
+- **Random keys only.** The `checksum/s3-key` and `checksum/root-key` pod annotations are an
+  unsalted SHA-256 of each key pair, readable by anyone who may read pods; for a 160-bit
+  random key that reveals nothing, for a chosen password it is a guessing oracle.
 - **Letters and digits only** for the RustFS root key: `init.sh` puts it in an
   `http://key:secret@host` URL, so `/`, `@` or `:` breaks it. `openssl rand -hex` output is safe.
 - **First install**: drust usually starts before the init Job has created its buckets and
@@ -158,6 +163,9 @@ RustFS's published default `rustfsadmin`.
 - **Rotating the root key**: change `storage.rustfs.rootSecretKey` (or both). `rustfs-0`
   restarts (`checksum/root-key`), takes the new key from env and keeps its users and
   buckets; the hook then logs in with it.
+- **`helm rollback`** runs `rustfs-init` too (`post-rollback`): RustFS holds drust's secret
+  as the hook last set it, so a rollback to an older `storage.secretKey` or `publicFiles`
+  needs that run to match the restored Secret again.
 - **With `secrets.existingSecret`** Helm cannot see the values, so nothing restarts by
   itself. After changing drust's key in that Secret: `helm upgrade` (the hook applies it),
   then `kubectl rollout restart sts/drust`. After changing the root key: `kubectl rollout
@@ -403,7 +411,7 @@ Caveats:
   markup by drust nor matched by the proxy. This is inherited from the Compose block
   (the byte copy keeps them identical) and is out of scope there too.
 - **`publicProxy.image` must be bumped routinely.** This Caddy is the anonymous,
-  internet-facing surface; it is pinned like every image here (Compose floats `caddy:2`
+  internet-facing surface; it is pinned by tag and digest (Compose floats `caddy:2`
   instead), so moving the pin to the current Caddy 2.x release is part of routine chart
   maintenance, not optional.
 
@@ -511,9 +519,8 @@ a longer retention and defeat `0`.
      narrow.
 
   If you set `DRUST_TRUSTED_PROXIES` in `extraEnv` before, **move it to
-  `ingress.trustedProxies`** when you upgrade: `extraEnv` renders after the chart's own
-  env, so the duplicate name is last-wins at runtime, but a duplicate name can confuse
-  Helm's patch on `helm upgrade`.
+  `ingress.trustedProxies`** when you upgrade: the render refuses `extraEnv` naming it,
+  because the chart sets it now and a duplicate env name fails a server-side apply.
 
 ## Test the chart
 

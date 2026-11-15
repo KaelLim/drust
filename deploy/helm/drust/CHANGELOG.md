@@ -27,25 +27,30 @@
 - **RustFS, the bundled object store.** A `rustfs` StatefulSet (`storage.rustfs.image`,
   RustFS 1.0.5 pinned tag+digest; PVC `rustfs-data-rustfs-0`, `storage.rustfs.pvcSize`;
   `resources.rustfs`; `scheduling.rustfs`), its Service, and a `rustfs-init`
-  post-install/post-upgrade hook Job that runs the Compose `init.sh`, `public-read.json`
-  and `drust-objects.json` (copies under `files/rustfs-init/`, byte-checked against
-  `deploy/compose-rustfs/` by `render_test.sh`). drust gets its own key limited to the
-  `public` and `private` buckets (`storage.accessKey` / `storage.secretKey`); the root key
-  (`storage.rustfs.rootAccessKey` / `rootSecretKey`, no default) reaches only the
-  StatefulSet and the hook. With `secrets.create`, the render fails when drust's access
-  key equals the root one. Changing drust's key or the root key through Helm restarts
-  the pod that holds it (`checksum/s3-key`, `checksum/root-key`); with
-  `secrets.existingSecret`, `kubectl rollout restart` (README). The RustFS pod runs as
-  uid 10001 on a read-only root with no ServiceAccount token, console off, logs to
-  stdout. NetworkPolicy: RustFS admits drust, `rustfs-init`, `backup-mirror` and
-  `public-proxy` on 9000 and nothing else; `rustfs-init` may reach only DNS and RustFS.
+  post-install/post-upgrade/post-rollback hook Job that runs the Compose `init.sh`,
+  `public-read.json` and `drust-objects.json` (copies under `files/rustfs-init/`,
+  byte-checked against `deploy/compose-rustfs/` by `render_test.sh`). drust gets its own key
+  limited to the `public` and `private` buckets (`storage.accessKey` / `storage.secretKey`);
+  the root key (`storage.rustfs.rootAccessKey` / `rootSecretKey`, no default) reaches only
+  the StatefulSet and the hook. With `secrets.create`, the render fails when drust's access
+  key equals the root one, or a root key is `rustfsadmin` or holds anything but letters and
+  digits. The four keys are trimmed, so a `--set-file` key file's trailing newline (which
+  `openssl rand -hex 20 > f` writes) does not reach RustFS. A rollback re-runs the hook,
+  which sets drust's secret on RustFS. Changing drust's key or the root key through Helm
+  restarts the pod that holds it (`checksum/s3-key`, `checksum/root-key`); with
+  `secrets.existingSecret`, `kubectl rollout restart` (README). The RustFS pod runs as uid
+  10001 on a read-only root with no ServiceAccount token and no Service links (`RUSTFS_*`
+  variables are its configuration), console off, logs to stdout. NetworkPolicy: RustFS
+  admits drust, `rustfs-init`, `backup-mirror` and `public-proxy` on 9000 and nothing else;
+  `rustfs-init` may reach only DNS and RustFS.
 
 ### Security
 - **`/public` served stored markup with no sandbox.** The Ingress sent `/public/*`
   straight to the store's port 9000: a `text/html` (or any `*+xml`) object came back with
   no CSP, and `?response-content-type=text/html` on an anonymous GET turned any public
   object into HTML — script running on the admin UI's origin. `/public/*` now goes to a
-  new `public-proxy` Caddy Deployment (`publicProxy.image`, `resources.publicProxy`)
+  new `public-proxy` Caddy Deployment (`publicProxy.image`, pinned tag+digest;
+  `resources.publicProxy`)
   whose `/public` block is a byte copy of the Compose one (`files/public-proxy.Caddyfile`,
   pinned by `render_test.sh`): GET/HEAD only, query string dropped, `Authorization` /
   `Cookie` stripped, `Set-Cookie` dropped, `nosniff` everywhere and the sandbox CSP on
@@ -64,7 +69,8 @@
   keyed on the ingress controller pod's address, so all clients of a group shared one
   rate-limit bucket. `1` counts the controller, the one proxy that appends to
   `X-Forwarded-For`. If you set `DRUST_TRUSTED_PROXIES` in `extraEnv`, move it to
-  `ingress.trustedProxies`. The README's known caveats cover the k3s ServiceLB SNAT, the
+  `ingress.trustedProxies`: the render refuses it in `extraEnv`, since a duplicate env name
+  fails a server-side apply. The README's known caveats cover the k3s ServiceLB SNAT, the
   controller's forwarded-header settings and the NetworkPolicy.
 - **The `GARAGE_ADMIN_*` placeholders are gone.** They existed because drust required
   both variables whenever `GARAGE_S3_ENDPOINT` was set; since v1.67.0 it boots on the S3

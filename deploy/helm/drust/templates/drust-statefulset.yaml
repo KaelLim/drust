@@ -21,7 +21,7 @@ spec:
         # existing user). Without this, `helm upgrade --set-file storage.secretKey=…` would
         # leave drust on the old value: every upload/download/delete 403, helm "success".
         # existingSecret: `kubectl rollout restart sts/drust` (README).
-        checksum/s3-key: {{ printf "%s\n%s" .Values.storage.accessKey .Values.storage.secretKey | sha256sum }}
+        checksum/s3-key: {{ printf "%s\n%s" (include "drust.key" .Values.storage.accessKey) (include "drust.key" .Values.storage.secretKey) | sha256sum }}
       {{- end }}
     spec:
       {{- with .Values.scheduling.drust.nodeSelector }}
@@ -148,6 +148,11 @@ spec:
             - { name: GARAGE_S3_ENDPOINT, value: {{ include "drust.storeEndpoint" . | quote }} }
             # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).
             - { name: GARAGE_PUBLIC_BUCKET, value: "public" }
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            {{- if eq (toString .name) "DRUST_TRUSTED_PROXIES" }}
+            {{- fail "extraEnv sets DRUST_TRUSTED_PROXIES, which the chart now sets from ingress.trustedProxies: move the value there (a duplicate env name fails a server-side apply)" }}
+            {{- end }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
