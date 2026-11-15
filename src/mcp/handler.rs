@@ -675,30 +675,46 @@ fn spawn_rpc_counter_bump(pool: crate::storage::pool::SharedTenantPool, name: St
 /// v1.26 — Wrap an anyhow error into McpError, attaching error_code +
 /// suggested_fix to the `data` field so LLM tools see structured
 /// remediation hints. Convention: tool functions `anyhow::bail!` with
-/// `"<CODE>: <message>"`, mirroring the REST `json_error` shape.
+/// `"<CODE>: <message>"`, mirroring the REST `json_error` shape — new code
+/// must keep writing it that way.
+///
+/// The code itself comes from `mcp::error_code::mcp_error_code`: the leading
+/// `CODE:` when there is one, else the classifier's closed tables (a sentinel
+/// directly after `PrepareError`'s prefix, then the ordered needle rows, then
+/// `INTERNAL`). It never returns caller text, so a message without a prefix no
+/// longer ships its first clause as the code. Message and JSON-RPC code
+/// (`-32603`) are unchanged.
 fn bail_mcp<T>(e: anyhow::Error) -> Result<T, McpError> {
     let msg = e.to_string();
-    let code = msg.split(':').next().unwrap_or("").trim();
-    let fix = crate::safety::error_fixes::lookup(code);
-    let mut data = serde_json::Map::new();
-    if !code.is_empty() {
-        data.insert(
-            "error_code".into(),
-            serde_json::Value::String(code.to_string()),
-        );
-    }
-    if let Some(f) = fix {
-        data.insert(
-            "suggested_fix".into(),
-            serde_json::Value::String(f.to_string()),
-        );
-    }
-    let data_val = if data.is_empty() {
-        None
-    } else {
-        Some(serde_json::Value::Object(data))
+    let code = crate::mcp::error_code::mcp_error_code(&msg, rmcp::model::ErrorCode::INTERNAL_ERROR)
+        .into_owned();
+    Err(with_error_code(McpError::internal_error(msg, None), &code))
+}
+
+/// Give a JSON-RPC tool error a `data.error_code` (and, when the code is
+/// catalogued, a `suggested_fix`). Keys already present win: an error that
+/// already carries `error_code` (e.g. `mcp_error_from_response` forwarding
+/// REST's, possibly contextual, fix) is returned untouched, and a non-object
+/// `data` is left alone. `code` and `message` are never changed.
+fn with_error_code(mut e: McpError, code: &str) -> McpError {
+    let mut data = match e.data.take() {
+        None => serde_json::Map::new(),
+        Some(Value::Object(m)) => m,
+        Some(other) => {
+            e.data = Some(other);
+            return e;
+        }
     };
-    Err(McpError::internal_error(msg, data_val))
+    if !data.contains_key("error_code") {
+        data.insert("error_code".into(), Value::String(code.to_string()));
+        if !data.contains_key("suggested_fix")
+            && let Some(f) = crate::safety::error_fixes::lookup(code)
+        {
+            data.insert("suggested_fix".into(), Value::String(f.to_string()));
+        }
+    }
+    e.data = Some(Value::Object(data));
+    e
 }
 
 /// The tool-EXECUTION-error face (MCP `isError: true`). Body is the JSON text
@@ -770,12 +786,182 @@ mod bail_mcp_tests {
         assert!(data.get("suggested_fix").is_none());
     }
 
+    /// Replaces `no_colon_message_yields_no_data`, which pinned the bug: a
+    /// message with no `CODE:` prefix used to ship its first clause as the code.
     #[test]
-    fn no_colon_message_yields_no_data() {
+    fn no_colon_message_yields_internal() {
         let r: Result<(), McpError> = bail_mcp(anyhow::anyhow!("just a free-form message"));
         let err = r.unwrap_err();
+        assert_eq!(err.message, "just a free-form message");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         let data = err.data.expect("data present");
-        assert_eq!(data["error_code"], "just a free-form message");
+        assert_eq!(data["error_code"], "INTERNAL");
+        assert!(data.get("suggested_fix").is_none());
+    }
+
+    #[test]
+    fn prefixless_message_gets_classified_code_and_fix() {
+        let r: Result<(), McpError> = bail_mcp(anyhow::anyhow!(
+            "unknown field 'A_B: x' for collection 'notes' (allowed: title)"
+        ));
+        let err = r.unwrap_err();
+        let data = err.data.expect("data present");
+        assert_eq!(data["error_code"], "FIELD_NOT_FOUND");
+        assert!(data["suggested_fix"].as_str().is_some());
+    }
+
+    #[test]
+    fn with_error_code_keeps_what_is_already_there() {
+        let e = McpError::invalid_params(
+            "m",
+            Some(serde_json::json!({"error_code": "X", "suggested_fix": "keep"})),
+        );
+        let out = with_error_code(e, "INVALID_PARAMS");
+        assert_eq!(
+            out.data.unwrap(),
+            serde_json::json!({"error_code": "X", "suggested_fix": "keep"})
+        );
+        let e = McpError::internal_error("m", Some(serde_json::json!("not an object")));
+        assert_eq!(
+            with_error_code(e, "INTERNAL").data.unwrap(),
+            serde_json::json!("not an object")
+        );
+        let e = McpError::internal_error("m", Some(serde_json::json!({"other": 1})));
+        let d = with_error_code(e, "INVALID_PARAMS").data.unwrap();
+        assert_eq!(d["other"], 1);
+        assert_eq!(d["error_code"], "INVALID_PARAMS");
+        assert!(d["suggested_fix"].as_str().is_some());
+    }
+
+    /// The two `read.rs` refusals reach `as_rusqlite_error(msg)` through a
+    /// variable, so the literal scan below cannot see them.
+    #[test]
+    fn query_forbidden_messages_have_codes() {
+        let src = include_str!("tools/read.rs");
+        for opener in [
+            "access to SQLite metadata tables is denied",
+            "`query` is read-only",
+        ] {
+            assert!(
+                src.contains(opener),
+                "read.rs no longer builds a message starting {opener:?}"
+            );
+            let msg = format!("{opener} — (underlying: x)");
+            assert_eq!(
+                crate::mcp::error_code::mcp_error_code(
+                    &msg,
+                    rmcp::model::ErrorCode::INTERNAL_ERROR
+                ),
+                "QUERY_FORBIDDEN"
+            );
+        }
+    }
+
+    /// Review item M2: every error literal in `src/mcp/tools/*.rs` that does
+    /// not open with `CODE:` and is not a pure forward classifies to a real
+    /// code — so a new unprefixed message fails here instead of reaching the
+    /// wire as `INTERNAL`. Also pins the classifier's safety premise: no
+    /// literal STARTS with a placeholder (caller text could then lead).
+    #[test]
+    fn every_unprefixed_tool_literal_has_a_code() {
+        const FILES: &[(&str, &str)] = &[
+            ("audit.rs", include_str!("tools/audit.rs")),
+            ("batch.rs", include_str!("tools/batch.rs")),
+            ("cron.rs", include_str!("tools/cron.rs")),
+            ("exploration.rs", include_str!("tools/exploration.rs")),
+            ("file_policy.rs", include_str!("tools/file_policy.rs")),
+            ("files.rs", include_str!("tools/files.rs")),
+            ("fts.rs", include_str!("tools/fts.rs")),
+            ("functions.rs", include_str!("tools/functions.rs")),
+            ("index.rs", include_str!("tools/index.rs")),
+            ("oauth.rs", include_str!("tools/oauth.rs")),
+            ("owner_field.rs", include_str!("tools/owner_field.rs")),
+            ("policy.rs", include_str!("tools/policy.rs")),
+            ("read.rs", include_str!("tools/read.rs")),
+            ("realtime.rs", include_str!("tools/realtime.rs")),
+            ("schema.rs", include_str!("tools/schema.rs")),
+            ("user.rs", include_str!("tools/user.rs")),
+            ("vector.rs", include_str!("tools/vector.rs")),
+            ("webhook.rs", include_str!("tools/webhook.rs")),
+            ("write.rs", include_str!("tools/write.rs")),
+        ];
+        // Genuine internal errors: nothing a caller did.
+        const INTERNAL_OK: &[&str] = &[
+            "collection vanished after create_index",
+            "collection vanished after drop_index",
+            "collection missing after alter",
+        ];
+        let lit_re = regex_lite::Regex::new(
+            r#"(?s)(?:bail!|anyhow!|invalid_input|as_rusqlite_error)\(\s*(?:format!\(\s*)?"((?:[^"\\]|\\.)*)""#,
+        )
+        .unwrap();
+        let cont_re = regex_lite::Regex::new(r"\\\n\s*").unwrap();
+        let lead_re = regex_lite::Regex::new(r"^[A-Z][A-Z0-9_]*:").unwrap();
+        let fwd_re = regex_lite::Regex::new(r"^[\s:]*(\{[^}]*\}[\s:]*)+$").unwrap();
+        let ph_re = regex_lite::Regex::new(r"\{[^}]*\}").unwrap();
+        let (mut n_invalid_input, mut n_as_rusqlite) = (0, 0);
+        for (file, src) in FILES {
+            for cap in lit_re.captures_iter(src) {
+                let whole = cap.get(0).unwrap().as_str();
+                let lit = cont_re.replace_all(&cap[1], "").into_owned();
+                if lead_re.is_match(&lit) || fwd_re.is_match(&lit) {
+                    continue;
+                }
+                assert!(
+                    !lit.starts_with('{'),
+                    "{file}: literal {lit:?} starts with a placeholder — caller or \
+                     inner text would lead the message and could become the code"
+                );
+                if whole.starts_with("invalid_input") {
+                    n_invalid_input += 1;
+                }
+                if whole.starts_with("as_rusqlite_error") {
+                    n_as_rusqlite += 1;
+                }
+                let msg = ph_re.replace_all(&lit, "x").replace("\\\"", "\"");
+                if INTERNAL_OK.contains(&msg.as_str()) {
+                    continue;
+                }
+                let code = crate::mcp::error_code::mcp_error_code(
+                    &msg,
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                );
+                assert_ne!(
+                    code, "INTERNAL",
+                    "{file}: unprefixed literal {lit:?} has no code — prefix it with \
+                     `<CODE>: ` or add a row to mcp::error_code::NEEDLES"
+                );
+            }
+        }
+        // Guard against a regex regression passing vacuously: the scan must see
+        // at least the unprefixed `invalid_input` / `as_rusqlite_error` literals
+        // counted when it was written.
+        assert!(
+            n_invalid_input >= 7,
+            "scan saw only {n_invalid_input} unprefixed invalid_input literals"
+        );
+        assert!(
+            n_as_rusqlite >= 3,
+            "scan saw only {n_as_rusqlite} unprefixed as_rusqlite_error literals"
+        );
+    }
+
+    /// Every tool module is in the scan list above, so a new module cannot
+    /// slip past it.
+    #[test]
+    fn literal_scan_covers_every_tool_module() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp/tools");
+        let src = include_str!("handler.rs");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if name == "mod.rs" || !name.ends_with(".rs") {
+                continue;
+            }
+            assert!(
+                src.contains(&format!("include_str!(\"tools/{name}\")")),
+                "tools/{name} is missing from every_unprefixed_tool_literal_has_a_code"
+            );
+        }
     }
 }
 

@@ -28,6 +28,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "A value violates a field constraint (min/max/enum/max_length). Adjust the value to satisfy the collection's declared constraints, or relax the constraint via the field editor.",
     ),
     (
+        "COLLECTION_EXISTS",
+        "A collection with this name already exists. List collections to confirm, extend it with add_field, or pick another name.",
+    ),
+    (
         "COLLECTION_NOT_FOUND",
         "Collection does not exist. Call `get_schema_overview` or `list_collections` to see existing collections.",
     ),
@@ -68,6 +72,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Row is referenced by another collection's foreign key (ON DELETE RESTRICT). Delete the referencing rows first, or use `dry_run: true` to see which collections block.",
     ),
     (
+        "FK_VIOLATION",
+        "A foreign-key value does not match any row of the referenced collection. Create the referenced row first, or correct the id.",
+    ),
+    (
         "FN_LIMIT",
         "Tenant function cap reached (DRUST_FN_MAX_PER_TENANT, default 10). Delete an unused function first (GET /t/<id>/functions to list).",
     ),
@@ -106,6 +114,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "MCP_USER_DENIED",
         "End-user tokens (`drust_user_*`) cannot use MCP. Use REST `/records` / `/list` / `/search` endpoints, or a stored RPC.",
+    ),
+    (
+        "NOT_NULL_VIOLATION",
+        "A required field was missing or null. Describe the collection to see its required fields, and send a value for each.",
     ),
     (
         "OAUTH_ONLY_NO_PASSWORD",
@@ -162,6 +174,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "RPC_DENIED",
         "RPC is not callable by your role. Service tokens always work; user/anon tokens require anon_callable=true on the stored RPC.",
+    ),
+    (
+        "RPC_EXISTS",
+        "An RPC with this name already exists. Update it instead, or delete it first.",
     ),
     (
         "RPC_STATEMENT_FAILED",
@@ -410,6 +426,29 @@ mod tests {
             lookup("MODE_MISMATCH").is_none(),
             "MODE_MISMATCH is dead and must not be in the catalog"
         );
+    }
+
+    /// Codes MCP's classifier (`mcp::error_code`) introduced; none is emitted by
+    /// REST, so their fixes change no REST body.
+    #[test]
+    fn lookup_finds_new_mcp_codes() {
+        for c in [
+            "COLLECTION_EXISTS",
+            "FK_VIOLATION",
+            "NOT_NULL_VIOLATION",
+            "RPC_EXISTS",
+        ] {
+            assert!(lookup(c).is_some(), "{c} must have a suggested_fix");
+        }
+    }
+
+    /// REST already answers `TYPE_MISMATCH` for three unrelated conditions
+    /// (body shape, role name, edge), and `json_error` attaches every catalogued
+    /// fix to every REST body — an entry here changes REST bytes and gives wrong
+    /// advice on two of them. Fails until that is a deliberate cross-face call.
+    #[test]
+    fn type_mismatch_stays_uncatalogued() {
+        assert!(lookup("TYPE_MISMATCH").is_none());
     }
 
     #[test]

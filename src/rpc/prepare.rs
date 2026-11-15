@@ -17,6 +17,11 @@ pub enum PrepareError {
     Rejected(String),
 }
 
+/// `PrepareError::Rejected`'s Display prefix, spelled out once so the MCP
+/// error-code classifier (`mcp::error_code::embedded_sentinel`) can anchor on
+/// it. `prepare_rejected_prefix_matches_display` keeps the two in step.
+pub const PREPARE_REJECTED_PREFIX: &str = "rpc sql failed prepare-time validation: ";
+
 /// Validate the SQL body of a stored RPC at registry-write time. The
 /// authorizer used matches the RPC's declared `mode`:
 ///
@@ -783,6 +788,39 @@ mod tests {
         )
         .unwrap();
         (d, conn, crate::storage::schema_cache::SchemaCache::new())
+    }
+
+    #[test]
+    fn prepare_rejected_prefix_matches_display() {
+        assert_eq!(
+            PrepareError::Rejected("x".into()).to_string(),
+            format!("{PREPARE_REJECTED_PREFIX}x")
+        );
+    }
+
+    /// The MCP classifier's closed sentinel set names this module's constants,
+    /// so renaming one here cannot silently drop it from the set.
+    #[test]
+    fn embedded_sentinels_are_the_emitted_constants() {
+        let set = crate::mcp::error_code::EMBEDDED_SENTINELS;
+        for c in [
+            RPC_ANON_OWNER_SCOPED,
+            RPC_KIND_INVALID,
+            RPC_QUERY_GRANT_ACTIVE,
+        ] {
+            assert!(set.contains(&c), "{c} missing from EMBEDDED_SENTINELS");
+        }
+        for s in set.iter().filter(|s| s.starts_with("RPC_")) {
+            assert!(
+                [
+                    RPC_ANON_OWNER_SCOPED,
+                    RPC_KIND_INVALID,
+                    RPC_QUERY_GRANT_ACTIVE
+                ]
+                .contains(s),
+                "{s} is not a prepare.rs constant"
+            );
+        }
     }
 
     #[test]
