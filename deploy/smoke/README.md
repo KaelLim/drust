@@ -83,7 +83,6 @@ table in the same commit that fixes it.
 | `50-mcp` | 2 | a missing or wrongly typed tool argument answers plain-text `isError` (rmcp 1.8) instead of one of drust's two error shapes |
 | `50-mcp` | 1 | `query`'s write refusal carries prose in `data.error_code` instead of an `UPPER_SNAKE` code |
 | `70-admin` | 3 | tenant create, tenant key reroll and tenant soft-delete write no host audit row |
-| `70-admin` | 2 | the CHANGELOG viewer answers 404 in the image (the image ships the binary only) |
 | `70-admin` | 1 | creating a tenant id that already exists answers 500 instead of 400 |
 | `80-rpc-cron-webhooks` | 2 | the egress allowlist cannot match an IPv6-literal origin without a port |
 

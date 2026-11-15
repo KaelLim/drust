@@ -210,6 +210,14 @@ update its toolchain first.
   chart does not set the variable yet, so k3s keeps today's single bucket until it does (see
   the chart notes).
 
+- **The CHANGELOG viewer works in the container image.** `/admin/_docs/changelog` read
+  `CHANGELOG.md` from the process's working directory. The image runs in `/data` and ships
+  only the binaries, so the page answered `404 doc not readable` on Docker Compose and k3s.
+  The file is now embedded in the binary at build time, so on every target the viewer shows
+  the changelog of the build that is answering. On a bare-metal host that runs from its
+  checkout, the page no longer picks up `CHANGELOG.md` edits before the next build. No action
+  needed.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's

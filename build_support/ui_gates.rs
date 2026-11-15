@@ -514,8 +514,8 @@ fn is_allowlisted_safe_producer(expr: &str) -> bool {
     }
     // 4. `body_html` — the CHANGELOG viewer's rendered markdown
     //    (`src/mgmt/docs.rs::changelog_page`). The source is the repo's own
-    //    `CHANGELOG.md`, read from the process CWD and shipped with the
-    //    binary; it is operator-controlled, never tenant input, and the route
+    //    `CHANGELOG.md`, embedded at compile time (`include_str!`) from the
+    //    repo; it is operator-controlled, never tenant input, and the route
     //    (`/admin/_docs/changelog`) sits behind the admin-session layer.
     //    pulldown-cmark passes raw HTML through, so this MUST stay a single
     //    named exception tied to that one handler — never a `_html` shape

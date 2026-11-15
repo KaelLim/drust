@@ -892,7 +892,7 @@ eyebrow = "管理 · 文件"
 source_label = "來源："
 
 [tenant_docs.page]
-meta_description = "drust 管理 — 本機文件檢視器（{active}）。"
+meta_description = "drust 管理 — 內建文件檢視器（{active}）。"
 title = "drust 管理 — _docs / {active}"
 
 [tenant_docs.toc]

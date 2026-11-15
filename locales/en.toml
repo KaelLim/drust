@@ -874,7 +874,7 @@ eyebrow = "Admin · documentation"
 source_label = "Source:"
 
 [tenant_docs.page]
-meta_description = "drust admin — on-disk doc viewer ({active})."
+meta_description = "drust admin — built-in doc viewer ({active})."
 title = "drust admin — _docs / {active}"
 
 [tenant_docs.toc]
