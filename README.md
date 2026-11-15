@@ -151,11 +151,11 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list; supports `https://*.example.com`, `http://localhost:*` |
 | `DRUST_TRUSTED_PROXIES` | optional (2; image 0; `docker-compose.yml` 1) | Reverse proxies in front of drust that append to `X-Forwarded-For`; the per-IP rate limits key on that entry (`0` = the TCP peer). Range 0–8. Set it when you put the image behind your own proxy |
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
-| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables file storage on any S3-compatible store (RustFS, Garage, MinIO, R2, AWS S3, B2). The `GARAGE_` names are historical. Compose's storage file sets them for you |
+| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables file storage on an S3-compatible store (verified: RustFS, Garage; constraints below). The `GARAGE_` names are historical. Compose's storage file sets them for you |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage only — used solely by the reconcile page to clean up buckets from the retired per-tenant layout. Set both; one alone is ignored with a boot warning |
 | `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the chart derives it from the ingress host |
 
-The S3 data path uses `object_store::aws::AmazonS3` (path-style, SigV4), so any S3-compatible store works: RustFS (the Compose default), Garage (the bare-metal reference host), MinIO, R2, AWS S3, B2.
+The S3 data path uses `object_store::aws::AmazonS3` (path-style, SigV4). It is verified against RustFS (the Compose default) and Garage (the bare-metal reference host). Two things are fixed and not configurable: the bucket names `public` and `private`, and the SigV4 region string `garage`. A store has to accept both. A hosted provider whose bucket names are global, or which checks the signing region (AWS S3, B2), cannot be used as it stands; MinIO and R2 are untested in this release.
 
 drust never creates buckets. Before the first upload, create `public` and `private`:
 - `public`: anonymous **GetObject only**, never a canned "download" policy, which also allows listing.
@@ -206,8 +206,9 @@ as described under *Configuration*, and point Caddy's `/public/*` at the store w
   replace the two lines marked `STORE-SHAPE` in `deploy/compose.Caddyfile` with the Garage
   forms in their comments.
 - MinIO (path-style S3 API): set `PUBLIC_OBJECTS_UPSTREAM`; untested in this release.
-- R2 or AWS S3: needs the provider's own public endpoint; carry the `/public/*` block across
-  with `@markup`, the query strip, the method limit and the header removals unchanged.
+- Any other store, or a public endpoint of its own: carry the `/public/*` block across with
+  `@markup`, the query strip, the method limit and the header removals unchanged. See
+  *Configuration* for the two things a store must accept (fixed bucket names, fixed region).
 
 Without storage, `/public/*` answers 502 from Caddy (the upstream does not resolve); there are
 no public files to serve, and the rest of the stack is unaffected.
@@ -259,6 +260,11 @@ one:
     with the `amazon/aws-cli` image on the compose network:
     `--endpoint-url http://minio:9000 s3api put-bucket-policy --bucket public --policy file:///p.json`;
   - create `public` and `private` if they never existed;
+  - `/public/*` now serves that bucket from the admin UI's origin, and the proxy's markup
+    matcher is case-sensitive. A public file stored before v1.56.3 with a markup type in
+    another casing (`TEXT/HTML`) would be served without the sandbox CSP: set it private and
+    public again (the move lowercases its type), or upload it again. Such a row's
+    `content_type` in `_system_files` differs from its lowercase form;
   - the override runs drust on the MinIO root key, which can also change bucket policy. For
     a least-privilege key, create a separate MinIO user, attach
     `deploy/compose-rustfs/drust-objects.json` to it (object read/write/delete and listing on

@@ -32,6 +32,9 @@ UMask=0077
 # Caller-SQL deadline (also has a working Rust default; Compose lists it too):
 #   DRUST_QUERY_DEADLINE_MS  caller-SQL deadline in ms (default 5000, 0 disables):
 #                            every read RPC / raw query, and anon+user write RPCs
+# Client-IP derivation (working Rust default; the image and Compose set their own):
+#   DRUST_TRUSTED_PROXIES    appending proxies in front of drust (default 2 =
+#                            nginx -> Caddy on this host; range 0-8, 0 = TCP peer)
 # The semaphore bounds concurrent deliveries; this NOFILE floor keeps FD
 # headroom for SQLite handles + SSE/WS alongside those sockets.
 LimitNOFILE=65536

@@ -151,11 +151,11 @@ flowchart LR
 | `DRUST_CORS_ORIGINS` | 選用 | 逗號分隔允許清單；支援 `https://*.example.com`、`http://localhost:*` |
 | `DRUST_TRUSTED_PROXIES` | 選用（2；映像檔 0；`docker-compose.yml` 1） | drust 前面會在 `X-Forwarded-For` 追加一項的反向代理層數；per-IP 限流以該項為 key（`0` = TCP 對端）。範圍 0–8。把映像檔放在自己的代理後面時要設定 |
 | `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
-| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用檔案儲存，任何 S3 相容服務皆可（RustFS、Garage、MinIO、R2、AWS S3、B2）。`GARAGE_` 字首是歷史名稱；Compose 的儲存設定檔會替你設好 |
+| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用檔案儲存，接 S3 相容服務（已驗證：RustFS、Garage；限制見下文）。`GARAGE_` 字首是歷史名稱；Compose 的儲存設定檔會替你設好 |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：只有對帳頁清理舊版「每租戶 bucket」時使用。兩者都要設；只設一個會在啟動時警告並視為未設定 |
 | `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案、簽署與 MCP 宣告 URL 對外使用的來源，不含路徑。Compose 設為 `http://localhost`；chart 由 ingress 主機推得 |
 
-S3 資料路徑走 `object_store::aws::AmazonS3`（path-style、SigV4），任何 S3 相容服務都能用：RustFS（Compose 預設）、Garage（bare-metal 參考主機）、MinIO、R2、AWS S3、B2。
+S3 資料路徑走 `object_store::aws::AmazonS3`（path-style、SigV4），已在 RustFS（Compose 預設）與 Garage（bare-metal 參考主機）上驗證。有兩件事是固定的、無法設定：bucket 名稱 `public` 與 `private`，以及 SigV4 的 region 字串 `garage`；儲存服務必須兩者都接受。bucket 名稱全域唯一、或會檢查簽章 region 的代管服務（AWS S3、B2）無法直接使用；MinIO 與 R2 在本版未經測試。
 
 drust 不會建立 bucket。首次上傳前請先建好：
 - `public`：匿名**只允許 GetObject**，切勿用同時開放列舉的「download」範本。
@@ -200,8 +200,8 @@ docker compose up -d
 - Garage：把 `PUBLIC_OBJECTS_UPSTREAM` 設為它的 `s3_web` 端點（例如 `garage:3902`），並把
   `deploy/compose.Caddyfile` 裡標記 `STORE-SHAPE` 的兩行換成其註解中的 Garage 寫法。
 - MinIO（path-style S3 API）：設定 `PUBLIC_OBJECTS_UPSTREAM` 即可；本版未經測試。
-- R2 或 AWS S3：需要該服務自己的公開端點；把 `/public/*` 區塊整段搬過去，`@markup`、捨棄 query、
-  方法限制與標頭移除都保持不變。
+- 其他儲存服務，或它自己的公開端點：把 `/public/*` 區塊整段搬過去，`@markup`、捨棄 query、
+  方法限制與標頭移除都保持不變。儲存服務必須接受的兩件事（固定的 bucket 名稱、固定的 region）見「設定」一節。
 
 未啟用儲存時，`/public/*` 由 Caddy 回 502（上游名稱無法解析）；本來就沒有公開檔案可提供，其餘服務不受影響。
 
@@ -248,7 +248,15 @@ docker compose up -d
     `deploy/compose-rustfs/public-read.json`（範本政策也允許列舉 bucket），例如在 compose 網路上用
     `amazon/aws-cli` 映像檔執行：
     `--endpoint-url http://minio:9000 s3api put-bucket-policy --bucket public --policy file:///p.json`；
-  - 若 `public` 與 `private` 從未建立，請建立它們。
+  - 若 `public` 與 `private` 從未建立，請建立它們；
+  - `/public/*` 現在會從管理後台的同一個來源提供該 bucket，而代理的 markup 比對區分大小寫。v1.56.3 之前存入、
+    content type 為其他大小寫（如 `TEXT/HTML`）的公開 markup 檔案，會在沒有 sandbox CSP 的情況下被提供：
+    請把它設為 private 再設回 public（搬移時會把 type 轉成小寫），或重新上傳。這類資料列在 `_system_files`
+    的 `content_type` 與其小寫形式不同；
+  - 這份 override 讓 drust 使用 MinIO 的 root 金鑰，該金鑰也能更改 bucket 政策。若要最小權限的金鑰，
+    請另建一個 MinIO 使用者，把 `deploy/compose-rustfs/drust-objects.json` 掛給它（僅限 `public` 與
+    `private` 的物件讀寫、刪除與列舉，不能改政策——與 `rustfs-init` 給 drust 的政策相同），再把
+    `GARAGE_S3_ACCESS_KEY` / `GARAGE_S3_SECRET_KEY` 指向該使用者。
 - **不再使用**：執行 `docker compose up -d --remove-orphans`（或
   `docker rm -f <project>-minio-1`）。容器連同開放的 port 與公開過的憑證一起移除；物件仍留在 `minio-data`。
 

@@ -27,9 +27,10 @@
 #     answers 400 to a drust bearer, and the admin session cookie is same-origin).
 #     Set-Cookie from the store never reaches the browser: this is the admin UI's
 #     origin, and a store (or a misconfigured upstream) must not set cookies on it.
-#   - @markup must stay in lockstep with storage::files::is_unsafe_inline_type and
-#     with the bare-metal host's block in ../garage/deploy/Caddyfile (pinned by
-#     deploy/tests/compose_public_route_test.sh). copy_response is MANDATORY inside
+#   - @markup must stay in lockstep with storage::files::is_unsafe_inline_type
+#     (pinned by deploy/tests/compose_public_route_test.sh) and with the bare-metal
+#     host's block in ../garage/deploy/Caddyfile (outside this repo: checked by
+#     hand). copy_response is MANDATORY inside
 #     handle_response: without it the body is silently dropped (200, 0 bytes).
 # Verified on Caddy 2.11.9 (the image `caddy:2` resolved to it); docker-compose.yml
 # keeps the floating `caddy:2` tag so the proxy keeps receiving security releases.

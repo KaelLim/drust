@@ -107,7 +107,7 @@ services:
       # --- object storage (file features) ---
       # Not set here. docker-compose.storage.yml adds GARAGE_S3_ENDPOINT and
       # drust's own bucket-scoped key when storage is on (deploy/compose-storage-env.sh).
-      # For a store you run yourself (MinIO, Garage, R2, AWS S3) set the three
+      # For a store you run yourself (Garage, MinIO, ...) set the three
       # GARAGE_S3_* variables in a docker-compose.override.yml instead (README).
       # The GARAGE_ names are historical; they configure any S3-compatible store.
       # drust never creates buckets: "public" (anonymous GetObject only, never a

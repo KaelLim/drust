@@ -8,7 +8,7 @@ on the admin plane. MCP gains error codes for conditions that had none (listed u
 *MCP (M1)*).
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
-only the row's `id` (E9). The other caller-visible changes are described in their entries:
+only the row's `id` (E9). Other caller-visible changes are described in their entries:
 SSE streams opened with an admin PAT end when that admin's access is revoked (E2′),
 `drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
 `drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
@@ -17,7 +17,11 @@ it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), an anon 
 call to a write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now answers
 `408 QUERY_TIMEOUT` and is rolled back (and one that waits a whole deadline behind another
 such call on the same tenant answers `429 RATE_LIMITED`), and the per-tenant MCP
-endpoint's model-facing surface changes as described under *MCP (M1)* below.
+endpoint's model-facing surface changes as described under *MCP (M1)* below. Several
+entries under *Fixed* also change an error response (an unknown field on a REST write, a
+path no route matches, a failed object-store call, an IPv6 egress origin, an over-size
+WebSocket frame) or the key minted for an upload whose extension is not plain ASCII; each
+entry says who is affected and whether anything needs doing.
 
 It also closes the Compose deployment target's gaps the new smoke stack found, and makes
 RustFS the bundled object store for Docker Compose: see *Deploy (Compose)* below.
@@ -305,7 +309,11 @@ update its toolchain first.
   are unchanged. The host files page (`/admin/files`) keeps its detailed errors; the tenant
   files admin page shares the data-plane upload, download and delete handlers, so it now
   shows the same fixed message (an upload there answers the `GARAGE_PUT_FAILED` JSON error),
-  as does an admin signed-URL fetch. To see what failed, read drust's log. No action needed.
+  as does an admin signed-URL fetch. Redeeming a signed URL also no longer returns the tenant
+  database's path or SQLite's own error text: when the tenant's database is gone (a
+  soft-deleted tenant) it answers `404 not found`, like an absent file, and a failed row
+  lookup answers `500 internal error`. To see what failed, read drust's log. No action
+  needed.
 - **A private IPv4 address written as an IPv6 address is now refused on every outbound
   path.** The private-address check recognised a private IPv4 inside an IPv6 address only in
   the `::ffff:a.b.c.d` form. The IPv4-compatible (`::a.b.c.d`), IPv4-translated
@@ -328,7 +336,7 @@ update its toolchain first.
   allowlist split an origin's port off at its last `:`, so `https://[2606:4700:4700::1111]`
   was refused `400 EGRESS_BAD_ORIGIN`, and the same origin written with `:443` was stored
   but never matched a webhook or `http-fetch` target. Bracketed IPv6 literals are now parsed
-  as addresses and stored in canonical form (`https://[2001:db8::1]`; an IPv4-mapped
+  as addresses and stored in canonical form (`https://[2606:4700:4700::1111]`; an IPv4-mapped
   address is stored as `https://[::ffff:a.b.c.d]`), so spelling and default-port
   differences no longer break a match; different addresses still never match. Webhook
   delivery to an IPv6-literal target also looked the bracketed host up as a DNS name and
@@ -357,10 +365,24 @@ update its toolchain first.
   the guest chooses — get a URL that resolves (wherever the proxy in front of the object
   store forwards an escaped `%25` path unchanged); the URL of every key made only of ASCII
   letters, digits, `.`, `_` and `-` is unchanged. The host files reconcile page no longer
-  lists such a file as both a dangling row and an orphan object (so "delete dangling rows"
-  can no longer remove the live row of an existing object), and deleting a genuine orphan
+  lists such a file as both a dangling row and an orphan object (so for such a file "delete
+  dangling rows" can no longer remove the live row of an existing object), and deleting a genuine orphan
   whose key the object store had encoded now actually deletes it. No action needed, unless
   a client inferred a file's type from its key's extension.
+- **The host files reconcile page no longer offers private host files as dangling rows.**
+  The page compares drust's rows with a listing of the `public` bucket only, but it compared
+  every host file row, and a private host file's object is in the `private` bucket. Each
+  private host file was therefore listed under "dangling rows", and applying the selection
+  deleted the row of a file whose object still existed, with no way back from that page. The
+  page now judges public rows only, and the apply step refuses to delete a private row even
+  when a stale or hand-built form names one. An object that any host row names is still
+  never offered as an orphan. Owner-only page; no action needed. If you applied "delete
+  dangling rows" on a host with private host files, those objects are still in the `private`
+  bucket without a row.
+- **The English delete-tenant confirmation showed `&#x27;` in place of an apostrophe.** The
+  sentence is reworded. A new test checks every bundle string that a template places inside
+  a JavaScript string literal, in both locales, for a character that would end the literal
+  or show up as an HTML entity.
 - **Write-mode stored RPCs called by anon or user tokens now stop at the query deadline.**
   Since v1.58 every caller-controlled *read* has run under `DRUST_QUERY_DEADLINE_MS`
   (default 5000), but a write-mode RPC (`mode='write'`) had no deadline at all. It runs
@@ -492,8 +514,8 @@ update its toolchain first.
   your real origin when you change Caddy's port or put TLS in front. The k3s chart already
   set it; bare-metal is unchanged.
 - **`/public/*` is served on Compose.** `deploy/compose.Caddyfile` had no route for the
-  public bucket, so the public URL drust returns reached drust and answered
-  `404 NOT_FOUND`. Caddy now serves `/public/*`
+  public bucket, so the public URL drust returns reached drust and answered a plain-text
+  `400 missing tenant in path`. Caddy now serves `/public/*`
   straight from the object store's `public` bucket, never through drust. It allows GET and
   HEAD only (anything else answers 405). It drops the query string, because an S3 API
   honours `?response-content-type=` on anonymous requests. It forwards neither
@@ -527,7 +549,11 @@ update its toolchain first.
   - keep MinIO: add the `docker-compose.override.yml` from the README ("Upgrading from
     the bundled MinIO"; untested in this release). It re-declares `minio` with the console on
     `127.0.0.1` only and no S3 port, so the next `docker compose up -d` recreates the
-    container without the exposure. Rotate away from `drustkey` / `drustsecret`; or
+    container without the exposure. Rotate away from `drustkey` / `drustsecret`. `/public/*`
+    then serves that bucket from the admin UI's origin, and the proxy's markup matcher is
+    case-sensitive: a public file stored before v1.56.3 with a markup type in another casing
+    (`TEXT/HTML`) would be served without the sandbox CSP. Set such a file private and public
+    again (the move lowercases its type), or upload it again; or
   - stop using it: run `docker compose up -d --remove-orphans` (or
     `docker rm -f <project>-minio-1`). The objects stay in `minio-data`. Moving them to
     RustFS is not documented in this release.
@@ -608,7 +634,9 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   reports `UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
   `CHECK_CONSTRAINT_FAILED` or `TYPE_MISMATCH`. An error with nothing to classify reports
   `INTERNAL`. New codes, on MCP only for now: `RPC_EXISTS`, `COLLECTION_EXISTS`,
-  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`. REST responses are
+  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`, and
+  `META_UNAVAILABLE` (a tool that needs the host metadata connection where there is none;
+  no `suggested_fix`). REST responses are
   unchanged. A client that matched the old prose in `data.error_code` should match the
   code, or the `message`, instead.
 - **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other
