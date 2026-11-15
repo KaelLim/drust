@@ -22,11 +22,14 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 /// link-local (169.254/16, fe80::/10), wildcard (0.0.0.0/8), IPv6 ULA
 /// (fc00::/7), RFC 6598 CGNAT (100.64.0.0/10), IPv6 unspecified (::/128),
 /// RFC 3849 documentation (2001:db8::/32), and every IPv6 spelling of a
-/// private IPv4 — IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96),
-/// NAT64 (64:ff9b::/96) and 6to4 (2002::/16) when the embedded IPv4 is
-/// itself private — plus the whole NAT64 local-use prefix 64:ff9b:1::/48,
-/// whose embedding is operator-chosen. (Teredo, 2001::/32, is not decoded:
-/// its embedding is obfuscated.) Returned for
+/// private IPv4 — IPv4-mapped (::ffff:0:0/96), IPv4-translated
+/// (::ffff:0:0:0/96, RFC 2765 SIIT), IPv4-compatible (::/96), NAT64
+/// (64:ff9b::/96) and 6to4 (2002::/16) when the embedded IPv4 is itself
+/// private — plus the whole NAT64 local-use prefix 64:ff9b:1::/48, whose
+/// embedding is operator-chosen. Not decoded, as known residuals: Teredo
+/// (2001::/32, obfuscated embedding) and RFC 6052 network-specific NAT64
+/// prefixes, which an operator picks from ordinary global space and so cannot
+/// be enumerated here. Returned for
 /// any IP that should never receive a webhook from an internet-facing drust
 /// instance.
 ///
@@ -110,6 +113,11 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
             };
             // ::a.b.c.d — IPv4-compatible (::/96; `::` and `::1` are caught above).
             if segs[0..6] == [0; 6] {
+                return is_private_ip(IpAddr::V4(embedded(segs[6], segs[7])));
+            }
+            // ::ffff:0:a.b.c.d — IPv4-translated (RFC 2765 SIIT); distinct from
+            // the IPv4-mapped form above, whose `ffff` sits one segment later.
+            if segs[0..4] == [0; 4] && segs[4] == 0xffff && segs[5] == 0 {
                 return is_private_ip(IpAddr::V4(embedded(segs[6], segs[7])));
             }
             // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052).
@@ -261,6 +269,8 @@ mod tests {
             "2002:c0a8:101::1",   // 6to4 192.168.1.1
             "2002:7f00:1::",      // 6to4 127.0.0.1
             "2002:a9fe:a9fe::1",  // 6to4 169.254.169.254
+            "::ffff:0:a00:1",     // IPv4-translated 10.0.0.1
+            "::ffff:0:a9fe:a9fe", // IPv4-translated 169.254.169.254
         ] {
             assert!(is_private_ip(ip(private)), "{private} must be private");
         }
@@ -268,6 +278,7 @@ mod tests {
             "64:ff9b::808:808",     // NAT64 8.8.8.8
             "2002:808:808::1",      // 6to4 8.8.8.8
             "::808:808",            // IPv4-compatible 8.8.8.8
+            "::ffff:0:808:808",     // IPv4-translated 8.8.8.8
             "2606:4700:4700::1111", // ordinary global unicast
             "64:ff9b:2::1",         // outside both NAT64 prefixes
         ] {
