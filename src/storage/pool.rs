@@ -13,6 +13,12 @@ use tokio::sync::{Mutex, Semaphore};
 /// (set in `apply_common_pragmas`) bounds each run's cost.
 const DRUST_OPTIMIZE_EVERY: u64 = 1000;
 
+/// How many anon/user write-mode stored RPCs one tenant admits at a time (see
+/// [`TenantPool::untrusted_write_rpc_gate`]). One: the writer is a single slot,
+/// so a second admitted untrusted RPC could only queue on the writer mutex in
+/// front of trusted writers.
+const UNTRUSTED_WRITE_RPC_PERMITS: usize = 1;
+
 /// The writer transaction handed to [`TenantPool::with_writer_tx`]: a deferred
 /// `BEGIN … COMMIT` over a connection held `&mut`.
 ///
@@ -79,6 +85,9 @@ pub struct TenantPool {
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
     reader_sema: Semaphore,
+    /// Admission for anon/user write-mode stored RPCs only — see
+    /// [`TenantPool::untrusted_write_rpc_gate`].
+    untrusted_write_rpc_gate: Semaphore,
     /// Monotonic count of successful writes through `with_writer` /
     /// `with_writer_tx`. Drives the periodic `PRAGMA optimize`.
     write_count: AtomicU64,
@@ -131,6 +140,7 @@ impl TenantPool {
             writer: Mutex::new(writer),
             readers,
             reader_sema: Semaphore::new(read_pool_size),
+            untrusted_write_rpc_gate: Semaphore::new(UNTRUSTED_WRITE_RPC_PERMITS),
             write_count: AtomicU64::new(0),
             #[cfg(any(test, debug_assertions))]
             optimize_runs: AtomicU64::new(0),
@@ -164,6 +174,19 @@ impl TenantPool {
 
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
+    }
+
+    /// Admission for anon/user write-mode stored RPCs only (one permit). The
+    /// query deadline bounds how long ONE untrusted RPC holds the writer; this
+    /// bounds how many untrusted RPCs can be queued for or holding it, so
+    /// trusted writers wait at most about one deadline (plus its bounded tail)
+    /// behind them instead of behind an unbounded queue. Taken by the REST
+    /// write arm's Anon/User branch (`rpc::handler::admit_untrusted_write`),
+    /// BEFORE the writer is requested and never inside a `with_writer`
+    /// closure. Never taken by `with_writer` itself or by any trusted caller
+    /// (service key, admin PAT, admin playground, cron).
+    pub fn untrusted_write_rpc_gate(&self) -> &Semaphore {
+        &self.untrusted_write_rpc_gate
     }
 
     pub async fn with_writer<F, T>(&self, f: F) -> rusqlite::Result<T>

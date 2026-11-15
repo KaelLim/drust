@@ -12,10 +12,11 @@ SSE streams opened with an admin PAT end when that admin's access is revoked (E2
 `drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
 `drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
 whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
-it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), an anon or user call to a
-write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now answers
-`408 QUERY_TIMEOUT` and is rolled back, and the per-tenant MCP endpoint's model-facing
-surface changes as described under *MCP (M1)* below.
+it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), an anon or user
+call to a write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now answers
+`408 QUERY_TIMEOUT` and is rolled back (and one that waits a whole deadline behind another
+such call on the same tenant answers `429 RATE_LIMITED`), and the per-tenant MCP
+endpoint's model-facing surface changes as described under *MCP (M1)* below.
 
 This release also carries three cross-major dependency upgrades (D1–D3 under *Build*).
 Together with the compatible refresh they clear every advisory that kept CI's `cargo audit`
@@ -372,14 +373,24 @@ update its toolchain first.
   `DRUST_QUERY_DEADLINE_MS=0` still disables the deadline. **Service tokens, admin PATs,
   the admin RPC playground and cron are unchanged** and still run write RPCs without a
   deadline. The deadline starts when the RPC gets the writer, so time spent queued behind
-  another writer does not count against it. What this bounds is how long **one** call
-  holds the writer, not how many are waiting for it: the per-token rate limiter caps how
-  fast requests arrive (about 6/s per token), not how many queue, so a sustained stream of
-  slow anon or user calls can still keep a tenant's writer busy, with every other writer —
-  trusted ones included — queued behind it. As with reads, the deadline caps how long a
-  call holds a worker, not the fact that it holds one. No action needed, unless an app
-  calls an anon-callable write RPC that legitimately runs longer than the deadline: move
-  that call behind a service key, or raise `DRUST_QUERY_DEADLINE_MS`.
+  another writer does not count against it. The deadline bounds how long **one** call
+  holds the tenant's writer; the admission slot below bounds how many untrusted calls can
+  be waiting for it. As with reads, the deadline caps how long a call holds a worker, not
+  the fact that it holds one.
+  Anon and user write RPCs are now also admitted **one at a time per tenant**: while one
+  holds that slot, the next waits up to one query deadline and is then refused with the
+  existing `429 RATE_LIMITED` (with `Retry-After`). The per-token rate limiter only caps
+  how fast requests arrive (about 6/s per token), not how many queue, so without the slot a
+  sustained stream of slow anon calls could keep a tenant's writer busy with every other
+  writer queued behind it; now a service, cron or MCP write waits at most about one
+  deadline behind them. Trusted callers — service tokens, admin PATs, the admin playground
+  and cron — never take the slot. Fast RPCs are unaffected, because a waiting call gets the
+  slot as soon as the one ahead finishes; **a tenant that runs several slow anon or user
+  write RPCs at once can now see 429s it did not see before.** With
+  `DRUST_QUERY_DEADLINE_MS=0` the wait for the slot is a fixed 5 s. No action needed,
+  unless an app calls an anon-callable write RPC that legitimately runs longer than the
+  deadline or runs several slow ones concurrently: move those calls behind a service key,
+  or raise `DRUST_QUERY_DEADLINE_MS`.
 
 ### Changed
 

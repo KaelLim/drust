@@ -349,6 +349,35 @@ pub async fn call_rpc(
                     );
                 }
 
+                // 0e. Untrusted admission gate: anon and user write RPCs are
+                //     admitted one at a time per tenant, so they cannot pile
+                //     up in front of the writer ahead of trusted writers. A
+                //     caller waits up to one query deadline for the slot, then
+                //     gets the limiter's 429. Exhaustive match: service (the
+                //     tenant key or an admin PAT) never touches the gate. The
+                //     permit is held until `run_write_rpc` returns, and is
+                //     taken BEFORE the writer is requested — never inside a
+                //     `with_writer` closure, which would put the semaphore
+                //     under the mutex and invert the bound.
+                let _admit = match &ctx_for_lookup {
+                    AuthCtx::Service { .. } => None,
+                    AuthCtx::Anon | AuthCtx::User { .. } => {
+                        match admit_untrusted_write(&pool, admit_wait()).await {
+                            Ok(p) => Some(p),
+                            Err(()) => {
+                                let mut resp = crate::tenant::router::rate_limited_response(
+                                    admit_wait().as_secs().max(1),
+                                );
+                                resp.extensions_mut()
+                                    .insert(crate::safety::audit::AuditExtra(
+                                        json!({"rpc_mode": "write"}),
+                                    ));
+                                return resp;
+                            }
+                        }
+                    }
+                };
+
                 // v1.50 — resolve the tenant's quota tier (transitional
                 // `read_tier`; single meta lock on the low-frequency RPC path).
                 let tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
@@ -387,6 +416,31 @@ pub async fn call_rpc(
     };
 
     outcome_to_response(outcome, &t, &name)
+}
+
+/// Take the tenant's untrusted write-RPC admission slot
+/// ([`crate::storage::pool::TenantPool::untrusted_write_rpc_gate`]), waiting at
+/// most `wait` for it. `Err(())` on a timeout or a closed semaphore; the REST
+/// write arm maps that to `429 RATE_LIMITED`. Only the Anon/User branch of that
+/// arm calls this. `pub` (not `pub(crate)`) so an integration test can drive it
+/// with a short wait against a pool it holds.
+pub async fn admit_untrusted_write(
+    pool: &crate::storage::pool::SharedTenantPool,
+    wait: std::time::Duration,
+) -> Result<tokio::sync::SemaphorePermit<'_>, ()> {
+    match tokio::time::timeout(wait, pool.untrusted_write_rpc_gate().acquire()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
+}
+
+/// How long an untrusted write RPC waits for the admission slot before the
+/// 429: one query deadline, so a burst of FAST anon write RPCs serialises as it
+/// always did on the writer mutex and never sees a 429 — a 429 means an
+/// untrusted RPC has held the slot for a whole deadline. With the deadline
+/// disabled (`DRUST_QUERY_DEADLINE_MS=0`) the wait is a fixed 5 s.
+fn admit_wait() -> std::time::Duration {
+    crate::query::executor::query_deadline().unwrap_or(std::time::Duration::from_secs(5))
 }
 
 /// Translate a `RpcOutcome` into the final HTTP response. Factored out so

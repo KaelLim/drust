@@ -208,6 +208,12 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `ROLLBACK TO`/`RELEASE` only when the run timed out AND the connection is back in
   autocommit (SQLite already rolled back an interrupted DML statement); widening it to every
   error class would relabel SQLITE_FULL/IOERR/NOMEM for trusted callers.
+- Anon/user write RPCs take a per-tenant admission slot (`TenantPool::untrusted_write_rpc_gate`,
+  one permit) in the REST write arm and answer `429 RATE_LIMITED` after waiting one deadline
+  for it; service, admin PAT, playground and cron never touch it. Deliberate (owner decision
+  2026-11-15): the deadline bounds one occupancy of the writer, the slot bounds the untrusted
+  queue in front of it. Do not move the acquire into `with_writer` (it would sit under the
+  mutex and invert the bound) and do not extend it to trusted callers.
 
 ## Canonical sources — do not hand-verify against prose
 

@@ -1238,3 +1238,150 @@ async fn rest_anon_runaway_write_rpc_answers_408_query_timeout() {
     assert_eq!(orders_count(&pool).await, 3, "nothing written");
     assert_eq!(history_rows(&pool).await.len(), hist_before);
 }
+
+// ── Untrusted write-RPC admission gate (one anon/user write RPC per tenant). ─
+
+/// The gate admits one: while its only permit is held, a second admission
+/// times out after the given wait; once released, admission succeeds.
+#[tokio::test]
+async fn untrusted_write_rpc_gate_admits_one_and_times_out_the_next() {
+    let (_app, tid, _svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rh-gate").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+
+    let held = pool.untrusted_write_rpc_gate().acquire().await.unwrap();
+    let started = std::time::Instant::now();
+    let second =
+        drust::rpc::handler::admit_untrusted_write(&pool, std::time::Duration::from_millis(50))
+            .await;
+    assert!(second.is_err(), "the only permit is held");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "bounded by the wait: {:?}",
+        started.elapsed()
+    );
+    drop(held);
+    let third =
+        drust::rpc::handler::admit_untrusted_write(&pool, std::time::Duration::from_millis(50))
+            .await;
+    assert!(third.is_ok(), "released permit is admitted again");
+}
+
+/// A service bearer never touches the gate: with the router's own slot held,
+/// a service write RPC still answers 200 at once.
+#[tokio::test]
+async fn service_write_rpc_ignores_the_untrusted_gate() {
+    let (app, tid, svc, _anon, tenants, _dir) =
+        helpers::spin_up_dual_role_self_register_with_registry("t-rh-gate-svc").await;
+    let pool = tenants.get_or_create(&tid).unwrap();
+    create_orders_table(&pool).await;
+    create_rpc(
+        &pool,
+        "open_add",
+        "INSERT INTO orders (qty) VALUES (1)",
+        "[]",
+        true,
+    )
+    .await;
+
+    let _held = pool.untrusted_write_rpc_gate().acquire().await.unwrap();
+    let started = std::time::Instant::now();
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/open_add", Some(json!({})), &svc))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::OK, "{v} ({elapsed:?})");
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "service did not wait for the untrusted slot: {elapsed:?}"
+    );
+    assert_eq!(orders_count(&pool).await, 1);
+}
+
+/// An anon write RPC takes the router's slot: while it is held for longer
+/// than one deadline, the anon call waits that long and is then refused with
+/// the limiter's 429, having written nothing.
+#[tokio::test]
+async fn rest_anon_write_rpc_waits_one_deadline_for_the_gate_then_429() {
+    if std::env::var_os("DRUST_QUERY_DEADLINE_MS").is_some() {
+        eprintln!("DRUST_QUERY_DEADLINE_MS is set; this test pins the 5000 ms default — skipped");
+        return;
+    }
+    let (app, tid, _svc, anon, tenants, _dir) =
+        helpers::spin_up_dual_role_self_register_with_registry("t-rh-gate-429").await;
+    let pool = tenants.get_or_create(&tid).unwrap();
+    create_orders_table(&pool).await;
+    create_rpc(
+        &pool,
+        "open_add",
+        "INSERT INTO orders (qty) VALUES (1)",
+        "[]",
+        true,
+    )
+    .await;
+
+    let _held = pool.untrusted_write_rpc_gate().acquire().await.unwrap();
+    let started = std::time::Instant::now();
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/open_add", Some(json!({})), &anon))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let status = r.status();
+    let retry_after = r
+        .headers()
+        .get(header::RETRY_AFTER)
+        .map(|h| h.to_str().unwrap().to_string());
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{v} ({elapsed:?})");
+    assert_eq!(v["error_code"], "RATE_LIMITED", "{v}");
+    assert_eq!(retry_after.as_deref(), Some("5"));
+    assert!(
+        elapsed >= std::time::Duration::from_millis(4500)
+            && elapsed < std::time::Duration::from_secs(15),
+        "waited about one deadline for the slot: {elapsed:?}"
+    );
+    assert_eq!(orders_count(&pool).await, 0, "nothing written");
+}
+
+/// A short hold is waited out, not refused: fast anon write RPCs serialise on
+/// the slot exactly as they did on the writer mutex.
+#[tokio::test]
+async fn rest_anon_write_rpc_waits_out_a_short_hold_and_succeeds() {
+    if std::env::var_os("DRUST_QUERY_DEADLINE_MS").is_some() {
+        eprintln!("DRUST_QUERY_DEADLINE_MS is set; this test assumes the 5000 ms wait — skipped");
+        return;
+    }
+    let (app, tid, _svc, anon, tenants, _dir) =
+        helpers::spin_up_dual_role_self_register_with_registry("t-rh-gate-wait").await;
+    let pool = tenants.get_or_create(&tid).unwrap();
+    create_orders_table(&pool).await;
+    create_rpc(
+        &pool,
+        "open_add",
+        "INSERT INTO orders (qty) VALUES (1)",
+        "[]",
+        true,
+    )
+    .await;
+
+    let holder = pool.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let release = tokio::spawn(async move {
+        let _p = holder.untrusted_write_rpc_gate().acquire().await.unwrap();
+        tx.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    });
+    rx.await.unwrap();
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/open_add", Some(json!({})), &anon))
+        .await
+        .unwrap();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    release.await.unwrap();
+    assert_eq!(orders_count(&pool).await, 1);
+}
