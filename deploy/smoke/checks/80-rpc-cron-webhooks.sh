@@ -466,10 +466,14 @@ check_eq "rpc deadline: pooled readers serve fast RPCs after the interrupt (prog
 # trusted and unbounded. One bounded CTE body, calibrated to run ~7.5 s here
 # (n=3M timed with the service key first), so the anon call must be cut off
 # at ~5 s and the service call must run past the deadline to completion.
+# The anon twin writes a marker row BEFORE the slow statement, so "wrote
+# nothing" can only hold if the interrupt rolled the whole body back. (Every
+# statement is bound with every param, and an unknown name is an error, so
+# the marker statement names :n too.)
 mcp create_rpc '{"name":"w_slow","mode":"write","sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}]}'
 setup_ok "rpc deadline: create bounded-CTE write RPC w_slow (service only)"
-mcp create_rpc '{"name":"w_slow_anon","mode":"write","sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}],"anon_callable":true}'
-setup_ok "rpc deadline: create the same write RPC as anon_callable w_slow_anon"
+mcp create_rpc '{"name":"w_slow_anon","mode":"write","sql":"INSERT INTO items(title, n) VALUES ('"'"'dl-marker'"'"', :n * 0); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}],"anon_callable":true}'
+setup_ok "rpc deadline: create the same write RPC, plus a leading marker insert, as anon_callable w_slow_anon"
 t0=$(now_ms); svc POST /rpc/w_slow '{"n":3000000}'; t1=$(now_ms)
 cal=$((t1 - t0)); [ "$cal" -lt 50 ] && cal=50
 N2=$(python3 -c "print(min(400000000, int(3000000 * 7500 / $cal)))")
@@ -478,10 +482,10 @@ items_before="$(body total)"
 t0=$(now_ms); REQ_TIMEOUT=60 anon POST /rpc/w_slow_anon "{\"n\":$N2}"; t1=$(now_ms)
 el=$((t1 - t0))
 check_eq "rpc deadline: an anon runaway write RPC is interrupted with 408 QUERY_TIMEOUT" "408 QUERY_TIMEOUT" "$STATUS $(body error_code)"
-if [ "$el" -ge 4500 ] && [ "$el" -lt 20000 ]; then ok "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline (${el} ms), not at the HTTP timeout"
-else bad "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline" "elapsed ${el} ms (n=$N2; 3M rows took ${cal} ms)"; fi
+if [ "$STATUS" = "408" ] && [ "$el" -ge 4500 ] && [ "$el" -lt 20000 ]; then ok "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline (${el} ms), not at the HTTP timeout"
+else bad "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline" "status $STATUS after ${el} ms (n=$N2; 3M rows took ${cal} ms)"; fi
 svc POST /collections/items/list '{}'
-check_eq "rpc deadline: the interrupted anon write RPC wrote nothing" "$items_before" "$(body total)"
+check_eq "rpc deadline: the interrupted anon write RPC wrote nothing (its leading marker row was rolled back)" "$items_before" "$(body total)"
 t0=$(now_ms); svc POST /records/items '{"data":{"title":"after-deadline","n":1}}'; t1=$(now_ms)
 if [ "$STATUS" = "201" ] && [ $((t1 - t0)) -lt 2000 ]; then ok "rpc deadline: the tenant writer serves a fast write right after the interrupt"
 else bad "rpc deadline: the tenant writer serves a fast write right after the interrupt" "status $STATUS after $((t1 - t0)) ms"; fi
