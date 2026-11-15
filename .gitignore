@@ -1,6 +1,9 @@
 /target
 .env
 .env.test
+# Local smoke stack (deploy/smoke/): per-run check output. Its generated
+# secrets file is deploy/smoke/.env, already covered by the `.env` line above.
+/deploy/smoke/.last-run/
 llms.md
 *.log
 /data
