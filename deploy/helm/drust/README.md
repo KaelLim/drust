@@ -104,7 +104,8 @@ You **must** provide `secrets.adminPassword`, and (when `storage.enabled`)
 otherwise. If you manage credentials outside Helm, set `secrets.create=false`
 and point `secrets.existingSecret` at a pre-created Secret carrying the same
 keys (`admin-username`, `admin-password`, and when storage is on `s3-access-key`,
-`s3-secret-key`, `admin-endpoint`, `admin-token`). When a backup feature (B1/B2) is
+`s3-secret-key`). An existing Secret that still carries the old `admin-endpoint` /
+`admin-token` keys keeps working: nothing reads them any more. When a backup feature (B1/B2) is
 enabled with `backup.external.create=false`, also pre-create the backup Secret named by
 `backup.external.existingSecret` with keys `backup-s3-access-key` / `backup-s3-secret-key`.
 
@@ -349,10 +350,6 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
   and uses `HOME=/tmp` (emptyDir), so a read-only root is expected to work — but
   confirm MinIO reaches `/minio/health/ready` on your image tag after first
   install; if it crash-loops on a read-only root, that is the place to look.
-- **`GARAGE_ADMIN_ENDPOINT` / `GARAGE_ADMIN_TOKEN` are unused placeholders.**
-  drust's config requires them to be present whenever `GARAGE_S3_ENDPOINT` is
-  set, but MinIO has no Garage admin API and they are never dialed. The chart
-  injects harmless placeholder values so boot does not fail.
 - **`ingress.tls.enabled: false` is evaluation-only.** Over plain HTTP the chart
   sets `DRUST_DEV_NO_SECURE_COOKIES=1`, so the admin session cookie ships without
   the `Secure` flag — otherwise user agents drop it (RFC 6265bis) and admin login

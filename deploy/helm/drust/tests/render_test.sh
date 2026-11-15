@@ -73,9 +73,12 @@ assert_contains minimal.yaml "port: 47826"              "drust service port"
 assert_contains minimal.yaml "kind: Secret"                  "Secret rendered when create=true"
 assert_contains minimal.yaml "name: DRUST_INIT_ADMIN_PASSWORD" "admin password env wired"
 assert_contains minimal.yaml "secretKeyRef"                   "admin password via secretKeyRef"
-assert_contains full.yaml    "name: GARAGE_ADMIN_ENDPOINT"    "admin endpoint placeholder env present when storage on"
+# drust needs no Garage admin API since v1.67.0 (both GARAGE_ADMIN_* unset = not configured);
+# the chart's never-dialed placeholders are gone, from the env and from the Secret.
+assert_absent   full.yaml    "GARAGE_ADMIN_"                  "no GARAGE_ADMIN_* env when storage on"
+assert_absent   full.yaml    "admin-endpoint"                 "no admin-endpoint/admin-token placeholder in the Secret"
 assert_contains full.yaml    "name: GARAGE_S3_ACCESS_KEY"     "s3 access key env present when storage on"
-assert_absent   minimal.yaml "name: GARAGE_ADMIN_ENDPOINT"    "no admin endpoint env when storage off"
+assert_absent   minimal.yaml "GARAGE_ADMIN_"                  "no GARAGE_ADMIN_* env when storage off"
 
 # --- Task 4 assertions ---
 assert_contains full.yaml    "minio/minio"          "minio image when storage on"

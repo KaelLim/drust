@@ -10,6 +10,13 @@
   `X-Forwarded-For`. If you set `DRUST_TRUSTED_PROXIES` in `extraEnv`, move it to
   `ingress.trustedProxies`. The README's known caveats cover the k3s ServiceLB SNAT, the
   controller's forwarded-header settings and the NetworkPolicy.
+- **The `GARAGE_ADMIN_*` placeholders are gone.** They existed because drust required
+  both variables whenever `GARAGE_S3_ENDPOINT` was set; since v1.67.0 it boots on the S3
+  settings alone, and it read the two never-dialed values as "Garage admin API
+  configured". Removed: the `GARAGE_ADMIN_ENDPOINT` / `GARAGE_ADMIN_TOKEN` env entries, the
+  `admin-endpoint` / `admin-token` Secret keys, and the values
+  `storage.adminEndpointPlaceholder` / `storage.adminTokenPlaceholder`. An
+  `existingSecret` that still carries the two keys keeps working (nothing reads them).
 
 ## [0.1.4] — 2026-08-04
 

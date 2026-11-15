@@ -66,9 +66,6 @@ storage:
     pvcSize: 20Gi
     # NOTE: bucket names are NOT configurable — drust's write path hardcodes
     # "public"/"private" (src/storage/files.rs). minio-init always creates exactly those.
-  # Placeholders satisfy the mandatory GARAGE_ADMIN_* config (MinIO has no admin API; never dialed).
-  adminEndpointPlaceholder: "http://127.0.0.1:1"
-  adminTokenPlaceholder: "unused"
 
 resources:
   drust:

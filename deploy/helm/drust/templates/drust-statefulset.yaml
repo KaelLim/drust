@@ -114,10 +114,6 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
             - name: GARAGE_S3_SECRET_KEY
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
-            - name: GARAGE_ADMIN_ENDPOINT
-              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-endpoint } }
-            - name: GARAGE_ADMIN_TOKEN
-              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-token } }
             {{- end }}
             {{- if .Values.hideVersion }}
             - { name: DRUST_HIDE_VERSION, value: "1" }
