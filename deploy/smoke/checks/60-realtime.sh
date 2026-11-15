@@ -553,8 +553,8 @@ check_eq "PUT /collections/notes/realtime {enabled:true} answers 200" "200 true"
 anon PUT /collections/notes/realtime '{"enabled":true}'
 check_eq "anon cannot toggle realtime (403 WRITE_DENIED)" "403 WRITE_DENIED" "$STATUS $(body error_code)"
 
-# The documented path in CLAUDE.md's surface index is /collections/<c>/subscribe;
-# the route (router, OpenAPI, MCP tool text, admin UI) is /records/<c>/subscribe.
+# An older CLAUDE.md named /collections/<c>/subscribe; the route (router, OpenAPI,
+# MCP tool text, admin UI, CLAUDE.md) is /records/<c>/subscribe.
 # The live contract is what OpenAPI advertises, so that is what is asserted.
 svc GET /openapi.json
 OA_SUB="$(printf '%s' "$BODY" | python3 -c '
@@ -568,7 +568,7 @@ print(" ".join(sorted(k.split("/", 3)[3] for k in p if k.endswith("/subscribe"))
 check_eq "OpenAPI advertises the SSE stream at /records/<c>/subscribe (and nowhere else)" \
   "200 records/notes/subscribe" "$STATUS $OA_SUB"
 sse_open doc "$T/collections/notes/subscribe" "$SERVICE_KEY" 10
-note "the CLAUDE.md spelling /collections/<c>/subscribe answers $(sse_status doc) (not a stream)"
+note "the non-route /collections/<c>/subscribe answers $(sse_status doc) (not a stream)"
 sse_kill doc
 
 mcp_call_r set_anon_caps '{"collection":"notes","caps":[]}'

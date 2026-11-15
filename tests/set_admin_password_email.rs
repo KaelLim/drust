@@ -1,4 +1,4 @@
-//! `drust_set_admin_password --email kael@example.com` populates the
+//! `set_admin_password --username … --email …` populates the
 //! `admins.email` column for an existing admin username. Invalid emails
 //! are rejected before write.
 

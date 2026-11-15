@@ -739,7 +739,7 @@ or_continue = "or continue with"
 
 [login.error]
 invalid_credentials = "Wrong username or password."
-oauth_admin_email_missing = "Your admin record has no email — run drust_set_admin_password --email."
+oauth_admin_email_missing = "Your admin record has no email — ask the operator to run set_admin_password --username <name> --email <addr>."
 oauth_email_unverified = "Your provider email is not verified."
 oauth_generic = "Login failed."
 oauth_misconfigured = "OAuth is not configured."
@@ -1786,11 +1786,11 @@ fetch_failed = "list fetch failed"
 
 [collection_page.realtime]
 quickstart_browser_note = "native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code>"
-quickstart_curl_note = "works with anon (needs <code>select</code> cap) or service token"
+quickstart_curl_note = "works with anon (needs <code>select</code> cap and no <code>owner_field</code>) or service token"
 quickstart_node_note = "native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package"
 quickstart_summary = "SSE quickstart (curl / Node / Browser)"
-role_anon = "anon ✓ needs <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap"
-role_service = "service ✓ always allowed"
+role_anon = "anon ✓ needs <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap and no <code style=\"background:transparent;border:0;padding:0;color:inherit;\">owner_field</code>"
+role_service = "service ✓ always allowed while enabled"
 role_user = "user ✕ always 403 SSE_USER_DENIED"
 toggle_label = "SSE broadcast"
 

@@ -78,8 +78,9 @@ impl Theme {
 }
 
 /// Build the `Set-Cookie` header value for the `drust_theme` preference
-/// cookie. Aligned with `drust_session` attributes: `Path=/drust` (no
-/// leak to /t/<id>/... tenant routes), `SameSite=Lax` (Strict breaks
+/// cookie. Aligned with `drust_session` attributes: `Path=<base path>`
+/// (`base_path::cookie_path`; `/drust` by default, `/` in the Docker
+/// image), `SameSite=Lax` (Strict breaks
 /// OAuth callback chain — see project memory), `Secure` (production).
 ///
 /// `DRUST_DEV_NO_SECURE_COOKIES=1` strips the `Secure` attribute so

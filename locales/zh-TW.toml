@@ -759,7 +759,7 @@ or_continue = "或使用以下方式繼續"
 
 [login.error]
 invalid_credentials = "帳號或密碼錯誤。"
-oauth_admin_email_missing = "您的管理員紀錄沒有電子郵件 — 請執行 drust_set_admin_password --email。"
+oauth_admin_email_missing = "您的管理員紀錄沒有電子郵件 — 請主機管理者執行 set_admin_password --username <名稱> --email <信箱>。"
 oauth_email_unverified = "您在 OAuth 提供者的電子郵件尚未驗證。"
 oauth_generic = "登入失敗。"
 oauth_misconfigured = "OAuth 尚未設定。"
@@ -1808,11 +1808,11 @@ fetch_failed = "讀取資料列失敗"
 
 [collection_page.realtime]
 quickstart_browser_note = "原生 <code>EventSource</code> 無法送 <code>Authorization</code>——請透過 BFF 代理，或改用 <code>fetch</code> + <code>ReadableStream</code>"
-quickstart_curl_note = "anon 可用（需 <code>select</code> cap），service token 亦可"
+quickstart_curl_note = "anon 可用（需 <code>select</code> cap，且集合未設 <code>owner_field</code>），service token 亦可"
 quickstart_node_note = "原生 <code>EventSource</code> 無法送 header——請改用 <code>eventsource</code> npm 套件"
 quickstart_summary = "SSE 快速上手（curl / Node / 瀏覽器）"
-role_anon = "anon ✓ 需要 <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap"
-role_service = "service ✓ 一律允許"
+role_anon = "anon ✓ 需要 <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap，且集合未設 <code style=\"background:transparent;border:0;padding:0;color:inherit;\">owner_field</code>"
+role_service = "service ✓ 啟用時一律允許"
 role_user = "user ✕ 一律 403 SSE_USER_DENIED"
 toggle_label = "SSE 廣播"
 

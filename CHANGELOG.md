@@ -631,6 +631,25 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
 
 ### Docs
 
+- `CLAUDE.md`'s surface index named the SSE route `/t/<id>/collections/<c>/subscribe`; the
+  route is, and always was, `/t/<id>/records/<c>/subscribe`. The row's gate is restated
+  from `subscribe_handler`: service (tenant key or admin PAT) and anon while
+  `realtime_enabled` is on; anon also needs `anon_caps[select]` and a collection with no
+  `owner_field` (`ANON_FORBIDDEN_OWNER_SCOPED`, whatever `read_scope`). A select policy was
+  never a precondition for connecting — it filters anon's events. The same sentence is
+  corrected in `.claude/rules/background-jobs.md`, in the admin collection page's realtime
+  card and SSE quickstart note (both locales; the service line now says "while enabled",
+  since service is refused `REALTIME_DISABLED` too), and in the MCP `set_realtime` tool
+  description, all of which left out the `owner_field` refusal.
+- The `inject_tus_capabilities` comment said `OPTIONS /t/<id>/uploads` never reaches its
+  handler. That holds only with a `DRUST_CORS_ORIGINS` allow-list; without one (the
+  default) the request goes through bearer auth like any verb — service gets the handler's
+  204, anon/user 403 `WRITE_DENIED`, no bearer 401, each carrying the tus headers. Comment
+  only; behaviour unchanged.
+- The login error for an OAuth admin with no email (`oauth_admin_email_missing`, both
+  locales) named a `drust_set_admin_password` binary that no target ships; it now names
+  `set_admin_password --username <name> --email <addr>`. The binary's own usage line had the
+  same wrong name.
 - Rooms error codes: `UNKNOWN_OP` was defined but never emitted — an unrecognized `op` is,
   and remains, `MALFORMED_FRAME` (no `ref`, the connection stays open) — and is removed.
   `ROOM_EVICTED`, which the v1.65.0 entry calls "the existing room-level" code, is likewise

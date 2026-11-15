@@ -434,3 +434,47 @@ async fn cors_options_preflight_no_token_short_circuits() {
         Some("https://app.example.com")
     );
 }
+
+// ─── Section 4: tus OPTIONS without a CORS allow-list ─────────────────────────
+// With `DRUST_CORS_ORIGINS` empty (the default) there is no CORS layer, so
+// `OPTIONS /t/<id>/uploads` goes through bearer auth like any other verb and
+// `uploads::options` IS reached — for a service bearer only. Pins the
+// `inject_tus_capabilities` comment, which once called the handler unreachable
+// over HTTP (true only when an allow-list is configured).
+#[tokio::test]
+async fn tus_options_without_cors_reaches_the_handler_for_service_only() {
+    let (app, svc, anon, _dir) = files_stack("tusopts", vec![], "[]").await;
+    let uri = "/t/tusopts/uploads";
+
+    // service → the handler's 204 + tus capability headers.
+    let r = app
+        .clone()
+        .oneshot(req("OPTIONS", uri, Some(&svc)))
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        StatusCode::NO_CONTENT,
+        "service reaches the handler"
+    );
+    assert!(r.headers().contains_key("tus-version"));
+    assert!(r.headers().contains_key("tus-extension"));
+
+    // anon → ServiceOnly in file_caps_layer.
+    let r = app
+        .clone()
+        .oneshot(req("OPTIONS", uri, Some(&anon)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert!(
+        r.headers().contains_key("tus-version"),
+        "the outermost capability layer adds the tus headers to the refusal too"
+    );
+    assert_eq!(body_error_code(r).await, "WRITE_DENIED");
+
+    // no bearer → 401 from bearer auth, still carrying the tus headers.
+    let r = app.oneshot(req("OPTIONS", uri, None)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert!(r.headers().contains_key("tus-version"));
+}

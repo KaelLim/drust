@@ -103,7 +103,9 @@ fn spool_path(state: &TenantFilesState, tid: &str, token: &str) -> PathBuf {
         .join(format!("{token}.part"))
 }
 
-/// OPTIONS /t/{tenant}/uploads — tus capability discovery.
+/// OPTIONS /t/{tenant}/uploads — tus capability discovery. Reached only when
+/// no CORS allow-list is configured (see `tenant::inject_tus_capabilities`);
+/// service-only (`require_service`, behind `file_caps_layer`'s `ServiceOnly`).
 pub async fn options(
     State(state): State<TenantFilesState>,
     axum::Extension(t): axum::Extension<TenantRef>,

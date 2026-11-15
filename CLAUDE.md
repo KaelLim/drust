@@ -104,8 +104,8 @@ reachable by an untrusted caller.
 | `/t/<id>/records/<c>?filter=&sort=` (legacy raw params) | **service only** — interpolated, not `?`-bound. Deprecated, Sunset 2027-01-01 |
 | `/t/<id>/query`, `/query/explain` | **service only** |
 | `/t/<id>/records:batch`, `records:upsert` | **service only** on both REST and MCP |
-| `/t/<id>/collections/<c>/subscribe` (SSE) | anon, gated on `realtime_enabled` AND `anon_caps[select]` AND any select policy |
-| `/t/<id>/realtime` (WS rooms) | subscribe: anyone with a tenant token. publish: service, unless the per-tenant publish flags are on |
+| `/t/<id>/records/<c>/subscribe` (SSE) | service (tenant key or admin PAT) and anon, only while the collection's `realtime_enabled` is on. Anon also needs `anon_caps[select]` and a collection with no `owner_field` (`ANON_FORBIDDEN_OWNER_SCOPED`, whatever `read_scope`). A select policy is not needed to connect — it filters anon's events (`Deleted` dropped under any policy; a clause-less one hides all). user: never (`SSE_USER_DENIED`) |
+| `/t/<id>/realtime` (WS rooms) | subscribe: any tenant token or an admin PAT. publish: service, unless the per-tenant publish flags are on |
 | `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer` **AND** per-file gated by the prefix policy registry (`authorize_file` on read/delete, `build_file_list_filter` on list) — the two AND. Uploading with `visibility=public` needs a third thing on top: the matching prefix rule's `public_upload_roles` grant (invariant 19). `sign` and set-visibility stay service-only |
 | `/t/<id>/file-policies` (PUT / GET / DELETE) | **service only** on every verb, list included — the registry IS the tenant's file-access map |
 | `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |

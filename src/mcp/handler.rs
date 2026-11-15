@@ -1612,7 +1612,9 @@ impl DrustMcpService {
         ),
         description = "Toggle SSE realtime broadcast for one collection. \
         When enabled, clients can subscribe to GET /records/<coll>/subscribe; \
-        anon callers additionally need anon_caps containing 'select'. When \
+        anon callers additionally need anon_caps containing 'select' and a \
+        collection with no owner_field (otherwise 403 ANON_FORBIDDEN_OWNER_SCOPED); \
+        user tokens are always refused (SSE_USER_DENIED). When \
         disabled, existing in-flight SSE connections are dropped within ~1s. \
         Refuses `_system_*` collections."
     )]
