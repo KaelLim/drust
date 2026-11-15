@@ -71,10 +71,17 @@ WORKDIR /data
 # prefix, so the image works standalone or behind a root-mounted proxy. Set
 # DRUST_BASE_PATH=/drust if you front it with a proxy that mounts drust under
 # that subpath (e.g. Caddy `handle_path /drust/*`, as in deploy/Caddyfile).
+#
+# DRUST_TRUSTED_PROXIES=0 → the image alone has no proxy: the per-IP rate
+# limits key on the TCP peer and ignore X-Forwarded-For. Set this to the number
+# of proxies you put in front of it that append to X-Forwarded-For
+# (docker-compose.yml sets 1 for its bundled Caddy); left at 0 behind a proxy,
+# every client shares the proxy's bucket.
 ENV DRUST_BIND=0.0.0.0:47826 \
     DRUST_DATA_DIR=/data \
     DRUST_LOG_DIR=/logs \
-    DRUST_BASE_PATH=""
+    DRUST_BASE_PATH="" \
+    DRUST_TRUSTED_PROXIES=0
 
 VOLUME ["/data", "/logs"]
 EXPOSE 47826

@@ -36,6 +36,14 @@ deploy/smoke/down.sh            # stop;  --wipe also deletes the volumes and the
 plain `up.sh` rebuilds (the cargo cache is a BuildKit cache mount, so only the
 first build is slow).
 
+On Docker Desktop all host traffic reaches Caddy from one VM gateway address, so
+the per-IP rate limits (logins, register, anon uploads and invokes) are still
+shared by every check during a local run — the scripts back off on
+`RATE_LIMITED_IP`. That is the environment, not drust: the stack keys on the
+client address Caddy sees (`DRUST_TRUSTED_PROXIES: "1"` in
+`docker-compose.yml`), and on Linux with external clients Docker keeps the
+source address.
+
 | What | Where |
 |---|---|
 | Admin UI (through Caddy) | <http://localhost:48080/login> |

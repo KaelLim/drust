@@ -18,8 +18,13 @@
 #     FTS_QUERY_INVALID, drop)
 #   - openapi.json / types.ts / zod.ts for service and anon
 #   - quota tier admin API validation (a tiny quota is not settable: min tier 1)
+#   - client-IP derivation behind the Compose Caddy (DRUST_TRUSTED_PROXIES=1):
+#     the login's ip_at_login, no fallback warning, the boot line
 # One tenant per run (deleted on exit by lib.sh), one end-user login per run.
 . "$(dirname "$0")/lib.sh"
+
+# UTC start of this script, for `docker compose logs --since`.
+START_ISO="$(python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
 
 # ── local helpers ──────────────────────────────────────────────────────────
 
@@ -581,14 +586,72 @@ check_contains "registered user id is server-minted (u-<uuid>)" "u-" "$UA_ID"
 USER_TOKEN=""
 tries=0
 while [ $tries -lt 3 ]; do
+  # The client-sent X-Forwarded-For (a documentation address) must NOT become
+  # the client address: Caddy rebuilds the header from its TCP peer.
   req POST "$T/auth/login" -H 'Content-Type: application/json' \
+    -H 'X-Forwarded-For: 198.51.100.77' \
     --data "{\"email\":\"$UEMAIL\",\"password\":\"$UPASS\"}"
   [ "$STATUS" != 429 ] && break
   tries=$((tries + 1)); sleep 5
 done
+LOGIN_STATUS="$STATUS"
 check_eq "tenant end-user login answers 200" 200 "$STATUS"
 USER_TOKEN="$(body token 2>/dev/null || true)"
 [ -n "$USER_TOKEN" ] && ok "login returned a bearer token" || bad "login returned a bearer token" "no token in the login response"
+
+# ── 9a. client IP behind the Compose Caddy (DRUST_TRUSTED_PROXIES=1) ──────
+# The login above went through Caddy ($T = $BASE). drust records the derived
+# client address as the host audit entry's extra.ip_at_login.
+LOGIN_IP_PY='
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for e in d.get("entries", []):
+    x = e.get("extra") or {}
+    if e.get("op") == "POST /auth/login" and e.get("status") == "ok" and x.get("email") == sys.argv[1]:
+        print(x.get("ip_at_login") or "")
+        break
+'
+if [ "$LOGIN_STATUS" != 200 ]; then
+  note "skipped (the login was rate-limited; on Docker Desktop every smoke agent reaches Caddy from one address): client-IP checks"
+else
+  IP_AT_LOGIN=""
+  for i in 1 2 3 4 5 6 7 8; do
+    admin GET "/admin/api/audit?tab=browse&window=1h&tenant=$TENANT_ID"
+    IP_AT_LOGIN="$(printf '%s' "$BODY" | python3 -c "$LOGIN_IP_PY" "$UEMAIL" 2>/dev/null || true)"
+    [ -n "$IP_AT_LOGIN" ] && break
+    sleep 1
+  done
+  if [ -z "$IP_AT_LOGIN" ]; then
+    bad "the tenant login wrote a host audit row with ip_at_login" "no POST /auth/login ok entry for this run's user"
+  else
+    check_ne "tenant login through Caddy records the client address, not the loopback fallback" 127.0.0.1 "$IP_AT_LOGIN"
+    check_ne "a client-sent X-Forwarded-For through Caddy does not become the client address" 198.51.100.77 "$IP_AT_LOGIN"
+    CADDY_CID=""
+    if command -v docker >/dev/null 2>&1; then
+      CADDY_CID="$(docker compose -p drust-smoke ps -q caddy 2>/dev/null | head -1)"
+    fi
+    if [ -z "$CADDY_CID" ]; then
+      note "skipped (docker not reachable): client-IP checks against the Caddy address and the drust log"
+    else
+      CADDY_IPS="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CADDY_CID" 2>/dev/null || true)"
+      # Fails when docker-compose.yml lacks DRUST_TRUSTED_PROXIES=1 (0 keys on
+      # the TCP peer = Caddy) or main never sets it (2 on a one-entry header
+      # falls back to the peer = Caddy).
+      check_not_contains "tenant login through Caddy is not keyed on the proxy's own address" \
+        " $IP_AT_LOGIN " " $CADDY_IPS "
+      N_WARN="$(docker compose -p drust-smoke logs --no-log-prefix --since "$START_ISO" drust 2>/dev/null \
+        | grep -c 'client_ip: X-Forwarded-For' || true)"
+      check_eq "drust logged no client_ip X-Forwarded-For fallback warning during this script" 0 "${N_WARN:-0}"
+      BOOT_LINE="$(docker compose -p drust-smoke logs --no-log-prefix drust 2>/dev/null \
+        | grep 'client-IP derivation configured' | tail -1 || true)"
+      check_contains "drust booted with trusted_proxies=1 (the boot line reads the global back)" \
+        '"trusted_proxies":1' "$BOOT_LINE"
+    fi
+  fi
+fi
 mcp_call create_user "{\"email\":\"smoke-b-$$@records.test\",\"password\":\"another-long-pass-$$\"}"
 UB_ID="$(mcp_text_q 'd["user_id"]')"
 check_contains "MCP create_user mints a second user" "u-" "$UB_ID"

@@ -49,6 +49,13 @@ services:
       # leaves it ON for deploy/live-smoke version checks; this opts the public
       # image out.) Set to empty/unset if you rely on the header.
       DRUST_HIDE_VERSION: "1"
+      # --- client IP for the per-IP rate limits ---
+      # One appending proxy: the bundled Caddy, which rebuilds X-Forwarded-For
+      # from its TCP peer. Add one per proxy you put in front of it AND
+      # configure Caddy to trust (`trusted_proxies`) — never count a proxy that
+      # passes a client's header through untouched. (The image alone defaults
+      # to 0 = key on the TCP peer.)
+      DRUST_TRUSTED_PROXIES: "1"
       # --- public URL (required for OAuth redirect/callback links) ---
       # DRUST_PUBLIC_URL: https://drust.example.com
       # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---
