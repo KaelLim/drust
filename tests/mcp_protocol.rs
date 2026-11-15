@@ -904,6 +904,69 @@ async fn update_and_delete_rpc_missing_name_is_rpc_not_found() {
     assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
 }
 
+/// `update_rpc`'s template stage names its own code. Only the side channel
+/// can say RPC_QUERY_TEMPLATE_INVALID here: the message alone is a generic
+/// prepare failure, which the `call_tool` backstop would call
+/// INVALID_SQL_FOR_MODE.
+#[tokio::test]
+async fn update_rpc_template_rejection_is_rpc_query_template_invalid() {
+    let (app, tok, sid, _dir) = session_with_collection("mcprpc5").await;
+    let t = "mcprpc5";
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q", "kind": "query",
+               "query": {"collection": "t", "filter": {"title": "a"}},
+               "params": []}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "update_rpc",
+        json!({"name": "q",
+               "query": {"collection": "t", "filter": {"title": {"$param": "x"}}}}),
+    )
+    .await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("undeclared param"), "{m}");
+    assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
+}
+
+/// `create_collection` has no existence pre-check, so a repeat forwards
+/// SQLite's `table "<name>" already exists`. A name containing "index" must
+/// still be COLLECTION_EXISTS, not INDEX_EXISTS.
+#[tokio::test]
+async fn create_collection_repeat_is_collection_exists_whatever_the_name() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcpdup").await;
+    let t = "mcpdup";
+    let (sid, _) = open_session(&app, t, &tok).await;
+    let args = json!({"name": "index_log", "fields": [{"name": "title", "sql_type": "text"}]});
+    let m = call_tool(&app, t, &tok, &sid, "create_collection", args.clone()).await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(&app, t, &tok, &sid, "create_collection", args).await;
+    let (_, msg, ec) = rpc_error(&m);
+    assert!(msg.contains("already exists"), "{m}");
+    assert_eq!(ec, "COLLECTION_EXISTS", "{m}");
+    assert!(
+        m["error"]["data"]["suggested_fix"].as_str().is_some(),
+        "{m}"
+    );
+}
+
 /// `call_rpc` answers with the codes REST's RPC handler uses.
 #[tokio::test]
 async fn call_rpc_errors_carry_rest_param_codes() {

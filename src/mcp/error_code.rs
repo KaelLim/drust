@@ -7,13 +7,16 @@
 //! SQLite errors that have no drust origin to edit, and the handler-level
 //! errors that never went through `bail_mcp` at all.
 //!
-//! Every value it returns is drust's own: the only step that hands back message
-//! bytes is the leading-code step, and it fires only when the message STARTS
-//! with an `UPPER_SNAKE` token — no tool message starts with caller text
-//! (`bail_mcp_tests::every_unprefixed_tool_literal_has_a_code` pins that).
-//! Every later step returns a constant from the tables below, so caller text (a
-//! JSON key, a collection name, SQL) can steer WHICH drust code is chosen but
-//! can never BECOME the code.
+//! Every step but the first returns a constant from the tables below, so caller
+//! text (a JSON key, a collection name, SQL) can steer WHICH drust code those
+//! steps choose but can never BECOME it. The first step, the leading-code step,
+//! hands back message bytes: it fires only when the message STARTS with an
+//! `UPPER_SNAKE` token followed by `:` or the end. That is drust's own prefix
+//! as long as no message starts with caller text. The tool-module literals are
+//! pinned (`bail_mcp_tests::every_unprefixed_tool_literal_has_a_code`); a
+//! message forwarded verbatim from another type's `Display` or from
+//! `e.to_string()` in `handler.rs` is not, and none found starts with caller
+//! text today. The surface is service-only either way.
 
 use rmcp::model::ErrorCode;
 use std::borrow::Cow;
@@ -38,6 +41,12 @@ enum Match {
     /// text opens the message and the variable tail is caller or SQLite text,
     /// so the tail can never select the row.
     Prefix(&'static str),
+    /// The message starts with the fixed fragment AND contains every other
+    /// fragment. Used where a fixed opener (SQLite's object kind, a drust
+    /// sentence start) is followed by a name and then more fixed text, so a
+    /// name that happens to contain another row's fragment cannot pick that
+    /// row.
+    PrefixAll(&'static str, &'static [&'static str]),
     /// The message contains every fragment. Used only where the fixed text sits
     /// mid-message (after a field name, or inside a native SQLite sentence).
     All(&'static [&'static str]),
@@ -47,6 +56,9 @@ impl Match {
     fn matches(&self, msg: &str) -> bool {
         match self {
             Match::Prefix(p) => msg.starts_with(p),
+            Match::PrefixAll(p, frags) => {
+                msg.starts_with(p) && frags.iter().all(|f| msg[p.len()..].contains(f))
+            }
             Match::All(frags) => frags.iter().all(|f| msg.contains(f)),
         }
     }
@@ -89,6 +101,17 @@ const NEEDLES: &[(Match, &str)] = &[
         Match::Prefix("meta connection not available in this context"),
         "META_UNAVAILABLE",
     ),
+    // A policy filter that does not parse (policy.rs, file_policy.rs). The
+    // tail is serde's message, which can echo caller text — so the row is
+    // anchored on drust's opener and sits before every `All` row, where that
+    // echo could otherwise select a field-spec or name row.
+    (
+        Match::PrefixAll("invalid `", &["` filter: "]),
+        "FILTER_PARSE_ERROR",
+    ),
+    // SQLite's ALTER TABLE ADD COLUMN / CREATE TABLE with a name already
+    // used: a caller mistake, not a server fault.
+    (Match::Prefix("duplicate column name"), "INVALID_PARAMS"),
     (Match::All(&["not found on collection"]), "FIELD_NOT_FOUND"),
     (
         Match::All(&["foreign_key references unknown collection"]),
@@ -138,7 +161,6 @@ const NEEDLES: &[(Match, &str)] = &[
         Match::All(&["must be select|insert|update|delete"]),
         "POLICY_INVALID",
     ),
-    (Match::All(&["invalid `", "filter: "]), "FILTER_PARSE_ERROR"),
     (
         Match::All(&["not found in meta.sqlite"]),
         "TENANT_NOT_FOUND",
@@ -169,10 +191,37 @@ const NEEDLES: &[(Match, &str)] = &[
         "CHECK_CONSTRAINT_FAILED",
     ),
     (Match::All(&["cannot store", "value in"]), "TYPE_MISMATCH"),
-    (Match::All(&["already exists", "index"]), "INDEX_EXISTS"),
+    // SQLite opens these with the object kind (`table "x" already exists`,
+    // `index x already exists`). Anchored on that kind, so a collection named
+    // `index_log` is not an index. Not a bare `Prefix("index ")`: SQLite's
+    // `index associated with UNIQUE or PRIMARY KEY constraint cannot be
+    // dropped` also opens that way.
     (
-        Match::All(&["already exists", "table"]),
+        Match::PrefixAll("index ", &["already exists"]),
+        "INDEX_EXISTS",
+    ),
+    (
+        Match::PrefixAll("table ", &["already exists"]),
         "COLLECTION_EXISTS",
+    ),
+    // `VectorCodecError` forwarded by `{e}` (search_vector, tools/vector.rs).
+    // The field name is a stored schema identifier, and the codes are the ones
+    // REST and MCP's write path give the same failures.
+    (
+        Match::PrefixAll("vector field ", &["-element array, got "]),
+        "VECTOR_DIM_MISMATCH",
+    ),
+    (
+        Match::PrefixAll("vector field ", &["is not a finite number"]),
+        "VECTOR_NON_FINITE",
+    ),
+    (
+        Match::PrefixAll("vector field ", &[": element at index ", "is not numeric"]),
+        "VECTOR_TYPE_ERROR",
+    ),
+    (
+        Match::PrefixAll("vector field ", &[": input is not a JSON array"]),
+        "VECTOR_TYPE_ERROR",
     ),
     (Match::All(&["no such table"]), "COLLECTION_NOT_FOUND"),
     (Match::All(&["no such column"]), "FIELD_NOT_FOUND"),
@@ -399,8 +448,87 @@ mod tests {
             "COLLECTION_EXISTS"
         );
         assert_eq!(code(&err("CREATE INDEX t_n ON t(n)")), "INDEX_EXISTS");
+        // A collection whose NAME contains "index" is still a collection:
+        // create_collection has no existence pre-check, so this is the text it
+        // forwards for a repeat.
+        c.execute_batch("CREATE TABLE \"index_log\"(id INTEGER PRIMARY KEY) STRICT")
+            .unwrap();
+        let dup = err("CREATE TABLE \"index_log\"(id INTEGER PRIMARY KEY) STRICT");
+        assert!(dup.contains("index_log"), "{dup}");
+        assert_eq!(code(&dup), "COLLECTION_EXISTS");
+        // An index whose name contains "table" is still an index.
+        c.execute_batch("CREATE INDEX table_idx ON t(n)").unwrap();
+        assert_eq!(code(&err("CREATE INDEX table_idx ON t(n)")), "INDEX_EXISTS");
+        // add_field / create_collection with a name already used.
+        assert_eq!(
+            code(&err("ALTER TABLE t ADD COLUMN n TEXT")),
+            "INVALID_PARAMS"
+        );
         assert_eq!(code(&err("SELECT * FROM nope")), "COLLECTION_NOT_FOUND");
         assert_eq!(code(&err("SELECT nope FROM t")), "FIELD_NOT_FOUND");
+    }
+
+    /// The policy-filter refusal's serde tail can echo caller text; that text
+    /// must not reach the field-spec rows (which used to come first).
+    #[test]
+    fn policy_filter_error_is_anchored_on_its_opener() {
+        assert_eq!(
+            code("invalid `using` filter: unknown variant `> max`, expected one of eq, ne"),
+            "FILTER_PARSE_ERROR"
+        );
+        assert_eq!(
+            code("invalid `check` filter: field x not found on collection y"),
+            "FILTER_PARSE_ERROR"
+        );
+        // The opener is required: the same fragments mid-message do not count.
+        assert_eq!(code("x: invalid `using` filter: y"), "INTERNAL");
+    }
+
+    /// `VectorCodecError` forwarded verbatim gets the codes REST gives it.
+    #[test]
+    fn vector_codec_errors_get_rest_codes() {
+        use crate::query::vector_codec::VectorCodecError as V;
+        let f = || "emb".to_string();
+        let msg = |e: V| e.to_string();
+        assert_eq!(
+            code(&msg(V::DimMismatch {
+                field: f(),
+                expected: 3,
+                got: 2
+            })),
+            "VECTOR_DIM_MISMATCH"
+        );
+        assert_eq!(
+            code(&msg(V::NonFinite {
+                field: f(),
+                index: 0
+            })),
+            "VECTOR_NON_FINITE"
+        );
+        assert_eq!(
+            code(&msg(V::NotNumeric {
+                field: f(),
+                index: 1
+            })),
+            "VECTOR_TYPE_ERROR"
+        );
+        assert_eq!(code(&msg(V::NotArray { field: f() })), "VECTOR_TYPE_ERROR");
+        // A stored BLOB of the wrong length is not the caller's mistake.
+        assert_eq!(code(&msg(V::BadBlobLen { field: f(), got: 5 })), "INTERNAL");
+    }
+
+    #[test]
+    fn prefix_all_needs_the_opener_and_the_fragments() {
+        let m = Match::PrefixAll("index ", &["already exists"]);
+        assert!(m.matches("index i already exists"));
+        assert!(!m.matches("table \"index_x\" already exists"));
+        assert!(
+            !m.matches("index associated with UNIQUE or PRIMARY KEY constraint cannot be dropped")
+        );
+        // The fragment is looked for AFTER the opener only.
+        let m = Match::PrefixAll("ab", &["ab"]);
+        assert!(!m.matches("ab"));
+        assert!(m.matches("abab"));
     }
 
     #[test]

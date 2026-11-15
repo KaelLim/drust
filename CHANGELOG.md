@@ -509,13 +509,19 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   without a `CODE:` prefix used to put the words before its first colon there — `query`'s
   write refusal, an unknown key on `insert_record` / `update_record` / `upsert_records`, and
   the `RPC_ANON_OWNER_SCOPED` refusals of `set_owner_field` and `set_policy` all sent prose —
-  and `create_rpc`, `update_rpc`, `delete_rpc`, `call_rpc`, `set_description` and the
-  meta-backed tools sent no `data` at all. Messages and JSON-RPC error codes are unchanged.
+  and `create_rpc`, `update_rpc`, `delete_rpc`, `call_rpc` (its lookup and its `kind=sql`
+  arm; the `kind=query` arm already forwarded REST's code), `set_description` and the
+  meta-backed tools sent no `data` at all. A `DB: …` storage failure now reports
+  `DB_ERROR`, REST's code for it, where it used to report `DB`. Messages and JSON-RPC error
+  codes are unchanged.
   The codes match REST where REST has one: `FIELD_NOT_FOUND` for an unknown key,
   `TYPE_MISMATCH` for a `data` that is not a non-empty object, `QUERY_FORBIDDEN`,
   `QUERY_TOO_LARGE`, `QUERY_TIMEOUT` and `SQL_ERROR` on `query`, the admin form's
   `INVALID_SQL_FOR_MODE`, `RPC_KIND_INVALID` and `RPC_QUERY_TEMPLATE_INVALID` on RPC saves,
-  and `RPC_NOT_FOUND` and the `PARAM_*` codes on `call_rpc`. A failed native constraint
+  and `RPC_NOT_FOUND` and the `PARAM_*` codes on `call_rpc`, and `VECTOR_DIM_MISMATCH`,
+  `VECTOR_NON_FINITE` and `VECTOR_TYPE_ERROR` for a bad query vector on
+  `search_collection`. A repeated `create_collection` reports `COLLECTION_EXISTS` and a
+  repeated `add_field` name `INVALID_PARAMS`. A failed native constraint
   reports `UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
   `CHECK_CONSTRAINT_FAILED` or `TYPE_MISMATCH`. An error with nothing to classify reports
   `INTERNAL`. New codes, on MCP only for now: `RPC_EXISTS`, `COLLECTION_EXISTS`,

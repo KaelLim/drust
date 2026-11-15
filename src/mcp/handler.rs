@@ -2672,13 +2672,25 @@ impl DrustMcpService {
     ) -> Result<CallToolResult, McpError> {
         let pool = self.state.inner().pool.clone();
         let name = p.name.clone();
+        // The registry's own code (RPC_NOT_FOUND, or DB_ERROR for a storage
+        // failure), carried out of the writer closure — same side channel as
+        // `update_rpc`. JSON-RPC -32602 and the message are unchanged.
+        let refusal = std::sync::OnceLock::<&'static str>::new();
+        let refusal_ref = &refusal;
         pool.with_writer(move |c| {
             crate::rpc::registry::delete(c, &name).map_err(|e| {
+                let _ = refusal_ref.set(e.save_code());
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })
         })
         .await
-        .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        .map_err(|e| {
+            let err = McpError::invalid_params(e.to_string(), None);
+            match refusal.get() {
+                Some(code) => with_error_code(err, code),
+                None => err,
+            }
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "rpc '{}' deleted",
@@ -3967,10 +3979,13 @@ impl ServerHandler for DrustMcpService {
     /// `data.error_code`.
     ///
     /// This is the first drust code on the tool path that holds a
-    /// `RequestContext` — and therefore the peer. Pushing ANY notification from
-    /// here is server push: it brings MCP sessions under CLAUDE.md invariant 5
-    /// (a key reroll and the admin-PAT revocation family would then have to end
-    /// MCP sessions too).
+    /// `RequestContext` — and therefore the peer. The hand-written resource and
+    /// prompt handlers below hold one too. Pushing ANY notification from any of
+    /// them is server push, whatever the capabilities declare (rmcp does not
+    /// stop a server sending what it never declared): it brings MCP sessions
+    /// under CLAUDE.md invariant 5 (a key reroll and the admin-PAT revocation
+    /// family would then have to end MCP sessions too).
+    /// `capabilities_tests::mcp_sources_never_push` scans `src/mcp/` for it.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -4057,6 +4072,51 @@ mod capabilities_tests {
             "adding a server capability may add server push; push brings MCP sessions \
              under invariant 5 — reroll and the admin-PAT family must then end MCP \
              sessions too"
+        );
+    }
+
+    /// The other half of the tripwire: a declared capability is not what stops
+    /// a push — rmcp lets a server send notifications it never declared. Every
+    /// handler that holds a `RequestContext` (`call_tool`, the resource and
+    /// prompt handlers) could reach the peer, so no code line under `src/mcp/`
+    /// may name it or a notify/send-notification call. Comments are skipped;
+    /// the needles are assembled at runtime so this test does not match itself.
+    #[test]
+    fn mcp_sources_never_push() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let needles = [
+            format!("{}{}", "pe", "er"),
+            format!("{}{}", "noti", "fy_"),
+            format!("{}{}", "send_noti", "fication"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        assert!(files.len() > 10, "scan found too few files: {files:?}");
+        let mut hits = Vec::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
+            for (i, line) in src.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("").to_ascii_lowercase();
+                if needles.iter().any(|n| code.contains(n.as_str())) {
+                    hits.push(format!("{}:{}: {}", f.display(), i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "MCP code names rmcp's push handle — any push brings MCP sessions under \
+             invariant 5 (reroll and the admin-PAT family must then end them):\n{}",
+            hits.join("\n")
         );
     }
 }
