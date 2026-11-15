@@ -88,15 +88,11 @@ pub fn is_valid_token(tok: &str) -> bool {
         })
 }
 
-/// Server-derived bare `_system_files` key: `<uuid>.<ext>` (ext from the
-/// client filename, defaulting to `bin`). Never embeds the client name.
+/// Server-derived bare `_system_files` key: `<uuid>.<ext>`. The rule (ext
+/// kept only when it is 1-12 ASCII alphanumerics, else `bin`) is
+/// `files::derive_file_key`, shared with Mode-A and host-admin uploads.
 pub fn derive_key(original_name: &str) -> String {
-    let ext = std::path::Path::new(original_name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric()) && s.len() <= 12)
-        .unwrap_or("bin");
-    format!("{}.{}", uuid::Uuid::new_v4(), ext)
+    crate::storage::files::derive_file_key(original_name)
 }
 
 pub async fn insert_session(pool: &SharedTenantPool, s: NewSession) -> rusqlite::Result<()> {

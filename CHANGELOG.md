@@ -328,6 +328,19 @@ update its toolchain first.
   still holds such an entry keeps working for its other entries, but its next whole-list
   save (REST `PUT`, MCP `set_egress_allowlist` or the admin settings form) is refused until
   that entry is dropped. DNS-name and IPv4 origins are stored and matched exactly as before.
+- **Public files whose name has a non-ASCII or reserved-character extension get a working
+  URL.** Mode-A (`POST /t/<id>/files`) and host-admin uploads took the key's extension
+  straight from the filename, and the object store percent-encodes non-ASCII bytes and
+  characters such as `~` in the key it writes, so `報告書.檔案` was stored under a different
+  key than the public URL named and the URL answered 404. All three upload stations now share
+  tus's rule: the key keeps the extension only if it is 1 to 12 ASCII letters or digits, and
+  uses `bin` otherwise. So on Mode-A and host-admin uploads an extension containing `-` or
+  `_`, or longer than 12 characters, now also gives a `.bin` key (`a.tar-gz` →
+  `<uuid>.bin`), as it already did on tus; a filename ending in a bare `.` now gives `.bin`
+  on all three. Files uploaded before this release keep their keys. The stored filename,
+  `Content-Disposition` and content type are unchanged — the content type comes from the
+  filename or the part's declared type, never from the key. No action needed, unless a
+  client inferred a file's type from its key's extension.
 
 ### Changed
 

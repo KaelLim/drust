@@ -592,12 +592,8 @@ pub async fn upload_submit(
     // lives (serve time + the Caddy `/public/*` response-header matcher).
     let bucket = bucket_for_upload(&Owner::Admin, visibility);
 
-    // Step 6: generate key.
-    let ext = std::path::Path::new(&original_name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
-    let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+    // Step 6: generate key — the shared station rule (`derive_file_key`).
+    let key = crate::storage::files::derive_file_key(&original_name);
 
     // Step 7: SQLite-first insert. Push to Garage next. Compensate on failure.
     {

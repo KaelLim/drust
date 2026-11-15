@@ -672,12 +672,9 @@ async fn upload_inner(
     let bucket = crate::storage::files::bucket_for(visibility);
 
     // DB stores the bare key (`<uuid>.<ext>`); Garage uses `<tenant>/<key>`
-    // so a single bucket holds everyone.
-    let ext = std::path::Path::new(&original_name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
-    let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+    // so a single bucket holds everyone. The extension rule keeps the key
+    // unchanged by object_store's path encoding (see `derive_file_key`).
+    let key = crate::storage::files::derive_file_key(&original_name);
     let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
     // SQLite-first INSERT into tenant DB — through the writer mutex of the pool

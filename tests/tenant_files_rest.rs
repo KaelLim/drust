@@ -1109,3 +1109,98 @@ async fn tenant_signed_bytes_storage_failure_hides_backend_detail() {
     assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
     assert_eq!(msg, "object store read failed");
 }
+
+// ─── key minting: the extension never needs object-store encoding ───────────
+
+/// A Mode-A upload whose extension object_store would percent-encode (non-ASCII,
+/// `~`) gets a `<uuid>.bin` key, so the object-store key, the DB key and the
+/// public URL are one string. The original filename is kept verbatim.
+#[tokio::test]
+async fn upload_non_ascii_extension_mints_bin_key() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use drust::mgmt::tenant_files::{TenantFilesState, upload};
+    use drust::storage::garage::GarageClient;
+    use object_store::ObjectStoreExt;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-key-mint";
+    drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
+    let store = Arc::new(object_store::memory::InMemory::new());
+    let garage = Arc::new(GarageClient::from_store(store.clone(), "public"));
+    let registry = Arc::new(drust::storage::pool::TenantRegistry::new(
+        dir.path().to_path_buf(),
+        2,
+    ));
+    let mut state =
+        TenantFilesState::test_default(Some(garage), dir.path().to_path_buf(), registry);
+    state.disk_min_free_pct = 0;
+    let app = axum::Router::new()
+        .route("/t/{tenant}/files", axum::routing::post(upload))
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
+        .with_state(state);
+
+    for filename in ["報告書.檔案", "notes.t~xt"] {
+        let boundary = "mintbound";
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\nabc\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let resp = tower::ServiceExt::oneshot(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/files"))
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{filename}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key = json["key"].as_str().unwrap().to_string();
+        assert!(key.ends_with(".bin"), "{filename} minted {key}");
+
+        // The row keeps the client's filename verbatim.
+        let conn =
+            rusqlite::Connection::open(dir.path().join("tenants").join(tid).join("data.sqlite"))
+                .unwrap();
+        let original: String = conn
+            .query_row(
+                "SELECT original_name FROM _system_files WHERE key = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(original, filename);
+
+        // The object sits at exactly the key the row names (the from_store
+        // client folds the bucket into the path: `public/<tenant>/<key>`).
+        let at = object_store::path::Path::from(format!("public/{tid}/{key}"));
+        assert_eq!(
+            at.as_ref(),
+            format!("public/{tid}/{key}"),
+            "no encoding needed"
+        );
+        store
+            .head(&at)
+            .await
+            .expect("object stored under the row's key");
+
+        // And the public URL names that key unencoded.
+        let url = json["url"].as_str().unwrap();
+        assert!(url.ends_with(&format!("/{tid}/{key}")), "{url}");
+    }
+}

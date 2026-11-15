@@ -258,6 +258,26 @@ pub fn compose_key(owner: &Owner, file_id: &str) -> String {
     }
 }
 
+/// Server-minted bare `_system_files` key for a new upload: `<uuid>.<ext>`.
+/// `ext` is the client filename's extension only if it is 1-12 ASCII letters
+/// or digits; anything else (non-ASCII, `~`, `-`, `_`, longer, or absent)
+/// becomes `bin`. That keeps the key identical before and after object_store's
+/// path encoding, so the DB key, the object-store key and the public URL are
+/// one string. Never embeds the client name. Shared by the three stations that
+/// mint keys: Mode-A multipart, tus (`uploads::session::derive_key`) and the
+/// host-admin upload. (Edge `put-file` keys are guest-chosen and mint nothing.)
+pub fn derive_file_key(original_name: &str) -> String {
+    let ext = std::path::Path::new(original_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .filter(|s| {
+            // `Path::extension` answers `Some("")` for a trailing dot (`x.`).
+            (1..=12).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or("bin");
+    format!("{}.{}", uuid::Uuid::new_v4(), ext)
+}
+
 /// Backward-compat shim: some call sites ask for just the bucket based
 /// on (owner, vis); admin and tenant now share buckets so we ignore
 /// `owner` and route by visibility alone.
@@ -1113,5 +1133,84 @@ mod required_buckets_tests {
             required_buckets("private"),
             vec!["public".to_string(), "private".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod key_and_url_tests {
+    use super::*;
+
+    fn ext_of(key: &str) -> &str {
+        key.rsplit_once('.').map(|(_, e)| e).unwrap()
+    }
+
+    #[test]
+    fn derive_file_key_keeps_short_ascii_alnum_ext() {
+        assert_eq!(ext_of(&derive_file_key("report.pdf")), "pdf");
+        assert_eq!(ext_of(&derive_file_key("REPORT.PDF")), "PDF");
+        assert_eq!(ext_of(&derive_file_key("a.tar.gz")), "gz");
+        assert_eq!(ext_of(&derive_file_key("x.abcdefghij12")), "abcdefghij12");
+        let k = derive_file_key("secret-name.pdf");
+        assert!(
+            !k.contains("secret"),
+            "the client name never reaches the key"
+        );
+        // `<uuid>.<ext>`
+        let (id, _) = k.rsplit_once('.').unwrap();
+        assert!(uuid::Uuid::parse_str(id).is_ok(), "{k}");
+    }
+
+    #[test]
+    fn derive_file_key_falls_back_to_bin() {
+        for name in [
+            "報告書.檔案",
+            "notes.t~xt",
+            "a.b%c",
+            "a.tar-gz",
+            "a.my_ext",
+            "noext",
+            ".hidden",
+            "x.abcdefghij123",
+            "x.",
+            "",
+        ] {
+            assert_eq!(ext_of(&derive_file_key(name)), "bin", "{name:?}");
+        }
+    }
+
+    /// object_store's `Path::from` percent-encodes every non-ASCII byte and
+    /// the characters of its `INVALID` set (which includes `~`). A derived key
+    /// must survive that unchanged, or the object store holds a different key
+    /// than the DB row and the public URL name.
+    #[test]
+    fn derive_file_key_is_invariant_under_object_store_encoding() {
+        let mut names: Vec<String> = vec![
+            "報告書.檔案".into(),
+            "日本語.テキスト".into(),
+            "naïve.café".into(),
+            ".".into(),
+            "..".into(),
+            "x.abcdefghij12".into(),
+            "x.abcdefghij123".into(),
+            "noext".into(),
+            ".dotfile".into(),
+            "a.tar-gz".into(),
+            "a.my_ext".into(),
+        ];
+        // One name per character object_store encodes, used as the extension.
+        for c in [
+            '/', '\\', '{', '^', '}', '%', '`', ']', '"', '>', '[', '~', '<', '#', '|', '*', '?',
+            ' ', '\u{7f}', '\u{1}',
+        ] {
+            names.push(format!("x.a{c}b"));
+        }
+        for name in names {
+            let key = derive_file_key(&name);
+            assert_eq!(
+                object_store::path::Path::from(key.as_str()).as_ref(),
+                key,
+                "{name:?} derived {key:?}, which object_store would store under another key"
+            );
+        }
     }
 }
