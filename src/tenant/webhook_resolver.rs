@@ -133,7 +133,17 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
 
 /// Resolve `host:port` and return only non-private SocketAddrs. Error if
 /// resolution fails OR every IP is private/loopback/link-local.
+///
+/// `host` may be a bracketed IPv6 literal (`[2606:4700:4700::1111]`, the form
+/// `Url::host_str` returns): the brackets are stripped so the literal is
+/// parsed without DNS and judged by `is_private_ip`. hyper never asks a
+/// resolver about an IP literal, so for a literal webhook target this
+/// wrap-first resolve is the only private-IP gate at dispatch.
 pub(crate) async fn resolve_public(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
+    let host = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(inner) => inner.to_owned(),
+        None => host,
+    };
     let resolved = tokio::task::spawn_blocking(move || {
         (host.as_str(), port)
             .to_socket_addrs()
@@ -209,6 +219,32 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    /// A bracketed public IPv6 literal (what `Url::host_str` hands the
+    /// dispatcher) resolves to itself, with no DNS lookup.
+    #[tokio::test]
+    async fn resolve_public_accepts_bracketed_public_ipv6_literal() {
+        let addrs = resolve_public("[2606:4700:4700::1111]".into(), 443)
+            .await
+            .unwrap();
+        assert_eq!(
+            addrs,
+            vec![SocketAddr::new(ip("2606:4700:4700::1111"), 443)]
+        );
+    }
+
+    /// A bracketed private literal is refused for being private, not for
+    /// failing a DNS lookup of the bracketed string.
+    #[tokio::test]
+    async fn resolve_public_rejects_bracketed_private_ipv6_literal() {
+        for host in ["[::1]", "[fd00::1]", "[fe80::1]", "[::ffff:10.0.0.1]"] {
+            let err = resolve_public(host.into(), 443).await.unwrap_err();
+            assert_eq!(
+                err, "host resolves only to private/loopback/link-local IPs",
+                "{host}"
+            );
+        }
     }
 
     /// Every IPv6 spelling of a private IPv4 is private; the same spellings

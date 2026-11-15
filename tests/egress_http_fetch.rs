@@ -356,6 +356,37 @@ async fn allowlisted_private_ip_literal_rejected_before_dial() {
     }
 }
 
+/// (2a) A portless IPv6-literal origin now normalises — and a private one still
+/// meets the explicit private-IP gate before any dial (it used to be refused
+/// earlier, as a malformed origin).
+#[tokio::test(flavor = "multi_thread")]
+async fn private_ipv6_literal_origin_rejected_before_dial() {
+    let (mcp, _tmp) = mcp_for("t-fetch-v6priv").await;
+    let list = r#"[{"system":"function","uri":"https://[::1]"}]"#;
+    let mut store = StoreData::new_for_test(
+        mcp,
+        CallerCtx::Privileged,
+        http_state(list, None, 5 * 1024 * 1024),
+    );
+    let started = std::time::Instant::now();
+    let err = store
+        .http_fetch_for_test(
+            "https://[::1]".into(),
+            "/".into(),
+            "GET".into(),
+            vec![],
+            vec![],
+        )
+        .await
+        .expect_err("a private IPv6 literal must be rejected before dial");
+    assert!(err.contains("private"), "got: {err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "must fail fast, took {:?}",
+        started.elapsed()
+    );
+}
+
 /// (2b) A private IPv4 written as a NAT64 IPv6 literal. The bracketed form with
 /// a non-default port has always normalised, so an allowlist entry like this
 /// one could be stored and dialled directly (hyper never consults the resolver

@@ -503,13 +503,12 @@ check_contains "egress: MCP set_egress_allowlist refuses an unknown system" EGRE
 # Allowlist the private targets on purpose: invariant 6 says the private-IP
 # block is orthogonal to the allowlist, so allowlisting must not open them.
 PRIV_URLS="https://127.0.0.1/h https://10.0.0.5/h https://172.16.0.9/h https://192.168.1.1/h https://169.254.169.254/h https://100.64.0.1/h https://0.0.0.0/h https://2852039166/h https://0x7f000001/h https://localhost/h http://127.0.0.1:9/h"
-# IPv6-literal origins cannot be stored at all (normalize_origin splits the
-# authority on the last ':'), so these are checked without an allowlist entry.
+# Private IPv6 targets are checked without an allowlist entry: check_url refuses
+# them at registration before the egress gate is consulted.
 PRIV6_URLS="https://[::1]/h https://[::ffff:127.0.0.1]/h https://[fe80::1]/h https://[fd00::1]/h"
-# Intended: a well-formed https origin is storable (normalize_origin doc) and a
-# stored entry matches across default-port differences (check_egress doc).
-# Both currently fail for bracketed IPv6 (rsplit_once(':') in normalize_origin)
-# — kept as failing checks; see the report. No outbound connection: the hook
+# A bracketed IPv6 origin is storable (normalize_origin parses the literal and
+# stores its canonical text) and a stored entry matches across default-port
+# and spelling differences (check_egress doc). No outbound connection: the hook
 # goes on a collection nothing writes and is deleted at once if it registers.
 svc PUT /egress-allowlist '{"entries":[{"system":"webhook","uri":"https://[2606:4700:4700::1111]"}]}'
 check_eq "egress: a public IPv6-literal webhook origin without a port is accepted by the allowlist (200)" 200 "$STATUS"

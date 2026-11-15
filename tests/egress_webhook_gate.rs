@@ -136,6 +136,82 @@ async fn register_allowed_after_origin_added() {
     );
 }
 
+// ─── (b′) an IPv6-literal origin can be allowlisted and matches ──────────────
+
+/// PUT the allowlist and return `(status, body)`.
+async fn put_allowlist_body(
+    app: &axum::Router,
+    tid: &str,
+    svc: &str,
+    entries: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/t/{tid}/egress-allowlist"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {svc}"))
+                .body(Body::from(
+                    serde_json::json!({ "entries": entries }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// The smoke failure, at the HTTP layer: a portless bracketed IPv6 origin was
+/// refused `400 EGRESS_BAD_ORIGIN`, and the `:443` spelling was stored but
+/// never matched a target. A public literal needs no DNS (`check_url` parses
+/// it as a socket address), so this stays hermetic.
+#[tokio::test]
+async fn register_allowed_for_allowlisted_ipv6_literal_origin() {
+    let tid = "t-egress-reg-ipv6";
+    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
+    let target = "https://[2606:4700:4700::1111]/h";
+
+    for written in [
+        "https://[2606:4700:4700::1111]",
+        "https://[2606:4700:4700::1111]:443",
+        "https://[2606:4700:4700:0:0:0:0:1111]",
+    ] {
+        let (put, body) = put_allowlist_body(
+            &app,
+            tid,
+            &svc,
+            serde_json::json!([{ "system": "webhook", "uri": written }]),
+        )
+        .await;
+        assert_eq!(
+            put, 200,
+            "allowlist PUT of {written} should succeed: {body}"
+        );
+        assert_eq!(
+            body["entries"][0]["uri"], "https://[2606:4700:4700::1111]",
+            "{written} must be stored in canonical form"
+        );
+
+        let (status, v) = create_webhook(&app, tid, &svc, target).await;
+        assert_eq!(
+            status, 201,
+            "allowlisted IPv6 origin (written {written}) must register, got {status}: {v}"
+        );
+    }
+
+    // A different address on the same /64 is still not allowlisted.
+    let (status, v) = create_webhook(&app, tid, &svc, "https://[2606:4700:4700::1112]/h").await;
+    assert_eq!(status, 400, "got {status}: {v}");
+    assert_eq!(v["error_code"].as_str(), Some("EGRESS_NOT_ALLOWLISTED"));
+}
+
 // ─── (c) dispatch denied when origin later removed from the allowlist ────────
 
 #[tokio::test]

@@ -312,6 +312,22 @@ update its toolchain first.
   A target that is, or resolves to, such a private mapping now fails the way a plain private
   address always has (`EGRESS_BAD_ORIGIN` on save, `INVALID_URL` on webhook registration, a
   terminal delivery failure, an `http-fetch` error). No action needed.
+- **An IPv6-literal origin can be allowlisted for egress, and matches.** The egress
+  allowlist split an origin's port off at its last `:`, so `https://[2606:4700:4700::1111]`
+  was refused `400 EGRESS_BAD_ORIGIN`, and the same origin written with `:443` was stored
+  but never matched a webhook or `http-fetch` target. Bracketed IPv6 literals are now parsed
+  as addresses and stored in canonical form (`https://[2001:db8::1]`; an IPv4-mapped
+  address is stored as `https://[::ffff:a.b.c.d]`), so spelling and default-port
+  differences no longer break a match; different addresses still never match. Webhook
+  delivery to an IPv6-literal target also looked the bracketed host up as a DNS name and
+  failed every attempt; it now checks the literal address directly. Private, loopback,
+  link-local and ULA literals stay refused exactly where their IPv4 counterparts are. An
+  origin with a stray `:`, `[` or `]` outside a bracketed literal (`http://::1`,
+  `https://a:b:443`), which used to be stored as an entry that could never match anything,
+  is now refused `EGRESS_BAD_ORIGIN`. Stored entries are not rewritten: an allowlist that
+  still holds such an entry keeps working for its other entries, but its next whole-list
+  save (REST `PUT`, MCP `set_egress_allowlist` or the admin settings form) is refused until
+  that entry is dropped. DNS-name and IPv4 origins are stored and matched exactly as before.
 
 ### Changed
 

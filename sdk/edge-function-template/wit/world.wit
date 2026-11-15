@@ -15,7 +15,8 @@ world edge-function {
     /// Outbound HTTP, gated by the tenant's egress allowlist (system=function)
     /// + the private-IP block (PinnedPublicResolver). No automatic redirect
     /// following: a 3xx is returned to the guest, which may re-fetch through
-    /// this same gated call. origin = scheme://host[:port] (must be allowlisted);
+    /// this same gated call. origin = scheme://host[:port] (must be allowlisted;
+    /// an IPv6 literal goes in brackets, e.g. https://[2001:db8::1]);
     /// path = path + query; method one of GET|POST|PUT|PATCH|DELETE|HEAD.
     http-fetch: func(origin: string, path: string, method: string, body: list<u8>, headers: list<tuple<string, string>>) -> result<http-response, string>;
 
