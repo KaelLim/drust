@@ -581,12 +581,15 @@ update its toolchain first.
   the RustFS root key never reaches the drust pod. There is no MinIO mode and no data move.
   Upgrading a 0.1.x release:
   - `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
-    `storage.rustfs.rootSecretKey` are now required, so an upgrade with the old values
-    file stops at render with a `required` message. Pass them with `-f` or `--set-file`.
+    `storage.rustfs.rootSecretKey` are now required, so with `secrets.create` an upgrade
+    with the old values file stops at render with a `required` message. Pass them with `-f`
+    or `--set-file`. With `secrets.existingSecret` nothing is checked at render: add the
+    two `rustfs-root-*` keys to that Secret before upgrading.
   - Helm removes the MinIO StatefulSet and Service. The PVC `minio-data-minio-0` is left
     in place, and nothing reads it.
-  - Files uploaded before the upgrade are not in RustFS: drust answers 404 for them, and
-    the chart does not copy them. Whoever needs them copies them with an S3 client that
+  - Files uploaded before the upgrade are not in RustFS, and the chart does not copy them:
+    their `/public` URL answers 404, while drust still lists them and their download
+    answers 502. Whoever needs them copies them with an S3 client that
     keeps object metadata (Content-Type, Content-Disposition, Cache-Control) before
     deleting that PVC. The chart README's "Upgrading from 0.1.x" says the same.
   Changing drust's key or the root key through Helm restarts the pod that holds it.
@@ -607,7 +610,9 @@ update its toolchain first.
   `backup.litestream.mcImage`, `backup.objectMirror.image`.
 - **`DRUST_TRUSTED_PROXIES` is set to `1`** (`ingress.trustedProxies`): before, chart pods
   inherited the image's `0` and all clients of a group shared one rate-limit bucket.
-- The never-dialed `GARAGE_ADMIN_*` placeholders are gone from the env and the Secret.
+- The never-dialed `GARAGE_ADMIN_*` placeholders are gone from the env and from a newly
+  rendered Secret; an upgraded release keeps the two unused Secret keys
+  (`kubectl edit secret` removes them).
 
 The chart's own `deploy/helm/drust/CHANGELOG.md` lists every changed value.
 

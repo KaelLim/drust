@@ -8,13 +8,17 @@
   fresh 0.1.x install could not start its store. RustFS is now the only bundled store;
   there is no MinIO mode, no upgrade check and no data move. Upgrading a 0.1.x release:
   - `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
-    `storage.rustfs.rootSecretKey` are required when `storage.enabled`, so an upgrade with
-    an old values file stops at render with a `required` message.
+    `storage.rustfs.rootSecretKey` are required when `storage.enabled`, so with
+    `secrets.create` an upgrade with an old values file stops at render with a `required`
+    message. With `secrets.existingSecret` nothing is checked at render: add
+    `rustfs-root-access-key` and `rustfs-root-secret-key` to that Secret first, or
+    `rustfs-0` and the hook cannot start and the upgrade fails at the hook timeout.
   - Helm removes the MinIO StatefulSet, Service and NetworkPolicies. The `minio-init`
     hook Job was deleted when it succeeded; a failed one stays until you delete it. The
     PVC `minio-data-minio-0` is left in place, and nothing reads it.
-  - Files uploaded before the upgrade are not in RustFS: drust answers 404 for them, and
-    the chart does not copy them. Whoever needs them copies them with an S3 client that
+  - Files uploaded before the upgrade are not in RustFS, and the chart does not copy them:
+    their `/public` URL answers 404, while drust still lists them and their download
+    answers 502. Whoever needs them copies them with an S3 client that
     keeps object metadata (Content-Type, Content-Disposition, Cache-Control) before
     deleting that PVC. README: "Upgrading from 0.1.x".
   - Removed values: `storage.minio.*`, `resources.minio`, `scheduling.minio`.
@@ -84,9 +88,10 @@
     pod holds a token that may delete VolumeSnapshots). The CronJob itself is unchanged.
   - Removed values: `backup.litestream.mcImage`, `backup.objectMirror.image` (both now
     `s3ClientImage`).
-- **`<release>-secret` is written as `data:` (base64), not `stringData:`.** Helm applies
-  server-side, and ownership of a `stringData` key is recorded under `stringData` only, so
-  a key the chart stopped rendering stayed in the live Secret forever. Keys that 0.1.x
+- **`<release>-secret` is written as `data:` (base64), not `stringData:`.** The API server
+  stores a `stringData` key as `data`, and neither Helm's client-side three-way patch nor a
+  server-side apply removes it when the chart stops rendering it, so such a key stayed in
+  the live Secret forever. Keys that 0.1.x
   wrote this way and 0.2.0 no longer renders (`admin-endpoint`, `admin-token`) still stay
   after the upgrade; nothing reads them, and `kubectl edit secret` can remove them.
 

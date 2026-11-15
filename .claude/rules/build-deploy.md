@@ -47,7 +47,7 @@ Never `cargo test --release` — LTO + `codegen-units = 1` takes 40+ minutes. So
 
 Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's first gate) and `cargo clippy --all-targets -- -D warnings`.
 
-The chart's `deploy/helm/drust/tests/render_test.sh` (CI's `helm-chart` job) also reads files outside the chart: `deploy/compose-rustfs/{init.sh,public-read.json,drust-objects.json}`, which the chart's `files/rustfs-init/` must equal byte for byte, and `deploy/compose.Caddyfile`, whose `/public/*` block the chart's proxy copies. Editing either Compose file therefore fails the chart test until the chart copy follows.
+The chart's `deploy/helm/drust/tests/render_test.sh` (CI's `helm-chart` job) also reads files outside the chart: `deploy/compose-rustfs/{init.sh,public-read.json,drust-objects.json}`, which the chart's `files/rustfs-init/` must equal byte for byte, and `deploy/compose.Caddyfile`, whose `/public/*` block the chart's proxy copies. Editing one of those three files, or that block, therefore fails the chart test until the chart copy follows; the rest of `compose.Caddyfile` is not compared.
 
 `make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh`, `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker), `deploy/tests/compose_public_route_test.sh` (the Compose `/public/*` block) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`.
 

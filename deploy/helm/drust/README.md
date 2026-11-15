@@ -83,11 +83,11 @@ publicFiles:
   enabled: false                  # true => /public/* anon-read of the public bucket, via public-proxy
 storage:
   enabled: true                   # the bundled RustFS
-  accessKey: "CHANGE-ME"          # drust's own key:      openssl rand -hex 10
-  secretKey: "CHANGE-ME"          #                       openssl rand -hex 20
+  accessKey: "CHANGEME"           # drust's own key:      openssl rand -hex 10
+  secretKey: "CHANGEME"           #                       openssl rand -hex 20
   rustfs:
-    rootAccessKey: "CHANGE-ME"    # RustFS root, not drust's: openssl rand -hex 10
-    rootSecretKey: "CHANGE-ME"    #                           openssl rand -hex 20
+    rootAccessKey: "CHANGEME"     # RustFS root, not drust's: openssl rand -hex 10
+    rootSecretKey: "CHANGEME"     #                           openssl rand -hex 20
     pvcSize: 20Gi                 # bucket names are fixed ("public"/"private"), not configurable
 maintenance:
   sidecar:
@@ -145,8 +145,16 @@ RustFS's published default `rustfsadmin`.
   restarts by itself (a `checksum/s3-key` annotation) and the hook sets the new secret on
   the existing RustFS user; for a few seconds in between, file calls may get 403. Changing
   `storage.accessKey` instead creates a **second** RustFS user and leaves the old one
-  working on both buckets (users live on the PVC). Remove it with the root key:
-  `kubectl -n <ns> exec -it rustfs-0 -- sh`, then `rc admin user rm <alias> <old access key>`.
+  working on both buckets (users live on the PVC). Remove it with the root key, which the
+  `rustfs-0` container already holds (the single quotes keep it out of your terminal; the
+  pod has no writable alias file, so the alias comes from the environment):
+
+  ```bash
+  kubectl -n <ns> exec rustfs-0 -- sh -c \
+    'RC_HOST_s3="http://$RUSTFS_ACCESS_KEY:$RUSTFS_SECRET_KEY@127.0.0.1:9000" rc admin user rm s3 <old access key>'
+  ```
+
+  The same prefix with `rc admin user ls s3` lists what is left.
 - **Rotating the root key**: change `storage.rustfs.rootSecretKey` (or both). `rustfs-0`
   restarts (`checksum/root-key`), takes the new key from env and keeps its users and
   buckets; the hook then logs in with it.
@@ -215,16 +223,20 @@ Chart 0.2.0 replaces the bundled MinIO with RustFS. It neither looks for MinIO n
 files:
 
 - `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
-  `storage.rustfs.rootSecretKey` are required, so an upgrade with an old values file stops
-  at render with a `required` message. Upgrade with `-f` or `--reset-then-reuse-values`,
-  never `--reuse-values` (it does not read this chart's new defaults).
+  `storage.rustfs.rootSecretKey` are required, so with `secrets.create` an upgrade with an
+  old values file stops at render with a `required` message. Upgrade with `-f` your values
+  file, never `--reuse-values` (it does not read this chart's new defaults).
+- With `secrets.existingSecret` nothing is checked at render: the upgrade goes through and
+  `rustfs-0` and the hook sit in `CreateContainerConfigError` until the hook times out. Add
+  `rustfs-root-access-key` and `rustfs-root-secret-key` to that Secret before upgrading, and
+  keep `s3-access-key` different from the root access key (`init.sh` refuses it).
 - Helm removes the MinIO StatefulSet, Service and NetworkPolicies. The `minio-init` hook
   Job was deleted when it succeeded; a failed one stays until you delete it. The PVC
   `minio-data-minio-0` is left in place, and nothing reads it.
-- Files uploaded before the upgrade are not in RustFS: drust answers 404 for them, and the
-  chart does not copy them. If you need them, copy them with an S3 client that keeps
-  object metadata (Content-Type, Content-Disposition, Cache-Control) before you delete
-  that PVC.
+- Files uploaded before the upgrade are not in RustFS, and the chart does not copy them: their
+  `/public` URL answers 404, while drust still lists them and their download answers 502.
+  If you need them, copy them with an S3 client that keeps object metadata (Content-Type,
+  Content-Disposition, Cache-Control) before you delete that PVC.
 
 ## Uninstall
 
@@ -236,6 +248,8 @@ helm uninstall group-a --namespace group-a
 workloads but **not** the StatefulSet PVCs — reinstalling the same release
 re-binds the existing `data-drust-0` / `logs-drust-0` / `rustfs-data-rustfs-0`
 volumes, so tenant data survives. This is deliberate: the PVC *is* the database.
+A `rustfs-init` hook Job that failed also stays (Helm does not delete hook resources on
+uninstall); `kubectl delete job rustfs-init` removes it.
 Because `createNamespace` defaults to **false**, the namespace you created with
 `--create-namespace` also survives. To reclaim everything for a group:
 
@@ -513,7 +527,7 @@ bash tests/render_test.sh
 It runs `helm lint`, renders every fixture with `helm template`, asserts the
 invariants (single writer, hardened securityContext, mandatory env, Host
 rewrite, storage/ingress gating, NetworkPolicy, backup), and validates each
-rendered manifest set with `kubeconform -ignore-missing-schemas` (CRDs such as
+rendered manifest set with `kubeconform -strict -ignore-missing-schemas` (CRDs such as
 Traefik `Middleware` and `VolumeSnapshot` are skipped). A clean run prints
 `0 failure(s)` and `0 chart(s) failed`.
 
