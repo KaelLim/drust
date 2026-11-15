@@ -163,6 +163,15 @@ if _render notls.yaml | awk '/name: DRUST_PUBLIC_BASE_URL$/{getline; if($0 ~ /"h
   echo "ok: DRUST_PUBLIC_BASE_URL uses http (exact value) when TLS off"; else echo "FAIL: DRUST_PUBLIC_BASE_URL wrong value/scheme when TLS off"; FAILS=$((FAILS+1)); fi
 assert_absent   full.yaml   "name: DRUST_DEV_NO_SECURE_COOKIES" "no dev-cookie env when TLS on"
 
+# --- DRUST_TRUSTED_PROXIES: the ingress controller is the one proxy appending to XFF ---
+# Unset, the pod inherits the image's 0 and every client shares the controller pod's
+# rate-limit bucket. Scoped to the env entry itself (one flow-style line), so a stray "1"
+# elsewhere cannot satisfy it.
+for f in minimal.yaml full.yaml; do
+  if _render "$f" | awk '/name: DRUST_TRUSTED_PROXIES,/{n++; if($0 ~ /value: "1" }$/) ok++} END{exit (n==1&&ok==1)?0:1}'; then
+    echo "ok: DRUST_TRUSTED_PROXIES=\"1\" on the drust container ($f)"; else echo "FAIL: DRUST_TRUSTED_PROXIES missing, duplicated or not \"1\" in $f"; FAILS=$((FAILS+1)); fi
+done
+
 # --- B1: Litestream sidecar + restore init (opt-in; default OFF) ---
 assert_contains litestream.yaml "name: litestream"                              "litestream sidecar rendered"
 assert_contains litestream.yaml "litestream/litestream"                         "litestream image wired"

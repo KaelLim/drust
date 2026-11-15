@@ -1,6 +1,15 @@
 # drust Helm chart — changelog
 
-## [Unreleased] — Deploy
+## [0.2.0] — unreleased
+
+### Changed
+- **`DRUST_TRUSTED_PROXIES` is set, from `ingress.trustedProxies` (default `1`).** Before,
+  the chart did not set it and drust pods inherited the image's `0`: every request was
+  keyed on the ingress controller pod's address, so all clients of a group shared one
+  rate-limit bucket. `1` counts the controller, the one proxy that appends to
+  `X-Forwarded-For`. If you set `DRUST_TRUSTED_PROXIES` in `extraEnv`, move it to
+  `ingress.trustedProxies`. The README's known caveats cover the k3s ServiceLB SNAT, the
+  controller's forwarded-header settings and the NetworkPolicy.
 
 ## [0.1.4] — 2026-08-04
 

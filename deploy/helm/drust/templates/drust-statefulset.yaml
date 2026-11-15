@@ -104,6 +104,7 @@ spec:
             - { name: DRUST_LOG_DIR, value: /logs }
             - { name: DRUST_BIND, value: "0.0.0.0:47826" }
             - { name: DRUST_BASE_PATH, value: "" }
+            - { name: DRUST_TRUSTED_PROXIES, value: {{ .Values.ingress.trustedProxies | quote }} }
             - name: DRUST_INIT_ADMIN_USERNAME
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-username } }
             - name: DRUST_INIT_ADMIN_PASSWORD

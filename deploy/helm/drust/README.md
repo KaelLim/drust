@@ -363,6 +363,37 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
   `localhost:8793`. Note **public**-visibility file URLs (`/public/<id>/<key>`) are
   only actually served when `publicFiles.enabled=true` — that flag is what routes
   `/public` to MinIO; private and pre-signed URLs are served through drust regardless.
+- **Client addresses and `ingress.trustedProxies` (`DRUST_TRUSTED_PROXIES`, default
+  `1`).** drust keys its per-IP rate limits (logins, register, OAuth callbacks, the CLI
+  device flow, anonymous file upload/delete and function invoke) on the
+  `X-Forwarded-For` entry that many positions from the right. `1` counts the ingress
+  controller, which appends exactly one entry; add one per proxy in front of it that the
+  controller is configured to trust (a cloud LB, a CDN). drust refuses to boot on a value
+  outside `0..8`, so a typo shows as a crash-looping pod. Three things decide whether the
+  key is really the client:
+  1. **k3s ServiceLB SNAT.** With the default k3s ServiceLB (`svclb`) and
+     `externalTrafficPolicy: Cluster` on the controller's Service, client traffic is
+     SNATed to a node address before the controller sees it, so every client collapses
+     onto that address (on a single-node k3s with Traefik every request arrived as
+     `10.42.0.1`). That is fail-closed (one shared bucket), not a bypass. The fix is
+     cluster-level: `externalTrafficPolicy: Local` on the controller's Service, or a
+     source-preserving load balancer.
+  2. **Controller forwarded-header settings.** ingress-nginx with
+     `use-forwarded-headers: true` but without `compute-full-forwarded-for: true`
+     forwards the client-supplied `X-Forwarded-For` verbatim, and so does Traefik with
+     `forwardedHeaders.insecure=true`: the key is then whatever the client wrote, for any
+     value of `trustedProxies`. Keep the controller's defaults, or set both nginx options
+     with `proxy-real-ip-cidr` restricted to your load balancer.
+  3. **NetworkPolicy.** With `networkPolicy.enabled: false`, or a
+     `hostNetworkIngressCIDRs` that admits every hostNetwork process on the nodes rather
+     than only the controller, a caller can reach drust's ClusterIP directly and pick its
+     own bucket by sending a one-entry header. Keep the policy on and the CIDR list
+     narrow.
+
+  If you set `DRUST_TRUSTED_PROXIES` in `extraEnv` before, **move it to
+  `ingress.trustedProxies`** when you upgrade: `extraEnv` renders after the chart's own
+  env, so the duplicate name is last-wins at runtime, but a duplicate name can confuse
+  Helm's patch on `helm upgrade`.
 
 ## Test the chart
 

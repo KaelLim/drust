@@ -218,9 +218,8 @@ update its toolchain first.
   at most once every five minutes, with the header's length and a count of what it
   suppressed; no log line at any level carries the header's value any more. Boot logs the
   effective setting (`client-IP derivation configured`). On Compose, sessions and the login
-  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The Helm
-  chart does not set the variable yet, so k3s keeps today's single bucket until it does (see
-  the chart notes).
+  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The k3s
+  chart 0.2.0 sets `1` (`ingress.trustedProxies`).
 
 - **The CHANGELOG viewer works in the container image.** `/admin/_docs/changelog` read
   `CHANGELOG.md` from the process's working directory. The image runs in `/data` and ships

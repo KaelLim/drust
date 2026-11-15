@@ -22,6 +22,17 @@ ingress:
   # rmcp DNS-rebinding guard: upstream Host MUST be loopback form. Do NOT change.
   hostRewrite: "127.0.0.1:47826"
   className: ""                  # optional ingressClassName (nginx); empty = default
+  # DRUST_TRUSTED_PROXIES: how many reverse proxies in front of drust APPEND to
+  # X-Forwarded-For. The ingress controller alone (Traefik / ingress-nginx defaults) = 1.
+  # Add one per extra proxy the controller is configured to trust (cloud LB, CDN).
+  # Never configure the controller to pass a client-supplied X-Forwarded-For through
+  # untrusted (Traefik forwardedHeaders.insecure; nginx use-forwarded-headers without
+  # compute-full-forwarded-for): drust would then key its rate limits on a value the
+  # client chose. Keeping networkPolicy.enabled=true is part of that guarantee. If you
+  # set DRUST_TRUSTED_PROXIES in extraEnv before, move it here (a duplicate env name is
+  # last-wins at runtime but can confuse helm upgrade's patch). drust refuses to boot on
+  # a value outside 0..8. See the README for the k3s ServiceLB caveat.
+  trustedProxies: 1
   tls:
     enabled: true
     issuer: letsencrypt          # cert-manager ClusterIssuer name (annotation)
