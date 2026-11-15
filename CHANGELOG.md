@@ -400,6 +400,24 @@ update its toolchain first.
   action needed, unless an app calls an anon-callable write RPC that legitimately runs
   longer than the deadline or runs several slow ones concurrently: move those calls behind
   a service key, or raise `DRUST_QUERY_DEADLINE_MS`.
+- **A WebSocket rooms frame over `DRUST_BROADCAST_PAYLOAD_MAX_BYTES` is now closed with a
+  reason.** The cap is enforced by the WebSocket codec (`max_message_size` /
+  `max_frame_size`), which refuses the frame as soon as its header is read, before drust sees
+  it, and the connection loop answered that by dropping the TCP connection with no frame at
+  all: the client saw 1006 and could not tell "payload too large" from a network failure. The
+  code comment claimed the opposite, and so did the v1.31.2 entry ("rejected at the frame
+  layer with a generic close") — no close frame was ever sent. The server now sends
+  `{"kind":"error","code":"PAYLOAD_TOO_LARGE"}` (no `ref` — the frame was never parsed), closes
+  **1009 Message Too Big**, and holds the socket for 250 ms before dropping it, so the two
+  frames are not lost to the TCP reset that the unread remainder of the oversize frame causes
+  (most visible behind a proxy that relays in chunks). All of it is best-effort and bounded at
+  2 s. The frame is still refused and nothing is published or audited; every other inbound
+  stream error ends the connection exactly as before, and the in-band `PAYLOAD_TOO_LARGE` for
+  a payload that only grows on re-serialization is unchanged. Same for every token kind. A
+  socket that was evicted, or whose admin PAT had just expired, and that sends an over-cap
+  frame now gets this close instead of `CONN_EVICTED` / `CONN_EXPIRED` 1008; nothing is
+  dispatched either way, and reconnecting with a revoked or expired credential still gets
+  401. No new environment variable, no schema change, no action needed.
 
 ### Changed
 
