@@ -24,3 +24,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/name: backup-mirror
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+{{- /* rclone remote "bk" (the external backup S3), configured only from env: no config
+       file, and the keys arrive by secretKeyRef, never inside a URL. Shared by the
+       litestream-enumerate init container and the backup-mirror CronJob. */ -}}
+{{- define "drust.rcloneBackupRemote" -}}
+- { name: RCLONE_CONFIG_BK_TYPE, value: s3 }
+- { name: RCLONE_CONFIG_BK_PROVIDER, value: Other }
+- { name: RCLONE_CONFIG_BK_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+- { name: RCLONE_CONFIG_BK_REGION, value: {{ .Values.backup.external.region | quote }} }
+- { name: RCLONE_CONFIG_BK_FORCE_PATH_STYLE, value: {{ .Values.backup.external.forcePathStyle | quote }} }
+- name: RCLONE_CONFIG_BK_ACCESS_KEY_ID
+  valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
+- name: RCLONE_CONFIG_BK_SECRET_ACCESS_KEY
+  valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+{{- end -}}

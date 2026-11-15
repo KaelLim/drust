@@ -42,22 +42,19 @@ spec:
       {{- if and .Values.backup.litestream.enabled .Values.backup.litestream.restore.enabled }}
       initContainers:
         - name: litestream-enumerate
-          image: {{ .Values.backup.litestream.mcImage | default .Values.storage.minio.mcImage | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ .Values.s3ClientImage | quote }}
+          # No imagePullPolicy: image.pullPolicy is drust's own (Never for a locally
+          # imported drust image would strand this third-party image).
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           env:
             - { name: HOME, value: /tmp }
-            - { name: MC_CONFIG_DIR, value: /tmp/.mc }
-            - { name: DEST_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+            - { name: RCLONE_CONFIG, value: /dev/null }      # remotes come only from env below
             - { name: DEST_BUCKET, value: {{ .Values.backup.external.bucket | quote }} }
             - { name: REPLICA_PREFIX, value: {{ include "backup.prefix" . | quote }} }
-            - name: AK
-              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
-            - name: SK
-              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+            {{- include "drust.rcloneBackupRemote" . | nindent 12 }}
           command: ["/bin/sh", "/etc/litestream/enumerate.sh"]
           volumeMounts:
             - { name: data, mountPath: /data, readOnly: true }

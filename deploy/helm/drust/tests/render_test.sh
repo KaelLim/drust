@@ -120,6 +120,8 @@ assert_contains full.yaml    "kind: CronJob"                    "backup cronjob 
 assert_contains full.yaml    "kind: VolumeSnapshot"             "cronjob creates a VolumeSnapshot manifest"
 assert_contains full.yaml    "csi-hostpath-snapclass"           "snapshot class wired"
 assert_contains full.yaml    'schedule: "0 3 * * *"'            "backup schedule wired"
+assert_contains full.yaml    "alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808" "snapshot CronJob uses a pullable kubectl, pinned tag+digest"
+assert_absent   full.yaml    "bitnami/kubectl"                  "no unpullable bitnami/kubectl"
 assert_absent   minimal.yaml "kind: CronJob"                    "no backup cronjob when class empty"
 
 # --- Review-fix regression guards ---
@@ -192,6 +194,17 @@ assert_contains litestream.yaml "name: litestream-restore"                      
 assert_contains litestream.yaml "name: litestream-enumerate"                    "enumerate initContainer rendered"
 assert_contains litestream.yaml "LITESTREAM_ACCESS_KEY_ID"                      "litestream creds via env (secretKeyRef)"
 assert_contains litestream.yaml "backup-s3-access-key"                          "backup Secret creds key present"
+# enumerate runs rclone (the minio/mc images can no longer be pulled), pinned by digest: it holds
+# the backup-S3 key. Remote "bk" comes from env only; the keys arrive by secretKeyRef.
+assert_contains litestream.yaml "rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5" "enumerate image is rclone, pinned tag+digest"
+assert_contains litestream.yaml 'rclone lsf --dirs-only "bk:${DEST_BUCKET}/${REPLICA_PREFIX}/tenants/"' "enumerate lists tenant prefixes with rclone"
+assert_contains litestream.yaml 'until rclone lsf "bk:${DEST_BUCKET}/${REPLICA_PREFIX}/" --max-depth 1' "enumerate probes its own prefix, not the bucket list"
+assert_contains litestream.yaml "name: RCLONE_CONFIG_BK_ACCESS_KEY_ID"          "enumerate gets the backup key via env"
+assert_contains litestream.yaml "name: RCLONE_CONFIG, value: /dev/null"         "enumerate reads no rclone config file"
+assert_absent   litestream.yaml "mc "                                           "no mc left in the litestream render"
+# the rclone init container must not inherit drust's image.pullPolicy (Never would strand it)
+if _render litestream.yaml | awk '/^[[:space:]]*- name: litestream-enumerate$/{s=1;next} s&&/^[[:space:]]*- name: [a-z]/{s=0} s&&/^[[:space:]]*imagePullPolicy:/{f=1} END{exit f?1:0}'; then
+  echo "ok: litestream-enumerate sets no imagePullPolicy"; else echo "FAIL: litestream-enumerate inherits an imagePullPolicy"; FAILS=$((FAILS+1)); fi
 # scope RO-root to the litestream SIDECAR container (not the always-present drust container / init
 # containers) — a whole-file grep would stay green even if the sidecar alone lost readOnlyRootFilesystem.
 if _render litestream.yaml | awk '/^[[:space:]]*- name: litestream$/{s=1;next} s&&/^[[:space:]]*- name: [a-z]/{s=0} s&&/readOnlyRootFilesystem: true/{f=1} END{exit f?0:1}'; then
@@ -219,17 +232,22 @@ assert_absent full.yaml    "name: litestream"          "no litestream in full fi
 assert_absent minimal.yaml "backup-s3-access-key"      "no backup Secret keys by default"
 assert_absent full.yaml    "name: litestream-restore"  "no restore init in full fixture (default off)"
 
-# --- B2: upload-backup mc-mirror CronJob (opt-in; needs storage) ---
+# --- B2: upload-backup copy CronJob (rclone; opt-in; needs storage) ---
 assert_contains backup-mirror.yaml "kind: CronJob"                             "objectMirror CronJob rendered"
-assert_contains backup-mirror.yaml "mc mirror --overwrite"                     "mc mirror command present"
+assert_contains backup-mirror.yaml 'rclone copy -M src:public  "$dst/objects/public"'   "mirror copies public with metadata (-M)"
+assert_contains backup-mirror.yaml 'rclone copy -M src:private "$dst/objects/private"'  "mirror copies private with metadata (-M)"
+assert_absent   backup-mirror.yaml "rclone sync"                               "mirror never syncs (a source delete must not reach the backup)"
+assert_contains backup-mirror.yaml 'name: RCLONE_S3_NO_CHECK_BUCKET, value: "true"' "mirror skips CreateBucket (a scoped key gets 403)"
+assert_contains backup-mirror.yaml 'until rclone lsf "$dst/" --max-depth 1'      "mirror probes its backup prefix, not the bucket list"
+assert_contains backup-mirror.yaml "rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5" "mirror image is rclone, pinned tag+digest"
+# no mc in the mirror CronJob record (minio-init in the same render still uses mc until it moves to rc)
+if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: CronJob/ && /name: testrel-backup-mirror\n/{print}' | grep -qE 'MC_HOST|mc alias|mc ls|mc mirror|minio/mc'; then
+  echo "FAIL: mc still used by the backup-mirror CronJob"; FAILS=$((FAILS+1)); else echo "ok: no mc in the backup-mirror CronJob"; fi
 assert_contains backup-mirror.yaml 'schedule: "0 * * * *"'                     "hourly mirror schedule"
-assert_contains backup-mirror.yaml "until mc ls src"                           "first-connect retry loop (CNI NP lag)"
+assert_contains backup-mirror.yaml "until rclone lsf src:public"               "first-connect retry loop (CNI NP lag)"
 assert_contains backup-mirror.yaml "backup-s3-access-key"                      "dest creds via backup Secret"
 assert_contains backup-mirror.yaml "app.kubernetes.io/name: backup-mirror"     "mirror Job carries dedicated labels"
 assert_contains backup-mirror.yaml "automountServiceAccountToken: false"       "mirror pod drops SA token"
-# env order: SRC_AK/SRC_SK before MC_HOST_src (kubelet $(VAR) gotcha)
-if _render backup-mirror.yaml | awk '/name: SRC_AK$/{a=NR} /name: SRC_SK$/{s=NR} /name: MC_HOST_src$/{m=NR} END{exit (a&&s&&m&&a<m&&s<m)?0:1}'; then
-  echo "ok: SRC_AK/SRC_SK precede MC_HOST_src"; else echo "FAIL: SRC creds not before MC_HOST_src"; FAILS=$((FAILS+1)); fi
 # mirror POD TEMPLATE must not wear drust/minio selector labels (would join a Service). The CronJob's
 # OWN metadata legitimately carries drust.labels, and the drust STS (also in this render) has its own
 # pod template — so isolate the CronJob record, then walk ONLY its pod template (template: -> spec:).

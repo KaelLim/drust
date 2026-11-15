@@ -56,6 +56,11 @@ webhook:
 publicFiles:
   enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)
 
+# Image of the S3 client used by the litestream-enumerate init container and the
+# backup-mirror CronJob (rclone). Pinned by digest: it holds the backup-S3 key and
+# drust's key.
+s3ClientImage: "docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5"
+
 storage:
   enabled: true
   minio:
@@ -89,7 +94,9 @@ backup:
   volumeSnapshotClassName: ""
   schedule: "0 3 * * *"          # UTC
   retain: 7                      # keep newest N snapshots (janitor in the same CronJob)
-  kubectlImage: "bitnami/kubectl:1.30"
+  # Needs a shell; bitnami/kubectl is gone. Pinned by digest: a community image whose pod
+  # holds a ServiceAccount token that may delete VolumeSnapshots (i.e. the backups).
+  kubectlImage: "docker.io/alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808"
 
   # ── B1/B2 shared external offsite backup destination (single S3) ──
   # The CSI VolumeSnapshot keys above and these sub-trees are all opt-in / default-off.
@@ -117,7 +124,6 @@ backup:
   litestream:
     enabled: false
     image: "litestream/litestream:0.5.15"   # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3
-    mcImage: ""                  # enumerate init image; empty => storage.minio.mcImage
     watch: true                  # native watcher enrolls post-boot tenants without a restart — DO NOT disable
     tenantPattern: "*.sqlite"        # basename glob under /data/tenants (recursive:true walks <id>/ subdirs).
                                      # VERIFIED against the real litestream 0.5.15 binary: a slash-form like
@@ -132,7 +138,7 @@ backup:
     restore:
       enabled: true              # enumerate + restore initContainers rebuild an empty /data from S3
 
-  # ── B2: hourly mc-mirror of this group's MinIO objects -> external backup S3 ──
+  # ── B2: hourly copy (rclone, never deletes) of this group's MinIO objects -> external backup S3 ──
   # DR completeness (#933): enable objectMirror (or provide an external object
   # backup) for a RESTORABLE unit — the DB VolumeSnapshot/Litestream alone does
   # NOT capture uploaded objects, so a cold restore to an empty object store
@@ -140,7 +146,6 @@ backup:
   objectMirror:
     enabled: false               # also needs storage.enabled
     schedule: "0 * * * *"        # hourly UTC
-    image: ""                    # empty => storage.minio.mcImage
     connectRetries: 30           # first-connect retries (CNI NP allow-set propagation lag)
     connectRetrySleep: 2
     backoffLimit: 3

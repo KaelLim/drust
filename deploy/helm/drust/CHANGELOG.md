@@ -17,6 +17,21 @@
   `admin-endpoint` / `admin-token` Secret keys, and the values
   `storage.adminEndpointPlaceholder` / `storage.adminTokenPlaceholder`. An
   `existingSecret` that still carries the two keys keeps working (nothing reads them).
+- **Pullable backup tooling.** The `minio/mc` and `bitnami/kubectl` images can no longer
+  be pulled, so the Litestream restore (`litestream-enumerate`), the object mirror and the
+  VolumeSnapshot CronJob could not start on a node that did not already hold them.
+  - The enumerate init container and the `backup-mirror` CronJob run rclone, from the new
+    `s3ClientImage` (`rclone/rclone:1.75.2`, pinned tag+digest: it holds the backup-S3
+    key and drust's key). Remotes come only from env; keys arrive by `secretKeyRef`. The
+    mirror copies with `-M` (without it `Content-Disposition`, `Cache-Control` and
+    `x-amz-meta-*` were dropped) and `RCLONE_S3_NO_CHECK_BUCKET=true` (without it a
+    bucket-scoped key fails every upload with 403), and now probes its backup prefix
+    instead of the bucket list, which a prefix-scoped key cannot list. Still a copy,
+    never a sync.
+  - `backup.kubectlImage` defaults to `alpine/kubectl:1.36.4`, pinned tag+digest (its
+    pod holds a token that may delete VolumeSnapshots). The CronJob itself is unchanged.
+  - Removed values: `backup.litestream.mcImage`, `backup.objectMirror.image` (both now
+    `s3ClientImage`).
 
 ## [0.1.4] — 2026-08-04
 

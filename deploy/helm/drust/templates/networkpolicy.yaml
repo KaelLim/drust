@@ -132,7 +132,7 @@ spec:
         - { protocol: TCP, port: 9000 }
     {{- end }}
     {{- if .Values.backup.objectMirror.enabled }}
-    # Hourly mc-mirror Job reads this group's MinIO:9000. It wears a dedicated label,
+    # Hourly backup-mirror Job (rclone copy) reads this group's MinIO:9000. It wears a dedicated label,
     # so admit it explicitly or it is black-holed.
     - from:
         - podSelector:

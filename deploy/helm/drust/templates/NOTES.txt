@@ -35,7 +35,7 @@ EVERY tenants/*/data.sqlite, including tenants created after boot (native direct
 {{- end }}
 {{- if .Values.backup.objectMirror.enabled }}
 
-UPLOAD-BACKUP: hourly mc-mirror of this group's MinIO objects -> "{{ .Values.backup.external.bucket }}".
+UPLOAD-BACKUP: hourly copy of this group's object store -> "{{ .Values.backup.external.bucket }}".
   kubectl -n {{ .Release.Namespace }} get cronjob {{ .Release.Name }}-backup-mirror
 {{- end }}
 

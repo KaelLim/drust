@@ -233,7 +233,7 @@ RPO is three-part and honest:
 
 Restore is automatic and runs **only when `/data` is empty** (fresh PVC / new node). Two
 initContainers run before drust starts: `litestream-enumerate` (lists tenant prefixes in
-the backup bucket via `mc`), then `litestream-restore` (restores each DB via `litestream
+the backup bucket with `rclone`, image `s3ClientImage`), then `litestream-restore` (restores each DB via `litestream
 restore`, atomic `.tmp`→`mv`, `-if-replica-exists`, never `-force`). A populated `/data`
 hits two independent skip gates plus a per-file existence check — live data is never
 overwritten. After restore, drust sees an existing `meta.sqlite`, so first-boot bootstrap
@@ -251,8 +251,12 @@ is a no-op: **tokens survive verbatim, the admin is not re-seeded.**
   the pod that also runs untrusted edge-function WASM and outbound webhooks. With general egress
   already on, CIDRs are optional (the pod already has broad egress by your choice).
 - The sidecar/init run under `readOnlyRootFilesystem: true` at uid 10001 (must match drust
-  so it can read the DBs it wrote). `mc` and `litestream` both run fine on a read-only root
-  — confirm with one live restore drill.
+  so it can read the DBs it wrote). `rclone` was seen running there (uid 10001, read-only
+  root, `HOME=/tmp`); confirm `litestream` with one live restore drill.
+- The enumerate step probes **this group's own prefix**, never the bucket list, so a key
+  whose policy is scoped to `<prefix>/` (as recommended below) works: such a key cannot
+  list buckets. Its remote is configured from env only (`RCLONE_CONFIG_BK_*`, keys by
+  `secretKeyRef`), never from a URL or a config file.
 
 > [!CAUTION]
 > **Cross-group backup isolation is the operator's job.** The replicated `meta.sqlite` carries
@@ -264,15 +268,25 @@ is a no-op: **tokens survive verbatim, the admin is not re-seeded.**
 
 ## Object-file backup (B2)
 
-`backup.objectMirror.*` adds an hourly CronJob that `mc mirror`s this group's MinIO
-`public` + `private` buckets to the same external S3 under `<prefix>/objects/`. Litestream
-handles the databases; this handles only the object files. It uses `--overwrite` but **not
-`--remove`**: an accidental source delete does not propagate into the backup, so a deleted
-object stays recoverable — the trade-off is the backup only grows, so prune it with a
-bucket lifecycle policy on the S3 side. The Job retries its first connection (a new Job pod
-IP takes seconds to enter the CNI NetworkPolicy allow-set, same cause as `minio-init`),
-wears a dedicated label with its own scoped NetworkPolicy, and drops its ServiceAccount
-token. Needs `storage.enabled`.
+`backup.objectMirror.*` adds an hourly CronJob that copies this group's MinIO `public` +
+`private` buckets to the same external S3 under `<prefix>/objects/`, with `rclone copy -M`
+(image `s3ClientImage`). Litestream handles the databases; this handles only the object
+files. A changed object is replaced, but it is a **copy, never a sync**: an accidental
+source delete does not propagate into the backup, so a deleted object stays recoverable —
+the trade-off is the backup only grows, so prune it with a bucket lifecycle policy on the
+S3 side. Two settings are load-bearing (each was seen to fail without it):
+
+- `-M` keeps `Content-Type`, `Content-Disposition`, `Cache-Control` and `x-amz-meta-*`.
+  Without it only `Content-Type` survives, and `/public` serves the other two straight
+  from the store, so a restore would change what anonymous clients get.
+- `RCLONE_S3_NO_CHECK_BUCKET=true`: otherwise rclone tries `CreateBucket` before every
+  upload, and a bucket-scoped backup key fails it with 403.
+
+The Job retries its first connection (a new Job pod IP takes seconds to enter the CNI
+NetworkPolicy allow-set, same cause as `minio-init`), probes this group's backup prefix
+rather than the bucket list (a prefix-scoped key cannot list buckets), wears a dedicated
+label with its own scoped NetworkPolicy, and drops its ServiceAccount token. Needs
+`storage.enabled`.
 
 ## Scheduling / placement (B3)
 
