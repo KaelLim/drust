@@ -509,6 +509,39 @@ pub const RPC_KIND_INVALID: &str = "RPC_KIND_INVALID";
 /// `PrepareError::Rejected` carrying it to `409 RPC_QUERY_GRANT_ACTIVE`.
 pub const RPC_QUERY_GRANT_ACTIVE: &str = "RPC_QUERY_GRANT_ACTIVE";
 
+/// Fallback code for a query-kind save rejection with no sentinel of its own
+/// (an unknown sort field, an undeclared `$param`, a cross-class operand …).
+///
+/// Two faces answer with it: the admin form's `data-error-code` and MCP
+/// `create_rpc` / `update_rpc`'s `data.error_code`, both through
+/// [`save_error_code`]. The sql side has had `INVALID_SQL_FOR_MODE` for this
+/// since C5; a template rejection was arriving with NO code at all, so an e2e
+/// scraper could not tell a refusal from a render.
+pub const RPC_QUERY_TEMPLATE_INVALID: &str = "RPC_QUERY_TEMPLATE_INVALID";
+
+/// The code for a save-time (create / update) rejection of a stored RPC, from
+/// the sentinel the message already carries. Shared by the admin form's banner
+/// and MCP `create_rpc` / `update_rpc`, so the two faces give one answer.
+///
+/// The sql arm is left BYTE-IDENTICAL to its pre-#950 behaviour (kind sentinel,
+/// else `INVALID_SQL_FOR_MODE`) — its messages are scraped today. Only the
+/// query arm gains the extra sentinels, so a template rejection stops arriving
+/// with no code at all. Every arm returns a constant: a caller string inside a
+/// template can at worst pick a different drust code, never inject one.
+pub fn save_error_code(msg: &str, kind: crate::rpc::registry::RpcKind) -> &'static str {
+    use crate::rpc::registry::RpcKind;
+    if msg.contains(RPC_KIND_INVALID) {
+        return RPC_KIND_INVALID;
+    }
+    match kind {
+        RpcKind::Sql => "INVALID_SQL_FOR_MODE",
+        RpcKind::Query => ["PROTECTED_COLLECTION", "COLLECTION_NOT_FOUND"]
+            .into_iter()
+            .find(|s| msg.contains(s))
+            .unwrap_or(RPC_QUERY_TEMPLATE_INVALID),
+    }
+}
+
 /// Config-time guard on the CLEAR paths (#950): refuse to drop `collection`'s
 /// select policy or `owner_field` while an `anon_callable` query-kind RPC
 /// targets it.
@@ -788,6 +821,51 @@ mod tests {
         )
         .unwrap();
         (d, conn, crate::storage::schema_cache::SchemaCache::new())
+    }
+
+    /// First pin of the admin form's `data-error-code` (and MCP's save codes):
+    /// the move out of `rpc_admin.rs` kept every arm byte-identical.
+    #[test]
+    fn save_error_code_pins_both_arms() {
+        use crate::rpc::registry::RpcKind::{Query, Sql};
+        let rejected = |s: &str| PrepareError::Rejected(s.into()).to_string();
+        // sql arm
+        assert_eq!(
+            save_error_code(
+                &rejected("RPC_KIND_INVALID: kind='sql' carries no `query`"),
+                Sql
+            ),
+            "RPC_KIND_INVALID"
+        );
+        assert_eq!(
+            save_error_code(&rejected("not authorized"), Sql),
+            "INVALID_SQL_FOR_MODE"
+        );
+        assert_eq!(
+            save_error_code(&rejected("PROTECTED_COLLECTION: '_system_users'"), Sql),
+            "INVALID_SQL_FOR_MODE",
+            "the sql arm ignores the query-arm sentinels"
+        );
+        // query arm
+        assert_eq!(
+            save_error_code(&rejected("PROTECTED_COLLECTION: '_system_users'"), Query),
+            "PROTECTED_COLLECTION"
+        );
+        assert_eq!(
+            save_error_code(
+                &rejected("COLLECTION_NOT_FOUND: no such collection: x"),
+                Query
+            ),
+            "COLLECTION_NOT_FOUND"
+        );
+        assert_eq!(
+            save_error_code(&rejected("RPC_KIND_INVALID: cannot declare user_id"), Query),
+            "RPC_KIND_INVALID"
+        );
+        assert_eq!(
+            save_error_code(&rejected("unknown sort field"), Query),
+            RPC_QUERY_TEMPLATE_INVALID
+        );
     }
 
     #[test]

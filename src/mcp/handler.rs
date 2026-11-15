@@ -2358,14 +2358,30 @@ impl DrustMcpService {
             None => None,
         };
         let cache = pool.schema_cache.clone();
+        // The code of the stage that refused, carried out of the writer closure
+        // (whose error type is a plain `rusqlite::Error`) to the reply's
+        // `data.error_code`. `with_writer` runs the closure inline (no
+        // `'static` bound), so a borrow is enough.
+        let refusal = std::sync::OnceLock::<&'static str>::new();
+        let refusal_ref = &refusal;
 
         pool.with_writer(move |c| {
-            let reject = |e: crate::rpc::prepare::PrepareError| {
+            // Records the stage's code, then builds the same error as before.
+            // First failure wins: a later stage never overwrites the stage that
+            // actually refused.
+            let reject_as = |code: &'static str, e: crate::rpc::prepare::PrepareError| {
+                let _ = refusal_ref.set(code);
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             };
             match kind {
                 crate::rpc::registry::RpcKind::Sql => {
-                    crate::rpc::prepare::validate_rpc_sql(c, &sql, mode).map_err(reject)?;
+                    crate::rpc::prepare::validate_rpc_sql(c, &sql, mode).map_err(|e| {
+                        let code = crate::rpc::prepare::save_error_code(
+                            &e.to_string(),
+                            crate::rpc::registry::RpcKind::Sql,
+                        );
+                        reject_as(code, e)
+                    })?;
                     // v1.41.3: refuse an anon-callable read RPC that reads an
                     // owner-scoped collection without binding :user_id — drust does not
                     // rewrite stored-RPC SQL, so it would return every user's rows.
@@ -2376,7 +2392,11 @@ impl DrustMcpService {
                         anon_callable,
                         mode,
                     )
-                    .map_err(reject)?;
+                    .map_err(|e| {
+                        let code = crate::mcp::error_code::embedded_sentinel(&e.to_string())
+                            .unwrap_or("INVALID_SQL_FOR_MODE");
+                        reject_as(code, e)
+                    })?;
                 }
                 // #950: a template is not raw SQL, so the two sql guards do not
                 // apply — row access is re-derived per call from the caller's
@@ -2384,14 +2404,21 @@ impl DrustMcpService {
                 // the save-time template validation (existence, protected
                 // collection, declared↔referenced params, dry compile).
                 crate::rpc::registry::RpcKind::Query => {
+                    let query_reject = |e: crate::rpc::prepare::PrepareError| {
+                        let code = crate::rpc::prepare::save_error_code(
+                            &e.to_string(),
+                            crate::rpc::registry::RpcKind::Query,
+                        );
+                        reject_as(code, e)
+                    };
                     let tpl = crate::rpc::query_template::parse_template(
                         query_json.as_deref().unwrap_or(""),
                     )
                     .map_err(|e| {
-                        reject(crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                        query_reject(crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
                     })?;
                     crate::rpc::prepare::validate_new_query_rpc(c, &cache, &tpl, &params_for_guard)
-                        .map_err(reject)?;
+                        .map_err(query_reject)?;
                 }
             }
             crate::rpc::registry::create(
@@ -2408,12 +2435,20 @@ impl DrustMcpService {
                 },
             )
             .map_err(|e| {
+                let _ = refusal_ref.set(e.save_code()); // first failure wins
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })?;
             Ok::<_, rusqlite::Error>(())
         })
         .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        .map_err(|e| {
+            // JSON-RPC -32603 and the message are unchanged; only `data` gains
+            // the exact, kind-aware code (INTERNAL when no stage claimed it).
+            with_error_code(
+                McpError::internal_error(e.to_string(), None),
+                refusal.get().copied().unwrap_or("INTERNAL"),
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "rpc '{}' created",
@@ -2467,9 +2502,17 @@ impl DrustMcpService {
             None => None,
         };
         let cache = pool.schema_cache.clone();
+        // The refusing stage's code, carried out of the writer closure to the
+        // reply's `data.error_code` — same side channel as `create_rpc`.
+        let refusal = std::sync::OnceLock::<&'static str>::new();
+        let refusal_ref = &refusal;
 
         pool.with_writer(move |c| {
-            let reject = |e: crate::rpc::prepare::PrepareError| {
+            // Records the stage's code, then builds the same error as before.
+            // First failure wins: a later stage never overwrites the stage that
+            // actually refused.
+            let reject_as = |code: &'static str, e: crate::rpc::prepare::PrepareError| {
+                let _ = refusal_ref.set(code);
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             };
             // ONE lookup, read before any validation: the kind of the STORED
@@ -2497,7 +2540,13 @@ impl DrustMcpService {
                                 .map(|r| r.mode)
                                 .unwrap_or(crate::rpc::registry::RpcMode::Read),
                         };
-                        crate::rpc::prepare::validate_rpc_sql(c, s, effective).map_err(reject)?;
+                        crate::rpc::prepare::validate_rpc_sql(c, s, effective).map_err(|e| {
+                            let code = crate::rpc::prepare::save_error_code(
+                                &e.to_string(),
+                                crate::rpc::registry::RpcKind::Sql,
+                            );
+                            reject_as(code, e)
+                        })?;
                     }
                 }
                 // #950 — a query row has no sql to validate (and `registry::
@@ -2528,13 +2577,22 @@ impl DrustMcpService {
                         || params_for_guard.is_some()
                         || anon_callable == Some(true);
                     if widening {
+                        let query_reject = |e: crate::rpc::prepare::PrepareError| {
+                            let code = crate::rpc::prepare::save_error_code(
+                                &e.to_string(),
+                                crate::rpc::registry::RpcKind::Query,
+                            );
+                            reject_as(code, e)
+                        };
                         let effective = query_json
                             .as_deref()
                             .or_else(|| stored.as_ref().and_then(|r| r.query_json.as_deref()))
                             .unwrap_or("");
                         let tpl =
                             crate::rpc::query_template::parse_template(effective).map_err(|e| {
-                                reject(crate::rpc::prepare::PrepareError::Rejected(e.to_string()))
+                                query_reject(crate::rpc::prepare::PrepareError::Rejected(
+                                    e.to_string(),
+                                ))
                             })?;
                         let effective_params = params_for_guard.as_deref().unwrap_or_else(|| {
                             stored.as_ref().map(|r| r.params.as_slice()).unwrap_or(&[])
@@ -2545,7 +2603,7 @@ impl DrustMcpService {
                             &tpl,
                             effective_params,
                         )
-                        .map_err(reject)?;
+                        .map_err(query_reject)?;
                     }
                 }
             }
@@ -2561,7 +2619,9 @@ impl DrustMcpService {
                 anon_callable,
             )
             .map_err(|e| {
-                rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
+                let code = crate::mcp::error_code::embedded_sentinel(&e.to_string())
+                    .unwrap_or("INVALID_SQL_FOR_MODE");
+                reject_as(code, e)
             })?;
             crate::rpc::registry::update(
                 c,
@@ -2576,12 +2636,20 @@ impl DrustMcpService {
                 },
             )
             .map_err(|e| {
+                let _ = refusal_ref.set(e.save_code()); // first failure wins
                 rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
             })?;
             Ok::<_, rusqlite::Error>(())
         })
         .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        .map_err(|e| {
+            // JSON-RPC -32603 and the message are unchanged; only `data` gains
+            // the exact, kind-aware code (INTERNAL when no stage claimed it).
+            with_error_code(
+                McpError::internal_error(e.to_string(), None),
+                refusal.get().copied().unwrap_or("INTERNAL"),
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "rpc '{}' updated",
@@ -2728,15 +2796,18 @@ impl DrustMcpService {
         let params = stored.params.clone();
         let outcome = pool
             .with_reader(move |c| {
+                // The typed code travels with the message: the same strings
+                // REST's RPC handler answers (`ParamError::code`,
+                // `ExecError::code`).
                 let bound = match crate::rpc::params::validate_and_bind(&params, &bind_body) {
                     Ok(b) => b,
-                    Err(e) => return Ok(Err(e.to_string())),
+                    Err(e) => return Ok(Err((e.code(), e.to_string()))),
                 };
                 let qr = match crate::query::executor::execute_read_query_with_named(
                     c, &sql, &bound, 1_000, 1_048_576,
                 ) {
                     Ok(qr) => qr,
-                    Err(e) => return Ok(Err(e.to_string())),
+                    Err(e) => return Ok(Err((e.code(), e.to_string()))),
                 };
                 Ok(Ok(qr))
             })
@@ -2745,7 +2816,9 @@ impl DrustMcpService {
 
         let qr = match outcome {
             Ok(qr) => qr,
-            Err(msg) => return Err(McpError::invalid_params(msg, None)),
+            Err((code, msg)) => {
+                return Err(with_error_code(McpError::invalid_params(msg, None), code));
+            }
         };
 
         spawn_rpc_counter_bump(pool.clone(), name.clone());

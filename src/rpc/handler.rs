@@ -604,38 +604,27 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 ));
             resp
         }
-        RpcOutcome::Param(e) => match e {
-            ParamError::Missing(_) => {
-                json_error(StatusCode::BAD_REQUEST, "PARAM_MISSING", &e.to_string())
-            }
-            ParamError::TypeMismatch { .. } => json_error(
-                StatusCode::BAD_REQUEST,
-                "PARAM_TYPE_MISMATCH",
-                &e.to_string(),
-            ),
-            ParamError::Unknown(_) => {
-                json_error(StatusCode::BAD_REQUEST, "PARAM_UNKNOWN", &e.to_string())
-            }
-            ParamError::BadParamsJson(_) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "PARAM_BAD_STORED",
-                &e.to_string(),
-            ),
-        },
-        RpcOutcome::Exec(e) => match &e {
-            ExecError::TooLarge { .. } => json_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "QUERY_TOO_LARGE",
-                &e.to_string(),
-            ),
-            ExecError::Forbidden(_) => {
-                json_error(StatusCode::FORBIDDEN, "QUERY_FORBIDDEN", &e.to_string())
-            }
-            ExecError::Timeout(_) => {
-                json_error(StatusCode::REQUEST_TIMEOUT, "QUERY_TIMEOUT", &e.to_string())
-            }
-            ExecError::Sql(_) => json_error(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
-        },
+        // The code strings live on the error types (`ParamError::code`,
+        // `ExecError::code`), shared with MCP `call_rpc`; only the status is
+        // decided here.
+        RpcOutcome::Param(e) => {
+            let status = match e {
+                ParamError::Missing(_)
+                | ParamError::TypeMismatch { .. }
+                | ParamError::Unknown(_) => StatusCode::BAD_REQUEST,
+                ParamError::BadParamsJson(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            json_error(status, e.code(), &e.to_string())
+        }
+        RpcOutcome::Exec(e) => {
+            let status = match &e {
+                ExecError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+                ExecError::Forbidden(_) => StatusCode::FORBIDDEN,
+                ExecError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
+                ExecError::Sql(_) => StatusCode::BAD_REQUEST,
+            };
+            json_error(status, e.code(), &e.to_string())
+        }
         RpcOutcome::StatementFailed(e) => statement_failed_response(e),
         RpcOutcome::TxCommitFailed(msg) => {
             // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.

@@ -131,6 +131,19 @@ pub enum ExecError {
     Sql(String),
 }
 
+impl ExecError {
+    /// The error code every face reports for this failure — REST's RPC handler
+    /// (`rpc/handler.rs`) and MCP `call_rpc` share this one table.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ExecError::TooLarge { .. } => "QUERY_TOO_LARGE",
+            ExecError::Forbidden(_) => "QUERY_FORBIDDEN",
+            ExecError::Timeout(_) => "QUERY_TIMEOUT",
+            ExecError::Sql(_) => "SQL_ERROR",
+        }
+    }
+}
+
 pub fn sql_hash(sql: &str) -> String {
     let d = Sha256::digest(sql.as_bytes());
     let mut s = String::with_capacity(71);
@@ -433,6 +446,21 @@ fn classify(err: rusqlite::Error) -> ExecError {
         return ExecError::Forbidden(text);
     }
     ExecError::Sql(text)
+}
+
+#[cfg(test)]
+mod exec_error_code_tests {
+    use super::*;
+
+    /// The strings REST's RPC handler emitted before it switched to `code()`.
+    #[test]
+    fn exec_error_codes() {
+        let too_large = ExecError::TooLarge { bytes: 2, limit: 1 };
+        assert_eq!(too_large.code(), "QUERY_TOO_LARGE");
+        assert_eq!(ExecError::Forbidden("x".into()).code(), "QUERY_FORBIDDEN");
+        assert_eq!(ExecError::Timeout(5).code(), "QUERY_TIMEOUT");
+        assert_eq!(ExecError::Sql("x".into()).code(), "SQL_ERROR");
+    }
 }
 
 #[cfg(test)]

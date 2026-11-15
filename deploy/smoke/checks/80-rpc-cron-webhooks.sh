@@ -279,6 +279,7 @@ check_eq "rpc: anon may call an anon_callable RPC over an unrestricted collectio
 mcp create_rpc '{"name":"bad_owned","sql":"SELECT id, title FROM owned","params":[],"anon_callable":true}'
 check_eq "rpc guard (create): anon_callable RPC over an owner-scoped collection without :user_id is refused" false "$MCP_OK"
 check_contains "rpc guard (create): refusal names RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (create): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp create_rpc '{"name":"bad_owned2","sql":"SELECT id, title FROM owned WHERE :user_id IS NOT NULL","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
 check_contains "rpc guard (create): declaring :user_id without constraining the owner column is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
 mcp create_rpc '{"name":"bad_policy","sql":"SELECT id, title FROM posts WHERE title = :user_id","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
@@ -292,6 +293,7 @@ mcp create_rpc '{"name":"r_owned_svc","sql":"SELECT id, title FROM owned","param
 setup_ok "rpc: create service-only RPC over owned"
 mcp update_rpc '{"name":"r_owned_svc","anon_callable":true}'
 check_contains "rpc guard (update): flipping anon_callable on an RPC over owned is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (update): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 anon POST /rpc/r_owned_svc '{}'
 check_eq "rpc guard (update): after the refused flip anon still gets 403 ANON_DENIED" "403 ANON_DENIED" "$STATUS $(body error_code)"
 mcp create_collection '{"name":"pubtab","fields":[{"name":"title","sql_type":"text"},{"name":"owner","sql_type":"text","foreign_key":"_system_users"}]}'
@@ -300,8 +302,10 @@ mcp create_rpc '{"name":"r_pubtab","sql":"SELECT id, title FROM pubtab","params"
 setup_ok "rpc: create anon_callable RPC over pubtab (not yet restricted)"
 mcp set_owner_field '{"collection":"pubtab","field":"owner"}'
 check_contains "rpc guard (set_owner_field): making a collection owner-scoped under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (set_owner_field): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp set_policy '{"collection":"pubtab","op":"select","using":{"title":"x"}}'
 check_contains "rpc guard (policy attach): attaching an RLS policy under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (policy attach): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 
 # ── validate_rpc_sql refusals (create-time, mode-matched authorizer) ───────
 # Every PrepareError carries the "prepare-time validation" prefix — a syntax
@@ -317,6 +321,7 @@ mcp create_rpc '{"name":"bad_attach","sql":"ATTACH DATABASE '"'"'/tmp/smoke80.db
 check_authz_refusal "rpc validate: ATTACH in a read RPC is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_master","sql":"SELECT name FROM sqlite_master","params":[]}'
 check_authz_refusal "rpc validate: a sqlite_master read is refused at create by the authorizer"
+check_eq "rpc validate: MCP create_rpc's authorizer refusal carries data.error_code INVALID_SQL_FOR_MODE" INVALID_SQL_FOR_MODE "$MCP_CODE"
 mcp create_rpc '{"name":"bad_sysread","sql":"SELECT * FROM _system_users","params":[]}'
 check_authz_refusal "rpc validate: a _system_* read is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_rw","sql":"INSERT INTO items(title) VALUES('"'"'x'"'"')","params":[]}'
@@ -332,7 +337,6 @@ check_authz_refusal "rpc validate: a sqlite_sequence write in a write-mode RPC i
 mcp list_rpc '{}'
 stored_bad="$(printf '%s' "$MCP_TEXT" | pyj 'sorted(r["name"] for r in d if r["name"].startswith("bad_"))')"
 check_eq "rpc validate/guard: none of the refused RPCs was stored" "[]" "$stored_bad"
-note "MCP create_rpc refusals arrive as JSON-RPC -32603 with no data.error_code (see report)"
 
 # ── runtime errors never echo the stored SQL (sqlite_error_without_sql) ────
 mcp create_rpc '{"name":"r_drift","sql":"SELECT a, b FROM drift WHERE a = '"'"'LITERAL_MARKER'"'"' OR 1","params":[],"anon_callable":true}'
