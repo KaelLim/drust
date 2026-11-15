@@ -1110,6 +1110,52 @@ async fn tenant_signed_bytes_storage_failure_hides_backend_detail() {
     assert_eq!(msg, "object store read failed");
 }
 
+/// The admin arm of signed-URL redemption shares the tenant arm's fixed
+/// message: a signed URL is redeemed with no caller at all.
+#[tokio::test]
+async fn admin_signed_bytes_storage_failure_hides_backend_detail() {
+    use axum::extract::{Path, Query, State};
+    use drust::mgmt::signed_bytes::{SigQs, SignedBytesState, admin_signed_bytes};
+    use drust::storage::garage::GarageClient;
+    use drust::storage::signed_url::{Owner as SignOwner, mint};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = "aaaaaaaa-0000-0000-0000-00000000003f.pdf";
+    let meta = drust::storage::meta::open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    meta.execute(
+        "INSERT INTO _system_files (key, original_name, size_bytes, visibility, uploader)
+         VALUES (?1, 'doc.pdf', 3, 'private', 'admin')",
+        rusqlite::params![key],
+    )
+    .unwrap();
+    let secret = [9u8; 32];
+    let state = SignedBytesState {
+        meta: Arc::new(tokio::sync::Mutex::new(meta)),
+        data_root: dir.path().to_path_buf(),
+        garage: Some(Arc::new(GarageClient::from_store(
+            Arc::new(failing_store::FailingStore),
+            "public",
+        ))),
+        url_sign_secret: Arc::new(secret),
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    let token = mint(&secret, &SignOwner::Admin, key, expires, false);
+    let result = admin_signed_bytes(
+        State(state),
+        Path(key.to_string()),
+        Query(SigQs {
+            e: expires,
+            t: token,
+            d: None,
+        }),
+    )
+    .await;
+    let (status, msg) = result.expect_err("a failing store must not stream");
+    assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(msg, "object store read failed");
+}
+
 // ─── key minting: the extension never needs object-store encoding ───────────
 
 /// A Mode-A upload whose extension object_store would percent-encode (non-ASCII,

@@ -721,6 +721,12 @@ fn listed_form(db_key: &str) -> String {
     object_store::path::Path::from(db_key).to_string()
 }
 
+/// The admin DB keys in their listed form ([`listed_form`]), the set
+/// [`classify_orphans`] diffs the bucket listing against.
+fn admin_db_listed_keys(db_rows: &[(i64, String, String)]) -> HashSet<String> {
+    db_rows.iter().map(|(_, k, _)| listed_form(k)).collect()
+}
+
 /// Admin rows whose object is absent from the listing. `db_rows` is already
 /// admin-only (meta.sqlite `_system_files`, keys with no slash) and
 /// `listed_keys` is the whole bucket, so no key-shape filter is needed on this
@@ -784,8 +790,7 @@ pub async fn reconcile_page(
             Err(e) => return internal(format!("db query: {e}")),
         }
     };
-    // Compared in the listing's encoded form — see `listed_form`.
-    let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| listed_form(k)).collect();
+    let db_keys = admin_db_listed_keys(&db_rows);
 
     // `garage.list_objects()` lists the WHOLE shared bucket (no prefix), so it
     // also returns every tenant's `<tenant-id>/<file-id>` object. Only the
@@ -1268,7 +1273,7 @@ pub async fn admin_sign_url(
 
 #[cfg(test)]
 mod reconcile_key_tests {
-    use super::{classify_orphans, dangling_rows, is_admin_level_key, listed_form};
+    use super::{admin_db_listed_keys, classify_orphans, dangling_rows, is_admin_level_key};
     use std::collections::HashSet;
 
     /// A legacy admin row whose key object_store encoded (`x.檔案`, listed as
@@ -1286,7 +1291,7 @@ mod reconcile_key_tests {
             ("tenant-id/a.png".to_string(), 3),
         ];
         let listed_keys: HashSet<String> = listed.iter().map(|(k, _)| k.clone()).collect();
-        let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| listed_form(k)).collect();
+        let db_keys = admin_db_listed_keys(&db_rows);
 
         let orphans = classify_orphans(&listed, &db_keys);
         assert_eq!(
