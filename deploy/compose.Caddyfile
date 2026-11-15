@@ -25,6 +25,8 @@
 #     object as an unsandboxed TEXT/HTML (the matcher below is case-sensitive).
 #   - GET/HEAD only. Authorization and Cookie never reach the store (an S3 API
 #     answers 400 to a drust bearer, and the admin session cookie is same-origin).
+#     Set-Cookie from the store never reaches the browser: this is the admin UI's
+#     origin, and a store (or a misconfigured upstream) must not set cookies on it.
 #   - @markup must stay in lockstep with storage::files::is_unsafe_inline_type and
 #     with the bare-metal host's block in ../garage/deploy/Caddyfile (pinned by
 #     deploy/tests/compose_public_route_test.sh). copy_response is MANDATORY inside
@@ -41,6 +43,7 @@
 			header_up -Authorization
 			header_up -Cookie
 			header_down X-Content-Type-Options "nosniff"
+			header_down -Set-Cookie
 
 			@markup {
 				header Content-Type text/html

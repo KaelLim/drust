@@ -1,6 +1,10 @@
 /target
 .env
 .env.test
+# Any other .env.* (e.g. the .env.tmp the storage generator and deploy/smoke/up.sh
+# write before an atomic mv) carries the same secrets; only the example is tracked.
+.env.*
+!.env.example
 # Local smoke stack (deploy/smoke/): per-run check output. Its generated
 # secrets file is deploy/smoke/.env, already covered by the `.env` line above.
 /deploy/smoke/.last-run/

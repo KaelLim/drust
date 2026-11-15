@@ -234,6 +234,32 @@ gen; rc=$?
 check "an existing non-empty key is never changed" \
   sh -c 'test "$1" = 0 && test "$(sed -n "s/^RUSTFS_SECRET_KEY=//p" "$2/.env")" = keep-this-one-0123456789' _ "$rc" "$G"
 
+# Compose reads "export KEY=value" lines too; the generator must see them as present,
+# or it appends a second definition that Compose's later-wins rule turns into a rotation.
+printf 'export RUSTFS_SECRET_KEY=keep-this-one-0123456789\n' > "$G/.env"
+gen; rc=$?
+check "an existing 'export KEY=' value is never changed or redefined" \
+  sh -c 'test "$1" = 0 && test "$(grep -c "RUSTFS_SECRET_KEY=" "$2/.env")" = 1 &&
+         grep -qx "export RUSTFS_SECRET_KEY=keep-this-one-0123456789" "$2/.env"' _ "$rc" "$G"
+
+printf 'GARAGE_S3_ENDPOINT=http://secret-host.example:9000\nCOMPOSE_FILE=a-private-name.yml\n' > "$G/.env"
+gen; rc=$?
+check "a refusal names the variable but never prints its value" \
+  sh -c 'test "$1" = 1 && ! grep -q "secret-host" "$2/out"' _ "$rc" "$G"
+printf 'COMPOSE_FILE=a-private-name.yml\n' > "$G/.env"
+gen; rc=$?
+check "a foreign COMPOSE_FILE refusal does not print its value" \
+  sh -c 'test "$1" = 1 && ! grep -q "a-private-name" "$2/out"' _ "$rc" "$G"
+
+# A failing openssl must end the run, never write an empty key and report success.
+mkdir -p "$G/stub"
+printf '#!/bin/sh\nexit 1\n' > "$G/stub/openssl"; chmod +x "$G/stub/openssl"
+rm -f "$G/.env"
+( cd "$G" && PATH="$G/stub:$PATH" COMPOSE_PROJECT_NAME=drust-compose-storage-test \
+    bash deploy/compose-storage-env.sh ) > "$G/out" 2>&1; rc=$?
+check "a failing openssl exits non-zero and writes no empty key" \
+  sh -c 'test "$1" != 0 && ! grep -Eq "^[A-Z_]+=$" "$2/.env" && ! grep -q "storage enabled" "$2/out"' _ "$rc" "$G"
+
 # ---- 6. Compose itself (skipped without docker) -----------------------------------
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   : > "$WORK/empty.env"

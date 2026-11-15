@@ -103,6 +103,7 @@ check "respond @write 405" has 'respond @write 405'
 check "header_up -Authorization" has 'header_up -Authorization'
 check "header_up -Cookie" has 'header_up -Cookie'
 check 'header_down X-Content-Type-Options "nosniff"' has 'header_down X-Content-Type-Options "nosniff"'
+check "header_down -Set-Cookie (the store never sets a cookie on the admin origin)" has 'header_down -Set-Cookie'
 # 9. Upstream from PUBLIC_OBJECTS_UPSTREAM; the only Host line is upstream_hostport.
 check "upstream is {\$PUBLIC_OBJECTS_UPSTREAM:rustfs:9000}" \
   sh -c 'printf "%s\n" "$1" | grep -qE "^[[:space:]]*reverse_proxy \{\\\$PUBLIC_OBJECTS_UPSTREAM:rustfs:9000\} \{"' _ "$public_block"

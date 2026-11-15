@@ -258,7 +258,12 @@ one:
     `deploy/compose-rustfs/public-read.json` (the canned policy also lists the bucket), e.g.
     with the `amazon/aws-cli` image on the compose network:
     `--endpoint-url http://minio:9000 s3api put-bucket-policy --bucket public --policy file:///p.json`;
-  - create `public` and `private` if they never existed.
+  - create `public` and `private` if they never existed;
+  - the override runs drust on the MinIO root key, which can also change bucket policy. For
+    a least-privilege key, create a separate MinIO user, attach
+    `deploy/compose-rustfs/drust-objects.json` to it (object read/write/delete and listing on
+    `public` and `private` only, no policy changes — the same policy `rustfs-init` gives
+    drust), and point `GARAGE_S3_ACCESS_KEY` / `GARAGE_S3_SECRET_KEY` at that user instead.
 - **Stop using it**: `docker compose up -d --remove-orphans` (or
   `docker rm -f <project>-minio-1`). The container goes away with its open ports and published
   credentials; the objects stay in `minio-data`.

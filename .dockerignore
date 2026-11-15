@@ -12,6 +12,7 @@ target/
 .env.*
 !.env.example
 deploy/smoke/.env
+deploy/smoke/.env.*
 deploy/smoke/.last-run/
 deploy/smoke/.generated/
 
