@@ -2,6 +2,8 @@ createNamespace: true
 ingress: { host: sp.example.test, controller: traefik }
 storage:
   enabled: true
-  minio: { rootUser: u, rootPassword: p }
+  accessKey: ak
+  secretKey: sk
+  rustfs: { rootAccessKey: rootak, rootSecretKey: rootsk }
 publicFiles: { enabled: false }
 secrets: { create: true, adminPassword: pw }

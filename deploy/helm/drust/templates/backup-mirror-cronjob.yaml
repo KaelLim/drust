@@ -17,7 +17,7 @@ spec:
       template:
         metadata:
           labels:
-            # Dedicated label (NOT drust/minio selectorLabels) — same reason as minio-init:
+            # Dedicated label (NOT drust's or rustfs's selectorLabels) — same reason as rustfs-init:
             # keeps this probeless Job pod out of every Service's endpoints.
             {{- include "backupMirror.selectorLabels" . | nindent 12 }}
         spec:
@@ -41,10 +41,10 @@ spec:
                 # before every upload and fails 403 (observed).
                 - { name: RCLONE_S3_NO_CHECK_BUCKET, value: "true" }
                 - { name: RCLONE_CONFIG_SRC_TYPE, value: s3 }
-                - { name: RCLONE_CONFIG_SRC_PROVIDER, value: Minio }
-                - { name: RCLONE_CONFIG_SRC_ENDPOINT, value: "http://{{ include "minio.svcName" . }}:9000" }
+                - { name: RCLONE_CONFIG_SRC_PROVIDER, value: Other }
+                - { name: RCLONE_CONFIG_SRC_ENDPOINT, value: "http://{{ include "rustfs.svcName" . }}:9000" }
                 - { name: RCLONE_CONFIG_SRC_FORCE_PATH_STYLE, value: "true" }
-                - name: RCLONE_CONFIG_SRC_ACCESS_KEY_ID          # the key drust uses for the store
+                - name: RCLONE_CONFIG_SRC_ACCESS_KEY_ID          # drust's own bucket-scoped key
                   valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
                 - name: RCLONE_CONFIG_SRC_SECRET_ACCESS_KEY
                   valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }

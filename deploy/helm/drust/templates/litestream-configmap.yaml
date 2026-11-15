@@ -57,7 +57,7 @@ data:
     # Remote "bk" comes entirely from RCLONE_CONFIG_BK_* env (no config file, no secret on argv).
     # Reachability / CNI-lag probe MUST target this group's own prefix, NOT the bucket list: a
     # least-privilege credential scoped to <prefix>/ cannot ListAllMyBuckets. `rclone lsf` of a
-    # prefix with nothing under it exits 0 (fresh install), like the MinIO client it replaced.
+    # prefix with nothing under it exits 0 (fresh install).
     i=0
     until rclone lsf "bk:${DEST_BUCKET}/${REPLICA_PREFIX}/" --max-depth 1 >/dev/null 2>&1; do
       i=$((i+1)); [ "$i" -ge 30 ] && { echo "[enumerate] backup S3 prefix unreachable"; exit 1; }

@@ -1,13 +1,15 @@
 ingress: { host: pl.example.test, controller: traefik }
 storage:
   enabled: true
-  minio: { rootUser: u, rootPassword: p }
+  accessKey: ak
+  secretKey: sk
+  rustfs: { rootAccessKey: rootak, rootSecretKey: rootsk }
 scheduling:
   drust:
     nodeSelector: { disktype: ssd }
     tolerations: [{ key: dedicated, operator: Equal, value: drust, effect: NoSchedule }]
     topologySpreadConstraints:
       - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: DoNotSchedule, labelSelector: { matchLabels: { app.kubernetes.io/name: drust } } }
-  minio:
+  rustfs:
     nodeSelector: { disktype: ssd }
 secrets: { create: true, adminPassword: pw }

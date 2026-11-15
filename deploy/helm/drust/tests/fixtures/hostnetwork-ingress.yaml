@@ -1,7 +1,9 @@
 ingress: { host: hn.example.test, controller: nginx }
 storage:
   enabled: true
-  minio: { rootUser: u, rootPassword: p }
+  accessKey: ak
+  secretKey: sk
+  rustfs: { rootAccessKey: rootak, rootSecretKey: rootsk }
 publicFiles: { enabled: true }
 secrets: { create: true, adminPassword: pw }
 networkPolicy:

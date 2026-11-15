@@ -10,9 +10,11 @@ publicFiles:
   enabled: true
 storage:
   enabled: true
-  minio:
-    rootUser: fulluser
-    rootPassword: fullpw
+  accessKey: fullak
+  secretKey: fullsk
+  rustfs:
+    rootAccessKey: fullrootak
+    rootSecretKey: fullrootsk
     pvcSize: 20Gi
 backup:
   volumeSnapshotClassName: csi-hostpath-snapclass

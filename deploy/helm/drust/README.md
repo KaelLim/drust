@@ -5,22 +5,22 @@
 This chart deploys **one drust instance per group**, with hard isolation between
 groups. Each Helm release lives in its own namespace and stands up a complete,
 self-contained drust stack: a single-writer drust StatefulSet, its own dedicated
-MinIO object store, a bucket-init hook Job, Services, an Ingress with the
+RustFS object store, a bucket-and-key init hook Job, Services, an Ingress with the
 mandatory rmcp Host rewrite, a bootstrap Secret, a default-deny NetworkPolicy,
 an optional `public-proxy` Caddy that serves `/public/*` (`publicFiles.enabled`),
 an optional maintenance sidecar, and an optional CSI-snapshot backup CronJob.
 
 The topology is deliberately "one group = one namespace = one release = one
-drust + one MinIO". Nothing is shared across groups — not the database, not the
+drust + one object store". Nothing is shared across groups — not the database, not the
 object store, not the network path. To add a group you install the chart again
 into a new namespace with a new values file. drust's own program code is never
 modified; a single GHCR image (`ghcr.io/kaellim/drust`) is parameterised purely
 through Helm values.
 
-> The single-writer invariant is load-bearing: both the drust and MinIO
-> StatefulSets are pinned to `replicas: 1` on ReadWriteOnce volumes. **Never**
-> scale either above 1 against the same volume — SQLite and single-node MinIO
-> are single-writer stores and concurrent writers corrupt them.
+> The single-writer invariant is load-bearing: the drust and RustFS StatefulSets are
+> pinned to `replicas: 1` on ReadWriteOnce
+> volumes. **Never** scale any of them above 1 against the same volume — SQLite and a
+> single-node object store are single-writer stores and concurrent writers corrupt them.
 
 ## Prerequisites
 
@@ -49,9 +49,9 @@ through Helm values.
   (`backup.volumeSnapshotClassName`). Leave it empty and no backup objects
   render.
 - A **CSI storage class that supports `ReadWriteOnce`** for the drust `/data`
-  and `/logs` PVCs and the MinIO data PVC. Set `persistence.storageClassName`
-  (and `storage.minio.pvcSize`) or leave `storageClassName` empty to use the
-  cluster default.
+  and `/logs` PVCs and the object store's PVC (`rustfs-data-rustfs-0`). Set
+  `persistence.storageClassName` (and `storage.rustfs.pvcSize`) or leave
+  `storageClassName` empty to use the cluster default.
 
 ## Install a group
 
@@ -82,10 +82,12 @@ publicUrl: https://group-a.example.tw   # required for OAuth redirect round-trip
 publicFiles:
   enabled: false                  # true => /public/* anon-read of the public bucket, via public-proxy
 storage:
-  enabled: true
-  minio:
-    rootUser: group-a-key
-    rootPassword: "CHANGE-ME"     # required when storage.enabled
+  enabled: true                   # the bundled RustFS
+  accessKey: "CHANGE-ME"          # drust's own key:      openssl rand -hex 10
+  secretKey: "CHANGE-ME"          #                       openssl rand -hex 20
+  rustfs:
+    rootAccessKey: "CHANGE-ME"    # RustFS root, not drust's: openssl rand -hex 10
+    rootSecretKey: "CHANGE-ME"    #                           openssl rand -hex 20
     pvcSize: 20Gi                 # bucket names are fixed ("public"/"private"), not configurable
 maintenance:
   sidecar:
@@ -100,15 +102,59 @@ secrets:
   adminPassword: "CHANGE-ME"      # DRUST_INIT_ADMIN_PASSWORD, first boot only
 ```
 
-You **must** provide `secrets.adminPassword`, and (when `storage.enabled`)
-`storage.minio.rootPassword` — the chart's `required` guards fail the render
-otherwise. If you manage credentials outside Helm, set `secrets.create=false`
-and point `secrets.existingSecret` at a pre-created Secret carrying the same
-keys (`admin-username`, `admin-password`, and when storage is on `s3-access-key`,
-`s3-secret-key`). An existing Secret that still carries the old `admin-endpoint` /
+You **must** provide `secrets.adminPassword`, and when `storage.enabled` the four
+storage keys (next section) — the chart's `required` guards fail
+the render otherwise. If you manage credentials outside Helm, set
+`secrets.create=false` and point `secrets.existingSecret` at a pre-created Secret
+carrying the same keys (`admin-username`, `admin-password`, and the storage keys in
+the table below). An existing Secret that still carries the old `admin-endpoint` /
 `admin-token` keys keeps working: nothing reads them any more. When a backup feature (B1/B2) is
 enabled with `backup.external.create=false`, also pre-create the backup Secret named by
 `backup.external.existingSecret` with keys `backup-s3-access-key` / `backup-s3-secret-key`.
+
+## Object store and its keys
+
+The bundled object store is RustFS: a StatefulSet `rustfs`, Service `rustfs:9000`, PVC
+`rustfs-data-rustfs-0`, and a `rustfs-init` post-install/post-upgrade hook Job. The
+Secret holds two keys for it:
+
+| Secret key | Values | Read by |
+|---|---|---|
+| `s3-access-key` / `s3-secret-key` | `storage.accessKey` / `storage.secretKey` (drust's own key) | drust, `rustfs-init`, `backup-mirror` |
+| `rustfs-root-access-key` / `rustfs-root-secret-key` | `storage.rustfs.rootAccessKey` / `storage.rustfs.rootSecretKey` | the `rustfs` StatefulSet and `rustfs-init` only |
+
+The root key never reaches the drust pod. `rustfs-init` runs the same
+`init.sh`, `public-read.json` and `drust-objects.json` as Docker Compose
+(`deploy/compose-rustfs/`; the chart's copies in `files/rustfs-init/` are byte-checked by
+`render_test.sh`): it creates the `public` and `private` buckets, gives `public` an
+anonymous GetObject-only policy when `publicFiles.enabled` (and removes it when not), and
+creates drust's user limited to those two buckets — it cannot create buckets or change
+who may read `public`. With `secrets.create` the render fails when `storage.accessKey`
+equals `storage.rustfs.rootAccessKey`; `init.sh` refuses the same in every case, and
+RustFS's published default `rustfsadmin`.
+
+- **Generate and pass keys from files**: `openssl rand -hex 10` for an access key,
+  `openssl rand -hex 20` for a secret, then `-f values.yaml` or `--set-file
+  storage.secretKey=<file>` — not `--set`, which lands in shell history.
+- **Letters and digits only** for the RustFS root key: `init.sh` puts it in an
+  `http://key:secret@host` URL, so `/`, `@` or `:` breaks it. `openssl rand -hex` output is safe.
+- **First install**: drust usually starts before the init Job has created its buckets and
+  key, so two `object store bucket check failed` warnings in its boot log are expected;
+  files work as soon as the Job is done (`NOTES` says the same).
+- **Rotating drust's key**: change `storage.secretKey`. The drust pod
+  restarts by itself (a `checksum/s3-key` annotation) and the hook sets the new secret on
+  the existing RustFS user; for a few seconds in between, file calls may get 403. Changing
+  `storage.accessKey` instead creates a **second** RustFS user and leaves the old one
+  working on both buckets (users live on the PVC). Remove it with the root key:
+  `kubectl -n <ns> exec -it rustfs-0 -- sh`, then `rc admin user rm <alias> <old access key>`.
+- **Rotating the root key**: change `storage.rustfs.rootSecretKey` (or both). `rustfs-0`
+  restarts (`checksum/root-key`), takes the new key from env and keeps its users and
+  buckets; the hook then logs in with it.
+- **With `secrets.existingSecret`** Helm cannot see the values, so nothing restarts by
+  itself. After changing drust's key in that Secret: `helm upgrade` (the hook applies it),
+  then `kubectl rollout restart sts/drust`. After changing the root key: `kubectl rollout
+  restart sts/rustfs` first, then `helm upgrade`. A missing key shows as
+  `CreateContainerConfigError` on the pod that needs it.
 
 ## CRITICAL — MCP Host rewrite live-verify
 
@@ -138,7 +184,7 @@ back to nginx-ingress (`ingress.controller: nginx`), or use a Traefik
 > 0.1.0 defaulted `createNamespace: true`, making the namespace **release-owned**.
 > Chart 0.1.1 defaults it **false**, so on the first `helm upgrade` Helm sees the
 > Namespace drop out of the rendered manifest and **prunes it — reaping every PVC
-> (all tenant SQLite databases + MinIO objects), irreversibly on a `reclaimPolicy:
+> (all tenant SQLite databases + stored objects), irreversibly on a `reclaimPolicy:
 > Delete` StorageClass.** If your 0.1.0 install used `createNamespace: true` (or
 > relied on that old default), annotate the live namespace **before** upgrading so
 > Helm's prune skips it:
@@ -163,6 +209,23 @@ upgrade terminates the old pod before the new one binds the volume — expect a
 **brief downtime window** per group during the pod swap. Upgrades are per group
 and independent; upgrading one group never touches another.
 
+## Upgrading from 0.1.x
+
+Chart 0.2.0 replaces the bundled MinIO with RustFS. It neither looks for MinIO nor moves
+files:
+
+- `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
+  `storage.rustfs.rootSecretKey` are required, so an upgrade with an old values file stops
+  at render with a `required` message. Upgrade with `-f` or `--reset-then-reuse-values`,
+  never `--reuse-values` (it does not read this chart's new defaults).
+- Helm removes the MinIO StatefulSet, Service and NetworkPolicies. The `minio-init` hook
+  Job was deleted when it succeeded; a failed one stays until you delete it. The PVC
+  `minio-data-minio-0` is left in place, and nothing reads it.
+- Files uploaded before the upgrade are not in RustFS: drust answers 404 for them, and the
+  chart does not copy them. If you need them, copy them with an S3 client that keeps
+  object metadata (Content-Type, Content-Disposition, Cache-Control) before you delete
+  that PVC.
+
 ## Uninstall
 
 ```bash
@@ -170,8 +233,8 @@ helm uninstall group-a --namespace group-a
 ```
 
 **PVCs are intentionally retained.** `helm uninstall` removes the release's
-workloads but **not** the StatefulSet/MinIO PVCs — reinstalling the same release
-re-binds the existing `data-drust-0` / `logs-drust-0` / `minio-data-minio-0`
+workloads but **not** the StatefulSet PVCs — reinstalling the same release
+re-binds the existing `data-drust-0` / `logs-drust-0` / `rustfs-data-rustfs-0`
 volumes, so tenant data survives. This is deliberate: the PVC *is* the database.
 Because `createNamespace` defaults to **false**, the namespace you created with
 `--create-namespace` also survives. To reclaim everything for a group:
@@ -269,8 +332,8 @@ is a no-op: **tokens survive verbatim, the admin is not re-seeded.**
 
 ## Object-file backup (B2)
 
-`backup.objectMirror.*` adds an hourly CronJob that copies this group's MinIO `public` +
-`private` buckets to the same external S3 under `<prefix>/objects/`, with `rclone copy -M`
+`backup.objectMirror.*` adds an hourly CronJob that copies this group's object-store
+`public` + `private` buckets (from RustFS, with drust's key) to the same external S3 under `<prefix>/objects/`, with `rclone copy -M`
 (image `s3ClientImage`). Litestream handles the databases; this handles only the object
 files. A changed object is replaced, but it is a **copy, never a sync**: an accidental
 source delete does not propagate into the backup, so a deleted object stays recoverable —
@@ -284,7 +347,7 @@ S3 side. Two settings are load-bearing (each was seen to fail without it):
   upload, and a bucket-scoped backup key fails it with 403.
 
 The Job retries its first connection (a new Job pod IP takes seconds to enter the CNI
-NetworkPolicy allow-set, same cause as `minio-init`), probes this group's backup prefix
+NetworkPolicy allow-set, same cause as the init Jobs), probes this group's backup prefix
 rather than the bucket list (a prefix-scoped key cannot list buckets), wears a dedicated
 label with its own scoped NetworkPolicy, and drops its ServiceAccount token. Needs
 `storage.enabled`.
@@ -307,13 +370,13 @@ explained once, there. In short:
 - Every response carries `X-Content-Type-Options: nosniff`, and markup
   (`text/html`, `text/xml`, `application/xml`, `text/xsl`, `*+xml`, with or without
   parameters) gets `Content-Security-Policy: sandbox allow-top-navigation-by-user-activation`.
-- Whether `GET /public/` lists the bucket is decided by the store's anonymous policy,
-  not by the proxy: the policy `minio-init` sets also allows listing.
+- **No listing**: anonymous access to `public` is GetObject on single objects only
+  (`rustfs-init` applies `public-read.json`), so `GET /public/` answers 403.
 
-Before this proxy, `/public` went from the Ingress straight to MinIO's port 9000:
+Before this proxy, `/public` went from the Ingress straight to the store's port 9000:
 markup was served with no CSP and `?response-content-type=` was honoured, a stored XSS
 on the admin origin. The ingress controller now reaches only the proxy's port 8080;
-the store's NetworkPolicy admits drust, its init Job, the backup mirror and the proxy,
+the `rustfs` NetworkPolicy admits drust, `rustfs-init`, the backup mirror and the proxy,
 and no namespace or address range.
 
 Caveats:
@@ -332,9 +395,9 @@ Caveats:
 
 ## Scheduling / placement (B3)
 
-`scheduling.drust.*` and `scheduling.minio.*` pass `nodeSelector` / `tolerations` /
-`affinity` / `topologySpreadConstraints` straight through to the respective StatefulSet pod
-spec. All default empty, so leaving them unset is zero behavior change.
+`scheduling.drust.*` and `scheduling.rustfs.*` pass `nodeSelector` /
+`tolerations` / `affinity` / `topologySpreadConstraints` straight through to the respective
+StatefulSet pod spec. All default empty, so leaving them unset is zero behavior change.
 
 > [!IMPORTANT]
 > **`tolerations` is a recovery-time control, not just placement.** Kubernetes injects
@@ -359,9 +422,9 @@ The external backup destination is shared-by-prefix: each group replicates under
 `backup.external.pathPrefix` (default `.Release.Namespace`). **Two groups must never share a
 prefix** — a shared prefix is cross-group shared-fate. Prefer a **per-group bucket** or
 IAM-scoped credentials pinned to the prefix. **Never** reuse `s3-access-key` /
-`s3-secret-key` (this group's MinIO root) as the backup credentials — the backup S3 is a
-different trust domain; use `backup.external.accessKey`/`secretKey`. In-cluster shared
-backup MinIO across groups is a deliberate non-goal (it would require a namespaceSelector
+`s3-secret-key` (drust's key on this group's RustFS) as the backup credentials — the backup
+S3 is a different trust domain; use `backup.external.accessKey`/`secretKey`. An in-cluster
+backup store shared across groups is a deliberate non-goal (it would require a namespaceSelector
 egress to another group); use a dedicated backup namespace or an off-cluster S3.
 
 > **`storage.enabled` and node binding.** On k3s `local-path`, a PV is pinned to its node
@@ -372,18 +435,11 @@ egress to another group); use a dedicated backup namespace or an off-cluster S3.
 
 ## Trash cleanup
 
-drust soft-deletes tenants into `/data/_trash/<dir>`. The maintenance sidecar's
-daily loop runs the session janitor (`drust_session_janitor`) **and** attempts a
-trash sweep (`find /data/_trash -mtime +7 -exec rm -rf`). The sweep is
-**non-fatal**: the slim runtime image is not guaranteed to ship `find`, so if
-`find` is missing the sidecar logs `trash sweep skipped` and keeps running the
-janitor. If your image lacks `find`, reclaim trash manually:
-
-```bash
-kubectl -n group-a exec sts/drust -c drust -- sh -c 'rm -rf /data/_trash/<dir>'
-```
-
-or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -mtime +7 -delete`).
+drust soft-deletes tenants into `/data/_trash/<dir>` and expires them **in-process**:
+`DRUST_TRASH_RETENTION_DAYS` (default 7, `0` = keep forever; set it through `extraEnv`).
+The maintenance sidecar's daily loop runs only the session janitor
+(`drust_session_janitor`); it deliberately does no time-based trash sweep, which would cap
+a longer retention and defeat `0`.
 
 ## Known caveats
 
@@ -402,10 +458,6 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
   `ingress-nginx`. If it is wrong, the NetworkPolicy black-holes the controller's
   traffic to drust (and to the `public-proxy` when `publicFiles.enabled`). `networkPolicy.dnsNamespace`
   likewise assumes cluster DNS runs in `kube-system`.
-- **MinIO runs with `readOnlyRootFilesystem: true`.** MinIO persists under `/data`
-  and uses `HOME=/tmp` (emptyDir), so a read-only root is expected to work — but
-  confirm MinIO reaches `/minio/health/ready` on your image tag after first
-  install; if it crash-loops on a read-only root, that is the place to look.
 - **`ingress.tls.enabled: false` is evaluation-only.** Over plain HTTP the chart
   sets `DRUST_DEV_NO_SECURE_COOKIES=1`, so the admin session cookie ships without
   the `Secure` flag — otherwise user agents drop it (RFC 6265bis) and admin login
@@ -467,8 +519,11 @@ Traefik `Middleware` and `VolumeSnapshot` are skipped). A clean run prints
 
 The fixture matrix includes `litestream.yaml` (B1 sidecar + restore init, storage off to
 prove independence, `allowInternetEgress:false` to prove egress decoupling),
-`backup-mirror.yaml` (B2 hourly object mirror), and `placement.yaml` (B3 scheduling
-passthrough on both StatefulSets), alongside the base fixtures.
+`backup-mirror.yaml` (B2 hourly object mirror), `placement.yaml` (B3 scheduling
+passthrough on both StatefulSets) and `existing-secret.yaml` (`secrets.create: false`),
+alongside the base fixtures. Every fixture is also checked to render nothing named MinIO.
 
-It also reads one file outside the chart: `deploy/compose.Caddyfile`, whose `/public/*`
-block `files/public-proxy.Caddyfile` must copy byte for byte. Run it from a full checkout.
+It also reads files outside the chart: `deploy/compose.Caddyfile`, whose `/public/*`
+block `files/public-proxy.Caddyfile` must copy byte for byte, and
+`deploy/compose-rustfs/{init.sh,public-read.json,drust-objects.json}`, which
+`files/rustfs-init/` must equal byte for byte. Run it from a full checkout.

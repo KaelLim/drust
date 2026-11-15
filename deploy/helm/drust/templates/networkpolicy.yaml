@@ -42,11 +42,11 @@ spec:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
     {{- if .Values.storage.enabled }}
-    # drust -> own MinIO (same namespace)
+    # drust -> own RustFS (same namespace)
     - to:
         - podSelector:
             matchLabels:
-              {{- include "minio.selectorLabels" . | nindent 14 }}
+              {{- include "rustfs.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- end }}
@@ -92,33 +92,31 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-minio
+  name: {{ .Release.Name }}-rustfs
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "drust.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      {{- include "minio.selectorLabels" . | nindent 6 }}
+      {{- include "rustfs.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
+  # Pod peers of this namespace only: no namespaceSelector and no ipBlock. The ingress
+  # controller never reaches this 9000; /public goes through the proxy's 8080.
   ingress:
     - from:
         - podSelector:
             matchLabels:
               {{- include "drust.selectorLabels" . | nindent 14 }}
-        # minio-init hook Job needs to reach MinIO to create the public/private
-        # buckets. It carries its OWN labels (not drust.selectorLabels — see the Job
-        # template), so admit them explicitly or the bucket-init is black-holed.
+        # rustfs-init hook Job (buckets, drust's key). It carries its OWN labels (not
+        # drust.selectorLabels — see the Job template), so admit them explicitly.
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: minio-init
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              {{- include "rustfsInit.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- if .Values.publicFiles.enabled }}
-    # /public/* reaches the store only through the public-proxy pod. The ingress
-    # controller is admitted to that pod's 8080 (policy below), never to 9000 here:
-    # this policy keeps no namespaceSelector and no ipBlock peer at all.
+    # /public/* reaches the store only through the public-proxy pod.
     - from:
         - podSelector:
             matchLabels:
@@ -127,8 +125,8 @@ spec:
         - { protocol: TCP, port: 9000 }
     {{- end }}
     {{- if .Values.backup.objectMirror.enabled }}
-    # Hourly backup-mirror Job (rclone copy) reads this group's MinIO:9000. It wears a dedicated label,
-    # so admit it explicitly or it is black-holed.
+    # Hourly backup-mirror Job (rclone copy) reads this group's store. It wears a dedicated
+    # label, so admit it explicitly or it is black-holed.
     - from:
         - podSelector:
             matchLabels:
@@ -148,18 +146,17 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-minio-init
+  name: {{ .Release.Name }}-rustfs-init
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "drust.labels" . | nindent 4 }}
 spec:
-  # The minio-init hook Job wears its OWN labels (not drust's — so it stays out of the
-  # drust Service endpoints), which also means no other NetworkPolicy selects it. Govern
-  # it explicitly so it is not left with unrestricted egress: cluster DNS + own MinIO only.
+  # The rustfs-init hook Job wears its OWN labels, so no other NetworkPolicy selects it.
+  # Govern it explicitly so it is not left with unrestricted egress: cluster DNS + own
+  # RustFS only. No ingress.
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: minio-init
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "rustfsInit.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress, Egress]
   egress:
     - to:
@@ -172,7 +169,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              {{- include "minio.selectorLabels" . | nindent 14 }}
+              {{- include "rustfs.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
 {{- if .Values.publicFiles.enabled }}
@@ -217,7 +214,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              {{- include "minio.selectorLabels" . | nindent 14 }}
+              {{- include "rustfs.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
 {{- end }}
@@ -250,7 +247,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              {{- include "minio.selectorLabels" . | nindent 14 }}
+              {{- include "rustfs.selectorLabels" . | nindent 14 }}
       ports:
         - { protocol: TCP, port: 9000 }
     {{- if .Values.backup.external.destinationCIDRs }}

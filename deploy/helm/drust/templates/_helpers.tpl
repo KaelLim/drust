@@ -1,6 +1,4 @@
 {{- define "drust.svcName" -}}drust{{- end -}}
-{{- define "minio.svcName" -}}minio{{- end -}}
-{{- define "minio.endpoint" -}}http://minio.{{ .Release.Namespace }}.svc:9000{{- end -}}
 {{- define "drust.tlsSecret" -}}{{ .Values.ingress.tls.secretName | default (printf "%s-tls" .Release.Name) }}{{- end -}}
 {{- define "drust.secretName" -}}{{ if .Values.secrets.create }}{{ .Release.Name }}-secret{{ else }}{{ required "secrets.existingSecret required when secrets.create=false" .Values.secrets.existingSecret }}{{ end }}{{- end -}}
 {{- define "drust.labels" -}}
@@ -11,10 +9,6 @@ helm.sh/chart: drust-{{ .Chart.Version }}
 {{- end -}}
 {{- define "drust.selectorLabels" -}}
 app.kubernetes.io/name: drust
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end -}}
-{{- define "minio.selectorLabels" -}}
-app.kubernetes.io/name: minio
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- define "drust.backupSecretName" -}}{{ if .Values.backup.external.create }}{{ .Release.Name }}-backup-secret{{ else }}{{ required "backup.external.existingSecret required when backup.external.create=false" .Values.backup.external.existingSecret }}{{ end }}{{- end -}}
@@ -40,5 +34,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- define "publicProxy.selectorLabels" -}}
 app.kubernetes.io/name: public-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+{{- define "rustfs.svcName" -}}rustfs{{- end -}}
+{{- /* The bundled RustFS's S3 endpoint, used by drust, public-proxy and backup-mirror. */ -}}
+{{- define "drust.storeEndpoint" -}}http://{{ include "rustfs.svcName" . }}.{{ .Release.Namespace }}.svc:9000{{- end -}}
+{{- define "rustfs.selectorLabels" -}}
+app.kubernetes.io/name: rustfs
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+{{- define "rustfsInit.selectorLabels" -}}
+app.kubernetes.io/name: rustfs-init
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}

@@ -7,8 +7,15 @@ VERIFY (only a live request catches these):
   1. MCP Host rewrite — `curl -H "Host: {{ .Values.ingress.host }}" https://{{ .Values.ingress.host }}/t/<tenant>/mcp`
      must NOT return 403/421. The ingress rewrites upstream Host to {{ .Values.ingress.hostRewrite }}.
 {{- if .Values.storage.enabled }}
-  2. Buckets — the minio-init Job created `public` + `private`.
-     kubectl -n {{ .Release.Namespace }} logs job/minio-init
+  2. Object store: RustFS. Buckets + drust's key are set by the rustfs-init hook Job
+     (it is deleted when it succeeds; a failure leaves it for
+     `kubectl -n {{ .Release.Namespace }} logs job/rustfs-init`).
+     On a first install drust usually starts before that Job: two "object store bucket
+     check failed" warnings in its boot log are expected; files work once the Job is done.
+{{- if .Values.publicFiles.enabled }}
+     /public/* is served by deploy/public-proxy (anonymous GET/HEAD, no listing):
+       curl -sI https://{{ .Values.ingress.host }}/public/<tenant>/<key>
+{{- end }}
 {{- end }}
 {{- if .Values.networkPolicy.enabled }}
   3. NetworkPolicy — cross-group isolation assumes networkPolicy.clusterCIDRs matches

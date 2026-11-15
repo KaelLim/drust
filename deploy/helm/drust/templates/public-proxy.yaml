@@ -46,7 +46,7 @@ spec:
           args: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
           env:
             # The Compose block reads its upstream from this variable; same block, same name.
-            - { name: PUBLIC_OBJECTS_UPSTREAM, value: "{{ include "minio.svcName" . }}:9000" }
+            - { name: PUBLIC_OBJECTS_UPSTREAM, value: "{{ include "rustfs.svcName" . }}:9000" }
           ports:
             - { name: http, containerPort: 8080 }   # unprivileged: no NET_BIND_SERVICE
           readinessProbe:                          # admin API is off

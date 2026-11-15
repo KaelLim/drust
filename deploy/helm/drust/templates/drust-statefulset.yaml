@@ -15,6 +15,14 @@ spec:
     metadata:
       labels:
         {{- include "drust.selectorLabels" . | nindent 8 }}
+      {{- if and .Values.secrets.create .Values.storage.enabled }}
+      annotations:
+        # rustfs-init replaces drust's secret on RustFS on every run (`rc admin user add` on an
+        # existing user). Without this, `helm upgrade --set-file storage.secretKey=…` would
+        # leave drust on the old value: every upload/download/delete 403, helm "success".
+        # existingSecret: `kubectl rollout restart sts/drust` (README).
+        checksum/s3-key: {{ printf "%s\n%s" .Values.storage.accessKey .Values.storage.secretKey | sha256sum }}
+      {{- end }}
     spec:
       {{- with .Values.scheduling.drust.nodeSelector }}
       nodeSelector:
@@ -137,7 +145,7 @@ spec:
             - { name: DRUST_DEV_NO_SECURE_COOKIES, value: "1" }
             {{- end }}
             {{- if .Values.storage.enabled }}
-            - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
+            - { name: GARAGE_S3_ENDPOINT, value: {{ include "drust.storeEndpoint" . | quote }} }
             # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).
             - { name: GARAGE_PUBLIC_BUCKET, value: "public" }
             {{- end }}
