@@ -382,15 +382,23 @@ update its toolchain first.
   existing `429 RATE_LIMITED` (with `Retry-After`). The per-token rate limiter only caps
   how fast requests arrive (about 6/s per token), not how many queue, so without the slot a
   sustained stream of slow anon calls could keep a tenant's writer busy with every other
-  writer queued behind it; now a service, cron or MCP write waits at most about one
-  deadline behind them. Trusted callers — service tokens, admin PATs, the admin playground
-  and cron — never take the slot. Fast RPCs are unaffected, because a waiting call gets the
-  slot as soon as the one ahead finishes; **a tenant that runs several slow anon or user
-  write RPCs at once can now see 429s it did not see before.** With
-  `DRUST_QUERY_DEADLINE_MS=0` the wait for the slot is a fixed 5 s. No action needed,
-  unless an app calls an anon-callable write RPC that legitimately runs longer than the
-  deadline or runs several slow ones concurrently: move those calls behind a service key,
-  or raise `DRUST_QUERY_DEADLINE_MS`.
+  writer queued behind it; now, while the deadline is enabled, a service, cron or MCP write
+  waits at most about one deadline behind them. Trusted callers — service tokens, admin
+  PATs, the admin playground and cron — never take the slot. A waiting call gets the slot
+  as soon as the one ahead returns, so a burst of fast RPCs is not refused while the writer
+  is free. The slot is held while its holder waits for the writer, though: a 429 means the
+  slot was occupied for a whole deadline, either by a slow anon/user RPC or by a fast one
+  queued behind a long trusted write (a service or cron write RPC, the admin playground, an
+  FTS rebuild, a large batch), so a second anon/user write RPC behind a writer busy for a
+  whole deadline gets 429 even when both are fast. **A tenant that runs several slow anon
+  or user write RPCs at once can now see 429s it did not see before.** The gate's 429 has
+  the limiter's exact body and `Retry-After`; its audit row carries
+  `"rpc_admission":"busy"` to tell it apart. With `DRUST_QUERY_DEADLINE_MS=0` the wait for
+  the slot is a fixed 5 s and neither bound applies to the slot holder: one never-ending
+  anon/user write RPC then holds the writer, and the slot, for as long as it runs. No
+  action needed, unless an app calls an anon-callable write RPC that legitimately runs
+  longer than the deadline or runs several slow ones concurrently: move those calls behind
+  a service key, or raise `DRUST_QUERY_DEADLINE_MS`.
 
 ### Changed
 

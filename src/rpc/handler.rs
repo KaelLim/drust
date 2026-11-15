@@ -440,10 +440,14 @@ pub async fn admit_untrusted_write(
 }
 
 /// How long an untrusted write RPC waits for the admission slot before the
-/// 429: one query deadline, so a burst of FAST anon write RPCs serialises as it
-/// always did on the writer mutex and never sees a 429 — a 429 means an
-/// untrusted RPC has held the slot for a whole deadline. With the deadline
-/// disabled (`DRUST_QUERY_DEADLINE_MS=0`) the wait is a fixed 5 s.
+/// 429: one query deadline. A waiting call gets the slot as soon as the one
+/// ahead returns, so a burst of fast anon write RPCs is not refused while the
+/// writer is free. The slot is held while its holder WAITS for the writer,
+/// though, so a 429 means the slot was occupied for a whole deadline — by a
+/// slow untrusted RPC, or by a fast one queued behind a long trusted write
+/// (service or cron write RPC, the playground, an FTS rebuild, a large batch).
+/// With the deadline disabled (`DRUST_QUERY_DEADLINE_MS=0`) the wait is a
+/// fixed 5 s (design §2.6's formula).
 fn admit_wait() -> std::time::Duration {
     crate::query::executor::query_deadline().unwrap_or(std::time::Duration::from_secs(5))
 }

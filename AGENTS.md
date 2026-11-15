@@ -213,7 +213,16 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   for it; service, admin PAT, playground and cron never touch it. Deliberate (owner decision
   2026-11-15): the deadline bounds one occupancy of the writer, the slot bounds the untrusted
   queue in front of it. Do not move the acquire into `with_writer` (it would sit under the
-  mutex and invert the bound) and do not extend it to trusted callers.
+  mutex and invert the bound) and do not extend it to trusted callers. Two consequences are
+  accepted, not bugs: (a) the slot is held while its holder waits for the writer, so a fast
+  anon/user write RPC queued behind a long trusted write (service/cron write RPC, playground,
+  FTS rebuild, large batch) occupies it, and a second one gets 429 after one deadline;
+  (b) known residual — one untrusted caller hitting a caller-cost-controlled (or slow by
+  nature) `anon_callable` write RPC about once per deadline, well under the per-token rate
+  limit, can keep the tenant's OTHER anon/user write RPCs at 429. That shifts the old
+  "delay every writer, trusted included, without bound" onto untrusted callers only; the
+  operator's remedy is to move that RPC behind a service key or make its cost independent of
+  caller parameters.
 
 ## Canonical sources — do not hand-verify against prose
 
