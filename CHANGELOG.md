@@ -421,6 +421,15 @@ update its toolchain first.
   frame now gets this close instead of `CONN_EVICTED` / `CONN_EXPIRED` 1008; nothing is
   dispatched either way, and reconnecting with a revoked or expired credential still gets
   401. No new environment variable, no schema change, no action needed.
+- **Publishing a file keeps its content type in the canonical casing.** Every upload station
+  has lowercased the content-type essence since v1.56.3, so the case-sensitive markup matcher
+  of a `/public/*` proxy block only has to match one casing. The visibility move (`PATCH`
+  set-visibility, MCP `set_file_visibility`, the admin toggle) re-uploaded the row's stored
+  type verbatim instead, so a file stored before v1.56.3 with a type such as `TEXT/HTML`
+  could be published in that casing and served from `/public/*` without the sandbox CSP.
+  The move now lowercases the essence (parameters untouched) on the object and the row. No
+  client renders the file differently. Service key and admin only, as before; no action
+  needed.
 
 ### Changed
 
@@ -488,7 +497,8 @@ update its toolchain first.
   straight from the object store's `public` bucket, never through drust. It allows GET and
   HEAD only (anything else answers 405). It drops the query string, because an S3 API
   honours `?response-content-type=` on anonymous requests. It forwards neither
-  `Authorization` nor cookies. It sends `nosniff` on every response, and the same sandbox
+  `Authorization` nor cookies, and drops any `Set-Cookie` the store answers with (this is the
+  admin UI's origin). It sends `nosniff` on every object it serves, and the same sandbox
   `Content-Security-Policy` as drust's own file responses for script-capable types.
   `PUBLIC_OBJECTS_UPSTREAM` (a Caddy-container variable, default `rustfs:9000`) selects the
   store. A Garage website endpoint also needs the two lines marked `STORE-SHAPE` in the file
@@ -504,7 +514,9 @@ update its toolchain first.
   `public` and nothing else (no listing), and gives drust its own key, which can use only
   those two buckets. Without that step, `docker compose up -d` starts drust without file
   storage, as before. The keys live in `.env`; to change one, edit it and run
-  `docker compose up -d` again.
+  `docker compose up -d` again. The script never prints a value (a refusal names the
+  variable only), reads `export KEY=…` lines as present, and stops without writing anything
+  for a key when `openssl` fails.
 - **Action needed if you ran the bundled MinIO (`--profile storage`).** The `minio` service
   and the `storage` profile are gone: the `minio/minio` image can no longer be pulled from
   Docker Hub. Your objects are still in the `minio-data` volume. This compose file no longer
