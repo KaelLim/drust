@@ -116,7 +116,7 @@ reachable by an untrusted caller.
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
-| `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose), never through drust |
+| `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose and k3s; on k3s through the chart's `public-proxy` Caddy), never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
 file prefix policies, audit toggle) are **service-only** on every face. Storage tier and per-member tenant cap are
@@ -340,7 +340,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     completely, and a codified test pins the exact string. The classifier is structural
     (every `*/*+xml` essence), not an enumeration; the first version of this fix was broken
     by `application/rss+xml`. The proxy's `/public/*` blocks (`../garage/deploy/Caddyfile` on
-    the host, `deploy/compose.Caddyfile` on Compose) are byte paths too: they carry the
+    the host, `deploy/compose.Caddyfile` on Compose, and on k3s
+    `deploy/helm/drust/files/public-proxy.Caddyfile`, a byte copy of the Compose block pinned
+    by the chart's `render_test.sh`) are byte paths too: they carry the
     `@markup` sandbox CSP and `nosniff`, and in front of an S3 API they must also drop the
     query string, which an S3 API honours as `response-content-type` on anonymous GETs.
 
