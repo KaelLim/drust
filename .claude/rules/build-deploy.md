@@ -6,6 +6,7 @@ paths:
   - "Cargo.lock"
   - ".github/workflows/**"
   - "deploy/**"
+  - "docker-compose*.yml"
 ---
 
 # drust — build, test & deploy landmines
@@ -46,6 +47,8 @@ Never `cargo test --release` — LTO + `codegen-units = 1` takes 40+ minutes. So
 
 Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's first gate) and `cargo clippy --all-targets -- -D warnings`.
 
+`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh` and `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker).
+
 ## systemd
 
 > [!CAUTION]
@@ -75,7 +78,7 @@ not render the chart, so divergence is invisible until a user hits it.
 |---|---|---|---|
 | Process supervision | `deploy/drust.service` | `docker-compose.yml` | `deploy/helm/drust/templates/drust-statefulset.yaml` |
 | Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` | chart Ingress |
-| Object store | host Garage | compose service | MinIO StatefulSet |
+| Object store | host Garage | RustFS via `docker-compose.storage.yml` + `rustfs-init` (off until `deploy/compose-storage-env.sh`) | MinIO StatefulSet (images no longer pullable; report) |
 | Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs **+ the `maintenance` sidecar** (default on, opt-out) |
 | Base path | `/drust` | `""` | `""` |
 | Trusted proxies (`DRUST_TRUSTED_PROXIES`) | 2 (default, nginx + Caddy) | 1 (`docker-compose.yml`; image default 0) | chart value (report: not yet set — the image's 0 applies) |
@@ -86,7 +89,7 @@ not render the chart, so divergence is invisible until a user hits it.
 Per-release checklist — run it before tagging, not after:
 
 1. `deploy/helm/drust/Chart.yaml` — bump `appVersion` to the release version, and `version` if the chart's own templates changed. **`appVersion` is the image tag `helm install` pulls**: `values.yaml` ships `image.tag: ""` and both drust containers fall back to it. This item is now mechanized — `render_test.sh` asserts `appVersion == Cargo.toml version` and CI's `helm-chart` job runs it, so a skipped bump is a red build rather than a silent gap. It was not always: `appVersion` read `1.49.4` for nine releases while `image.tag` carried a second, equally stale hardcoded version, so default installs shipped a binary missing two intra-tenant fixes and the stored-XSS sandbox.
-2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three.
+2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three. A Caddy-container variable or a variable of `docker-compose.storage.yml` counts too.
 3. New on-disk path, volume, or directory? Compose and the chart both need it mounted, and the chart needs it in the StatefulSet `volumeClaimTemplates` — a path drust creates at boot lands on ephemeral container storage otherwise.
 4. New recurring job? See the CAUTION above.
 5. New route or route prefix? Check the chart's Ingress and `deploy/compose.Caddyfile`, not just the host Caddyfile.

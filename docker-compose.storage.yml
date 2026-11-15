@@ -1,0 +1,87 @@
+# Bundled object store for drust's file features: RustFS (S3 API), plus a
+# one-shot init that creates the two buckets drust writes to.
+#
+# Turn it on ONCE with:   deploy/compose-storage-env.sh
+# then as usual:          docker compose up -d
+#
+# The script writes COMPOSE_FILE=docker-compose.yml:docker-compose.storage.yml and
+# freshly generated keys into .env next to this file. Without that, this file is
+# not loaded and `docker compose up -d` runs drust with no object storage. To load
+# it by hand: docker compose -f docker-compose.yml -f docker-compose.storage.yml up -d
+#
+# Nothing here is published on the host. drust reaches RustFS at http://rustfs:9000
+# over the compose network, and Caddy serves /public/* straight from it
+# (deploy/compose.Caddyfile).
+
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    restart: unless-stopped
+    environment:
+      # Root credentials, required here: RustFS itself only WARNS and starts with
+      # its published default (rustfsadmin) when they are unset. .env is the
+      # source of truth: change a key there and run `docker compose up -d` again.
+      # RustFS keeps its users and policies on the volume across a root-key
+      # change, and rustfs-init re-applies drust's key from .env on every run.
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?run deploy/compose-storage-env.sh}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?run deploy/compose-storage-env.sh}
+      # The web console (port 9001) is an admin surface with CORS "*". Off.
+      RUSTFS_CONSOLE_ENABLE: "false"
+      # Log to stdout, so `docker compose logs rustfs` shows store errors. The
+      # image's default (/logs) writes a file inside the container instead.
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+      # RUSTFS_SERVER_DOMAINS stays UNSET (path-style only): when set, a request
+      # whose Host has no port and is not a listed domain is read as a bucket name.
+    volumes:
+      # Named volume: Docker copies the image's uid-10001 ownership into it on
+      # first use. A bind mount gets no such copy; it presumably needs
+      # chown 10001:10001 first (untested).
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    # No `ports:`. The S3 port (and its unauthenticated /health, which prints the
+    # version) is reachable only on the compose network.
+
+  # One-shot and idempotent (it re-runs on every `up` and re-asserts the policy):
+  # creates "public" and "private", lets anyone GET objects from "public" (and do
+  # nothing else), and sets drust's own key from .env, limited to those two buckets.
+  rustfs-init:
+    image: rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    restart: "no"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init/init.sh"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?run deploy/compose-storage-env.sh}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?run deploy/compose-storage-env.sh}
+      GARAGE_S3_ACCESS_KEY: ${GARAGE_S3_ACCESS_KEY:?run deploy/compose-storage-env.sh}
+      GARAGE_S3_SECRET_KEY: ${GARAGE_S3_SECRET_KEY:?run deploy/compose-storage-env.sh}
+    volumes:
+      - ./deploy/compose-rustfs/init.sh:/init/init.sh:ro
+      - ./deploy/compose-rustfs/public-read.json:/init/public-read.json:ro
+      - ./deploy/compose-rustfs/drust-objects.json:/init/drust-objects.json:ro
+    tmpfs:
+      # The image declares VOLUME /data; without a mount here every new init
+      # container would leave an anonymous volume behind.
+      - /data
+
+  drust:
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    environment:
+      # The GARAGE_ names are historical: they configure any S3-compatible store.
+      GARAGE_S3_ENDPOINT: http://rustfs:9000   # keep the port (path-style; Host carries it)
+      # drust's OWN key, which rustfs-init limits to the two buckets. Not the root
+      # key: drust cannot create buckets or change who may read "public".
+      GARAGE_S3_ACCESS_KEY: ${GARAGE_S3_ACCESS_KEY:?run deploy/compose-storage-env.sh}
+      GARAGE_S3_SECRET_KEY: ${GARAGE_S3_SECRET_KEY:?run deploy/compose-storage-env.sh}
+      # GARAGE_ADMIN_ENDPOINT / GARAGE_ADMIN_TOKEN: Garage only. RustFS has no such API.
+
+volumes:
+  rustfs-data:

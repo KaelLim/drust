@@ -60,6 +60,14 @@ jobs:
       - name: backup retention fixtures
         run: bash deploy/tests/backup_retention_test.sh
 
+      # The bundled Compose object store: no published store port, no default
+      # credential, drust on its own bucket-scoped key, a GetObject-only public
+      # policy, and a key generator that never rotates or prints a secret.
+      # Static + fixture checks (its Docker part also runs when the runner has
+      # docker compose).
+      - name: compose object-store fixtures
+        run: bash deploy/tests/compose_storage_test.sh
+
   # The chart had zero CI coverage: `render_test.sh` only ever ran when someone
   # remembered to. That is how appVersion sat at 1.49.4 for nine releases while
   # values.yaml carried the real (also stale) image tag. Offline — `helm

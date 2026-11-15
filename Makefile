@@ -63,8 +63,11 @@ test-all: test-shell
 # Fixture tests for the deploy scripts. Not Rust, so `cargo test` cannot see
 # them — and deploy/drust-backup.sh is the only code here that deletes
 # credential-bearing production archives, so it must not be the untested half.
+# compose_storage_test.sh pins the bundled Compose object store (overlay, init,
+# key generator); its Docker part skips itself when docker is absent.
 test-shell:
 	bash deploy/tests/backup_retention_test.sh
+	bash deploy/tests/compose_storage_test.sh
 
 groups:
 	@echo "group harnesses — make test-<group>  (= cargo test --lib --test g_<group>)"

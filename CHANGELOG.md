@@ -19,6 +19,9 @@ call to a write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now ans
 such call on the same tenant answers `429 RATE_LIMITED`), and the per-tenant MCP
 endpoint's model-facing surface changes as described under *MCP (M1)* below.
 
+It also closes the Compose deployment target's gaps the new smoke stack found, and makes
+RustFS the bundled object store for Docker Compose: see *Deploy (Compose)* below.
+
 This release also carries three cross-major dependency upgrades (D1–D3 under *Build*).
 Together with the compatible refresh they clear every advisory that kept CI's `cargo audit`
 step red: `cargo audit` now reports 0 vulnerabilities, and `.cargo/audit.toml` lists exactly
@@ -479,6 +482,30 @@ update its toolchain first.
   bare-metal default `http://localhost:8793`, which nothing in the stack serves. Set it to
   your real origin when you change Caddy's port or put TLS in front. The k3s chart already
   set it; bare-metal is unchanged.
+- **The bundled object store is RustFS, and turning it on is one step.** Run
+  `deploy/compose-storage-env.sh` once, then `docker compose up -d`. The script writes `.env`
+  next to the compose file, with `COMPOSE_FILE` (which adds the new
+  `docker-compose.storage.yml`) and freshly generated keys. That file runs RustFS 1.0.5
+  (pinned by digest) with no host ports and the web console off, plus a one-shot
+  `rustfs-init`. `rustfs-init` creates `public` and `private`, lets anyone read objects in
+  `public` and nothing else (no listing), and gives drust its own key, which can use only
+  those two buckets. Without that step, `docker compose up -d` starts drust without file
+  storage, as before. The keys live in `.env`; to change one, edit it and run
+  `docker compose up -d` again.
+- **Action needed if you ran the bundled MinIO (`--profile storage`).** The `minio` service
+  and the `storage` profile are gone: the `minio/minio` image can no longer be pulled from
+  Docker Hub. Your objects are still in the `minio-data` volume. This compose file no longer
+  declares it, so nothing deletes it. **The old `minio` container keeps running** after the
+  upgrade, with ports 9000 and 9001 open on every interface and the published
+  `drustkey` / `drustsecret` credentials: a plain `docker compose up -d` only warns about
+  it. Then either:
+  - keep MinIO: add the `docker-compose.override.yml` from the README ("Upgrading from
+    the bundled MinIO"; untested in this release). It re-declares `minio` with the console on
+    `127.0.0.1` only and no S3 port, so the next `docker compose up -d` recreates the
+    container without the exposure. Rotate away from `drustkey` / `drustsecret`; or
+  - stop using it: run `docker compose up -d --remove-orphans` (or
+    `docker rm -f <project>-minio-1`). The objects stay in `minio-data`. Moving them to
+    RustFS is not documented in this release.
 - **Compose comments corrected.** The admin UI is at `http://localhost/login`, not
   `/drust/login` (the image serves at the root). `DRUST_HIDE_VERSION` hides the version
   header whenever it is set, even to an empty string; to get the header back, remove the

@@ -442,12 +442,12 @@ the glob fires, just read the file.
 
 | File | Fires on | Covers |
 |---|---|---|
-| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
+| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**`, `docker-compose*.yml` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
 | `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
-| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | Garage integration, upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
+| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | object-store integration (S3 client, bucket probe), upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
 | `.claude/rules/background-jobs.md` | `src/{functions,cron,rpc,safety}/**`, `src/tenant/{webhook*,egress,rooms}` | edge functions, cron semantics, stored-RPC guards, webhooks, egress, audit writer, SSE |
 | `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **eight `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
 

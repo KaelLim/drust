@@ -84,9 +84,10 @@ open http://localhost:47826/login       # 後台 UI（root 模式）；用上面
 ```bash
 git clone https://github.com/KaelLim/drust.git && cd drust
 
-docker compose up -d                 # drust 跑在 http://localhost:47826
-# ...或連同 S3 檔案儲存（drust + MinIO）：
-docker compose --profile storage up -d
+docker compose up -d                 # drust 跑在 http://localhost:47826（不含檔案儲存）
+# ...或連同 S3 檔案儲存（drust + RustFS），只需一次：
+deploy/compose-storage-env.sh        # 寫入 .env：COMPOSE_FILE 與新產生的金鑰
+docker compose up -d
 ```
 
 ```bash
@@ -150,11 +151,100 @@ flowchart LR
 | `DRUST_CORS_ORIGINS` | 選用 | 逗號分隔允許清單；支援 `https://*.example.com`、`http://localhost:*` |
 | `DRUST_TRUSTED_PROXIES` | 選用（2；映像檔 0；`docker-compose.yml` 1） | drust 前面會在 `X-Forwarded-For` 追加一項的反向代理層數；per-IP 限流以該項為 key（`0` = TCP 對端）。範圍 0–8。把映像檔放在自己的代理後面時要設定 |
 | `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
-| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用 S3 儲存功能 |
-| `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：自動建立 bucket |
+| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用檔案儲存，任何 S3 相容服務皆可（RustFS、Garage、MinIO、R2、AWS S3、B2）。`GARAGE_` 字首是歷史名稱；Compose 的儲存設定檔會替你設好 |
+| `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：只有對帳頁清理舊版「每租戶 bucket」時使用。兩者都要設；只設一個會在啟動時警告並視為未設定 |
 | `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案、簽署與 MCP 宣告 URL 對外使用的來源，不含路徑。Compose 設為 `http://localhost`；chart 由 ingress 主機推得 |
 
-S3 資料路徑走 `object_store::aws::AmazonS3`，所以任何 S3 相容服務都能用（Garage、MinIO、R2、AWS S3、B2）。自動建 bucket 是 Garage 專屬；其他後端請預先建好 bucket。
+S3 資料路徑走 `object_store::aws::AmazonS3`（path-style、SigV4），任何 S3 相容服務都能用：RustFS（Compose 預設）、Garage（bare-metal 參考主機）、MinIO、R2、AWS S3、B2。
+
+drust 不會建立 bucket。首次上傳前請先建好：
+- `public`：匿名**只允許 GetObject**，切勿用同時開放列舉的「download」範本。
+- `private`：不開放匿名存取。
+
+任一個無法列出時，drust 會在啟動時記錄警告。公開檔案由反向代理直接自 `public` 提供、不經過 drust。Compose 的儲存設定檔會替你建好兩個 bucket 與政策。
+
+</details>
+
+<details>
+<summary><b>Docker Compose 的物件儲存</b></summary>
+
+**啟用。** 在 repo 根目錄執行一次：
+
+```bash
+deploy/compose-storage-env.sh        # 寫入 .env：COMPOSE_FILE 與新產生的金鑰
+docker compose up -d
+```
+
+這支腳本在 `docker-compose.yml` 旁寫入 `.env`（權限 600），內容是
+`COMPOSE_FILE=docker-compose.yml:docker-compose.storage.yml`——之後每個一般的 `docker compose`
+指令都會一併載入儲存設定檔——以及新產生的金鑰：RustFS 的 root 金鑰與 drust 自己的金鑰。它只補上缺少的項目，
+絕不更改或印出既有的值；若 `.env` 已把 `GARAGE_S3_ENDPOINT` 指向其他儲存服務，它會拒絕執行。Windows
+請手動寫入同樣五行，`COMPOSE_FILE` 改用 `;` 分隔。若你另有 `docker-compose.override.yml`，請自行把它加進
+`COMPOSE_FILE`：一旦設定了 `COMPOSE_FILE`，Compose 就不會再自動載入 override 檔。
+
+`docker-compose.storage.yml` 執行 RustFS 1.0.5（以 digest 鎖定），不對主機開放任何 port、關閉 web
+主控台，另有一次性的 `rustfs-init`：建立 `public` 與 `private`、讓任何人都能 GET `public` 裡的物件且僅止於此
+（不能列舉），並給 drust 一把只能使用這兩個 bucket 的專屬金鑰。drust 從不持有 RustFS 的 root 金鑰。
+
+- **更換金鑰**：編輯 `.env`，再執行一次 `docker compose up -d`。`rustfs-init` 每次執行都會依 `.env`
+  重新套用 drust 的金鑰；RustFS 在更換 root 金鑰後仍保留使用者與政策（於 1.0.5 觀察到）。更換 drust 的
+  *access* key 會留下舊的 RustFS 使用者；如有需要，用 `rc admin user remove` 移除。
+- **儲存服務 log**：`docker compose logs rustfs`。
+- **主控台**：預設關閉。要使用時，在 override 檔裡替 `rustfs` 設 `RUSTFS_CONSOLE_ENABLE: "true"` 並開放
+  `127.0.0.1:9001:9001`。
+
+**改用 MinIO、Garage 或其他儲存服務。** 不要執行這支腳本。在 `docker-compose.override.yml` 裡替 `drust`
+設定三個 `GARAGE_S3_*` 變數，並依「設定」一節建好兩個 bucket。
+
+**從內附的 MinIO 升級。** 直到本版之前，`docker compose --profile storage up -d` 會執行內附的 MinIO。
+這個服務與 `storage` profile 已移除，因為 `minio/minio` 映像檔已無法從 Docker Hub 取得。你的物件仍在
+`minio-data` volume 裡；本 compose 檔不再宣告它，所以不會有任何東西刪除它。**升級後舊的 `minio` 容器會繼續
+執行，port 9000/9001 開在所有介面上，並使用公開過的 `drustkey`/`drustsecret`；`docker compose up -d`
+只會對它發出警告。** 請擇一處理：
+
+- **保留 MinIO**（本版未經測試）。不要執行 `deploy/compose-storage-env.sh`。把下面的
+  `docker-compose.override.yml` 放在 `docker-compose.yml` 旁，並在 `.env` 設定 `MINIO_ROOT_USER` /
+  `MINIO_ROOT_PASSWORD`：
+
+  ```yaml
+  # docker-compose.override.yml — keep running your own MinIO.
+  services:
+    minio:
+      image: <the MinIO image you already have locally>  # minio/minio is no longer on Docker Hub
+      restart: unless-stopped
+      command: server /data --console-address ":9001"
+      ports:
+        - "127.0.0.1:9001:9001"      # console, host-local; the S3 port needs no host binding
+      environment:
+        MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+        MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+      volumes:
+        - minio-data:/data
+    drust:
+      environment:
+        GARAGE_S3_ENDPOINT: http://minio:9000
+        GARAGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER:?set in .env}
+        GARAGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+    caddy:
+      environment:
+        PUBLIC_OBJECTS_UPSTREAM: minio:9000
+  volumes:
+    minio-data:    # same name: the existing <project>_minio-data volume is reused
+  ```
+
+  它重新宣告 `minio`：主控台只開在 `127.0.0.1`、不開 S3 port，所以下一次 `docker compose up -d`
+  會以無暴露的設定重建舊容器。接著：
+  - 換掉 `drustkey` / `drustsecret`——它們已公開過，而且其 S3 port 曾開在所有介面上；
+  - 把 `public` 上的 `download` 範本政策換成只允許 GetObject 的
+    `deploy/compose-rustfs/public-read.json`（範本政策也允許列舉 bucket），例如在 compose 網路上用
+    `amazon/aws-cli` 映像檔執行：
+    `--endpoint-url http://minio:9000 s3api put-bucket-policy --bucket public --policy file:///p.json`；
+  - 若 `public` 與 `private` 從未建立，請建立它們。
+- **不再使用**：執行 `docker compose up -d --remove-orphans`（或
+  `docker rm -f <project>-minio-1`）。容器連同開放的 port 與公開過的憑證一起移除；物件仍留在 `minio-data`。
+
+**把物件從 MinIO 搬到 RustFS。** 尚未提供文件（未經測試）。在那之前請用上面的 override 保留 MinIO；
+你的物件仍在 `minio-data` 裡。
 
 </details>
 
@@ -162,7 +252,7 @@ S3 資料路徑走 `object_store::aws::AmazonS3`，所以任何 S3 相容服務�
 > **備份快照僅含資料庫。** drust 的 `*.tar.zst` 快照（以及 k3s 的 DB VolumeSnapshot /
 > Litestream）只涵蓋 SQLite 資料庫，不含上傳的物件。要成為可還原的災難復原單位，每份 DB
 > 備份都須搭配物件儲存備份：bare-metal `garage-backup.timer`、k3s `objectMirror`
->（Litestream 只備份資料庫、不含物件）、docker-compose 則備份 `minio-data` volume。快照亦含明文憑證——
+>（Litestream 只備份資料庫、不含物件）、docker-compose 則備份 `rustfs-data` volume（先停 `rustfs` 以取得一致的複本），或用 S3 工具把兩個 bucket 複製出來。快照亦含明文憑證——
 > 切勿未加密存放於機外。含 **trigram** FTS 索引的租戶 DB 需主機 `sqlite3` ≥ 3.34 才能 `VACUUM`／還原
 >（trigram tokenizer 的最低版本），內建引擎較新，但主機工具未必。
 

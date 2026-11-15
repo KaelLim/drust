@@ -1,7 +1,12 @@
 # drust — single-command self-host.
 #
-#   docker compose up -d            # drust + Caddy (SQLite BaaS, no file storage)
-#   docker compose --profile storage up -d   # drust + MinIO (S3 file storage)
+#   docker compose up -d        # drust + Caddy (SQLite BaaS, no file storage)
+#
+# File storage (S3; the bundled store is RustFS) is one extra step, once:
+#   deploy/compose-storage-env.sh && docker compose up -d
+# The script writes .env next to this file (COMPOSE_FILE + generated keys), so
+# `docker compose` also loads docker-compose.storage.yml. MinIO, Garage or any
+# other S3 store: README, "Object storage on Docker Compose".
 #
 # First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
 # http://localhost/login (the bundled Caddy proxies the root path to drust; the
@@ -94,13 +99,16 @@ services:
       # MAX_CONCURRENCY so one tenant's fan-out can't occupy the whole pool and
       # starve other tenants' webhooks (cross-tenant head-of-line blocking).
       # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
-      # --- optional S3 object storage (uncomment with the `storage` profile) ---
-      # GARAGE_S3_ENDPOINT:   http://minio:9000
-      # GARAGE_S3_ACCESS_KEY: drustkey
-      # GARAGE_S3_SECRET_KEY: drustsecret
-      # NOTE: per-tenant bucket AUTO-provisioning needs Garage's admin API
-      # (GARAGE_ADMIN_ENDPOINT + GARAGE_ADMIN_TOKEN). With MinIO/R2/S3, the
-      # data path still works but you pre-create the buckets yourself.
+      # --- object storage (file features) ---
+      # Not set here. docker-compose.storage.yml adds GARAGE_S3_ENDPOINT and
+      # drust's own bucket-scoped key when storage is on (deploy/compose-storage-env.sh).
+      # For a store you run yourself (MinIO, Garage, R2, AWS S3) set the three
+      # GARAGE_S3_* variables in a docker-compose.override.yml instead (README).
+      # The GARAGE_ names are historical; they configure any S3-compatible store.
+      # drust never creates buckets: "public" (anonymous GetObject only, never a
+      # policy that also lists) and "private" (no anonymous access) must exist;
+      # drust logs a warning at boot for each one it cannot list.
+      # GARAGE_ADMIN_ENDPOINT / GARAGE_ADMIN_TOKEN are optional and Garage-only.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:47826/health"]
       interval: 30s
@@ -119,28 +127,15 @@ services:
         soft: 65536
         hard: 65536
 
-  # Optional S3-compatible object store for file features. Enable with:
-  #   docker compose --profile storage up -d
-  minio:
-    image: minio/minio:latest
-    profiles: ["storage"]
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
-    environment:
-      MINIO_ROOT_USER: drustkey
-      MINIO_ROOT_PASSWORD: drustsecret
-    volumes:
-      - minio-data:/data
-
 # BACKUP / DR: this compose file ships NO scheduled backup. For disaster
-# recovery you must back up BOTH named volumes — `drust-data` (SQLite DBs +
-# in-app snapshots under /data/backups) AND `minio-data` (uploaded objects).
+# recovery back up BOTH the `drust-data` volume (SQLite DBs + in-app snapshots
+# under /data/backups) AND the object store: with docker-compose.storage.yml
+# that is the `rustfs-data` volume (stop `rustfs` for a consistent copy) or
+# both buckets copied out with an S3 client. A MinIO setup from before v1.67
+# keeps its objects in `minio-data`, which this file no longer declares and
+# nothing deletes (README, "Upgrading from the bundled MinIO").
 # The in-app admin snapshot is DB-only and is NOT a complete DR unit; it also
 # contains plaintext credentials — store it encrypted, off-host.
 volumes:
   drust-data:
   drust-logs:
-  minio-data:

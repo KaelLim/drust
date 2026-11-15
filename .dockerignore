@@ -33,3 +33,4 @@ docs/superpowers/
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.storage.yml
