@@ -361,7 +361,7 @@ pub fn make_tenant_inner(
     };
     if let Some((deleted_at, existing_owner)) = existing {
         if deleted_at.is_none() {
-            anyhow::bail!("tenant '{id}' already exists");
+            anyhow::bail!("TENANT_ID_UNAVAILABLE: tenant '{id}' already exists");
         }
         // v1.58 — CLAUDE.md invariant #7: the branch below hard-DELETEs the
         // soft-deleted tenant's row and tokens and wipes any live remnant, so
@@ -384,7 +384,7 @@ pub fn make_tenant_inner(
             existing_owner,
         ) == crate::mgmt::tenant_authz::TenantAccess::Deny
         {
-            anyhow::bail!("tenant '{id}' already exists");
+            anyhow::bail!("TENANT_ID_UNAVAILABLE: tenant '{id}' already exists");
         }
         tracing::info!(tenant_id = %id, "recycling id from soft-deleted tenant");
         // E5 — the caller must run `evict_tenant_everywhere` once the meta lock
@@ -526,12 +526,24 @@ pub async fn create_tenant_json(
         Ok(made) => made,
         Err(e) => {
             let msg = e.to_string();
-            return if msg.contains("TENANT_CAP_EXCEEDED") {
+            // A live id and a soft-deleted id the caller may not recycle are ONE
+            // arm with a handler-built message (invariant 7: the create route
+            // must not be an ownership oracle). The `UNIQUE` text maps to the
+            // same answer so a future race cannot make a third, distinguishable
+            // response; today the existence SELECT and the INSERT share one
+            // meta lock, so it is unreachable.
+            return if msg.starts_with("TENANT_CAP_EXCEEDED") {
                 crate::error::json_error(StatusCode::FORBIDDEN, "TENANT_CAP_EXCEEDED", &msg)
-            } else if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
-                (StatusCode::BAD_REQUEST, msg).into_response()
+            } else if msg.starts_with("TENANT_ID_UNAVAILABLE") || msg.contains("UNIQUE") {
+                crate::error::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "TENANT_ID_UNAVAILABLE",
+                    &format!("tenant '{id}' already exists"),
+                )
+            } else if msg.starts_with("invalid tenant id") {
+                crate::error::json_error(StatusCode::BAD_REQUEST, "INVALID_TENANT_ID", &msg)
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+                crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &msg)
             };
         }
     };
@@ -593,6 +605,16 @@ pub async fn create_tenant_form(
         }
         Err(e) => {
             let msg = e.to_string();
+            if msg.starts_with("TENANT_ID_UNAVAILABLE") {
+                // Keep the form's plain text free of the code prefix (and
+                // byte-identical to before for this practically unreachable
+                // case — the id is a fresh UUID v4).
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("tenant '{id}' already exists"),
+                )
+                    .into_response();
+            }
             let code = if msg.contains("TENANT_CAP_EXCEEDED") {
                 StatusCode::FORBIDDEN
             } else {

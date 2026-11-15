@@ -176,6 +176,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "drust assigns `id`. Anon and user tokens must omit it on insert, and on update may only send the record's own id (or omit it). Service tokens may still set ids, e.g. for imports.",
     ),
     (
+        "TENANT_ID_UNAVAILABLE",
+        "Choose a different tenant id, or omit `id` and drust mints a UUID.",
+    ),
+    (
         "TENANT_NOT_FOUND",
         "Tenant id is not registered or has been deleted. Check the tenant id in the URL path.",
     ),

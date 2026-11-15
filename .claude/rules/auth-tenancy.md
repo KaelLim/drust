@@ -167,6 +167,12 @@ are one critical section. The signature takes the role from the DB and `owner_ad
 plain `i64` (not `Option`), because two review rounds showed that every parameter which
 *could* be wrong eventually was.
 
+A live id and a soft-deleted id the caller may not recycle both answer `400
+TENANT_ID_UNAVAILABLE` with one handler-built message (`make_tenant_inner` bails with the
+same `TENANT_ID_UNAVAILABLE:`-prefixed literal in both places, and `create_tenant_json`
+maps it — and any `UNIQUE` failure — to a single arm). Keep them a single arm, or the
+create route becomes an ownership oracle.
+
 Approve paths on both the quota and the cap queue must re-validate that the target is still
 an increase (`409 …_NOT_INCREASE`) and must 404 a vanished requester — `admins.id` is
 `INTEGER PRIMARY KEY` **without** AUTOINCREMENT, so SQLite reuses a deleted top rowid and the

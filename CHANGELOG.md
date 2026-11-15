@@ -2,8 +2,9 @@
 
 Fixes from the access-gate convergence review (E track). One new environment variable,
 `DRUST_TRUSTED_PROXIES` (default `2`, unchanged behaviour on an existing host); the Docker
-image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error code:
-`SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error codes:
+`SYSTEM_FIELD_READONLY`, returned only to anon and user tokens, and `TENANT_ID_UNAVAILABLE`
+on the admin plane.
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
 only the row's `id` (E9). The other caller-visible changes are described in their entries:
@@ -247,6 +248,18 @@ update its toolchain first.
   are unaffected: they already reported the field by name. Other native SQLite refusals on
   these two endpoints (UNIQUE, NOT NULL, STRICT type) are still `400 text/plain` with
   SQLite's message. No action needed.
+- **Creating a tenant whose id is already taken answers `400 TENANT_ID_UNAVAILABLE`
+  instead of a 500.** `POST /admin/api/tenants` with the id of a live tenant, or of a
+  soft-deleted tenant the caller may not recycle, fell through the error mapping into its
+  500 arm, so the CLI and automation treated a caller mistake as a server fault and
+  retried it. Both cases now answer the same 400 with the same message,
+  `tenant '<id>' already exists`, and a `suggested_fix`. A caller who cannot see that
+  tenant still learns nothing about which case it hit (CLAUDE.md invariant 7). The other
+  refusals on this route now use the same JSON error shape: an invalid id is
+  `400 INVALID_TENANT_ID` (it was `400 text/plain`), and an unexpected failure is
+  `500 INTERNAL`. The tenant-cap refusal (`403 TENANT_CAP_EXCEEDED`) and every successful
+  create are unchanged. The UUID-minting form (`POST /admin/tenants/new`) keeps its
+  plain-text answers. No action needed, unless a script matched the old 500.
 
 ### Changed
 

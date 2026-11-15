@@ -168,3 +168,65 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
     assert_eq!(bus.channel_count(), 0, "sse channel not evicted");
     assert_eq!(inner.cached_count(), 0, "inner mcp registry not evicted");
 }
+
+async fn post_tenant(app: &axum::Router, tok: &str, body: &str) -> (StatusCode, String, Vec<u8>) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/admin/api/tenants")
+        .header(header::COOKIE, format!("drust_session={tok}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let b = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap()
+        .to_vec();
+    (status, ct, b)
+}
+
+#[tokio::test]
+async fn create_with_live_id_answers_400_tenant_id_unavailable() {
+    let (app, tok, _d) = app().await;
+    let (s, _, _) = post_tenant(&app, &tok, r#"{"id":"blog","name":"Blog"}"#).await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, ct, b) = post_tenant(&app, &tok, r#"{"id":"blog","name":"Again"}"#).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&b)
+    );
+    assert!(ct.starts_with("application/json"), "content-type {ct}");
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error_code"], "TENANT_ID_UNAVAILABLE");
+    assert_eq!(v["message"], "tenant 'blog' already exists");
+    assert!(
+        !v["suggested_fix"].as_str().unwrap_or_default().is_empty(),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn bad_slug_answers_json_invalid_tenant_id() {
+    let (app, tok, _d) = app().await;
+    let (s, ct, b) = post_tenant(&app, &tok, r#"{"id":"Bad Slug!!","name":"x"}"#).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(ct.starts_with("application/json"), "content-type {ct}");
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error_code"], "INVALID_TENANT_ID");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid tenant id"),
+        "{v}"
+    );
+}
