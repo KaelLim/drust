@@ -90,8 +90,17 @@ impl StorageConfig {
         }
         let access_key = req("GARAGE_S3_ACCESS_KEY")?;
         let secret_key = req("GARAGE_S3_SECRET_KEY")?;
-        // After the S3 keys, so a missing S3 key is still the reported error
-        // and the half-pair warning is not emitted on a config that fails anyway.
+        let max_upload_bytes = parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?;
+        let large_upload_max_bytes = parse_num("DRUST_LARGE_UPLOAD_MAX_BYTES", 2_147_483_648)?;
+        let large_upload_chunk_max_bytes =
+            parse_num("DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES", 67_108_864)?;
+        let large_upload_max_sessions_per_tenant =
+            parse_num("DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT", 5)?;
+        let large_upload_session_ttl_secs =
+            parse_num("DRUST_LARGE_UPLOAD_SESSION_TTL_SECS", 86_400)?;
+        // After every fallible read above, so a missing S3 key or a bad number
+        // is still the reported error and the half-pair warning is never
+        // emitted on a config that fails anyway.
         let (admin_endpoint, admin_token) = admin_api_pair();
         Ok(Some(Self {
             endpoint,
@@ -100,21 +109,12 @@ impl StorageConfig {
             secret_key,
             admin_token,
             public_bucket: opt("GARAGE_PUBLIC_BUCKET").unwrap_or_else(|| "public".to_string()),
-            max_upload_bytes: parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?,
+            max_upload_bytes,
             disk_min_free_pct,
-            large_upload_max_bytes: parse_num("DRUST_LARGE_UPLOAD_MAX_BYTES", 2_147_483_648)?,
-            large_upload_chunk_max_bytes: parse_num(
-                "DRUST_LARGE_UPLOAD_CHUNK_MAX_BYTES",
-                67_108_864,
-            )?,
-            large_upload_max_sessions_per_tenant: parse_num(
-                "DRUST_LARGE_UPLOAD_MAX_SESSIONS_PER_TENANT",
-                5,
-            )?,
-            large_upload_session_ttl_secs: parse_num(
-                "DRUST_LARGE_UPLOAD_SESSION_TTL_SECS",
-                86_400,
-            )?,
+            large_upload_max_bytes,
+            large_upload_chunk_max_bytes,
+            large_upload_max_sessions_per_tenant,
+            large_upload_session_ttl_secs,
         }))
     }
 }
@@ -123,14 +123,15 @@ fn opt(name: &'static str) -> Option<String> {
     std::env::var(name).ok()
 }
 
-/// Unset OR empty → `None`.
+/// Unset, empty, OR whitespace-only → `None` (a blank-looking token must not
+/// be sent as a bearer). A non-blank value is returned as given.
 fn opt_nonempty(name: &'static str) -> Option<String> {
-    opt(name).filter(|v| !v.is_empty())
+    opt(name).filter(|v| !v.trim().is_empty())
 }
 
 /// The Garage admin API is configured only when BOTH `GARAGE_ADMIN_ENDPOINT`
-/// and `GARAGE_ADMIN_TOKEN` are non-empty. Anything else — both absent or
-/// empty, or a half pair — reads as "not configured" (both fields empty).
+/// and `GARAGE_ADMIN_TOKEN` are non-blank. Anything else — both absent or
+/// blank, or a half pair — reads as "not configured" (both fields empty).
 /// A half pair is warned about, never refused: it booted before these became
 /// optional (`req` accepted an empty string), and nothing on the data path
 /// uses the admin API. The warning names the missing variable, never a value.
@@ -327,11 +328,14 @@ mod tests {
     #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
     fn storage_config_half_configured_admin_api_reads_as_unconfigured() {
         // (endpoint, token): None = unset, Some("") = present but empty.
-        let cases: [(Option<&str>, Option<&str>); 4] = [
+        // Whitespace-only reads as empty: a blank-looking token is never sent.
+        let cases: [(Option<&str>, Option<&str>); 6] = [
             (Some("http://127.0.0.1:47832"), None),
             (Some("http://127.0.0.1:47832"), Some("")),
+            (Some("http://127.0.0.1:47832"), Some("  \t")),
             (None, Some("token")),
             (Some(""), Some("token")),
+            (Some(" "), Some("token")),
         ];
         for (endpoint, token) in cases {
             clear_storage_env();

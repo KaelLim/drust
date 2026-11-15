@@ -220,8 +220,10 @@ update its toolchain first.
 
 - **A missing `private` bucket is reported at boot.** drust writes to two fixed buckets,
   `public` and `private`, and never creates either. The boot check listed only the
-  `GARAGE_PUBLIC_BUCKET` bucket, so a missing `private` bucket first showed up as
-  `502 GARAGE_PUT_FAILED` on the first private upload. Boot now lists both (and
+  `GARAGE_PUBLIC_BUCKET` bucket, so a missing `private` bucket first showed up as a 502 on
+  the first private write (`GARAGE_PUT_FAILED` from a tus finalize or an edge `put-file`;
+  plain-text `garage put: …` from a multipart upload, `visibility change: …` from a
+  visibility move). Boot now lists both (and
   `GARAGE_PUBLIC_BUCKET` too if it names a third bucket) at the same time, and logs one
   warning per bucket it cannot list — missing, unreachable, or not listable with the
   configured key. drust still boots either way, and boot takes no longer than before when the
@@ -270,12 +272,11 @@ update its toolchain first.
   subscriber is evicted. The key is absent when there is nothing to report, so an
   unreferenced drop answers exactly as before.
 
-- **`GARAGE_ADMIN_ENDPOINT` and `GARAGE_ADMIN_TOKEN` are optional.** Storage started only
-  when both were set, although nothing on the data path uses Garage's admin API, so a store
-  configured with just `GARAGE_S3_ENDPOINT`, `GARAGE_S3_ACCESS_KEY` and
+- **`GARAGE_ADMIN_ENDPOINT` and `GARAGE_ADMIN_TOKEN` are optional.** Nothing on the data
+  path uses Garage's admin API, yet a store configured with just `GARAGE_S3_ENDPOINT`, `GARAGE_S3_ACCESS_KEY` and
   `GARAGE_S3_SECRET_KEY` (any S3-compatible store) failed at startup with
   `missing env var: GARAGE_ADMIN_ENDPOINT`. Both are now optional. If only one of the two is
-  set, or one is empty, drust logs one warning at boot naming the missing variable and
+  set, or one is empty or whitespace only, drust logs one warning at boot naming the missing variable and
   treats the admin API as not configured; it never refuses to start over them. The admin API
   is used only by the owner-only reconcile page to clean up buckets left from the retired
   per-tenant layout; without it, that cleanup logs `Garage admin API not configured`, sends

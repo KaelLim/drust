@@ -131,8 +131,11 @@ impl GarageClient {
         }
     }
 
-    /// Health check. Lists at most one object; an empty bucket is a valid
-    /// healthy state.
+    /// Health check of the default store's bucket only: fetches one
+    /// ListObjectsV2 page and reads its first entry; an empty bucket is a
+    /// valid healthy state. Boot does NOT use this — it calls
+    /// [`Self::probe_required_buckets`], which checks every bucket a write
+    /// can land in; do not re-wire boot to this single-bucket check.
     pub async fn ping(&self) -> Result<()> {
         use futures::StreamExt;
         let mut stream = self.store.list(None);
@@ -142,7 +145,8 @@ impl GarageClient {
         }
     }
 
-    /// Lists at most one object in `bucket`; an empty bucket is healthy.
+    /// Fetches one ListObjectsV2 page of `bucket` and reads its first entry;
+    /// an empty bucket is healthy.
     ///
     /// Real client: a per-bucket store (`build_s3_for_bucket`), the same
     /// client every cross-bucket write uses. `from_store` client (empty

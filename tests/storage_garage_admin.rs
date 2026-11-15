@@ -139,6 +139,18 @@ async fn admin_api_without_endpoint_errors_with_config_hint() {
 }
 
 #[tokio::test]
+async fn admin_api_with_token_but_no_endpoint_errors_with_config_hint() {
+    // The other half pair: a token alone must refuse up front naming the
+    // endpoint, not fall through to a request against a relative URL.
+    let c = GarageClient::from_mock_admin("", "tok");
+    let err = c.lookup_bucket("x").await.unwrap_err().to_string();
+    assert!(
+        err.contains("GARAGE_ADMIN_ENDPOINT") && err.contains("not configured"),
+        "a token without an endpoint must say the admin API is not configured, got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn admin_api_with_endpoint_but_no_token_sends_no_request() {
     // A half pair reads as "not configured" in config, and the client guards
     // the same way: no request with an empty bearer ever leaves.
@@ -341,9 +353,11 @@ async fn probe_required_buckets_runs_probes_concurrently() {
 }
 
 #[tokio::test]
-async fn ping_bucket_on_a_from_store_client_reads_the_bucket_prefix() {
-    // The from_store test affordance (no S3 endpoint) folds the bucket into
-    // the key; an empty "bucket" is healthy, like an empty real bucket.
+async fn ping_bucket_on_a_from_store_client_never_builds_an_s3_client() {
+    // The from_store test affordance (no S3 endpoint) must take the
+    // backing-store branch: building a per-bucket S3 client from an empty
+    // endpoint and listing through it would fail. An InMemory list cannot
+    // error, so this pins only that branch choice, not the prefix it lists.
     let store: std::sync::Arc<dyn object_store::ObjectStore> =
         std::sync::Arc::new(object_store::memory::InMemory::new());
     let c = GarageClient::from_store(store, "public");
