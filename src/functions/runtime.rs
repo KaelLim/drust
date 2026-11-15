@@ -11,8 +11,8 @@ use wasmtime::component::{Component, HasSelf, InstancePre, Linker};
 use wasmtime::{Config, Engine, Store};
 
 // Generated bindings for the WIT world. The WIT file is the SDK template's —
-// single source of truth (Task 2). wasmtime-45 drift: the `async: true`
-// bindgen key became `imports/exports: { default: async }`.
+// single source of truth (Task 2). The `imports/exports: { default: async }`
+// keys (wasmtime ≥ 45; formerly `async: true`) are unchanged through 50.
 wasmtime::component::bindgen!({
     path: "sdk/edge-function-template/wit",
     world: "edge-function",
@@ -26,8 +26,8 @@ pub fn engine() -> &'static Engine {
     static ENGINE: OnceLock<Engine> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let mut cfg = Config::new();
-        // wasmtime 45: async support is always on; `Config::async_support`
-        // is deprecated as a no-op, so it is not called here.
+        // Async support has been always-on since wasmtime 45
+        // (`Config::async_support` is a deprecated no-op), so it is not called.
         cfg.epoch_interruption(true);
         cfg.wasm_component_model(true);
         // Multi-memory multiplies the per-memory-cap hole and nothing we ship
@@ -35,6 +35,27 @@ pub fn engine() -> &'static Engine {
         // core instance. The cumulative MemLimiter is the real fix; this
         // shrinks the surface.
         cfg.wasm_multi_memory(false);
+        // wasmtime 47–50 widened the DEFAULT proposal set (base set moved from
+        // WASM2 to WASM3, wide-arithmetic on by default since 49). With the
+        // `gc` / `threads` cargo features off, the net additions over the
+        // wasmtime-46 engine are exactly these three. A tenant-uploaded guest
+        // is untrusted input to the compiler, so the accepted surface stays
+        // the 46-era one: nothing a wasm32-wasip2 toolchain emits by default
+        // needs them, and any artifact accepted before still validates.
+        // `engine_wasm_feature_set_is_the_wasmtime46_set` pins the result.
+        cfg.wasm_features(
+            wasmtime::WasmFeatures::GC
+                | wasmtime::WasmFeatures::FUNCTION_REFERENCES
+                | wasmtime::WasmFeatures::WIDE_ARITHMETIC,
+            false,
+        );
+        // Component-model-async (wasip3) stays OFF. Cargo.toml already leaves
+        // wasmtime-wasi's `p3` feature (default since 50) out, so it is not
+        // compiled in; this pins it off even if feature unification ever
+        // turns `wasmtime/component-model-async` on through another crate.
+        // Every call site here is `call_async`/`instantiate_async`, never a
+        // concurrent API, so nothing depends on it.
+        cfg.concurrency_support(false);
         let engine = Engine::new(&cfg).expect("construct wasmtime engine");
         let ticker = engine.clone();
         std::thread::Builder::new()
@@ -76,6 +97,9 @@ pub fn engine() -> &'static Engine {
 pub(crate) fn arm_epoch_budget<T>(store: &mut Store<T>, timeout_secs: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     store.set_epoch_deadline(1);
+    // The callback argument is a `StoreHookState<T>` since wasmtime 50
+    // (`StoreContextMut<T>` before); it is unused — the budget reads only
+    // the captured `deadline`.
     store.epoch_deadline_callback(move |_| {
         if std::time::Instant::now() >= deadline {
             Ok(wasmtime::UpdateDeadline::Interrupt)
@@ -331,7 +355,8 @@ impl wasmtime::ResourceLimiter for MemLimiter {
 }
 
 // WASI plumbing — wasmtime-wasi 45 merged the old IoView/WasiView pair into
-// one `WasiView` returning a `WasiCtxView { ctx, table }` (Grounding note 1).
+// one `WasiView` returning a `WasiCtxView { ctx, table }` (Grounding note 1);
+// the shape is unchanged through wasmtime-wasi 50.
 impl wasmtime_wasi::WasiView for StoreData {
     fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
         wasmtime_wasi::WasiCtxView {
@@ -694,7 +719,12 @@ impl host::Host for StoreData {
             .resolver_override
             .clone()
             .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
+        //    HTTP/1.1 only: object_store 0.14 turns on reqwest's `http2` feature
+        //    through feature unification, which would otherwise let a TLS origin
+        //    negotiate h2 via ALPN. Pinning keeps the wire protocol (and the
+        //    parser a tenant-chosen origin can reach) exactly what it was.
         let client = reqwest::Client::builder()
+            .http1_only()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(self.host.http.timeout_secs))
             .redirect(reqwest::redirect::Policy::none())
@@ -1061,7 +1091,7 @@ impl FunctionRunner for WasmRunner {
             Err(trap) => {
                 let oom = store.data().limits.oom_hit;
                 // Epoch-deadline expiry raises wasmtime::Trap::Interrupt
-                // (wasmtime-45 vm/libcalls.rs: `UpdateDeadline::Interrupt =>
+                // (wasmtime vm/libcalls.rs, 45 through 50: `UpdateDeadline::Interrupt =>
                 // Err(Trap::Interrupt)`). Classify by trap code, NOT wall
                 // clock: the deadline fires on the Nth global ticker tick,
                 // which lands up to one tick (100ms) BEFORE `timeout_secs`
@@ -1105,6 +1135,54 @@ mod tests {
     #[test]
     fn validate_rejects_garbage() {
         assert!(validate_component(b"not wasm at all").is_err());
+    }
+
+    /// The engine accepts EXACTLY the wasm proposal set the wasmtime-46 engine
+    /// accepted — the guest-facing compiler surface must not drift on a
+    /// wasmtime bump. 46's `Config::features()` with this crate's cargo
+    /// features (cranelift, component-model, no gc / threads /
+    /// component-model-async) was `WASM2 − GC_TYPES` plus multi-memory,
+    /// relaxed-simd, tail-call, extended-const, memory64 and the component
+    /// model, and `engine()` then turned multi-memory off. A wasmtime upgrade
+    /// that widens the default set turns this red: decide consciously, then
+    /// update.
+    #[test]
+    fn engine_wasm_feature_set_is_the_wasmtime46_set() {
+        use wasmtime::WasmFeatures as F;
+        let expected = ((F::WASM2 - F::GC_TYPES)
+            | F::RELAXED_SIMD
+            | F::TAIL_CALL
+            | F::EXTENDED_CONST
+            | F::MEMORY64
+            | F::COMPONENT_MODEL)
+            - F::MULTI_MEMORY;
+        let got = engine().get_wasm_features();
+        assert_eq!(
+            got,
+            expected,
+            "engine wasm feature set drifted: extra={:?} missing={:?}",
+            got - expected,
+            expected - got
+        );
+        // Belt and braces on the capabilities that matter most for an
+        // in-process untrusted guest.
+        for f in [
+            F::THREADS,
+            F::SHARED_EVERYTHING_THREADS,
+            F::GC,
+            F::GC_TYPES,
+            F::EXCEPTIONS,
+            F::LEGACY_EXCEPTIONS,
+            F::STACK_SWITCHING,
+            F::MULTI_MEMORY,
+            F::CM_ASYNC,
+            F::CM_ASYNC_STACKFUL,
+            F::CM_THREADING,
+        ] {
+            assert!(!got.contains(f), "{f:?} must stay disabled");
+        }
+        assert!(!engine().get_concurrency_support());
+        assert!(engine().get_epoch_interruption());
     }
 
     /// Hand-assembled core module `(module (func (export "spin") (loop br 0)))`.

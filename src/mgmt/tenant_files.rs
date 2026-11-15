@@ -593,7 +593,7 @@ async fn upload_inner(
     // `false` arm is provably never read (`files.rs` pins the agreement).
     let policies = if crate::storage::files::publish_grant_lookup_required(upload_caller, requested)
     {
-        pool.with_reader(crate::storage::file_policy::load_file_policies)
+        pool.with_reader(|c| crate::storage::file_policy::load_file_policies(c))
             .await
             .map_err(|e| e.to_string())
     } else {

@@ -150,7 +150,7 @@ pub async fn list_file_policies(s: &DrustMcp) -> anyhow::Result<Value> {
     let policies = s
         .inner()
         .pool
-        .with_reader(load_file_policies)
+        .with_reader(|c| load_file_policies(c))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(json!({ "policies": policies }))
@@ -170,7 +170,7 @@ pub async fn public_upload_grants(s: &DrustMcp) -> anyhow::Result<Vec<(String, V
     let policies = s
         .inner()
         .pool
-        .with_reader(load_file_policies)
+        .with_reader(|c| load_file_policies(c))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(policies

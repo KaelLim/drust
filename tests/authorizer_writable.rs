@@ -22,9 +22,9 @@ pub fn seed(name: &str) -> tempfile::TempDir {
 #[test]
 fn insert_into_user_table_allowed() {
     let d = seed("alloc_insert");
-    let conn = open_write(d.path(), "alloc_insert").unwrap();
+    let mut conn = open_write(d.path(), "alloc_insert").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let sql = "INSERT INTO orders (qty) VALUES (1)";
     let r = conn.prepare(sql);
     assert!(
@@ -38,9 +38,9 @@ fn insert_into_user_table_allowed() {
 #[test]
 fn update_user_table_allowed() {
     let d = seed("alloc_update");
-    let conn = open_write(d.path(), "alloc_update").unwrap();
+    let mut conn = open_write(d.path(), "alloc_update").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let sql = "UPDATE orders SET qty = 2 WHERE id = 1";
     let r = conn.prepare(sql);
     assert!(
@@ -54,9 +54,9 @@ fn update_user_table_allowed() {
 #[test]
 fn delete_user_table_allowed() {
     let d = seed("alloc_delete");
-    let conn = open_write(d.path(), "alloc_delete").unwrap();
+    let mut conn = open_write(d.path(), "alloc_delete").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let sql = "DELETE FROM orders WHERE id = 1";
     let r = conn.prepare(sql);
     assert!(
@@ -70,9 +70,9 @@ fn delete_user_table_allowed() {
 #[test]
 fn pragma_table_info_allowed() {
     let d = seed("alloc_pragma_ti");
-    let conn = open_write(d.path(), "alloc_pragma_ti").unwrap();
+    let mut conn = open_write(d.path(), "alloc_pragma_ti").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let sql = "SELECT * FROM pragma_table_info('orders')";
     let r = conn.prepare(sql);
     assert!(
@@ -86,9 +86,9 @@ fn pragma_table_info_allowed() {
 #[test]
 fn pragma_writable_schema_ignored() {
     let d = seed("alloc_pragma_ws");
-    let conn = open_write(d.path(), "alloc_pragma_ws").unwrap();
+    let mut conn = open_write(d.path(), "alloc_pragma_ws").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     // Prepare succeeds because the authorizer's Pragma arm returns Ignore
     // (no-op) for any pragma not in the table_info/index_* whitelist —
     // including writable_schema. Ignore means the statement compiles but
@@ -101,13 +101,16 @@ fn pragma_writable_schema_ignored() {
         sql,
         r.err()
     );
+    // `Statement` has a Drop impl: release the prepared result before the
+    // `&mut` detach below.
+    drop(r);
     // Execute it too — should still be a no-op under Ignore semantics.
     let _ = conn.execute("PRAGMA writable_schema = 1", []);
     // Confirm the write was dropped: writable_schema must still report 0.
     // Detach first because the authorizer's Ignore arm also suppresses the
     // pragma-read, returning QueryReturnedNoRows; the assertion target is
     // the persisted DB state, not the in-authorizer query path.
-    detach_authorizer(&conn);
+    detach_authorizer(&mut conn);
     let val: i32 = conn
         .pragma_query_value(None, "writable_schema", |row| row.get(0))
         .unwrap();
@@ -121,9 +124,9 @@ fn pragma_writable_schema_ignored() {
 #[test]
 fn insert_into_system_users_denied() {
     let d = seed("t_ins_sys_users");
-    let conn = open_write(d.path(), "t_ins_sys_users").unwrap();
+    let mut conn = open_write(d.path(), "t_ins_sys_users").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare(
         "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) VALUES ('a','a','a','a','a')",
     );
@@ -137,9 +140,9 @@ fn insert_into_system_users_denied() {
 #[test]
 fn update_system_files_denied() {
     let d = seed("t_upd_sys_files");
-    let conn = open_write(d.path(), "t_upd_sys_files").unwrap();
+    let mut conn = open_write(d.path(), "t_upd_sys_files").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("UPDATE _system_files SET visibility = 'public'");
     assert!(
         r.is_err(),
@@ -151,9 +154,9 @@ fn update_system_files_denied() {
 #[test]
 fn drop_table_denied() {
     let d = seed("t_drop_table");
-    let conn = open_write(d.path(), "t_drop_table").unwrap();
+    let mut conn = open_write(d.path(), "t_drop_table").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("DROP TABLE orders");
     assert!(r.is_err(), "expected denial for: {}", "DROP TABLE orders");
 }
@@ -161,9 +164,9 @@ fn drop_table_denied() {
 #[test]
 fn alter_table_add_column_denied() {
     let d = seed("t_alter_table");
-    let conn = open_write(d.path(), "t_alter_table").unwrap();
+    let mut conn = open_write(d.path(), "t_alter_table").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("ALTER TABLE orders ADD COLUMN foo TEXT");
     assert!(
         r.is_err(),
@@ -175,9 +178,9 @@ fn alter_table_add_column_denied() {
 #[test]
 fn create_trigger_denied() {
     let d = seed("t_create_trigger");
-    let conn = open_write(d.path(), "t_create_trigger").unwrap();
+    let mut conn = open_write(d.path(), "t_create_trigger").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("CREATE TRIGGER tr AFTER INSERT ON orders BEGIN SELECT 1; END");
     assert!(
         r.is_err(),
@@ -189,9 +192,9 @@ fn create_trigger_denied() {
 #[test]
 fn attach_database_denied() {
     let d = seed("t_attach_db");
-    let conn = open_write(d.path(), "t_attach_db").unwrap();
+    let mut conn = open_write(d.path(), "t_attach_db").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("ATTACH DATABASE '/tmp/x.db' AS other");
     assert!(
         r.is_err(),
@@ -203,9 +206,9 @@ fn attach_database_denied() {
 #[test]
 fn begin_transaction_denied() {
     let d = seed("t_begin_txn");
-    let conn = open_write(d.path(), "t_begin_txn").unwrap();
+    let mut conn = open_write(d.path(), "t_begin_txn").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
     let r = conn.prepare("BEGIN TRANSACTION");
     assert!(r.is_err(), "expected denial for: {}", "BEGIN TRANSACTION");
 }
@@ -213,7 +216,7 @@ fn begin_transaction_denied() {
 #[test]
 fn case4_all_system_collections_insert_denied() {
     let d = seed("t");
-    let conn = open_write(d.path(), "t").unwrap();
+    let mut conn = open_write(d.path(), "t").unwrap();
 
     // open_write applies tenant_db::SCHEMA_SQL plus per-tenant migrations,
     // which now create _system_users / _system_sessions themselves. Use
@@ -242,7 +245,7 @@ fn case4_all_system_collections_insert_denied() {
     .unwrap();
 
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    attach_writable_authorizer(&conn, &search);
+    attach_writable_authorizer(&mut conn, &search);
 
     // One INSERT per protected _system_* collection, columns matching the
     // canonical CREATE TABLE in src/storage/tenant_db.rs SCHEMA_SQL and

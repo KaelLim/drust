@@ -149,6 +149,19 @@ guard could build, but shares the same per-statement attach/detach loop), and
 `referenced_user_tables` installs its own table-capturing authorizer. Both detach explicitly
 after each statement's prepare, before propagating its error.
 
+**Installing any connection hook needs `&mut Connection`** (rusqlite ≥ 0.41: swapping an
+authorizer / progress handler / preupdate hook frees the previous closure, so the borrow
+checker must prove no statement is alive). So `pool.with_reader` hands out `&mut Connection`,
+`AuthzGuard` and the executor's `DeadlineGuard` hold the connection exclusively and deref to
+it — guarded SQL is prepared THROUGH the guard (`let authz = AuthzGuard::readonly(c); let c:
+&Connection = &authz;`), which makes "every statement is dropped before the detach" a
+compile-time fact rather than a declaration-order convention. `rusqlite::Transaction` only
+lends `&Connection`, so `pool.with_writer_tx` hands its closure a drust
+`storage::pool::WriterTx` instead (deferred `BEGIN`/`COMMIT`, ROLLBACK on drop — exactly
+`Transaction`'s default semantics) that derefs mutably to the connection; that is what lets
+the in-transaction authorizer scans (`anon_rpc_dependents` in `drop_collection`,
+`scan_unsafe_anon_rpcs` in `migrate_tenant_db`, which opens a `WriterTx` directly) run.
+
 **Row authorization is on the PARENT.** `$fts` compiles to `"id" IN (SELECT rowid FROM
 "<head>" WHERE "<head>" MATCH ?)`; the unchanged owner/RLS/caps `WHERE` on the parent decides
 row access, so a User only searches their own rows. The head name is always

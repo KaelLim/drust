@@ -162,11 +162,12 @@ pub async fn list_records(
     let binds_for_list = binds.clone();
     let rows: Vec<serde_json::Value> = pool_list
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             run_bound_select(c, &list_sql_owned, &binds_for_list)
         })
         .await?;
@@ -189,11 +190,12 @@ pub async fn list_records(
     let binds_for_count = binds.clone();
     let total: i64 = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
@@ -307,11 +309,12 @@ pub async fn aggregate(s: &DrustMcp, args: AggregateArgs) -> anyhow::Result<serd
     let binds_owned = binds.clone();
     let rows: Vec<serde_json::Value> = pool_run
         .with_reader(move |c| -> rusqlite::Result<Vec<serde_json::Value>> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             run_bound_select(c, &sql_owned, &binds_owned)
         })
         .await?;
@@ -395,7 +398,7 @@ fn run_bound_select(
     binds: &[Value],
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();
@@ -430,7 +433,8 @@ pub async fn explain(s: &DrustMcp, sql: &str, _analyze: bool) -> anyhow::Result<
             // `explain` tool takes a raw statement, same camp as `/query`), so
             // it never carries a drust-compiled `$fts` and must not be able to
             // name a `_system_search_*` table by hand.
-            let _authz = AuthzGuard::readonly(c);
+            let authz = AuthzGuard::readonly(c);
+            let c: &rusqlite::Connection = &authz;
             let explain_sql = format!("EXPLAIN QUERY PLAN {sql_owned}");
             (|| -> rusqlite::Result<String> {
                 let mut stmt = c.prepare(&explain_sql)?;

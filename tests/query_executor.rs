@@ -18,10 +18,15 @@ fn seed() -> tempfile::TempDir {
 #[test]
 fn returns_rows_and_column_names() {
     let d = seed();
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
-    let out =
-        execute_read_query(&conn, "SELECT id, title FROM posts ORDER BY id", 10, 5_000).unwrap();
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
+    let out = execute_read_query(
+        &mut conn,
+        "SELECT id, title FROM posts ORDER BY id",
+        10,
+        5_000,
+    )
+    .unwrap();
     assert_eq!(out.column_names, vec!["id", "title"]);
     assert_eq!(out.rows.len(), 3);
     assert!(!out.truncated);
@@ -30,9 +35,9 @@ fn returns_rows_and_column_names() {
 #[test]
 fn enforces_row_cap() {
     let d = seed();
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
-    let out = execute_read_query(&conn, "SELECT * FROM posts", 2, 5_000).unwrap();
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
+    let out = execute_read_query(&mut conn, "SELECT * FROM posts", 2, 5_000).unwrap();
     assert_eq!(out.rows.len(), 2);
     assert!(out.truncated);
 }
@@ -40,19 +45,19 @@ fn enforces_row_cap() {
 #[test]
 fn rejects_too_large_sql() {
     let d = seed();
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     let big = format!("SELECT * FROM posts /* {} */", "x".repeat(20_000));
-    let err = execute_read_query(&conn, &big, 10, 5_000).unwrap_err();
+    let err = execute_read_query(&mut conn, &big, 10, 5_000).unwrap_err();
     assert!(matches!(err, ExecError::TooLarge { .. }));
 }
 
 #[test]
 fn forbidden_returns_forbidden_error() {
     let d = seed();
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
-    let err = execute_read_query(&conn, "DROP TABLE posts", 10, 5_000).unwrap_err();
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
+    let err = execute_read_query(&mut conn, "DROP TABLE posts", 10, 5_000).unwrap_err();
     assert!(matches!(err, ExecError::Forbidden { .. }));
 }
 
@@ -75,13 +80,13 @@ fn a_runaway_query_times_out_and_the_handler_is_removed_afterwards() {
         std::env::set_var("DRUST_QUERY_DEADLINE_MS", "300");
     }
     let d = seed();
-    let conn = open_read(d.path(), "t").unwrap();
-    attach_readonly_authorizer(&conn);
+    let mut conn = open_read(d.path(), "t").unwrap();
+    attach_readonly_authorizer(&mut conn);
     // ~2 billion iterations: many seconds uninterrupted, but count(*) is one row.
     let runaway = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 2000000000) SELECT count(*) FROM c";
 
     let start = std::time::Instant::now();
-    let err = execute_read_query(&conn, runaway, 10_000, 1_000_000).unwrap_err();
+    let err = execute_read_query(&mut conn, runaway, 10_000, 1_000_000).unwrap_err();
     let elapsed = start.elapsed();
     assert!(
         matches!(err, ExecError::Timeout(_)),
@@ -96,7 +101,7 @@ fn a_runaway_query_times_out_and_the_handler_is_removed_afterwards() {
     // a trivial query on the SAME connection must still succeed. If the handler
     // were still armed it would abort this immediately.
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let ok = execute_read_query(&conn, "SELECT count(*) FROM posts", 10, 5_000);
+    let ok = execute_read_query(&mut conn, "SELECT count(*) FROM posts", 10, 5_000);
     assert!(
         ok.is_ok(),
         "a stale deadline handler aborted an innocent later query: {ok:?}"
@@ -114,8 +119,8 @@ fn a_runaway_query_times_out_and_the_handler_is_removed_afterwards() {
     binds.insert("lim".to_string(), BoundValue::Int(2_000_000_000));
     let runaway_named = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < :lim) SELECT count(*) FROM c";
     let start2 = std::time::Instant::now();
-    let err2 =
-        execute_read_query_with_named(&conn, runaway_named, &binds, 10_000, 1_000_000).unwrap_err();
+    let err2 = execute_read_query_with_named(&mut conn, runaway_named, &binds, 10_000, 1_000_000)
+        .unwrap_err();
     let elapsed2 = start2.elapsed();
     assert!(
         matches!(err2, ExecError::Timeout(_)),

@@ -2,7 +2,7 @@
 name = "drust"
 version = "1.67.0"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.97"
 autotests = false
 
 [[bin]]
@@ -24,7 +24,7 @@ tower-http         = { version = "0.6", features = ["trace", "cors", "set-header
 rmcp               = { version = "1.5", features = ["server", "transport-streamable-http-server", "transport-worker"] }
 schemars           = "1"
 tower              = { version = "0.5", features = ["util"] }
-rusqlite           = { version = "0.40", features = ["bundled", "hooks", "preupdate_hook"] }
+rusqlite           = { version = "0.42", features = ["bundled", "hooks", "preupdate_hook"] }
 sqlite-vec         = "0.1"
 serde              = { version = "1", features = ["derive"] }
 serde_json         = { version = "1", features = ["preserve_order"] }
@@ -51,7 +51,7 @@ tokio-util         = { version = "0.7", features = ["io"] }
 futures            = "0.3"
 urlencoding        = "2"
 url                = "2"
-object_store       = { version = "0.13", features = ["aws"] }
+object_store       = { version = "0.14.2", features = ["aws"] }
 mime_guess         = "2"
 bytes              = "1"
 reqwest            = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "form"] }
@@ -61,8 +61,13 @@ tar                = { version = "0.4", default-features = false }
 zstd               = { version = "0.13", default-features = false }
 tempfile           = "3"
 prometheus         = { version = "0.14", default-features = false }
-wasmtime           = { version = "46", default-features = false, features = ["runtime", "component-model", "async", "parallel-compilation", "cranelift", "anyhow"] }
-wasmtime-wasi      = "46"
+wasmtime           = { version = "50.0.1", default-features = false, features = ["runtime", "component-model", "async", "parallel-compilation", "cranelift", "anyhow"] }
+# `p3` joined wasmtime-wasi's DEFAULT features in 50 (it was opt-in through 46)
+# and turns on wasmtime's `component-model-async` + `component-model-bytes`,
+# which in turn makes the engine accept component-model-async guests by
+# default. drust links only `p2`; listing the 46-era defaults keeps the guest
+# surface identical. `runtime::engine` also pins `concurrency_support(false)`.
+wasmtime-wasi      = { version = "50.0.1", default-features = false, features = ["p1", "p2"] }
 async-trait        = "0.1"
 regex-lite         = "0.1"
 croner = "3.0.1"

@@ -4,7 +4,12 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 /// Install the permissive allow-all callback. Non-panicking so
 /// [`AuthzGuard`]'s `Drop` can call it during an unwind (a second panic there
 /// would abort the process).
-fn install_allow_all(conn: &Connection) -> rusqlite::Result<()> {
+///
+/// Takes `&mut Connection` because rusqlite (0.41+) requires exclusive access
+/// to swap a hook: replacing the authorizer frees the previous boxed closure,
+/// so it must not be possible while a statement borrowed from the same
+/// connection could still invoke it.
+fn install_allow_all(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.authorizer(Some(|_ctx: AuthContext<'_>| -> Authorization {
         Authorization::Allow
     }))
@@ -18,41 +23,78 @@ fn install_allow_all(conn: &Connection) -> rusqlite::Result<()> {
 /// On a POOLED READER use [`AuthzGuard`] instead of a bare attach/detach
 /// pair: a `?` or a panic between the two skips this call and returns the
 /// reader to the pool still restricted.
-pub fn detach_authorizer(conn: &Connection) {
+pub fn detach_authorizer(conn: &mut Connection) {
     install_allow_all(conn).expect("detach (allow-all) authorizer must install");
 }
 
 /// RAII: attach on construction, allow-all on Drop — on `?`, early `return`
-/// AND panic unwind. Bind to a NAMED local (`let _authz = …`); `let _ = …`
+/// AND panic unwind. Bind to a NAMED local (`let authz = …`); `let _ = …`
 /// drops it on the spot and runs the statement unguarded.
+///
+/// The guard holds the connection EXCLUSIVELY (rusqlite needs `&mut` to swap
+/// the authorizer) and derefs to it, so every statement run while it is
+/// attached goes through the guard: `let authz = AuthzGuard::readonly(c);
+/// let c: &Connection = &authz;`. Statements borrow from the guard, so the
+/// borrow checker guarantees they are dropped BEFORE the Drop detaches.
 ///
 /// The constructors call the existing [`attach_readonly_authorizer`] /
 /// [`attach_search_readonly_authorizer`] verbatim, so the allowed set of each
 /// arm is exactly that function's. Bare attach/detach pairs remain only where
 /// the detach ORDER is load-bearing (`run_write_rpc` must detach before
 /// `RELEASE`) and in `validate_rpc_sql` / `referenced_user_tables`.
-#[must_use = "bind to a named local (`let _authz = …`); `let _ = …` detaches immediately"]
-pub(crate) struct AuthzGuard<'c>(Option<&'c Connection>);
+#[must_use = "bind to a named local (`let authz = …`); `let _ = …` detaches immediately"]
+pub(crate) struct AuthzGuard<'c> {
+    conn: &'c mut Connection,
+    /// `false` for [`AuthzGuard::none`]: nothing was attached, so Drop must
+    /// not touch the connection's authorizer either.
+    attached: bool,
+}
 
 impl<'c> AuthzGuard<'c> {
     /// The strict read-only arm — caller-SQL sites and drust SQL that never
     /// needs a search shadow.
-    pub(crate) fn readonly(c: &'c Connection) -> Self {
+    pub(crate) fn readonly(c: &'c mut Connection) -> Self {
         attach_readonly_authorizer(c);
-        Self(Some(c))
+        Self {
+            conn: c,
+            attached: true,
+        }
     }
 
     /// The additive search-reader arm — drust-BUILT SQL only (see
     /// [`attach_search_readonly_authorizer`]'s WARNING).
-    pub(crate) fn search_readonly(c: &'c Connection) -> Self {
+    pub(crate) fn search_readonly(c: &'c mut Connection) -> Self {
         attach_search_readonly_authorizer(c);
-        Self(Some(c))
+        Self {
+            conn: c,
+            attached: true,
+        }
     }
 
     /// No authorizer attached and none removed on Drop — for sites that
     /// attach conditionally (admin `_list` on a protected collection).
-    pub(crate) fn none() -> Self {
-        Self(None)
+    pub(crate) fn none(c: &'c mut Connection) -> Self {
+        Self {
+            conn: c,
+            attached: false,
+        }
+    }
+}
+
+impl std::ops::Deref for AuthzGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn
+    }
+}
+
+/// `DerefMut` exists so a guarded connection can arm a further RAII hook of
+/// its own (the read executor's `DeadlineGuard` progress handler) — never to
+/// swap the authorizer mid-guard.
+impl std::ops::DerefMut for AuthzGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn
     }
 }
 
@@ -61,8 +103,8 @@ impl Drop for AuthzGuard<'_> {
         // Never panic here: Drop runs during unwind, and a second panic
         // aborts. `authorizer()` only errors on a non-owned connection; if it
         // ever did, what stays installed is the STRICTER arm (fail-closed).
-        if let Some(c) = self.0 {
-            let _ = install_allow_all(c);
+        if self.attached {
+            let _ = install_allow_all(self.conn);
         }
     }
 }
@@ -70,7 +112,7 @@ impl Drop for AuthzGuard<'_> {
 /// Attach the read-only authorizer. Every SQL action is inspected; anything
 /// outside the whitelist is denied. Paired with `SQLITE_OPEN_READONLY` at
 /// connection-open time for defense in depth.
-pub fn attach_readonly_authorizer(conn: &Connection) {
+pub fn attach_readonly_authorizer(conn: &mut Connection) {
     conn.authorizer(Some(|ctx: AuthContext<'_>| -> Authorization {
         match ctx.action {
             AuthAction::Select => Authorization::Allow,
@@ -152,7 +194,7 @@ pub fn attach_readonly_authorizer(conn: &Connection) {
 /// plain SELECT, so a Deny there fails the whole statement. Allowing the
 /// *authorization* is safe on this connection class only: `SQLITE_OPEN_READONLY`
 /// + `query_only` + DEFENSIVE make executing any write impossible.
-pub fn attach_search_readonly_authorizer(conn: &Connection) {
+pub fn attach_search_readonly_authorizer(conn: &mut Connection) {
     conn.authorizer(Some(|ctx: AuthContext<'_>| -> Authorization {
         match ctx.action {
             AuthAction::Select => Authorization::Allow,
@@ -255,7 +297,7 @@ pub fn attach_search_readonly_authorizer(conn: &Connection) {
 ///     is what refuses direct SQL on them;
 ///   * anything else — the pre-existing protected-collection decision.
 pub fn attach_writable_authorizer(
-    conn: &Connection,
+    conn: &mut Connection,
     search: &crate::storage::search_names::SearchTables,
 ) {
     let search = search.clone();
@@ -369,8 +411,8 @@ mod auth_tests {
     #[test]
     fn anon_cannot_select_system_rpc() {
         let tmp = fresh_with_rpc_table();
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
-        attach_readonly_authorizer(&conn);
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
+        attach_readonly_authorizer(&mut conn);
         let r: rusqlite::Result<i64> =
             conn.query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0));
         assert!(r.is_err(), "expected denial, got {:?}", r);
@@ -379,8 +421,8 @@ mod auth_tests {
     #[test]
     fn anon_cannot_select_system_files() {
         let tmp = fresh_with_rpc_table();
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
-        attach_readonly_authorizer(&conn);
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
+        attach_readonly_authorizer(&mut conn);
         let r: rusqlite::Result<i64> =
             conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0));
         assert!(r.is_err(), "expected denial, got {:?}", r);
@@ -389,8 +431,8 @@ mod auth_tests {
     #[test]
     fn anon_cannot_select_system_collection_meta() {
         let tmp = fresh_with_rpc_table();
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
-        attach_readonly_authorizer(&conn);
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
+        attach_readonly_authorizer(&mut conn);
         let r: rusqlite::Result<i64> =
             conn.query_row("SELECT COUNT(*) FROM _system_collection_meta", [], |r| {
                 r.get(0)
@@ -415,17 +457,18 @@ mod auth_tests {
     #[test]
     fn guard_detaches_on_question_mark_early_return() {
         let tmp = fresh_with_rpc_table();
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
 
-        fn probe(c: &Connection) -> rusqlite::Result<()> {
-            let _authz = AuthzGuard::readonly(c);
+        fn probe(c: &mut Connection) -> rusqlite::Result<()> {
+            let authz = AuthzGuard::readonly(c);
+            let c: &Connection = &authz;
             let m = master_count(c);
             assert!(is_auth_denied(&m), "guard must be attached, got {m:?}");
             c.query_row("SELECT 1 FROM no_such_table", [], |_| Ok(()))?;
             Ok(())
         }
 
-        assert!(probe(&conn).is_err(), "probe must early-return on `?`");
+        assert!(probe(&mut conn).is_err(), "probe must early-return on `?`");
         master_count(&conn).expect("allow-all must be back after a `?` early return");
         let rpc: i64 = conn
             .query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0))
@@ -436,11 +479,11 @@ mod auth_tests {
     #[test]
     fn guard_detaches_on_panic() {
         let tmp = fresh_with_rpc_table();
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
 
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _authz = AuthzGuard::readonly(&conn);
-            assert!(is_auth_denied(&master_count(&conn)));
+            let authz = AuthzGuard::readonly(&mut conn);
+            assert!(is_auth_denied(&master_count(&authz)));
             panic!("boom");
         }));
         assert!(r.is_err(), "the closure must really have panicked");
@@ -459,8 +502,9 @@ mod auth_tests {
             )
             .unwrap();
         }
-        let conn = open_read(tmp.path(), "rpcauth").unwrap();
-        let _authz = AuthzGuard::readonly(&conn);
+        let mut conn = open_read(tmp.path(), "rpcauth").unwrap();
+        let authz = AuthzGuard::readonly(&mut conn);
+        let conn: &Connection = &authz;
         for t in [
             "_system_rpc",
             "_system_files",
@@ -495,12 +539,12 @@ mod auth_tests {
             crate::storage::pool::TenantPool::new(tmp.path().to_path_buf(), "e7pool", 1).unwrap();
         let first = pool
             .with_reader(|c| {
-                let _authz = AuthzGuard::readonly(c);
-                c.query_row("SELECT 1 FROM missing", [], |_| Ok(()))
+                let authz = AuthzGuard::readonly(c);
+                authz.query_row("SELECT 1 FROM missing", [], |_| Ok(()))
             })
             .await;
         assert!(first.is_err());
-        pool.with_reader(master_count)
+        pool.with_reader(|c| master_count(c))
             .await
             .expect("the pooled reader must come back unrestricted");
     }
@@ -573,31 +617,31 @@ mod search_arm_tests {
     #[test]
     fn search_reader_admits_the_fts_shape_and_the_strict_reader_denies_it() {
         let tmp = fts_fixture();
-        let conn = open_read(tmp.path(), TENANT).unwrap();
+        let mut conn = open_read(tmp.path(), TENANT).unwrap();
         let q = fts_query();
 
-        attach_readonly_authorizer(&conn);
+        attach_readonly_authorizer(&mut conn);
         let strict: rusqlite::Result<i64> = conn.query_row(&q, ["alpha"], |r| r.get(0));
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         assert!(
             strict.is_err(),
             "the STRICT reader must keep denying a _system_search_* read (it is the arm \
              caller-authored SQL runs under), got {strict:?}"
         );
 
-        attach_search_readonly_authorizer(&conn);
+        attach_search_readonly_authorizer(&mut conn);
         let hit: i64 = conn
             .query_row(&q, ["alpha"], |r| r.get(0))
             .expect("the search reader must admit the compiled $fts shape end to end");
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         assert_eq!(hit, 1);
     }
 
     #[test]
     fn search_reader_admits_rank_ordering_through_the_module_internals() {
         let tmp = fts_fixture();
-        let conn = open_read(tmp.path(), TENANT).unwrap();
-        attach_search_readonly_authorizer(&conn);
+        let mut conn = open_read(tmp.path(), TENANT).unwrap();
+        attach_search_readonly_authorizer(&mut conn);
         let h = head();
         let ranked: Vec<i64> = conn
             .prepare(&format!(
@@ -608,15 +652,15 @@ mod search_arm_tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .expect("stepping must survive fts5's internal shadow reads");
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         assert_eq!(ranked.len(), 2, "both seeded rows should match: {ranked:?}");
     }
 
     #[test]
     fn search_reader_does_not_widen_anything_else() {
         let tmp = fts_fixture();
-        let conn = open_read(tmp.path(), TENANT).unwrap();
-        attach_search_readonly_authorizer(&conn);
+        let mut conn = open_read(tmp.path(), TENANT).unwrap();
+        attach_search_readonly_authorizer(&mut conn);
 
         let attach = conn.execute_batch("ATTACH DATABASE ':memory:' AS side");
         assert!(attach.is_err(), "ATTACH must stay denied, got {attach:?}");
@@ -664,18 +708,18 @@ mod search_arm_tests {
                 || msg.contains("ReadOnly"),
             "internal-shadow write on the reader must be stopped below the authorizer, got {msg}"
         );
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
     }
 
     #[test]
     fn writable_arm_syncs_via_triggers_but_refuses_hand_written_shadow_dml() {
         let tmp = fts_fixture();
-        let conn = open_write(tmp.path(), TENANT).unwrap();
+        let mut conn = open_write(tmp.path(), TENANT).unwrap();
         let search = snapshot_search_tables(&conn).unwrap();
         let h = head();
 
         conn.execute_batch("SAVEPOINT drust_rpc_v2").unwrap();
-        attach_writable_authorizer(&conn, &search);
+        attach_writable_authorizer(&mut conn, &search);
 
         // 1. The parent write is admitted; the sync triggers may write the head.
         conn.execute(
@@ -713,8 +757,11 @@ mod search_arm_tests {
             sysw.is_err(),
             "a non-search _system_* write must stay denied, got {sysw:?}"
         );
+        // `Statement` has a Drop impl, so the Result keeps `conn` borrowed to
+        // end of scope unless released before the `&mut` detach.
+        drop(sysw);
 
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         conn.execute_batch("RELEASE drust_rpc_v2").unwrap();
 
         let hit: i64 = conn
@@ -742,7 +789,7 @@ mod search_arm_tests {
         use crate::rpc::registry::RpcMode;
 
         let tmp = fts_fixture();
-        let conn = open_write(tmp.path(), TENANT).unwrap();
+        let mut conn = open_write(tmp.path(), TENANT).unwrap();
         let h = head();
 
         for sql in [
@@ -751,7 +798,7 @@ mod search_arm_tests {
             format!(r#"SELECT rowid FROM "{h}" WHERE "{h}" MATCH 'alpha'"#),
             format!(r#"SELECT k, v FROM "{h}_config""#),
         ] {
-            let err = validate_rpc_sql(&conn, &sql, RpcMode::Read).expect_err(&format!(
+            let err = validate_rpc_sql(&mut conn, &sql, RpcMode::Read).expect_err(&format!(
                 "a read RPC must NOT be allowed to name a search shadow: {sql}"
             ));
             let msg = format!("{err}");
@@ -767,7 +814,7 @@ mod search_arm_tests {
 
         // Control: the same validation still accepts an ordinary user table,
         // so the rejections above are the search gate and not a blanket no.
-        validate_rpc_sql(&conn, r#"SELECT id, title FROM "notes""#, RpcMode::Read)
+        validate_rpc_sql(&mut conn, r#"SELECT id, title FROM "notes""#, RpcMode::Read)
             .expect("an ordinary read RPC must still validate");
     }
 
@@ -780,11 +827,11 @@ mod search_arm_tests {
         use crate::rpc::registry::RpcMode;
 
         let tmp = fts_fixture();
-        let conn = open_write(tmp.path(), TENANT).unwrap();
+        let mut conn = open_write(tmp.path(), TENANT).unwrap();
         let h = head();
 
         validate_rpc_sql(
-            &conn,
+            &mut conn,
             r#"UPDATE "notes" SET title = 'x' WHERE id = 1"#,
             RpcMode::Write,
         )
@@ -794,7 +841,7 @@ mod search_arm_tests {
             format!(r#"INSERT INTO "{h}"(rowid, title, body) VALUES (1, 'a', 'b')"#),
             format!(r#"DELETE FROM "{h}_data""#),
         ] {
-            validate_rpc_sql(&conn, &sql, RpcMode::Write).expect_err(&format!(
+            validate_rpc_sql(&mut conn, &sql, RpcMode::Write).expect_err(&format!(
                 "a write RPC must not hand-write a search table: {sql}"
             ));
         }
@@ -812,7 +859,7 @@ mod search_arm_tests {
         use crate::rpc::registry::RpcMode;
 
         let tmp = fts_fixture();
-        let conn = open_write(tmp.path(), TENANT).unwrap();
+        let mut conn = open_write(tmp.path(), TENANT).unwrap();
         // A real table under the protected prefix (what a service could create
         // before the create-time guard; the authorizer must deny it regardless).
         conn.execute_batch(
@@ -825,13 +872,13 @@ mod search_arm_tests {
             r#"INSERT INTO "_system_search_leak"(secret) VALUES ('x')"#,
             r#"DELETE FROM "_system_search_leak""#,
         ] {
-            validate_rpc_sql(&conn, sql, RpcMode::Write).expect_err(&format!(
+            validate_rpc_sql(&mut conn, sql, RpcMode::Write).expect_err(&format!(
                 "a write RPC must not reach an ordinary _system_search_ table: {sql}"
             ));
         }
         // And a READ of it is denied at validation too (strict read arm).
         validate_rpc_sql(
-            &conn,
+            &mut conn,
             r#"SELECT secret FROM "_system_search_leak""#,
             RpcMode::Read,
         )
@@ -848,14 +895,15 @@ mod search_arm_tests {
     #[test]
     fn search_guard_admits_fts_and_strict_guard_denies_it_and_both_detach() {
         let tmp = fts_fixture();
-        let conn = open_read(tmp.path(), TENANT).unwrap();
+        let mut conn = open_read(tmp.path(), TENANT).unwrap();
         let q = fts_query();
         let master = |c: &Connection| -> rusqlite::Result<i64> {
             c.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
         };
 
         {
-            let _authz = AuthzGuard::readonly(&conn);
+            let authz = AuthzGuard::readonly(&mut conn);
+            let conn: &Connection = &authz;
             let strict: rusqlite::Result<i64> = conn.query_row(&q, ["alpha"], |r| r.get(0));
             assert!(
                 is_auth_denied(&strict),
@@ -863,12 +911,13 @@ mod search_arm_tests {
             );
         }
         {
-            let _authz = AuthzGuard::search_readonly(&conn);
+            let authz = AuthzGuard::search_readonly(&mut conn);
+            let conn: &Connection = &authz;
             let hit: i64 = conn
                 .query_row(&q, ["alpha"], |r| r.get(0))
                 .expect("search guard admits the compiled $fts shape");
             assert_eq!(hit, 1);
-            let m = master(&conn);
+            let m = master(conn);
             assert!(is_auth_denied(&m), "sqlite_master stays denied, got {m:?}");
             let rpc: rusqlite::Result<i64> =
                 conn.query_row("SELECT COUNT(*) FROM _system_rpc", [], |r| r.get(0));
@@ -878,8 +927,8 @@ mod search_arm_tests {
             );
         }
         {
-            let _authz = AuthzGuard::none();
-            master(&conn).expect("none() attaches nothing");
+            let authz = AuthzGuard::none(&mut conn);
+            master(&authz).expect("none() attaches nothing");
         }
         master(&conn).expect("allow-all after every guard dropped");
     }

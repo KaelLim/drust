@@ -1024,7 +1024,7 @@ pub async fn rpc_test_run(
         Some(n) => n,
         None => return (StatusCode::NOT_FOUND, "tenant not found").into_response(),
     };
-    let conn = match open_read(&state.data_dir, &tenant_id) {
+    let mut conn = match open_read(&state.data_dir, &tenant_id) {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -1130,7 +1130,7 @@ pub async fn rpc_test_run(
 
             let started = std::time::Instant::now();
             let exec_result = crate::query::executor::execute_read_query_with_named(
-                &conn,
+                &mut conn,
                 &stored.sql,
                 &bound,
                 1_000,

@@ -173,7 +173,7 @@ pub fn execute_one(
     } else {
         // Rows-returning (SELECT or RETURNING). Mirrors
         // execute_read_query_with_named_inner (src/query/executor.rs).
-        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
         let col_count = column_names.len();
         let mut rows: Vec<Vec<crate::query::executor::Cell>> = Vec::new();
         let mut types: Vec<String> = vec!["null".into(); col_count];
@@ -782,15 +782,15 @@ mod tests {
         use crate::rpc::params::BoundValue;
         use std::collections::BTreeMap;
         let d = tempfile::tempdir().unwrap();
-        let conn = crate::storage::tenant_db::open_write(d.path(), "denied").unwrap();
+        let mut conn = crate::storage::tenant_db::open_write(d.path(), "denied").unwrap();
         conn.execute_batch("CREATE TABLE metrics (n INTEGER);")
             .unwrap();
         let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
 
         let search = crate::storage::search_names::snapshot_search_tables(&conn).unwrap();
-        crate::query::authorizer::attach_writable_authorizer(&conn, &search);
+        crate::query::authorizer::attach_writable_authorizer(&mut conn, &search);
         let e = execute_one(&conn, "DROP TABLE metrics", &binds, 1).unwrap_err();
-        crate::query::authorizer::detach_authorizer(&conn);
+        crate::query::authorizer::detach_authorizer(&mut conn);
 
         assert!(
             e.authorizer_denied,

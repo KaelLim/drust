@@ -218,22 +218,22 @@ fn fts_fixture() -> TempDir {
 #[test]
 fn search_reader_admits_shadow_but_strict_reader_denies() {
     let tmp = fts_fixture();
-    let conn = open_read(tmp.path(), TENANT).unwrap();
+    let mut conn = open_read(tmp.path(), TENANT).unwrap();
 
-    crate::query::authorizer::attach_readonly_authorizer(&conn);
+    crate::query::authorizer::attach_readonly_authorizer(&mut conn);
     let strict: rusqlite::Result<i64> = conn.query_row(FTS_QUERY, ["alpha"], |r| r.get(0));
-    crate::query::authorizer::detach_authorizer(&conn);
+    crate::query::authorizer::detach_authorizer(&mut conn);
     assert!(
         strict.is_err(),
         "the STRICT arm must keep denying _system_search_* reads — it is what a \
          stored read-RPC body runs under; got {strict:?}"
     );
 
-    crate::query::authorizer::attach_search_readonly_authorizer(&conn);
+    crate::query::authorizer::attach_search_readonly_authorizer(&mut conn);
     let admitted: i64 = conn
         .query_row(FTS_QUERY, ["alpha"], |r| r.get(0))
         .expect("the search reader must admit the compiled $fts shape");
-    crate::query::authorizer::detach_authorizer(&conn);
+    crate::query::authorizer::detach_authorizer(&mut conn);
     assert_eq!(admitted, 1);
 }
 
@@ -319,7 +319,7 @@ fn sync_triggers_are_same_tx_and_rollback_atomically() {
 #[test]
 fn writable_authorizer_allows_trigger_shadow_sync() {
     let tmp = fts_fixture();
-    let conn = open_write(tmp.path(), TENANT).unwrap();
+    let mut conn = open_write(tmp.path(), TENANT).unwrap();
     // A control collection with NO fts triggers, so the assertions below prove
     // something about triggers and not about the fixture (verifier finding:
     // without this control the test could pass for the wrong reason).
@@ -344,7 +344,7 @@ fn writable_authorizer_allows_trigger_shadow_sync() {
     // → RELEASE. A verifier additionally drove the REAL run_write_rpc (pool +
     // preupdate hook + quota) against this fixture, so the mimic is faithful.
     conn.execute_batch("SAVEPOINT spike_rpc").unwrap();
-    crate::query::authorizer::attach_writable_authorizer(&conn, &search);
+    crate::query::authorizer::attach_writable_authorizer(&mut conn, &search);
     let r = conn.execute(
         r#"INSERT INTO "notes"(title, body) VALUES ('zeta note', 'from rpc')"#,
         [],
@@ -357,7 +357,7 @@ fn writable_authorizer_allows_trigger_shadow_sync() {
              VALUES (99, 'evil', 'evil')"#,
         [],
     );
-    crate::query::authorizer::detach_authorizer(&conn);
+    crate::query::authorizer::detach_authorizer(&mut conn);
     conn.execute_batch("RELEASE spike_rpc").unwrap();
 
     r.expect("the parent INSERT (and its trigger-driven shadow sync) must now succeed");

@@ -97,7 +97,7 @@ pub async fn list_file_policies(
     if let Err(resp) = require_service(&t) {
         return resp;
     }
-    match t.pool.with_reader(load_file_policies).await {
+    match t.pool.with_reader(|c| load_file_policies(c)).await {
         Ok(policies) => Json(json!({ "policies": policies })).into_response(),
         Err(e) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,

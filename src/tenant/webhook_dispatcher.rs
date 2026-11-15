@@ -368,7 +368,11 @@ impl WebhookDispatcher {
         let resolver_for_cache: Arc<dyn reqwest::dns::Resolve + Send + Sync> = resolver_override
             .clone()
             .unwrap_or_else(|| Arc::new(crate::tenant::webhook_resolver::PinnedPublicResolver));
+        // HTTP/1.1 only, here and in the per-attempt builder below: object_store
+        // 0.14 turns on reqwest's `http2` feature through feature unification,
+        // and a webhook receiver must keep seeing the protocol it always has.
         let cached_client = reqwest::Client::builder()
+            .http1_only()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
@@ -1033,6 +1037,7 @@ async fn deliver_inner(
                 shared.clone()
             } else {
                 let mut b = reqwest::Client::builder()
+                    .http1_only()
                     .connect_timeout(Duration::from_secs(5))
                     .timeout(Duration::from_secs(10))
                     .redirect(reqwest::redirect::Policy::none())

@@ -42,7 +42,11 @@ pub enum PrepareError {
 /// connection for BOTH modes; callers should dispatch through
 /// `pool.with_reader` (avoids the per-tenant writer mutex on every
 /// admin-form save).
-pub fn validate_rpc_sql(conn: &Connection, sql: &str, mode: RpcMode) -> Result<(), PrepareError> {
+pub fn validate_rpc_sql(
+    conn: &mut Connection,
+    sql: &str,
+    mode: RpcMode,
+) -> Result<(), PrepareError> {
     // Preserve pre-C5 behaviour: an empty body was rejected because
     // `conn.prepare("")` errors with "no SQL". The new split-then-prepare
     // path would otherwise loop zero times and silently accept "".
@@ -140,7 +144,7 @@ pub const RPC_ANON_OWNER_SCOPED: &str = "RPC_ANON_OWNER_SCOPED";
 /// runs before this guard. In read mode an unexpected write action is denied
 /// outright (validate should already have rejected it).
 pub fn guard_anon_owner_scoped_rpc(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     params: &[ParamSpec],
     anon_callable: bool,
@@ -210,7 +214,7 @@ pub fn guard_anon_owner_scoped_rpc(
 /// read mode an unexpected write action is denied outright (validate should
 /// already have rejected it).
 fn referenced_user_tables(
-    conn: &Connection,
+    conn: &mut Connection,
     sql: &str,
     mode: RpcMode,
 ) -> Result<HashSet<String>, PrepareError> {
@@ -342,7 +346,7 @@ fn sql_binds_owner_to_user_id(sql: &str, owner_col: &str) -> bool {
 /// would. The owner-scope config path is service-only + rare, so the per-RPC
 /// probe is off the hot path.
 pub fn guard_owner_scope_change_against_anon_rpcs(
-    conn: &Connection,
+    conn: &mut Connection,
     collection: &str,
     new_owner_field: &str,
 ) -> Result<(), PrepareError> {
@@ -390,7 +394,7 @@ pub fn guard_owner_scope_change_against_anon_rpcs(
 /// uses this to neutralize them fail-closed. Read-only; the caller performs the
 /// remediation. Reuses [`guard_anon_owner_scoped_rpc`] so "unsafe" means exactly
 /// what the create/update guard means.
-pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareError> {
+pub fn scan_unsafe_anon_rpcs(conn: &mut Connection) -> Result<Vec<String>, PrepareError> {
     let rpcs = crate::rpc::registry::list(conn)
         .map_err(|e| PrepareError::Rejected(format!("rpc scan failed: {e}")))?;
     let mut unsafe_names = Vec::new();
@@ -429,7 +433,7 @@ pub fn scan_unsafe_anon_rpcs(conn: &Connection) -> Result<Vec<String>, PrepareEr
 /// write, not roll it back) and reuses [`referenced_user_tables`] so it sees
 /// exactly the tables the runtime would.
 pub fn guard_policy_change_against_anon_rpcs(
-    conn: &Connection,
+    conn: &mut Connection,
     collection: &str,
 ) -> Result<(), PrepareError> {
     let rpcs = crate::rpc::registry::list(conn)
@@ -469,7 +473,7 @@ pub fn guard_policy_change_against_anon_rpcs(
 /// values (inheriting the stored `mode`). A missing stored row is a no-op — the
 /// update itself will 404.
 pub fn guard_anon_owner_scoped_rpc_update(
-    conn: &Connection,
+    conn: &mut Connection,
     name: &str,
     new_sql: Option<&str>,
     new_params: Option<&[ParamSpec]>,
@@ -574,7 +578,7 @@ pub(crate) struct AnonRpcDependent {
 /// `referenced_user_tables` swaps authorizers (it always detaches its own).
 /// `collection` is an `identifier()`, i.e. already lowercase.
 pub(crate) fn anon_rpc_dependents(
-    conn: &Connection,
+    conn: &mut Connection,
     collection: &str,
 ) -> rusqlite::Result<Vec<AnonRpcDependent>> {
     use crate::rpc::registry::RpcKind;
@@ -898,9 +902,9 @@ mod tests {
 
     #[test]
     fn valid_select_passes() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         validate_rpc_sql(
-            &conn,
+            &mut conn,
             "SELECT id, body FROM posts WHERE id = :id",
             RpcMode::Read,
         )
@@ -909,61 +913,62 @@ mod tests {
 
     #[test]
     fn syntax_error_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "SELECT FROM", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err = validate_rpc_sql(&mut conn, "SELECT FROM", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn update_rejected() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         let err =
-            validate_rpc_sql(&conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
+            validate_rpc_sql(&mut conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn delete_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "DELETE FROM posts", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err = validate_rpc_sql(&mut conn, "DELETE FROM posts", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn attach_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "ATTACH 'other.db' AS x", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err = validate_rpc_sql(&mut conn, "ATTACH 'other.db' AS x", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn sqlite_master_rejected() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         let err =
-            validate_rpc_sql(&conn, "SELECT * FROM sqlite_master", RpcMode::Read).unwrap_err();
+            validate_rpc_sql(&mut conn, "SELECT * FROM sqlite_master", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn unknown_table_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "SELECT * FROM nope", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err = validate_rpc_sql(&mut conn, "SELECT * FROM nope", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn system_rpc_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "SELECT * FROM _system_rpc", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err =
+            validate_rpc_sql(&mut conn, "SELECT * FROM _system_rpc", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
     #[test]
     fn empty_body_rejected() {
-        let (_t, conn) = fresh();
-        let err = validate_rpc_sql(&conn, "", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let err = validate_rpc_sql(&mut conn, "", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
-        let err = validate_rpc_sql(&conn, "   \n\t  ", RpcMode::Read).unwrap_err();
+        let err = validate_rpc_sql(&mut conn, "   \n\t  ", RpcMode::Read).unwrap_err();
         matches!(err, PrepareError::Rejected(_));
     }
 
@@ -974,8 +979,8 @@ mod tests {
         // the read authorizer would Deny but a detached connection
         // accepts at prepare time (rusqlite returns Ok; step would fail
         // on a real readonly handle but this conn is a writer).
-        let (_t, conn) = fresh();
-        validate_rpc_sql(&conn, "SELECT id FROM posts", RpcMode::Read).unwrap();
+        let (_t, mut conn) = fresh();
+        validate_rpc_sql(&mut conn, "SELECT id FROM posts", RpcMode::Read).unwrap();
         let r = conn.prepare("DROP TABLE posts");
         assert!(r.is_ok(), "authorizer leaked after success: {:?}", r.err());
     }
@@ -985,8 +990,9 @@ mod tests {
         // Mirror of the success path: even if validate Rejects, the
         // detach in the body must run so the connection is clean for
         // the next user.
-        let (_t, conn) = fresh();
-        let _ = validate_rpc_sql(&conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
+        let (_t, mut conn) = fresh();
+        let _ =
+            validate_rpc_sql(&mut conn, "UPDATE posts SET body = 'x'", RpcMode::Read).unwrap_err();
         let r = conn.prepare("DROP TABLE posts");
         assert!(r.is_ok(), "authorizer leaked after failure: {:?}", r.err());
     }
@@ -1003,7 +1009,7 @@ mod tests {
     #[test]
     fn enumerating_guards_skip_query_kind() {
         use crate::rpc::registry::{self, RpcCreate, RpcKind};
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         conn.execute_batch(
             "CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INTEGER, user_id TEXT);",
         )
@@ -1034,11 +1040,11 @@ mod tests {
         )
         .unwrap();
 
-        guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id")
+        guard_owner_scope_change_against_anon_rpcs(&mut conn, "orders", "user_id")
             .expect("owner-scope guard must skip query-kind rows");
-        guard_policy_change_against_anon_rpcs(&conn, "orders")
+        guard_policy_change_against_anon_rpcs(&mut conn, "orders")
             .expect("policy guard must skip query-kind rows");
-        let flagged = scan_unsafe_anon_rpcs(&conn).unwrap();
+        let flagged = scan_unsafe_anon_rpcs(&mut conn).unwrap();
         assert!(
             flagged.is_empty(),
             "legacy scan must not neutralize query-kind rows, got {flagged:?}"
@@ -1046,9 +1052,9 @@ mod tests {
         // The per-row UPDATE guard is the fourth RPC_ANON_OWNER_SCOPED site and
         // skips query rows for the same reason — including the hostile fixture,
         // so `kind` (not an empty sql column) is what makes it pass.
-        guard_anon_owner_scoped_rpc_update(&conn, "q", None, None, Some(true))
+        guard_anon_owner_scoped_rpc_update(&mut conn, "q", None, None, Some(true))
             .expect("update guard must skip query-kind rows");
-        guard_anon_owner_scoped_rpc_update(&conn, "qraw", None, None, Some(true))
+        guard_anon_owner_scoped_rpc_update(&mut conn, "qraw", None, None, Some(true))
             .expect("update guard must decide on kind, not on the sql column");
         let still_anon: i64 = conn
             .query_row(
@@ -1075,10 +1081,17 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(guard_owner_scope_change_against_anon_rpcs(&conn, "orders", "user_id").is_err());
-        assert!(guard_policy_change_against_anon_rpcs(&conn, "orders").is_err());
-        assert_eq!(scan_unsafe_anon_rpcs(&conn).unwrap(), vec!["s".to_string()]);
-        assert!(guard_anon_owner_scoped_rpc_update(&conn, "s", None, None, Some(true)).is_err());
+        assert!(
+            guard_owner_scope_change_against_anon_rpcs(&mut conn, "orders", "user_id").is_err()
+        );
+        assert!(guard_policy_change_against_anon_rpcs(&mut conn, "orders").is_err());
+        assert_eq!(
+            scan_unsafe_anon_rpcs(&mut conn).unwrap(),
+            vec!["s".to_string()]
+        );
+        assert!(
+            guard_anon_owner_scoped_rpc_update(&mut conn, "s", None, None, Some(true)).is_err()
+        );
     }
 
     /// A query row over `orders`, created through the registry so the kind
@@ -1256,7 +1269,7 @@ mod tests {
         .unwrap();
     }
 
-    fn dependent_names(conn: &Connection, collection: &str) -> Vec<String> {
+    fn dependent_names(conn: &mut Connection, collection: &str) -> Vec<String> {
         anon_rpc_dependents(conn, collection)
             .unwrap()
             .into_iter()
@@ -1267,7 +1280,7 @@ mod tests {
     #[test]
     fn anon_rpc_dependents_lists_both_kinds_and_skips_the_rest() {
         use crate::rpc::registry::RpcKind;
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         conn.execute_batch("CREATE TABLE other (id INTEGER PRIMARY KEY);")
             .unwrap();
         seed_query_row(&conn, "q", r#"{"collection":"posts"}"#, true);
@@ -1284,7 +1297,7 @@ mod tests {
         seed_sql_row(&conn, "s_other", "SELECT id FROM other", true);
         seed_sql_row(&conn, "s_off", "SELECT id FROM posts", false);
 
-        let deps = anon_rpc_dependents(&conn, "posts").unwrap();
+        let deps = anon_rpc_dependents(&mut conn, "posts").unwrap();
         let got: Vec<(&str, RpcKind)> = deps.iter().map(|d| (d.name.as_str(), d.kind)).collect();
         assert_eq!(
             got,
@@ -1295,7 +1308,7 @@ mod tests {
 
     #[test]
     fn anon_rpc_dependents_survives_a_row_with_bad_params_json() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         seed_sql_row(&conn, "s", "SELECT id FROM posts", true);
         conn.execute(
             "INSERT INTO _system_rpc (name, sql, params_json, anon_callable, kind, mode)
@@ -1304,7 +1317,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(dependent_names(&conn, "posts"), ["s", "s_badparams"]);
+        assert_eq!(dependent_names(&mut conn, "posts"), ["s", "s_badparams"]);
         // Control: the registry listing fails the whole batch on that one row,
         // which is exactly why the scan reads `_system_rpc` itself.
         assert!(crate::rpc::registry::list(&conn).is_err());
@@ -1312,7 +1325,7 @@ mod tests {
 
     #[test]
     fn anon_rpc_dependents_falls_back_to_text_when_sql_cannot_prepare() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         seed_sql_row(
             &conn,
             "s_ghost",
@@ -1321,14 +1334,14 @@ mod tests {
         );
         seed_sql_row(&conn, "s_ghost_only", "SELECT * FROM ghost", true);
         // An unpreparable body errs toward LISTING when its text names the table.
-        assert_eq!(dependent_names(&conn, "posts"), ["s_ghost"]);
+        assert_eq!(dependent_names(&mut conn, "posts"), ["s_ghost"]);
     }
 
     #[test]
     fn anon_rpc_dependents_leaves_no_capturing_authorizer() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         seed_sql_row(&conn, "s", "SELECT id FROM posts", true);
-        anon_rpc_dependents(&conn, "posts").unwrap();
+        anon_rpc_dependents(&mut conn, "posts").unwrap();
         let r = conn.prepare("SELECT 1 FROM posts");
         assert!(r.is_ok(), "authorizer leaked: {:?}", r.err());
         drop(r);
@@ -1338,8 +1351,8 @@ mod tests {
 
     #[test]
     fn anon_rpc_dependents_matches_sql_that_spells_the_table_in_upper_case() {
-        let (_t, conn) = fresh();
+        let (_t, mut conn) = fresh();
         seed_sql_row(&conn, "s_upper", "SELECT id FROM POSTS", true);
-        assert_eq!(dependent_names(&conn, "posts"), ["s_upper"]);
+        assert_eq!(dependent_names(&mut conn, "posts"), ["s_upper"]);
     }
 }

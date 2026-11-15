@@ -9,7 +9,7 @@ A self-hosted, multi-tenant SQLite Backend-as-a-Service in one Rust binary:
 per-tenant REST **and** a native MCP endpoint, row-level security, realtime,
 vector search, and WebAssembly edge functions. One file per tenant. No database server.
 
-[![Rust](https://img.shields.io/badge/Rust-1.93%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![MCP](https://img.shields.io/badge/MCP-native-7c3aed)](https://modelcontextprotocol.io)
 [![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#zap-quickstart)

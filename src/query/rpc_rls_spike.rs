@@ -80,7 +80,7 @@ mod rls_spike {
 
     type Seen = Arc<Mutex<Vec<(String, String, Option<String>, Option<String>)>>>;
 
-    fn capture_reads(conn: &Connection) -> Seen {
+    fn capture_reads(conn: &mut Connection) -> Seen {
         let seen: Seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         conn.authorizer(Some(move |ctx: AuthContext<'_>| -> Authorization {
@@ -104,20 +104,20 @@ mod rls_spike {
 
     #[test]
     fn s2_authorizer_distinguishes_view_reads_from_direct_reads() {
-        let (_t, conn) = fixture();
+        let (_t, mut conn) = fixture();
         create_mask(&conn, "u1");
 
         // Through the view (unqualified).
-        let seen = capture_reads(&conn);
+        let seen = capture_reads(&mut conn);
         conn.prepare(r#"SELECT body FROM "posts""#).unwrap();
         let via_view = seen.lock().unwrap().clone();
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
 
         // Direct (qualified).
-        let seen2 = capture_reads(&conn);
+        let seen2 = capture_reads(&mut conn);
         conn.prepare(r#"SELECT body FROM main."posts""#).unwrap();
         let direct = seen2.lock().unwrap().clone();
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
 
         eprintln!("S2 via_view Read tuples: {via_view:?}");
         eprintln!("S2 direct   Read tuples: {direct:?}");
@@ -152,7 +152,7 @@ mod rls_spike {
 
     #[test]
     fn s2b_discriminator_prototype_allows_view_and_denies_direct() {
-        let (_t, conn) = fixture();
+        let (_t, mut conn) = fixture();
         create_mask(&conn, "u1");
         // Prototype of the real arm: deny Read on main.posts unless it flows
         // through an accessor (our view); allow everything else.
@@ -173,7 +173,7 @@ mod rls_spike {
             conn.query_row(r#"SELECT COUNT(*) FROM "posts""#, [], |r| r.get(0));
         let direct: rusqlite::Result<i64> =
             conn.query_row(r#"SELECT COUNT(*) FROM main."posts""#, [], |r| r.get(0));
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         eprintln!("S2b via_view={via_view:?} direct={direct:?}");
         assert_eq!(via_view.unwrap(), 1, "the masked path must stay usable");
         assert!(direct.is_err(), "the direct path must be denied");
@@ -300,15 +300,15 @@ mod rls_spike {
 
     #[test]
     fn s5_temp_master_under_strict_reader() {
-        let (_t, conn) = fixture();
+        let (_t, mut conn) = fixture();
         create_mask(&conn, "u1");
-        attach_readonly_authorizer(&conn);
+        attach_readonly_authorizer(&mut conn);
         let leak: rusqlite::Result<String> = conn.query_row(
             "SELECT sql FROM sqlite_temp_master WHERE name = 'posts'",
             [],
             |r| r.get(0),
         );
-        detach_authorizer(&conn);
+        detach_authorizer(&mut conn);
         eprintln!("S5 sqlite_temp_master under strict reader: {leak:?}");
         assert!(
             leak.is_err(),

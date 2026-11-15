@@ -30,7 +30,10 @@ impl GitHubAdapter {
             authorize_endpoint,
             token_endpoint,
             api_base,
+            // HTTP/1.1 only: object_store 0.14 turns on reqwest's `http2`
+            // feature through feature unification; pin the pre-upgrade protocol.
             http: reqwest::Client::builder()
+                .http1_only()
                 .user_agent("drust-oauth/1.11")
                 .build()
                 .expect("reqwest client build"),

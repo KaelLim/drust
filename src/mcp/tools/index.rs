@@ -266,7 +266,8 @@ pub async fn explain_select(
     let pool = pool.clone();
     let plan: Vec<serde_json::Value> = pool
         .with_reader(move |c| {
-            let _authz = crate::query::authorizer::AuthzGuard::readonly(c);
+            let authz = crate::query::authorizer::AuthzGuard::readonly(c);
+            let c: &rusqlite::Connection = &authz;
             (|| {
                 let mut stmt = c.prepare(&plan_sql)?;
                 // EXPLAIN QUERY PLAN columns: id, parent, notused, detail.

@@ -305,11 +305,12 @@ async fn run_structured_list_inner(
     let binds_for_list = binds.clone();
     let records_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_list
         .with_reader(move |c| {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             run_bound_select(c, &list_sql_owned, &binds_for_list)
         })
         .await;
@@ -339,11 +340,12 @@ async fn run_structured_list_inner(
     let binds_for_count = binds.clone();
     let count_res: rusqlite::Result<i64> = pool_count
         .with_reader(move |c| -> rusqlite::Result<i64> {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             (|| -> rusqlite::Result<i64> {
                 let mut stmt = c.prepare_cached(&count_sql_owned)?;
                 let refs: Vec<&dyn rusqlite::ToSql> = binds_for_count
@@ -474,11 +476,12 @@ pub async fn post_aggregate(
     let binds_owned = binds.clone();
     let rows_res: rusqlite::Result<(Vec<String>, Vec<serde_json::Value>)> = pool_run
         .with_reader(move |c| {
-            let _deadline = crate::query::executor::DeadlineGuard::arm(
+            let mut deadline = crate::query::executor::DeadlineGuard::arm(
                 c,
                 crate::query::executor::query_deadline(),
             );
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(&mut deadline);
+            let c: &rusqlite::Connection = &authz;
             run_bound_select(c, &sql_owned, &binds_owned)
         })
         .await;
@@ -559,7 +562,8 @@ pub async fn post_list_explain(
     let plan_sql = format!("EXPLAIN QUERY PLAN {list_sql}");
     let plan: Vec<String> = pool
         .with_reader(move |c| -> rusqlite::Result<Vec<String>> {
-            let _authz = AuthzGuard::search_readonly(c);
+            let authz = AuthzGuard::search_readonly(c);
+            let c: &rusqlite::Connection = &authz;
             (|| -> rusqlite::Result<Vec<String>> {
                 let mut stmt = c.prepare(&plan_sql)?;
                 let refs: Vec<&dyn rusqlite::ToSql> =
@@ -748,7 +752,7 @@ fn run_bound_select(
     // and re-issued on every page fetch, so the per-connection statement cache
     // hits. No correctness change — same SQL, same `?` binds.
     let mut stmt = conn.prepare_cached(sql)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let col_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
     let mut rows_iter = stmt.query(rusqlite::params_from_iter(refs))?;
     let mut out: Vec<serde_json::Value> = Vec::new();

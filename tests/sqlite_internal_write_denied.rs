@@ -44,8 +44,8 @@ fn seeded_conn() -> rusqlite::Connection {
 
 #[test]
 fn reader_authorizer_denies_sqlite_sequence_reads() {
-    let conn = seeded_conn();
-    drust::query::authorizer::attach_readonly_authorizer(&conn);
+    let mut conn = seeded_conn();
+    drust::query::authorizer::attach_readonly_authorizer(&mut conn);
 
     let denied = conn
         .prepare("SELECT seq FROM sqlite_sequence")
@@ -75,7 +75,7 @@ fn reader_authorizer_denies_sqlite_sequence_reads() {
 fn authorizer_receives_the_canonical_table_spelling() {
     use std::sync::{Arc, Mutex};
 
-    let conn = seeded_conn();
+    let mut conn = seeded_conn();
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     conn.authorizer(Some(
@@ -116,10 +116,10 @@ fn authorizer_receives_the_canonical_table_spelling() {
 /// have landed. Prove the mutation verbs are denied, in both spellings.
 #[test]
 fn writable_authorizer_denies_sqlite_sequence_writes() {
-    let conn = seeded_conn();
+    let mut conn = seeded_conn();
     conn.execute_batch("SAVEPOINT drust_rpc_v2").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    drust::query::authorizer::attach_writable_authorizer(&conn, &search);
+    drust::query::authorizer::attach_writable_authorizer(&mut conn, &search);
 
     for sql in [
         "UPDATE sqlite_sequence SET seq = 9223372036854775807 WHERE name = 'things'",
@@ -133,15 +133,15 @@ fn writable_authorizer_denies_sqlite_sequence_writes() {
 
     // Control: a normal collection is still writable under the same authorizer,
     // so the assertions above are proving the gate, not a blanket refusal.
-    drust::query::authorizer::detach_authorizer(&conn);
+    drust::query::authorizer::detach_authorizer(&mut conn);
     conn.execute_batch("ROLLBACK TO drust_rpc_v2; RELEASE drust_rpc_v2")
         .unwrap();
     conn.execute_batch("SAVEPOINT drust_rpc_v2").unwrap();
     let search = drust::storage::search_names::snapshot_search_tables(&conn).unwrap();
-    drust::query::authorizer::attach_writable_authorizer(&conn, &search);
+    drust::query::authorizer::attach_writable_authorizer(&mut conn, &search);
     conn.execute("UPDATE things SET v = 'b' WHERE id = 1", [])
         .expect("a normal collection must still be writable");
 
-    drust::query::authorizer::detach_authorizer(&conn);
+    drust::query::authorizer::detach_authorizer(&mut conn);
     conn.execute_batch("RELEASE drust_rpc_v2").unwrap();
 }
