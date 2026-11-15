@@ -7,6 +7,7 @@ groups. Each Helm release lives in its own namespace and stands up a complete,
 self-contained drust stack: a single-writer drust StatefulSet, its own dedicated
 MinIO object store, a bucket-init hook Job, Services, an Ingress with the
 mandatory rmcp Host rewrite, a bootstrap Secret, a default-deny NetworkPolicy,
+an optional `public-proxy` Caddy that serves `/public/*` (`publicFiles.enabled`),
 an optional maintenance sidecar, and an optional CSI-snapshot backup CronJob.
 
 The topology is deliberately "one group = one namespace = one release = one
@@ -79,7 +80,7 @@ ingress:
     issuer: letsencrypt           # cert-manager ClusterIssuer name
 publicUrl: https://group-a.example.tw   # required for OAuth redirect round-trips
 publicFiles:
-  enabled: false                  # true => /public/* anon-read path to the MinIO public bucket
+  enabled: false                  # true => /public/* anon-read of the public bucket, via public-proxy
 storage:
   enabled: true
   minio:
@@ -288,6 +289,47 @@ rather than the bucket list (a prefix-scoped key cannot list buckets), wears a d
 label with its own scoped NetworkPolicy, and drops its ServiceAccount token. Needs
 `storage.enabled`.
 
+## /public
+
+With `publicFiles.enabled: true` (and `storage.enabled`), the Ingress sends `/public/*`
+to `public-proxy`, a one-replica Caddy Deployment, which serves it straight from the
+store's `public` bucket. drust never sees these requests. The proxy's `/public/*` block,
+`files/public-proxy.Caddyfile`, is a byte-for-byte copy of the Compose one in
+`deploy/compose.Caddyfile` (`render_test.sh` fails when they differ), so every rule is
+explained once, there. In short:
+
+- **GET and HEAD only**; any other method answers 405.
+- The bucket comes from configuration, never from the request path, and the **query
+  string is dropped**: the store's S3 API honours `?response-content-type=` on
+  anonymous GETs, which would re-serve any public object as HTML.
+- `Authorization` and `Cookie` never reach the store, and the store's `Set-Cookie`
+  never reaches the browser (this is the admin UI's origin).
+- Every response carries `X-Content-Type-Options: nosniff`, and markup
+  (`text/html`, `text/xml`, `application/xml`, `text/xsl`, `*+xml`, with or without
+  parameters) gets `Content-Security-Policy: sandbox allow-top-navigation-by-user-activation`.
+- Whether `GET /public/` lists the bucket is decided by the store's anonymous policy,
+  not by the proxy: the policy `minio-init` sets also allows listing.
+
+Before this proxy, `/public` went from the Ingress straight to MinIO's port 9000:
+markup was served with no CSP and `?response-content-type=` was honoured, a stored XSS
+on the admin origin. The ingress controller now reaches only the proxy's port 8080;
+the store's NetworkPolicy admits drust, its init Job, the backup mirror and the proxy,
+and no namespace or address range.
+
+Caveats:
+
+- **Upper-case markup types get no CSP.** The proxy's matcher is case-sensitive, so a
+  file stored with a type like `TEXT/HTML; charset=UTF-8` (possible for files uploaded
+  before drust v1.56.3) is served without the sandbox. Remedy: set such a file private
+  and then public again; the move lowercases its type.
+- **A comma-joined declared type** (`<safe>/<x>,text/html`) is neither treated as
+  markup by drust nor matched by the proxy. This is inherited from the Compose block
+  (the byte copy keeps them identical) and is out of scope there too.
+- **`publicProxy.image` must be bumped routinely.** This Caddy is the anonymous,
+  internet-facing surface; it is pinned like every image here (Compose floats `caddy:2`
+  instead), so moving the pin to the current Caddy 2.x release is part of routine chart
+  maintenance, not optional.
+
 ## Scheduling / placement (B3)
 
 `scheduling.drust.*` and `scheduling.minio.*` pass `nodeSelector` / `tolerations` /
@@ -358,7 +400,7 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
 - **nginx-ingress needs `networkPolicy.ingressControllerNamespace`.** It defaults
   to `kube-system` (correct for k3s Traefik); nginx-ingress usually runs in
   `ingress-nginx`. If it is wrong, the NetworkPolicy black-holes the controller's
-  traffic to drust (and to MinIO when `publicFiles.enabled`). `networkPolicy.dnsNamespace`
+  traffic to drust (and to the `public-proxy` when `publicFiles.enabled`). `networkPolicy.dnsNamespace`
   likewise assumes cluster DNS runs in `kube-system`.
 - **MinIO runs with `readOnlyRootFilesystem: true`.** MinIO persists under `/data`
   and uses `HOME=/tmp` (emptyDir), so a read-only root is expected to work — but
@@ -373,7 +415,8 @@ or schedule your own busybox CronJob mounting the same PVC (`find /data/_trash -
   from `ingress.host` + the TLS toggle (you do **not** set it in values) instead of
   `localhost:8793`. Note **public**-visibility file URLs (`/public/<id>/<key>`) are
   only actually served when `publicFiles.enabled=true` — that flag is what routes
-  `/public` to MinIO; private and pre-signed URLs are served through drust regardless.
+  `/public` to the `public-proxy` (see "/public" above); private and pre-signed URLs are
+  served through drust regardless.
 - **Client addresses and `ingress.trustedProxies` (`DRUST_TRUSTED_PROXIES`, default
   `1`).** drust keys its per-IP rate limits (logins, register, OAuth callbacks, the CLI
   device flow, anonymous file upload/delete and function invoke) on the
@@ -426,3 +469,6 @@ The fixture matrix includes `litestream.yaml` (B1 sidecar + restore init, storag
 prove independence, `allowInternetEgress:false` to prove egress decoupling),
 `backup-mirror.yaml` (B2 hourly object mirror), and `placement.yaml` (B3 scheduling
 passthrough on both StatefulSets), alongside the base fixtures.
+
+It also reads one file outside the chart: `deploy/compose.Caddyfile`, whose `/public/*`
+block `files/public-proxy.Caddyfile` must copy byte for byte. Run it from a full checkout.

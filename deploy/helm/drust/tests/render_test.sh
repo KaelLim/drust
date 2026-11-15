@@ -100,6 +100,11 @@ assert_contains minimal.yaml "127.0.0.1:47826"                        "host rewr
 assert_contains minimal.yaml "kind: Middleware"                       "traefik middleware for host rewrite"
 assert_contains full.yaml    "cert-manager.io/cluster-issuer: letsencrypt" "cert-manager issuer when tls.enabled"
 assert_contains full.yaml    "path: /public"                          "public path when publicFiles on"
+# /public goes to the public-proxy Caddy, never to an S3 port: the store itself serves markup
+# with no CSP and honours ?response-content-type= (stored XSS on the admin origin).
+if _render full.yaml | awk 'BEGIN{RS="---\n"} /kind: Ingress\n/{print}' | awk '/- path: \/public$/{p=1} p&&/name: public-proxy$/{n=1} p&&n&&/number: 8080/{ok=1} p&&/- path: \/$/{exit} END{exit ok?0:1}'; then
+  echo "ok: /public Ingress backend is public-proxy:8080"; else echo "FAIL: /public Ingress backend is not public-proxy:8080"; FAILS=$((FAILS+1)); fi
+assert_absent   full.yaml    "number: 9000"                           "no Ingress backend on an S3 port"
 assert_absent   minimal.yaml "path: /public"                          "no public path when publicFiles off"
 assert_contains nginx.yaml "nginx.ingress.kubernetes.io/upstream-vhost: 127.0.0.1:47826" "nginx upstream-vhost host rewrite"
 assert_absent   nginx.yaml "kind: Middleware" "no traefik middleware for nginx controller"
@@ -130,8 +135,6 @@ if _render full.yaml | awk '/kind: RoleBinding/{r=1} r&&/kind: ServiceAccount/{s
   echo "ok: backup RoleBinding subject has namespace"; else echo "FAIL: backup RoleBinding subject missing namespace"; FAILS=$((FAILS+1)); fi
 assert_contains full.yaml "MC_CONFIG_DIR"          "minio-init mc has a writable config dir"
 assert_contains full.yaml "runAsGroup: 1000"       "minio runAsGroup pinned"
-assert_contains full.yaml "public-file GETs arrive" "minio NetworkPolicy admits ingress-controller when publicFiles on"
-assert_absent storage-noPublic.yaml "public-file GETs arrive" "no ingress-controller MinIO rule when publicFiles off"
 # #935 — sidecar no longer hardcodes _trash retention; the in-process janitor
 # (DRUST_TRASH_RETENTION_DAYS) is the sole sweeper on every target.
 assert_absent full.yaml "/data/_trash" "sidecar no longer sweeps _trash by path (#935)"
@@ -292,11 +295,56 @@ if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
 assert_absent minimal.yaml "nodeSelector"               "no nodeSelector by default (empty {} => omitted)"
 assert_absent full.yaml    "topologySpreadConstraints"  "no topologySpread by default"
 
+# --- /public through the public-proxy Caddy (templates/public-proxy.yaml) ---
+assert_contains full.yaml    "name: public-proxy"                 "public-proxy rendered when storage+publicFiles on"
+assert_contains full.yaml    "docker.io/library/caddy:2.11.9"     "public-proxy runs the pinned Caddy"
+assert_contains full.yaml    "checksum/caddyfile:"                "a Caddyfile change rolls the proxy"
+assert_absent   storage-noPublic.yaml "public-proxy"              "no public-proxy when publicFiles off"
+assert_absent   minimal.yaml "public-proxy"                       "no public-proxy when storage off"
+_pp_dep() { _render "$1" | awk 'BEGIN{RS="---\n"} /kind: Deployment\n/ && /\n  name: public-proxy\n/{print}'; }
+if _pp_dep full.yaml | grep -q "kind: Deployment"; then
+  echo "ok: public-proxy is a Deployment"; else echo "FAIL: no public-proxy Deployment in full.yaml"; FAILS=$((FAILS+1)); fi
+if _pp_dep full.yaml | awk '/name: PUBLIC_OBJECTS_UPSTREAM,/{ if ($0 ~ /value: "minio:9000" }$/) ok=1 } END{exit ok?0:1}'; then
+  echo "ok: public-proxy upstream is minio:9000"; else echo "FAIL: public-proxy upstream is not \"minio:9000\""; FAILS=$((FAILS+1)); fi
+# The proxy is the anonymous surface: no credential of any kind in its pod.
+if _pp_dep full.yaml | grep -q "secretKeyRef"; then
+  echo "FAIL: public-proxy Deployment references a Secret"; FAILS=$((FAILS+1)); else echo "ok: public-proxy holds no secretKeyRef"; fi
+# Its pod template must not wear a store's or drust's selector label (it would join that Service).
+if _pp_dep full.yaml | awk '/^  template:$/{t=1;next} t&&/^    spec:$/{exit} t&&/app\.kubernetes\.io\/name: (drust|minio|rustfs)$/{bad=1} END{exit bad?1:0}' &&
+   _pp_dep full.yaml | awk '/^  template:$/{t=1;next} t&&/^    spec:$/{exit} t&&/app\.kubernetes\.io\/name: public-proxy$/{ok=1} END{exit ok?0:1}'; then
+  echo "ok: public-proxy pod template wears only its own label"; else echo "FAIL: public-proxy pod template labels wrong (store/drust label, or its own missing)"; FAILS=$((FAILS+1)); fi
+# The store's policy admits the proxy pod on 9000, and its INGRESS keeps no namespaceSelector and no
+# ipBlock peer: the controller reaches only the proxy's 8080, never 9000.
+_np() { _render "$1" | awk -v n="name: testrel-$2" 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && index($0, n "\n"){print}'; }
+_np_ingress() { _np "$1" "$2" | awk '/^  ingress:/{on=1} /^  egress:/{on=0} on'; }
+for f in full.yaml hostnetwork-ingress.yaml; do
+  if _np_ingress "$f" minio | grep -qE '^[[:space:]]*-?[[:space:]]*(namespaceSelector|ipBlock):'; then
+    echo "FAIL: minio NP ingress admits a namespace or ipBlock peer ($f)"; FAILS=$((FAILS+1)); else echo "ok: minio NP ingress has no namespaceSelector/ipBlock ($f)"; fi
+done
+if _np_ingress full.yaml minio | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: public-proxy$'; then
+  echo "ok: minio NP admits public-proxy"; else echo "FAIL: minio NP does not admit public-proxy"; FAILS=$((FAILS+1)); fi
+if _np_ingress storage-noPublic.yaml minio | grep -q 'public-proxy'; then
+  echo "FAIL: minio NP admits public-proxy with publicFiles off"; FAILS=$((FAILS+1)); else echo "ok: minio NP has no public-proxy peer with publicFiles off"; fi
+if _np_ingress full.yaml public-proxy | grep -q 'kubernetes.io/metadata.name: kube-system' &&
+   _np_ingress full.yaml public-proxy | grep -q 'port: 8080' &&
+   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: minio$' &&
+   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | grep -q 'port: 9000'; then
+  echo "ok: public-proxy NP: controller namespace on 8080 in, minio:9000 out"; else echo "FAIL: public-proxy NP ingress/egress wrong"; FAILS=$((FAILS+1)); fi
+
+# --- lockstep with Compose: the chart's /public block is a byte copy of deploy/compose.Caddyfile's ---
+# (compose_public_route_test.sh pins the Compose block to files.rs, so this pins the chart copy too.)
+pub_block() { awk '!on && /^\thandle_path \/public\/\* \{/ {on=1}
+  on {print; n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); d+=n-m; if(d==0) exit}' "$1"; }
+if [ -n "$(pub_block "$REPO_ROOT/deploy/compose.Caddyfile")" ] &&
+   [ "$(pub_block "$REPO_ROOT/deploy/compose.Caddyfile")" = "$(pub_block "$CHART/files/public-proxy.Caddyfile")" ]; then
+  echo "ok: chart /public block is byte-identical to deploy/compose.Caddyfile's"
+else echo "FAIL: files/public-proxy.Caddyfile /public block differs from deploy/compose.Caddyfile"; FAILS=$((FAILS+1)); fi
+
 # --- Issue #8: hostNetwork ingress controller needs an ipBlock peer ---
 # A hostNetwork controller carries no pod IP, so `namespaceSelector` can never
 # resolve it and every request is REJECTed — 502 that reads like the app is down.
 # Two independent paths break: the admin plane (drust:47826) and /public/*
-# (minio:9000). Assert BOTH policies carry the CIDRs, because fixing only the
+# (public-proxy:8080). Assert BOTH policies carry the CIDRs, because fixing only the
 # one you happened to test leaves the other silently black-holed.
 assert_absent   minimal.yaml            "ipBlock: { cidr:" "no hostNetwork ipBlock by default (empty list => omitted)"
 if _render hostnetwork-ingress.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust/{
@@ -304,11 +352,9 @@ if _render hostnetwork-ingress.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolic
   } END{exit ok?0:1}'; then
   echo "ok: drust NetworkPolicy admits hostNetworkIngressCIDRs on 47826"
 else echo "FAIL: drust NetworkPolicy missing hostNetwork ipBlock peers"; FAILS=$((FAILS+1)); fi
-if _render hostnetwork-ingress.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-minio/{
-    if ($0 ~ /10\.42\.0\.0\/32/ && $0 ~ /10\.0\.2\.218\/32/ && $0 ~ /port: 9000/) ok=1
-  } END{exit ok?0:1}'; then
-  echo "ok: minio NetworkPolicy admits hostNetworkIngressCIDRs on 9000 (/public path)"
-else echo "FAIL: minio NetworkPolicy missing hostNetwork ipBlock peers"; FAILS=$((FAILS+1)); fi
+if _np_ingress hostnetwork-ingress.yaml public-proxy | awk '/10\.42\.0\.0\/32/{a=1} /10\.0\.2\.218\/32/{b=1} /port: 8080/{p=1} END{exit (a&&b&&p)?0:1}'; then
+  echo "ok: public-proxy NetworkPolicy admits hostNetworkIngressCIDRs on 8080 (/public path)"
+else echo "FAIL: public-proxy NetworkPolicy missing hostNetwork ipBlock peers"; FAILS=$((FAILS+1)); fi
 # The namespaceSelector peer must SURVIVE — the ipBlock widens the allowed
 # sources, it does not replace them. A pod-network controller must keep working.
 assert_contains hostnetwork-ingress.yaml "kubernetes.io/metadata.name: ingress-nginx" "namespaceSelector peer retained alongside the ipBlock"

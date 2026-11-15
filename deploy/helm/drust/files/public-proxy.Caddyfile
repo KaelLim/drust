@@ -1,0 +1,45 @@
+# /public/* for the k3s chart (templates/public-proxy.yaml). The handle_path block
+# below is a byte-for-byte copy of deploy/compose.Caddyfile's, and render_test.sh fails
+# when they differ: edit both together. Every line of it is explained there.
+# PUBLIC_OBJECTS_UPSTREAM is set by the Deployment: the bundled store's Service, port 9000.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	handle_path /public/* {
+		@write not method GET HEAD
+		respond @write 405
+		rewrite * /public{path}? # STORE-SHAPE. Garage s3_web form: rewrite * {path}?
+		reverse_proxy {$PUBLIC_OBJECTS_UPSTREAM:rustfs:9000} {
+			header_up Host {upstream_hostport} # STORE-SHAPE. Garage s3_web form: header_up Host "public.web.local"
+			header_up -Authorization
+			header_up -Cookie
+			header_down X-Content-Type-Options "nosniff"
+			header_down -Set-Cookie
+
+			@markup {
+				header Content-Type text/html
+				header Content-Type text/html;*
+				header Content-Type text/xml
+				header Content-Type text/xml;*
+				header Content-Type application/xml
+				header Content-Type application/xml;*
+				header Content-Type text/xsl
+				header Content-Type text/xsl;*
+				header Content-Type *+xml
+				header Content-Type *+xml;*
+			}
+			handle_response @markup {
+				header Content-Security-Policy "sandbox allow-top-navigation-by-user-activation"
+				copy_response
+			}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

@@ -2,6 +2,21 @@
 
 ## [0.2.0] — unreleased
 
+### Security
+- **`/public` served stored markup with no sandbox.** The Ingress sent `/public/*`
+  straight to MinIO's port 9000: a `text/html` (or any `*+xml`) object came back with no
+  CSP, and `?response-content-type=text/html` on an anonymous GET turned any public
+  object into HTML — script running on the admin UI's origin. `/public/*` now goes to a
+  new `public-proxy` Caddy Deployment (`publicProxy.image`, `resources.publicProxy`)
+  whose `/public` block is a byte copy of the Compose one (`files/public-proxy.Caddyfile`,
+  pinned by `render_test.sh`): GET/HEAD only, query string dropped, `Authorization` /
+  `Cookie` stripped, `Set-Cookie` dropped, `nosniff` everywhere and the sandbox CSP on
+  markup. The ingress controller is now admitted to the proxy's 8080 only; MinIO's
+  NetworkPolicy no longer admits the controller namespace or `hostNetworkIngressCIDRs`
+  on 9000 (those CIDRs moved to the proxy's policy). Upper-case markup types stored
+  before drust v1.56.3 still get no CSP (case-sensitive matcher); set such a file
+  private and public again.
+
 ### Changed
 - **`DRUST_TRUSTED_PROXIES` is set, from `ingress.trustedProxies` (default `1`).** Before,
   the chart did not set it and drust pods inherited the image's `0`: every request was

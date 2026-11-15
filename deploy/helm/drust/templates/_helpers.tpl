@@ -38,3 +38,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: RCLONE_CONFIG_BK_SECRET_ACCESS_KEY
   valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
 {{- end -}}
+{{- define "publicProxy.selectorLabels" -}}
+app.kubernetes.io/name: public-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}

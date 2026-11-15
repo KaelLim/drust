@@ -54,12 +54,23 @@ webhook:
   maxPerTenantConcurrency: 8     # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY (deliveries in flight, per tenant)
 
 publicFiles:
-  enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)
+  # true => /public/* on ingress.host is served by the public-proxy Caddy straight from
+  # the store's "public" bucket (anonymous GET/HEAD only; whether GET /public/ lists the
+  # bucket is up to the store's anonymous policy, see the README's "/public" section).
+  enabled: false
 
 # Image of the S3 client used by the litestream-enumerate init container and the
 # backup-mirror CronJob (rclone). Pinned by digest: it holds the backup-S3 key and
 # drust's key.
 s3ClientImage: "docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5"
+
+publicProxy:
+  # Caddy that serves /public/* (rendered only with storage.enabled AND publicFiles.enabled).
+  # Its /public block is a byte-for-byte copy of deploy/compose.Caddyfile's (render_test.sh
+  # checks). Pinned like every image here; Compose floats caddy:2 instead. This container
+  # IS the anonymous internet-facing surface: bumping this pin to the current Caddy 2.x
+  # release is part of routine chart maintenance, not optional.
+  image: "docker.io/library/caddy:2.11.9"
 
 storage:
   enabled: true
@@ -79,6 +90,9 @@ resources:
   minio:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }
+  publicProxy:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
 
 persistence:
   storageClassName: ""           # empty => cluster default
