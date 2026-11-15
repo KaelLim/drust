@@ -2,7 +2,8 @@
 
 Fixes from the access-gate convergence review (E track). One new environment variable,
 `DRUST_TRUSTED_PROXIES` (default `2`, unchanged behaviour on an existing host); the Docker
-image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error code:
+`SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
 only the row's `id` (E9). The other caller-visible changes are described in their entries:
@@ -193,6 +194,9 @@ update its toolchain first.
   `DRUST_TRUSTED_PROXIES` (default `2`, range `0`–`8`, an out-of-range or non-numeric value
   refuses to boot) now says how many proxies append to `X-Forwarded-For`; the client is the
   entry that many from the right, and entries a client adds on the left still cannot move it.
+  The chain is every `X-Forwarded-For` header line in order, not just the first, so a proxy
+  that appends its entry as a separate header line (HAProxy `option forwardfor`) is counted
+  correctly instead of leaving the client's own line to be indexed.
   `0` ignores the header and keys on the TCP peer, which drust now actually has. The
   bare-metal chain keeps the default and is unchanged; `docker-compose.yml` sets `1`; the image
   defaults to `0`, so `docker run -p 47826:47826` is keyed per client. **If you run the image

@@ -69,7 +69,9 @@ pub fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
 /// Pure derivation; all logic lives here so unit tests never touch the global.
 ///
 /// - `n == 0`: the TCP peer; `X-Forwarded-For` is never read.
-/// - header absent or not visible ASCII: the peer, no warning.
+/// - the chain is every `X-Forwarded-For` field line, concatenated in order
+///   (a single-line header — every shipped proxy — is unchanged by this).
+/// - header absent, or any line not visible ASCII: the peer, no warning.
 /// - fewer than `n` entries: the peer, throttled warning (`reason="short"`).
 /// - `parts[len - n]` not an `IpAddr`: the peer, throttled warning
 ///   (`reason="unparseable"`).
@@ -83,15 +85,23 @@ pub fn client_ip_with(headers: &HeaderMap, peer: SocketAddr, n: u8) -> IpAddr {
     if n == 0 {
         return fallback;
     }
-    let raw = match headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        Some(s) => s,
-        None => return fallback,
-    };
-    let parts: Vec<&str> = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
+    // EVERY field line, in order: HTTP lets a list header arrive as several
+    // lines (RFC 9110 §5.3, equivalent to one comma-joined value), and some
+    // appending proxies (HAProxy `option forwardfor`) add their entry as a NEW
+    // line. `get` would return only the first — the line the client sent —
+    // and the right-indexing below would then pick a client-chosen value.
+    let mut parts: Vec<&str> = Vec::new();
+    let mut any = false;
+    for line in headers.get_all("x-forwarded-for") {
+        let Ok(s) = line.to_str() else {
+            return fallback;
+        };
+        any = true;
+        parts.extend(s.split(',').map(str::trim).filter(|s| !s.is_empty()));
+    }
+    if !any {
+        return fallback;
+    }
     let n = usize::from(n);
 
     // `<`, not `!=`: a legitimate client behind its own proxy produces extra
@@ -297,6 +307,48 @@ mod tests {
         }
     }
 
+    /// Two field lines, client-sent first, proxy-appended second (HAProxy
+    /// `option forwardfor` shape). The chain is their concatenation, so the
+    /// client's own line cannot be what right-indexing lands on.
+    fn two_lines(first: &[u8], second: &[u8]) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        m.append(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_bytes(first).unwrap(),
+        );
+        m.append(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_bytes(second).unwrap(),
+        );
+        m
+    }
+
+    #[test]
+    fn multiple_field_lines_are_one_chain() {
+        let m = two_lines(b"198.51.100.7", b"203.0.113.10");
+        assert_eq!(client_ip_with(&m, doc_peer(), 1), ip("203.0.113.10"));
+        assert_eq!(client_ip_with(&m, doc_peer(), 2), ip("198.51.100.7"));
+        // A comma list in the client's line still cannot move the n=1 key.
+        let m = two_lines(b"9.9.9.9, 8.8.8.8", b"203.0.113.10");
+        assert_eq!(client_ip_with(&m, doc_peer(), 1), ip("203.0.113.10"));
+        assert_eq!(client_ip_with(&m, doc_peer(), 2), ip("8.8.8.8"));
+        // Short across both lines: the peer.
+        let m = two_lines(b"198.51.100.7", b"203.0.113.10");
+        assert_eq!(client_ip_with(&m, doc_peer(), 3), ip("192.0.2.50"));
+    }
+
+    #[test]
+    fn any_non_ascii_field_line_returns_peer() {
+        for m in [
+            two_lines(b"\xff", b"203.0.113.10"),
+            two_lines(b"198.51.100.7", b"203.0.113.10, \xff"),
+        ] {
+            for n in [1u8, 2] {
+                assert_eq!(client_ip_with(&m, doc_peer(), n), ip("192.0.2.50"), "n={n}");
+            }
+        }
+    }
+
     #[test]
     fn short_chain_returns_peer() {
         assert_eq!(
@@ -375,6 +427,19 @@ mod tests {
     /// commented-out call can neither satisfy nor hide a needle), not
     /// `production_half`, which cuts at the first `#[cfg(test)]` and would
     /// fail open on files that carry one near the top.
+    ///
+    /// Also, for every file under `src/` but this one: no `client_ip_with(`
+    /// call (it takes the peer as a bare argument, so it would escape the
+    /// count table), and no string literal naming a client-address header
+    /// (`x-forwarded-for`, `x-real-ip`, `forwarded`) — a hand-rolled read.
+    /// `set_trusted_proxies(` is pinned to `main.rs` across `src/` AND `tests/`,
+    /// since a harness member calling it would re-key every XFF test in its
+    /// binary.
+    ///
+    /// This file is skipped, so `ClientIp` / `peer_addr` going back to a
+    /// literal loopback is caught by the behavioural tests instead:
+    /// `auth_login::login_without_xff_records_the_connect_info_peer_as_ip_at_login`
+    /// and `admin_login_rate_limit::admin_login_rate_limit_keys_on_connect_info_peer_without_xff`.
     #[test]
     fn every_client_ip_consumer_keys_on_the_real_peer() {
         use crate::tenant::rooms::srcpin::{code_only, collect_rs_files};
@@ -392,6 +457,7 @@ mod tests {
         ];
         const THIS_FILE: &str = "safety/ip.rs";
         const LOOPBACK_LITERAL: &str = "[127, 0, 0, 1], 0";
+        const HEADER_LITERALS: &[&str] = &["\"x-forwarded-for\"", "\"x-real-ip\"", "\"forwarded\""];
 
         let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let mut files = Vec::new();
@@ -446,11 +512,20 @@ mod tests {
                     "{rel}: calls `set_trusted_proxies` — only main may set the global"
                 ));
             }
-            if rel != "main.rs" && code.to_ascii_lowercase().contains("\"x-forwarded-for\"") {
+            if !call_sites(&code, "client_ip_with(").is_empty() {
                 offenders.push(format!(
-                    "{rel}: reads X-Forwarded-For by hand — derive the client through \
-                     `safety::ip::ClientIp`"
+                    "{rel}: calls `client_ip_with` — take `ClientIp`, or call \
+                     `client_ip(…, peer_addr(…))`"
                 ));
+            }
+            let lower = code.to_ascii_lowercase();
+            for needle in HEADER_LITERALS {
+                if lower.contains(needle) {
+                    offenders.push(format!(
+                        "{rel}: names the header literal {needle} — derive the client \
+                         through `safety::ip::ClientIp`, never a hand-rolled header read"
+                    ));
+                }
             }
 
             match CONSUMERS.iter().position(|(f, _, _)| *f == rel) {
@@ -476,6 +551,33 @@ mod tests {
         for (k, (f, _, _)) in CONSUMERS.iter().enumerate() {
             if !seen[k] {
                 offenders.push(format!("{f}: pinned consumer file not found under src/"));
+            }
+        }
+
+        // `set_trusted_proxies` from an integration test: every harness member
+        // shares its binary's global with the XFF tests.
+        let tests_root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
+        let mut test_files = Vec::new();
+        collect_rs_files(tests_root, &mut test_files);
+        test_files.sort();
+        assert!(
+            test_files.len() > 100,
+            "the tree walk found only {} .rs file(s) under {} — the tests/ half of the \
+             `set_trusted_proxies` pin would pass vacuously",
+            test_files.len(),
+            tests_root.display(),
+        );
+        for path in &test_files {
+            let raw = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            if !call_sites(&code_only(&raw), "set_trusted_proxies(").is_empty() {
+                offenders.push(format!(
+                    "tests/{}: calls `set_trusted_proxies` — only main may set the global",
+                    path.strip_prefix(tests_root)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                ));
             }
         }
         assert!(

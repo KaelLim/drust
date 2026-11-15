@@ -57,11 +57,7 @@ async fn main() -> anyhow::Result<()> {
         let n = drust::safety::ip::trusted_proxies();
         tracing::info!(
             trusted_proxies = n,
-            keyed_on = if n == 0 {
-                "tcp-peer"
-            } else {
-                "x-forwarded-for"
-            },
+            keyed_on = if n == 0 { "tcp-peer" } else { "xff" },
             "client-IP derivation configured"
         );
     }
