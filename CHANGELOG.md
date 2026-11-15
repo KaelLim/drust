@@ -339,8 +339,16 @@ update its toolchain first.
   `<uuid>.bin`), as it already did on tus; a filename ending in a bare `.` now gives `.bin`
   on all three. Files uploaded before this release keep their keys. The stored filename,
   `Content-Disposition` and content type are unchanged — the content type comes from the
-  filename or the part's declared type, never from the key. No action needed, unless a
-  client inferred a file's type from its key's extension.
+  filename or the part's declared type, never from the key. Public URLs are now built from
+  the key exactly as the object store holds it, so files uploaded before this release with
+  such an extension — and edge-function `put-file` keys containing such characters, which
+  the guest chooses — get a URL that resolves (wherever the proxy in front of the object
+  store forwards an escaped `%25` path unchanged); the URL of every key made only of ASCII
+  letters, digits, `.`, `_` and `-` is unchanged. The host files reconcile page no longer
+  lists such a file as both a dangling row and an orphan object (so "delete dangling rows"
+  can no longer remove the live row of an existing object), and deleting a genuine orphan
+  whose key the object store had encoded now actually deletes it. No action needed, unless
+  a client inferred a file's type from its key's extension.
 
 ### Changed
 

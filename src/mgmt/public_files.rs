@@ -711,9 +711,34 @@ fn is_admin_level_key(key: &str) -> bool {
         && key != ".."
 }
 
+/// A DB key as the object-store listing reports it. `list_objects` returns
+/// keys in object_store's encoded form (the S3 listing parses without
+/// decoding), so a row `x.檔案` is listed as `x.%E6%AA%94%E6%A1%88`; the diff
+/// must compare that form in both directions, or such a row reads as dangling
+/// AND its object as an orphan — and "delete dangling rows" would delete the
+/// live row of an existing object.
+fn listed_form(db_key: &str) -> String {
+    object_store::path::Path::from(db_key).to_string()
+}
+
+/// Admin rows whose object is absent from the listing. `db_rows` is already
+/// admin-only (meta.sqlite `_system_files`, keys with no slash) and
+/// `listed_keys` is the whole bucket, so no key-shape filter is needed on this
+/// direction.
+fn dangling_rows(
+    db_rows: Vec<(i64, String, String)>,
+    listed_keys: &HashSet<String>,
+) -> Vec<(i64, String, String)> {
+    db_rows
+        .into_iter()
+        .filter(|(_, k, _)| !listed_keys.contains(&listed_form(k)))
+        .collect()
+}
+
 /// Objects present in the bucket but absent from the ADMIN inventory
 /// (meta.sqlite `_system_files`). Tenant-namespaced keys are filtered out
-/// first — see [`is_admin_level_key`].
+/// first — see [`is_admin_level_key`]. `admin_db_keys` holds the DB keys in
+/// their listed form ([`listed_form`]).
 fn classify_orphans(
     bucket_keys: &[(String, u64)],
     admin_db_keys: &HashSet<String>,
@@ -759,7 +784,8 @@ pub async fn reconcile_page(
             Err(e) => return internal(format!("db query: {e}")),
         }
     };
-    let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| k.clone()).collect();
+    // Compared in the listing's encoded form — see `listed_form`.
+    let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| listed_form(k)).collect();
 
     // `garage.list_objects()` lists the WHOLE shared bucket (no prefix), so it
     // also returns every tenant's `<tenant-id>/<file-id>` object. Only the
@@ -771,14 +797,8 @@ pub async fn reconcile_page(
         .collect();
     let orphan_objects: Vec<(String, String)> = classify_orphans(&bucket_keys, &db_keys);
 
-    // Asymmetric on purpose: `db_rows` is already admin-only (meta.sqlite
-    // `_system_files`, keys with no slash) and `garage_keys` is the whole
-    // bucket, so a row with no matching object really is an admin-level row
-    // whose object is gone. No key-shape filter is needed on this direction.
-    let dangling_rows: Vec<(i64, String, String)> = db_rows
-        .into_iter()
-        .filter(|(_, k, _)| !garage_keys.contains(k))
-        .collect();
+    // Asymmetric on purpose — see `dangling_rows`.
+    let dangling_rows: Vec<(i64, String, String)> = dangling_rows(db_rows, &garage_keys);
 
     let pending_revokes: Vec<PendingRevokeRow> = {
         let conn = state.meta.lock().await;
@@ -918,7 +938,9 @@ pub async fn reconcile_apply(
             tracing::warn!(key = %key, "reconcile: refused non-admin orphan key");
             continue;
         }
-        if let Err(e) = garage.delete_object(&key).await {
+        // The key came from the listing, so it is already in object_store's
+        // encoded form: `delete_object` would encode it again and miss.
+        if let Err(e) = garage.delete_listed_object(&key).await {
             tracing::warn!(key = %key, error = %e, "reconcile: orphan delete failed");
         }
     }
@@ -1049,14 +1071,22 @@ async fn load_files(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let base = state.base_url.trim_end_matches('/');
     let files = rows
         .into_iter()
         .map(
             |(id, key, original_name, content_type, size_bytes, uploaded_at, visibility)| {
                 PublicFileRow {
                     id,
-                    public_url: format!("{base}/public/{key}"),
+                    // `Visibility::Public` regardless of the row: this column has
+                    // always shown the `/public/` link. Built by the shared
+                    // builder so the key segment matches what the object store
+                    // holds.
+                    public_url: crate::storage::files::build_public_url(
+                        &state.base_url,
+                        &Owner::Admin,
+                        Visibility::Public,
+                        &key,
+                    ),
                     key,
                     original_name,
                     content_type,
@@ -1238,8 +1268,37 @@ pub async fn admin_sign_url(
 
 #[cfg(test)]
 mod reconcile_key_tests {
-    use super::{classify_orphans, is_admin_level_key};
+    use super::{classify_orphans, dangling_rows, is_admin_level_key, listed_form};
     use std::collections::HashSet;
+
+    /// A legacy admin row whose key object_store encoded (`x.檔案`, listed as
+    /// `x.%E6%AA%94%E6%A1%88`) is neither dangling nor an orphan; a genuine
+    /// orphan and a genuine dangling row still surface.
+    #[test]
+    fn reconcile_diff_matches_encoded_listing() {
+        let db_rows = vec![
+            (1_i64, "x.檔案".to_string(), "x.檔案".to_string()),
+            (2, "gone.pdf".to_string(), "gone.pdf".to_string()),
+        ];
+        let listed: Vec<(String, u64)> = vec![
+            ("x.%E6%AA%94%E6%A1%88".to_string(), 1),
+            ("orphan.png".to_string(), 2),
+            ("tenant-id/a.png".to_string(), 3),
+        ];
+        let listed_keys: HashSet<String> = listed.iter().map(|(k, _)| k.clone()).collect();
+        let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| listed_form(k)).collect();
+
+        let orphans = classify_orphans(&listed, &db_keys);
+        assert_eq!(
+            orphans.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["orphan.png"]
+        );
+        let dangling = dangling_rows(db_rows, &listed_keys);
+        assert_eq!(
+            dangling.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
 
     fn keys(v: &[&str]) -> HashSet<String> {
         v.iter().map(|s| s.to_string()).collect()

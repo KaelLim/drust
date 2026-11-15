@@ -296,9 +296,18 @@ pub fn build_public_url(
     // under `<tenant>/<uuid>` inside the shared bucket, so public URLs
     // interleave the tenant id. Private URLs go through drust's own
     // bytes/signed endpoints and keep the bare key for the /{key} route.
+    //
+    // A public URL is served by the object store itself, which percent-decodes
+    // the request path ONCE and looks that string up — so the key segment is
+    // the key exactly as object_store wrote it, escaped once more for the URL
+    // (`public_url_key`). For a key made only of `[A-Za-z0-9._-]` that is the
+    // key itself; private URLs route to drust, which decodes and re-applies
+    // object_store's encoding on its own.
     match (owner, visibility) {
-        (Owner::Admin, Visibility::Public) => format!("{base}/public/{key}"),
-        (Owner::Tenant(id), Visibility::Public) => format!("{base}/public/{id}/{key}"),
+        (Owner::Admin, Visibility::Public) => format!("{base}/public/{}", public_url_key(key)),
+        (Owner::Tenant(id), Visibility::Public) => {
+            format!("{base}/public/{id}/{}", public_url_key(key))
+        }
         (Owner::Admin, Visibility::Private) => {
             format!(
                 "{base}{}",
@@ -312,6 +321,22 @@ pub fn build_public_url(
             )
         }
     }
+}
+
+/// The URL path for a public object key: the key as object_store stores it
+/// (`Path::from` percent-encodes non-ASCII bytes and its `INVALID` set, `~`
+/// included), each segment escaped once more for the URL, so the object
+/// store's single percent-decode of the request path yields exactly the stored
+/// key. The identity on keys whose segments are non-empty, not `.`/`..`, and
+/// use only `[A-Za-z0-9._-]` — every key `derive_file_key` mints. Changes only
+/// URLs that could not resolve before (legacy keys with an encodable
+/// extension, guest-chosen edge `put-file` keys).
+fn public_url_key(key: &str) -> String {
+    object_store::path::Path::from(key)
+        .parts()
+        .map(|p| urlencoding::encode(p.as_ref()).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub fn default_cache_control(visibility: Visibility, _disposition: Disposition) -> &'static str {
@@ -1212,5 +1237,101 @@ mod key_and_url_tests {
                 "{name:?} derived {key:?}, which object_store would store under another key"
             );
         }
+    }
+
+    const UUID: &str = "3f1c8b0e-4d2a-4f3b-9c11-2a7e5d6f8a90";
+
+    /// Every key that resolves today keeps a byte-identical URL. `~` is
+    /// deliberately absent: object_store encodes it, so it never resolved.
+    #[test]
+    fn build_public_url_is_unchanged_for_plain_keys() {
+        let base = "https://h.example";
+        let tenant = Owner::Tenant("acme".into());
+        for key in [
+            format!("{UUID}.pdf"),
+            format!("{UUID}.bin"),
+            format!("{UUID}.PDF"),
+            "a-b_c.d".to_string(),
+            format!("{UUID}."),
+            "x.abcdefghij12".to_string(),
+        ] {
+            assert_eq!(
+                build_public_url(base, &Owner::Admin, Visibility::Public, &key),
+                format!("{base}/public/{key}")
+            );
+            assert_eq!(
+                build_public_url(base, &tenant, Visibility::Public, &key),
+                format!("{base}/public/acme/{key}")
+            );
+        }
+    }
+
+    /// For a key object_store encodes, the URL's key part, percent-decoded
+    /// once (what the object store does to a request path), is exactly the
+    /// key object_store stored.
+    #[test]
+    fn build_public_url_targets_the_stored_object_key() {
+        let base = "https://h.example";
+        for key in [
+            format!("{UUID}.檔案"),
+            "x.t~xt".to_string(),
+            "a b.txt".to_string(),
+            "a/b c".to_string(),
+            "q?.x#y".to_string(),
+        ] {
+            let stored = object_store::path::Path::from(key.as_str())
+                .as_ref()
+                .to_string();
+            for (owner, prefix) in [
+                (Owner::Admin, format!("{base}/public/")),
+                (Owner::Tenant("acme".into()), format!("{base}/public/acme/")),
+            ] {
+                let url = build_public_url(base, &owner, Visibility::Public, &key);
+                let part = url.strip_prefix(&prefix).unwrap();
+                assert!(part.is_ascii() && !part.contains(['?', '#', ' ']), "{part}");
+                let decoded = urlencoding::decode(part).unwrap();
+                assert_eq!(decoded, stored, "{key:?} -> {url}");
+            }
+        }
+        assert_eq!(
+            build_public_url(base, &Owner::Admin, Visibility::Public, "x.t~xt"),
+            format!("{base}/public/x.t%257Ext")
+        );
+        assert_eq!(
+            build_public_url(
+                base,
+                &Owner::Admin,
+                Visibility::Public,
+                &format!("{UUID}.檔案")
+            ),
+            format!("{base}/public/{UUID}.%25E6%25AA%2594%25E6%25A1%2588")
+        );
+    }
+
+    /// The private arms route to drust, which decodes the path segment and
+    /// applies object_store's encoding itself — they are unchanged.
+    #[test]
+    fn build_public_url_private_arms_unchanged() {
+        let base = "https://h.example";
+        let key = format!("{UUID}.檔案");
+        assert_eq!(
+            build_public_url(base, &Owner::Admin, Visibility::Private, &key),
+            format!(
+                "{base}{}",
+                crate::base_path::base(&format!("/admin/files/{key}/bytes"))
+            )
+        );
+        assert_eq!(
+            build_public_url(
+                base,
+                &Owner::Tenant("acme".into()),
+                Visibility::Private,
+                &key
+            ),
+            format!(
+                "{base}{}",
+                crate::base_path::base(&format!("/t/acme/files/{key}/bytes"))
+            )
+        );
     }
 }

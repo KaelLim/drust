@@ -239,6 +239,22 @@ impl GarageClient {
         }
     }
 
+    /// Delete an object by a key exactly as [`Self::list_objects`] returned it.
+    ///
+    /// A listed key is already in object_store's encoded form (the S3 listing
+    /// builds it with `Path::parse`, which does not decode), so
+    /// [`Self::delete_object`] — which applies `Path::from` — would encode its
+    /// `%` again and delete nothing (silently: delete is idempotent on
+    /// NotFound). This parses the key instead. Idempotent: a missing key is `Ok`.
+    pub async fn delete_listed_object(&self, listed_key: &str) -> Result<()> {
+        let path = StorePath::parse(listed_key).context("listed key is not a valid object path")?;
+        match self.store.delete(&path).await {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e).context("garage delete_listed_object failed"),
+        }
+    }
+
     /// List every object in the bucket. Intended for reconciliation (admin
     /// action, low frequency).
     pub async fn list_objects(&self) -> Result<Vec<ObjectSummary>> {
@@ -730,6 +746,49 @@ mod tests {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let client = GarageClient::from_store(store.clone(), "public");
         (store, client)
+    }
+
+    /// The premise of the reconcile fix: listing does not decode, so an
+    /// object written under a non-ASCII key is listed in its encoded form.
+    #[tokio::test]
+    async fn listed_key_of_encodable_object_is_its_encoded_form() {
+        let (_store, client) = client();
+        client
+            .put_object("x.檔案", bytes::Bytes::from_static(b"1"), None, "x.檔案")
+            .await
+            .unwrap();
+        let keys: Vec<String> = client
+            .list_objects()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.key)
+            .collect();
+        assert_eq!(keys, vec!["x.%E6%AA%94%E6%A1%88".to_string()]);
+    }
+
+    /// `delete_object` on a listed key encodes its `%` again and deletes
+    /// nothing; `delete_listed_object` removes it.
+    #[tokio::test]
+    async fn delete_listed_object_removes_an_encoded_key() {
+        let (_store, client) = client();
+        client
+            .put_object("x.檔案", bytes::Bytes::from_static(b"1"), None, "x.檔案")
+            .await
+            .unwrap();
+        let listed = client.list_objects().await.unwrap().remove(0).key;
+
+        client.delete_object(&listed).await.unwrap();
+        assert_eq!(
+            client.list_objects().await.unwrap().len(),
+            1,
+            "delete_object re-encodes a listed key and misses the object"
+        );
+
+        client.delete_listed_object(&listed).await.unwrap();
+        assert!(client.list_objects().await.unwrap().is_empty());
+        // Idempotent.
+        client.delete_listed_object(&listed).await.unwrap();
     }
 
     #[tokio::test]
