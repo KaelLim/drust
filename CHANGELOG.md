@@ -12,8 +12,10 @@ SSE streams opened with an admin PAT end when that admin's access is revoked (E2
 `drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
 `drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
 whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
-it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), and the per-tenant
-MCP endpoint's model-facing surface changes as described under *MCP (M1)* below.
+it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), an anon or user call to a
+write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now answers
+`408 QUERY_TIMEOUT` and is rolled back, and the per-tenant MCP endpoint's model-facing
+surface changes as described under *MCP (M1)* below.
 
 This release also carries three cross-major dependency upgrades (D1–D3 under *Build*).
 Together with the compatible refresh they clear every advisory that kept CI's `cargo audit`
@@ -354,6 +356,30 @@ update its toolchain first.
   can no longer remove the live row of an existing object), and deleting a genuine orphan
   whose key the object store had encoded now actually deletes it. No action needed, unless
   a client inferred a file's type from its key's extension.
+- **Write-mode stored RPCs called by anon or user tokens now stop at the query deadline.**
+  Since v1.58 every caller-controlled *read* has run under `DRUST_QUERY_DEADLINE_MS`
+  (default 5000), but a write-mode RPC (`mode='write'`) had no deadline at all. It runs
+  inside the tenant's writer lock, synchronously on a runtime worker, so an
+  `anon_callable` write RPC whose cost grows with a caller-supplied parameter let an
+  unauthenticated caller hold that tenant's writer — and so delay every other write to it
+  — and pin a worker for as long as the body took. The Docker smoke run measured one at
+  7.3 s answering `200`, while a read RPC on the same tenant was cut off at 5.0 s.
+  Now, for anon and user callers of `POST /t/<id>/rpc/<name>`, the body runs under the
+  same deadline the read RPCs use. It is one budget for the whole body, not one per
+  statement. When it expires the call answers **`408 QUERY_TIMEOUT`** with the read arm's
+  message (`query timed out after 5000ms`) and body shape, every statement is rolled back
+  together with its record-history rows, and the writer is released at once.
+  `DRUST_QUERY_DEADLINE_MS=0` still disables the deadline. **Service tokens, admin PATs,
+  the admin RPC playground and cron are unchanged** and still run write RPCs without a
+  deadline. The deadline starts when the RPC gets the writer, so time spent queued behind
+  another writer does not count against it. What this bounds is how long **one** call
+  holds the writer, not how many are waiting for it: the per-token rate limiter caps how
+  fast requests arrive (about 6/s per token), not how many queue, so a sustained stream of
+  slow anon or user calls can still keep a tenant's writer busy, with every other writer —
+  trusted ones included — queued behind it. As with reads, the deadline caps how long a
+  call holds a worker, not the fact that it holds one. No action needed, unless an app
+  calls an anon-callable write RPC that legitimately runs longer than the deadline: move
+  that call behind a service key, or raise `DRUST_QUERY_DEADLINE_MS`.
 
 ### Changed
 

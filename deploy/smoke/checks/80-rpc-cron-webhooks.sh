@@ -2,8 +2,9 @@
 # Jobs surface: stored RPC (kind='sql' read/write, kind='query'), anon_callable
 # semantics + RPC_ANON_OWNER_SCOPED config-time guard, validate_rpc_sql
 # refusals, write-RPC record history via the preupdate hook (rusqlite 0.42),
-# the read query deadline (progress handler, rusqlite 0.42), cron (a real
-# minute fire of a write RPC + limits/error codes), webhooks + egress allowlist
+# the query deadline (progress handler, rusqlite 0.42) on read RPCs and on
+# anon write RPCs, cron (a real minute fire of a write RPC + limits/error
+# codes), webhooks + egress allowlist
 # (deny-all default, register-time private-IP refusal even when allowlisted,
 # dispatch-time egress denial recorded on the subscription, registration cap).
 # Uses 3 throwaway tenants; never makes an outbound connection to a third party
@@ -461,15 +462,34 @@ fast_ok=0
 for i in 1 2 3 4 5 6; do svc POST /rpc/r_items '{"min":0}'; [ "$STATUS" = "200" ] && fast_ok=$((fast_ok + 1)); done
 check_eq "rpc deadline: pooled readers serve fast RPCs after the interrupt (progress handler removed)" 6 "$fast_ok"
 
-# Measurement only (no check): does a WRITE RPC carry the same deadline? The
-# source arms DeadlineGuard only on the read executor; this records what the
-# deployed binary does with a bounded CTE calibrated to run ~7 s.
+# Write RPCs: anon and user callers run under the same deadline; service is
+# trusted and unbounded. One bounded CTE body, calibrated to run ~7.5 s here
+# (n=3M timed with the service key first), so the anon call must be cut off
+# at ~5 s and the service call must run past the deadline to completion.
 mcp create_rpc '{"name":"w_slow","mode":"write","sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}]}'
+setup_ok "rpc deadline: create bounded-CTE write RPC w_slow (service only)"
+mcp create_rpc '{"name":"w_slow_anon","mode":"write","sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}],"anon_callable":true}'
+setup_ok "rpc deadline: create the same write RPC as anon_callable w_slow_anon"
 t0=$(now_ms); svc POST /rpc/w_slow '{"n":3000000}'; t1=$(now_ms)
 cal=$((t1 - t0)); [ "$cal" -lt 50 ] && cal=50
 N2=$(python3 -c "print(min(400000000, int(3000000 * 7500 / $cal)))")
+svc POST /collections/items/list '{}'
+items_before="$(body total)"
+t0=$(now_ms); REQ_TIMEOUT=60 anon POST /rpc/w_slow_anon "{\"n\":$N2}"; t1=$(now_ms)
+el=$((t1 - t0))
+check_eq "rpc deadline: an anon runaway write RPC is interrupted with 408 QUERY_TIMEOUT" "408 QUERY_TIMEOUT" "$STATUS $(body error_code)"
+if [ "$el" -ge 4500 ] && [ "$el" -lt 20000 ]; then ok "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline (${el} ms), not at the HTTP timeout"
+else bad "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline" "elapsed ${el} ms (n=$N2; 3M rows took ${cal} ms)"; fi
+svc POST /collections/items/list '{}'
+check_eq "rpc deadline: the interrupted anon write RPC wrote nothing" "$items_before" "$(body total)"
+t0=$(now_ms); svc POST /records/items '{"data":{"title":"after-deadline","n":1}}'; t1=$(now_ms)
+if [ "$STATUS" = "201" ] && [ $((t1 - t0)) -lt 2000 ]; then ok "rpc deadline: the tenant writer serves a fast write right after the interrupt"
+else bad "rpc deadline: the tenant writer serves a fast write right after the interrupt" "status $STATUS after $((t1 - t0)) ms"; fi
 t0=$(now_ms); REQ_TIMEOUT=60 svc POST /rpc/w_slow "{\"n\":$N2}"; t1=$(now_ms)
-note "measurement: write RPC calibrated to ~7.5 s (n=$N2; 3M rows took ${cal} ms) answered $STATUS $(body error_code 2>/dev/null) after $((t1 - t0)) ms"
+el=$((t1 - t0))
+if [ "$STATUS" = "200" ] && [ "$el" -ge 5500 ]; then ok "rpc deadline: a service write RPC past the deadline is not interrupted (200 after ${el} ms)"
+elif [ "$STATUS" = "200" ]; then note "rpc deadline: service control under-calibrated (${el} ms) — proves nothing"
+else bad "rpc deadline: a service write RPC past the deadline is not interrupted (200)" "status $STATUS $(body error_code) after ${el} ms"; fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tenant C — webhooks + egress allowlist.

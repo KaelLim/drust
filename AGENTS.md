@@ -195,6 +195,20 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   resets `cache_control`, and a publish cannot be recalled once Caddy serves the object
   (invariant 19).
 
+**Deliberate — write-mode stored RPC deadline (not the PAT family):**
+
+- Write-mode stored RPCs run **without** a deadline for service / admin PAT / admin
+  playground / cron: deliberate (trust tiers — a tenant's nightly cron write RPC that
+  legitimately runs for 20 s must not start failing). Untrusted callers are bounded by
+  `exec_write::deadline_for`, the only producer of `Some`; the playground and cron pass a
+  literal `None`. Do not "fix" it by arming the deadline for every caller.
+- The deadline guard in `run_write_rpc` is armed **only around the statement loop**, not
+  at the top of the closure: an interrupt inside the history flush is a 500, and one inside
+  STEP 5c would interrupt invariant 2's last-in-tx quota gate. `abandon_savepoint` skips
+  `ROLLBACK TO`/`RELEASE` only when the run timed out AND the connection is back in
+  autocommit (SQLite already rolled back an interrupted DML statement); widening it to every
+  error class would relabel SQLITE_FULL/IOERR/NOMEM for trusted callers.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

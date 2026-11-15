@@ -65,7 +65,8 @@ services:
       # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---
       # DRUST_CORS_ORIGINS: https://app.example.com,http://localhost:*
       # --- caller-controlled query deadline (ms); default 5000, 0 disables ---
-      # Bounds raw /query, stored RPC, and the legacy raw-filter path so one
+      # Bounds raw /query, every read stored RPC, anon/user write stored RPCs
+      # (which also hold the tenant writer), and the legacy raw-filter path, so one
       # expensive recursive CTE cannot monopolise a runtime worker. Lower it on a
       # small-core host; raise it only if legitimate report queries are timing out.
       # DRUST_QUERY_DEADLINE_MS: "5000"
