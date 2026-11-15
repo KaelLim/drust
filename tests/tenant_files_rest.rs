@@ -1028,7 +1028,7 @@ async fn stream_bytes_storage_failure_hides_backend_detail() {
         Path((tid.to_string(), key.to_string())),
     )
     .await;
-    let (status, msg) = result.err().expect("a failing store must not stream");
+    let (status, msg) = result.expect_err("a failing store must not stream");
     assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
     assert_eq!(msg, "object store read failed");
     assert!(!msg.contains("storage-internal"));
@@ -1105,7 +1105,7 @@ async fn tenant_signed_bytes_storage_failure_hides_backend_detail() {
         }),
     )
     .await;
-    let (status, msg) = result.err().expect("a failing store must not stream");
+    let (status, msg) = result.expect_err("a failing store must not stream");
     assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
     assert_eq!(msg, "object store read failed");
 }
