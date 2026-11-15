@@ -665,8 +665,9 @@ fi
 # Sent straight to drust's own port with no X-Forwarded-For: the one-entry chain
 # is missing, so client_ip falls back to the TCP peer. With connect-info that is
 # the Docker gateway; without it, peer_addr's loopback default, and the bare
-# image (DRUST_TRUSTED_PROXIES=0) would key every client on one address. Runs
-# AFTER the warning count above, because this request logs that fallback.
+# image (DRUST_TRUSTED_PROXIES=0) would key every client on one address. An
+# absent header takes the peer without the fallback warning, so the warning
+# count above is not affected by where this runs.
 ALL_LOGIN_IPS_PY='
 import json, sys
 try:

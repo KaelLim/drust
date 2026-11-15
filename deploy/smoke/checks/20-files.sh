@@ -151,8 +151,9 @@ check_ne "GET /public/ does not list the bucket (status)" 200 "$STATUS"
 check_not_contains "GET /public/ does not list the bucket (no ListBucketResult)" ListBucketResult "$BODY"
 # Bucket-level on purpose: /public/<tenant>/?list-type=2 names the object key
 # "<tenant>/" and is a GetObject whatever the proxy does with the query, so it
-# could never list. This form lists the moment the query strip and the
-# GetObject-only policy are both lost.
+# could never list. With the query strip in place this reaches the store as the
+# GET /public/ above and fails with it when the GetObject-only policy is lost;
+# it is kept as the request a client would send to list, strip or no strip.
 req GET "$PUBLIC/?list-type=2&prefix=$TA/"
 check_ne "a ListObjectsV2 request on /public/ does not list the bucket (status)" 200 "$STATUS"
 check_not_contains "a ListObjectsV2 request on /public/ returns no ListBucketResult" ListBucketResult "$BODY"

@@ -410,3 +410,95 @@ async fn upload_submit_mints_a_bin_key_for_a_non_ascii_extension() {
     );
     assert!(!url.contains('%'), "nothing in the url is escaped: {url}");
 }
+
+/// Deleting a PRIVATE host file deletes its object from the `private` bucket,
+/// where the upload put it. The handler used to delete from the client's
+/// default (public) store: nothing was there, the row went, and the object
+/// stayed behind with no row and no page that lists that bucket.
+#[tokio::test]
+async fn delete_submit_removes_a_private_host_file_from_the_private_bucket() {
+    use drust::mgmt::public_files::{PublicFilesState, delete_submit, upload_submit};
+    use drust::storage::garage::GarageClient;
+    use drust::storage::meta::{bootstrap_admin, open_meta};
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    let dir = tempdir().unwrap();
+    let mut conn = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    bootstrap_admin(&mut conn, "root", "pw").unwrap();
+    let session_meta = Arc::new(Mutex::new(conn));
+    let meta = {
+        let mut c2 = open_meta(&dir.path().join("meta2.sqlite")).unwrap();
+        bootstrap_admin(&mut c2, "root", "pw").unwrap();
+        Arc::new(Mutex::new(c2))
+    };
+    let garage = Arc::new(GarageClient::from_mock_admin(
+        "http://127.0.0.1:1",
+        "unused",
+    ));
+    let mut state = PublicFilesState::test_default(session_meta, meta.clone());
+    state.garage = Some(garage.clone());
+    state.disk_min_free_pct = 0;
+    let app = axum::Router::new()
+        .route(
+            "/",
+            axum::routing::post(upload_submit)
+                .layer(axum::extract::DefaultBodyLimit::max(state.max_upload_bytes)),
+        )
+        .route("/{id}/delete", axum::routing::post(delete_submit))
+        .with_state(state);
+
+    let (boundary, body_bytes) = make_multipart(&[
+        ("visibility", "private", None),
+        ("file", "hi", Some("secret.txt")),
+    ]);
+    let upload = Request::builder()
+        .method("POST")
+        .uri("/")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body_bytes))
+        .unwrap();
+    let resp = app.clone().oneshot(upload).await.unwrap();
+    assert!(resp.status().is_redirection(), "upload: {}", resp.status());
+
+    let (id, key, visibility): (i64, String, String) = meta
+        .lock()
+        .await
+        .query_row("SELECT id, key, visibility FROM _system_files", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(visibility, "private");
+    let listed = |g: Arc<GarageClient>| async move {
+        g.list_objects()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.key)
+            .collect::<Vec<String>>()
+    };
+    assert_eq!(listed(garage.clone()).await, vec![format!("private/{key}")]);
+
+    let delete = Request::builder()
+        .method("POST")
+        .uri(format!("/{id}/delete"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(delete).await.unwrap();
+    assert!(resp.status().is_redirection(), "delete: {}", resp.status());
+    assert!(
+        listed(garage).await.is_empty(),
+        "the object is gone from the private bucket"
+    );
+    let rows: i64 = meta
+        .lock()
+        .await
+        .query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "and so is the row");
+}
