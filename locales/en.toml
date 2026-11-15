@@ -666,7 +666,7 @@ eyebrow = "Admin · storage"
 pill_files_unit = "files"
 pill_not_configured = "not configured"
 title = "Host files"
-sub_configured = "Host-level files in the shared <code>public</code> bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Tenant files live inside each tenant's Files page."
+sub_configured = "Host-level files: public ones in the shared <code>public</code> bucket (anonymous read at <code>/public/&lt;key&gt;</code>), private ones in the shared <code>private</code> bucket. Tenant files live inside each tenant's Files page."
 sub_unconfigured = "Object storage not configured. Set <code>GARAGE_S3_ENDPOINT</code> and its key pair in <code>.env</code> and restart drust."
 
 [files.list]

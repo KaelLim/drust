@@ -682,7 +682,7 @@ banner_action = "請清出資料庫磁碟的空間或擴充磁碟。"
 banner_usage = "已使用 {used} GB／共 {total} GB。"
 [files.head]
 eyebrow = "管理 · 儲存"
-sub_configured = "主機層級的檔案，存放於共用的 <code>public</code> 儲存桶 — 匿名讀取路徑為 <code>/public/&lt;key&gt;</code>。各租戶的檔案在該租戶的檔案頁面。"
+sub_configured = "主機層級的檔案：公開檔案存放於共用的 <code>public</code> 儲存桶（匿名讀取路徑為 <code>/public/&lt;key&gt;</code>），私有檔案存放於共用的 <code>private</code> 儲存桶。各租戶的檔案在該租戶的檔案頁面。"
 sub_unconfigured = "尚未設定物件儲存。請在 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code> 及其金鑰組後重啟 drust。"
 # REVIEW (low confidence): count suffix, please verify
 pill_files_unit = "個檔案"
