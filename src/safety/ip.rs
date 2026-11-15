@@ -456,7 +456,14 @@ mod tests {
             ("mgmt/routes.rs", 0, 1),
         ];
         const THIS_FILE: &str = "safety/ip.rs";
-        const LOOPBACK_LITERAL: &str = "[127, 0, 0, 1], 0";
+        // The spellings of a loopback "peer" a consumer could hand in instead of
+        // `peer_addr(…)`. None of them appears anywhere else in src/ today.
+        const LOOPBACK_LITERALS: &[&str] = &[
+            "[127, 0, 0, 1], 0",
+            "127.0.0.1:0",
+            "Ipv4Addr::LOCALHOST",
+            "Ipv4Addr::new(127,",
+        ];
         const HEADER_LITERALS: &[&str] = &["\"x-forwarded-for\"", "\"x-real-ip\"", "\"forwarded\""];
 
         let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
@@ -499,13 +506,13 @@ mod tests {
             }
             let extractors = call_sites(&code, "ClientIp(").len();
 
-            if (code.contains("client_ip") || code.contains("ClientIp"))
-                && code.contains(LOOPBACK_LITERAL)
-            {
-                offenders.push(format!(
-                    "{rel}: names client_ip/ClientIp and still builds the literal \
-                     `{LOOPBACK_LITERAL}` peer — use `ClientIp` or `peer_addr`"
-                ));
+            if code.contains("client_ip") || code.contains("ClientIp") {
+                for lit in LOOPBACK_LITERALS.iter().filter(|l| code.contains(*l)) {
+                    offenders.push(format!(
+                        "{rel}: names client_ip/ClientIp and still builds the literal \
+                         `{lit}` peer — use `ClientIp` or `peer_addr`"
+                    ));
+                }
             }
             if rel != "main.rs" && !call_sites(&code, "set_trusted_proxies(").is_empty() {
                 offenders.push(format!(
