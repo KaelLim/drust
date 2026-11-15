@@ -719,9 +719,10 @@ fn with_error_code(mut e: McpError, code: &str) -> McpError {
 
 /// The tool-EXECUTION-error face (MCP `isError: true`). Body is the JSON text
 /// `{"error_code", "message", "suggested_fix"?}` — the keys `bail_mcp` puts in
-/// JSON-RPC `data`, plus the message. MA1's outer `call_tool` (design §3.8)
-/// converts protocol errors through THIS function, so every isError body has
-/// one shape; do not fork it. `fix`: pass the fix the error already carries
+/// JSON-RPC `data`, plus the message. The per-tenant `call_tool`
+/// (`finish_tool_call`) converts rmcp's argument errors through THIS function,
+/// and MA1's account-level `call_tool` (design §3.8) extends that to every
+/// protocol error, so every isError body has one shape; do not fork it. `fix`: pass the fix the error already carries
 /// (`mcp_error_from_response` forwards REST's possibly CONTEXTUAL fix); `None`
 /// falls back to the catalogue, and an uncatalogued code simply has no fix.
 fn tool_error(
@@ -739,6 +740,69 @@ fn tool_error(
     let text = serde_json::to_string(&Value::Object(body))
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::error(vec![Content::text(text)]))
+}
+
+/// The message rmcp gives a tool argument that fails to deserialize
+/// (`rmcp …/handler/server/tool.rs`, `Parameters::from_context_part` →
+/// `ErrorData::invalid_params("failed to deserialize parameters: …")`). rmcp's
+/// own constant (`router/tool.rs`, used by `into_tool_argument_error`) is
+/// private, so it is spelled out here; the `tests/mcp_protocol.rs` wire tests
+/// fail if an rmcp upgrade changes it.
+const RMCP_ARG_ERROR_PREFIX: &str = "failed to deserialize parameters:";
+
+/// Post-process every `tools/call` outcome (called by the hand-written
+/// `call_tool`):
+///
+/// 1. rmcp ≥ 1.8 turns an argument error into a plain-text `isError` result
+///    (`into_tool_argument_error`). That is reshaped into drust's one isError
+///    body via [`tool_error`] with `INVALID_PARAMS`, rmcp's sentence as the
+///    `message`. It cannot match a drust isError, whose text starts with `{`.
+/// 2. rmcp 1.7 returned the same failure as JSON-RPC `-32602`; it gets the same
+///    reshaping, so the face does not depend on which compatible rmcp resolves.
+/// 3. An unknown tool (`"tool not found"`) stays a JSON-RPC `-32602` — the
+///    protocol-error class.
+/// 4. Any other JSON-RPC error gains a `data.error_code` if it has none
+///    ([`ensure_error_code`]).
+/// 5. Everything else passes through untouched.
+fn finish_tool_call(r: Result<CallToolResult, McpError>) -> Result<CallToolResult, McpError> {
+    match r {
+        Ok(res) => {
+            if res.is_error == Some(true)
+                && res.structured_content.is_none()
+                && res.content.len() == 1
+                && let Some(t) = res.content[0].as_text()
+                && t.text.starts_with(RMCP_ARG_ERROR_PREFIX)
+            {
+                return tool_error("INVALID_PARAMS", t.text.clone(), None);
+            }
+            Ok(res)
+        }
+        Err(e)
+            if e.code == rmcp::model::ErrorCode::INVALID_PARAMS
+                && e.message.starts_with(RMCP_ARG_ERROR_PREFIX) =>
+        {
+            tool_error("INVALID_PARAMS", e.message.into_owned(), None)
+        }
+        Err(e) if e.message == "tool not found" => Err(e),
+        Err(e) => Err(ensure_error_code(e)),
+    }
+}
+
+/// The `call_tool` backstop for every JSON-RPC tool error that did not come
+/// through `bail_mcp` (a handler's own `invalid_params` / `internal_error`):
+/// if `data` has no `error_code`, classify the message the same way `bail_mcp`
+/// does. Existing `data` keys are kept; code and message never change.
+fn ensure_error_code(e: McpError) -> McpError {
+    let has_code = e
+        .data
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_some_and(|m| m.contains_key("error_code"));
+    if has_code {
+        return e;
+    }
+    let code = crate::mcp::error_code::mcp_error_code(&e.message, e.code).into_owned();
+    with_error_code(e, &code)
 }
 
 /// M1 (B6) — for the tools whose inner fn reports failure as an `Ok` object
@@ -962,6 +1026,81 @@ mod bail_mcp_tests {
                 "tools/{name} is missing from every_unprefixed_tool_literal_has_a_code"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod finish_tool_call_tests {
+    use super::*;
+
+    fn body_of(r: &CallToolResult) -> Value {
+        assert_eq!(r.is_error, Some(true), "{r:?}");
+        let t = r.content[0].as_text().expect("text content");
+        serde_json::from_str(&t.text).expect("isError body is JSON")
+    }
+
+    const ARG_MSG: &str = "failed to deserialize parameters: missing field `x`";
+
+    #[test]
+    fn rmcp_argument_result_becomes_invalid_params_tool_error() {
+        let out = finish_tool_call(Ok(CallToolResult::error(vec![Content::text(ARG_MSG)])))
+            .expect("stays a tool result");
+        let b = body_of(&out);
+        assert_eq!(b["error_code"], "INVALID_PARAMS");
+        assert_eq!(b["message"], ARG_MSG);
+        assert!(b["suggested_fix"].as_str().is_some(), "{b}");
+    }
+
+    #[test]
+    fn rmcp17_argument_protocol_error_becomes_tool_error() {
+        let out = finish_tool_call(Err(McpError::invalid_params(ARG_MSG, None)))
+            .expect("becomes a tool result");
+        let b = body_of(&out);
+        assert_eq!(b["error_code"], "INVALID_PARAMS");
+        assert_eq!(b["message"], ARG_MSG);
+    }
+
+    #[test]
+    fn drust_tool_error_and_unknown_tool_pass_through() {
+        let drust = tool_error("COLLECTION_NOT_FOUND", "no such collection".into(), None).unwrap();
+        let before = serde_json::to_string(&drust).unwrap();
+        let out = finish_tool_call(Ok(drust)).unwrap();
+        assert_eq!(serde_json::to_string(&out).unwrap(), before);
+
+        // A success whose text happens to start with the prefix is not an error.
+        let ok = CallToolResult::success(vec![Content::text(ARG_MSG)]);
+        let out = finish_tool_call(Ok(ok)).unwrap();
+        assert_ne!(out.is_error, Some(true));
+
+        let e =
+            finish_tool_call(Err(McpError::invalid_params("tool not found", None))).unwrap_err();
+        assert_eq!(e.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(e.message, "tool not found");
+        assert!(e.data.is_none());
+    }
+
+    #[test]
+    fn codeless_protocol_error_gains_code_and_keeps_existing_data() {
+        let e = finish_tool_call(Err(McpError::internal_error(
+            "meta connection not available in this context",
+            None,
+        )))
+        .unwrap_err();
+        assert_eq!(e.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(e.message, "meta connection not available in this context");
+        assert_eq!(e.data.unwrap()["error_code"], "META_UNAVAILABLE");
+
+        let with = McpError::invalid_params("x", Some(serde_json::json!({"error_code": "X"})));
+        let e = finish_tool_call(Err(with)).unwrap_err();
+        assert_eq!(e.data.unwrap(), serde_json::json!({"error_code": "X"}));
+
+        // An unclassifiable -32602 falls back to INVALID_PARAMS, not INTERNAL.
+        let e = finish_tool_call(Err(McpError::invalid_params(
+            "mode must be \"read\" or \"write\"",
+            None,
+        )))
+        .unwrap_err();
+        assert_eq!(e.data.unwrap()["error_code"], "INVALID_PARAMS");
     }
 }
 
@@ -3739,6 +3878,25 @@ impl ServerHandler for DrustMcpService {
         )
         .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
         .with_instructions(instructions)
+    }
+
+    /// The single tool-call choke point: every `#[tool]` goes through here
+    /// (hand-written, so `#[tool_handler]` does not generate its own), and
+    /// `finish_tool_call` reshapes rmcp's argument errors and backstops
+    /// `data.error_code`.
+    ///
+    /// This is the first drust code on the tool path that holds a
+    /// `RequestContext` — and therefore the peer. Pushing ANY notification from
+    /// here is server push: it brings MCP sessions under CLAUDE.md invariant 5
+    /// (a key reroll and the admin-PAT revocation family would then have to end
+    /// MCP sessions too).
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        finish_tool_call(Self::tool_router().call(tcc).await)
     }
 
     // --- MCP Resources (v1.56, M2). Hand-written (rmcp has no resource macro);

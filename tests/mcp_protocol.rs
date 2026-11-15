@@ -507,3 +507,166 @@ async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
         "instructions on the wire: {s}"
     );
 }
+
+/// One `tools/call` on an open session; returns the JSON-RPC message (with
+/// either `result` or `error`).
+async fn call_tool(
+    app: &axum::Router,
+    tenant: &str,
+    tok: &str,
+    sid: &str,
+    name: &str,
+    args: Value,
+) -> Value {
+    let req = session_request(
+        tenant,
+        tok,
+        sid,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        }),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    parse_mcp_body(resp)
+        .await
+        .into_iter()
+        .find(|m| m.get("result").is_some() || m.get("error").is_some())
+        .expect("tools/call must answer a result or an error")
+}
+
+/// The isError body of a tools/call answer, parsed.
+fn tool_error_body(m: &Value) -> Value {
+    assert_eq!(m["result"]["isError"], Value::Bool(true), "{m}");
+    let text = m["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("isError without text content: {m}"));
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("isError text is not JSON ({e}): {text}"))
+}
+
+/// rmcp 1.8 answers a malformed argument with its own plain-text isError;
+/// drust reshapes it into its one isError body (`finish_tool_call`).
+#[tokio::test]
+async fn tools_call_missing_argument_is_invalid_params_tool_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg1").await;
+    let (sid, _) = open_session(&app, "mcparg1", &tok).await;
+    let m = call_tool(
+        &app,
+        "mcparg1",
+        &tok,
+        &sid,
+        "describe_collection",
+        json!({}),
+    )
+    .await;
+    let b = tool_error_body(&m);
+    assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing field `collection`"),
+        "{b}"
+    );
+    assert!(b["suggested_fix"].as_str().is_some(), "{b}");
+}
+
+#[tokio::test]
+async fn tools_call_wrongly_typed_argument_is_invalid_params_tool_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg2").await;
+    let (sid, _) = open_session(&app, "mcparg2", &tok).await;
+    let m = call_tool(
+        &app,
+        "mcparg2",
+        &tok,
+        &sid,
+        "delete_record",
+        json!({"collection": "x", "id": "abc"}),
+    )
+    .await;
+    let b = tool_error_body(&m);
+    assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
+    assert!(
+        b["message"].as_str().unwrap().contains("expected i64"),
+        "{b}"
+    );
+}
+
+#[tokio::test]
+async fn tools_call_unknown_tool_stays_protocol_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg3").await;
+    let (sid, _) = open_session(&app, "mcparg3", &tok).await;
+    let m = call_tool(&app, "mcparg3", &tok, &sid, "no_such_tool", json!({})).await;
+    assert_eq!(m["error"]["code"], -32602, "{m}");
+    assert_eq!(m["error"]["message"], "tool not found", "{m}");
+}
+
+async fn session_with_collection(
+    tenant: &str,
+) -> (axum::Router, String, String, tempfile::TempDir) {
+    let (app, tok, _anon, dir) = mcp_stack(tenant).await;
+    let (sid, _) = open_session(&app, tenant, &tok).await;
+    let m = call_tool(
+        &app,
+        tenant,
+        &tok,
+        &sid,
+        "create_collection",
+        json!({"name": "t", "fields": [{"name": "title", "sql_type": "text"}]}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    (app, tok, sid, dir)
+}
+
+/// `query`'s write refusal used to ship the prose before its first colon as
+/// `data.error_code`.
+#[tokio::test]
+async fn query_write_refusal_carries_query_forbidden() {
+    let (app, tok, sid, _dir) = session_with_collection("mcpqf").await;
+    let m = call_tool(
+        &app,
+        "mcpqf",
+        &tok,
+        &sid,
+        "query",
+        json!({"sql": "DELETE FROM t"}),
+    )
+    .await;
+    assert_eq!(m["error"]["code"], -32603, "{m}");
+    assert!(
+        m["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`query` is read-only"),
+        "{m}"
+    );
+    assert_eq!(m["error"]["data"]["error_code"], "QUERY_FORBIDDEN", "{m}");
+}
+
+/// The unknown-key refusal names the caller's key first; a key shaped like a
+/// code must not become the code.
+#[tokio::test]
+async fn insert_unknown_key_carries_field_not_found() {
+    let (app, tok, sid, _dir) = session_with_collection("mcpfnf").await;
+    let m = call_tool(
+        &app,
+        "mcpfnf",
+        &tok,
+        &sid,
+        "insert_record",
+        json!({"collection": "t", "data": {"A_B: x": 1}}),
+    )
+    .await;
+    let msg = m["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{m}"));
+    assert!(msg.starts_with("unknown field 'A_B: x'"), "{m}");
+    assert_eq!(m["error"]["data"]["error_code"], "FIELD_NOT_FOUND", "{m}");
+}

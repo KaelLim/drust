@@ -78,7 +78,6 @@ table in the same commit that fixes it.
 |---|---|---|
 | `20-files`, `50-mcp` | 5 | `docker-compose.yml` does not set `DRUST_PUBLIC_BASE_URL`, so file, signed and MCP-advertised URLs point at `http://localhost:8793` |
 | `20-files`, `30-uploads-tus` | 2 | `deploy/compose.Caddyfile` has no `/public/*` route, so the public URL drust returns answers `404 NOT_FOUND` from drust |
-| `50-mcp` | 2 | a missing or wrongly typed tool argument answers plain-text `isError` (rmcp 1.8) instead of one of drust's two error shapes |
 
 ## Writing a check
 

@@ -501,6 +501,11 @@ def main():
         # "every isError body has one shape".
         check("%s uses one of drust's two error faces (JSON-RPC error, or isError with "
               "{error_code,message} JSON)" % label, drust_error_face(m), short(m))
+        # handler.rs finish_tool_call: an argument that fails to deserialize is the isError
+        # face with INVALID_PARAMS. Pinned exactly: the check above would also pass a
+        # regression back to JSON-RPC -32602.
+        check("%s is an isError result with error_code INVALID_PARAMS" % label,
+              is_error(m) and (tool_json(m) or {}).get("error_code") == "INVALID_PARAMS", short(m))
     _, m = S.tool("list_records", {"collection": "notes", "filter": [1, 2]})
     e = rpc_err(m) or {}
     check("a malformed filter is an error with FILTER_PARSE_ERROR and the shape hint",
