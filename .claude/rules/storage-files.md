@@ -22,6 +22,7 @@ Fires when you touch the Garage S3 client, per-tenant files, the tus upload serv
 Optional; activated by `GARAGE_S3_ENDPOINT` + friends in `.env`.
 
 - **Garage is an independent service** (see `tool/garage/CLAUDE.md`). drust speaks plain S3 via `object_store::aws::AmazonS3`. drust boots with Garage unreachable — storage tab shows "not configured" / admin ops return 503; rest of drust unaffected.
+- **`GARAGE_ADMIN_ENDPOINT` / `GARAGE_ADMIN_TOKEN` are optional** and Garage-only. Configured means BOTH non-empty (`config::admin_api_pair`); a half pair logs one boot warning naming the missing variable and reads as unconfigured — never a `ConfigError`, because a half pair booted before the pair was optional. The admin API's only caller is the owner-only reconcile page's cleanup of retired per-tenant buckets; `GarageClient::admin_url` refuses up front when either side is empty, so no admin request is ever sent to a relative URL or with an empty bearer.
 - **Reads bypass drust.** Anonymous GETs hit Caddy `/public/*`, which reverse-proxies to Garage `s3_web` (`127.0.0.1:47831`) with `Host: public.web.local`. drust is only in the *write* path.
 - **SQLite-first upload / S3-first delete.** Upload inserts metadata row, puts to Garage, compensates by deleting row on S3 failure. Delete calls Garage first (idempotent on NotFound), then clears row. Orphans surfaced by `reconcile` page.
 - **`_system_*` drop-protected.** `storage::schema::is_protected_collection()` is consulted by `drop_collection`, for both admin-level `_system_files` and per-tenant `_system_files`.

@@ -259,6 +259,18 @@ update its toolchain first.
   subscriber is evicted. The key is absent when there is nothing to report, so an
   unreferenced drop answers exactly as before.
 
+- **`GARAGE_ADMIN_ENDPOINT` and `GARAGE_ADMIN_TOKEN` are optional.** Storage started only
+  when both were set, although nothing on the data path uses Garage's admin API, so a store
+  configured with just `GARAGE_S3_ENDPOINT`, `GARAGE_S3_ACCESS_KEY` and
+  `GARAGE_S3_SECRET_KEY` (any S3-compatible store) failed at startup with
+  `missing env var: GARAGE_ADMIN_ENDPOINT`. Both are now optional. If only one of the two is
+  set, or one is empty, drust logs one warning at boot naming the missing variable and
+  treats the admin API as not configured; it never refuses to start over them. The admin API
+  is used only by the owner-only reconcile page to clean up buckets left from the retired
+  per-tenant layout; without it, that cleanup logs `Garage admin API not configured`, sends
+  no request, and keeps the row for a later retry. A fresh install has no such rows. Hosts
+  that set both see no change; no action needed.
+
 ### MCP (M1) — model-facing text, tool annotations, error results
 
 No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.

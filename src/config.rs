@@ -52,9 +52,13 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct StorageConfig {
     pub endpoint: String,
+    /// `GARAGE_ADMIN_ENDPOINT`. Empty = the Garage admin API is not
+    /// configured (see `admin_api_pair`); only the reconcile page's cleanup
+    /// of retired per-tenant buckets uses it.
     pub admin_endpoint: String,
     pub access_key: String,
     pub secret_key: String,
+    /// `GARAGE_ADMIN_TOKEN`. Empty exactly when `admin_endpoint` is empty.
     pub admin_token: String,
     pub public_bucket: String,
     pub max_upload_bytes: usize,
@@ -84,12 +88,17 @@ impl StorageConfig {
                 "must be between 1 and 99".into(),
             ));
         }
+        let access_key = req("GARAGE_S3_ACCESS_KEY")?;
+        let secret_key = req("GARAGE_S3_SECRET_KEY")?;
+        // After the S3 keys, so a missing S3 key is still the reported error
+        // and the half-pair warning is not emitted on a config that fails anyway.
+        let (admin_endpoint, admin_token) = admin_api_pair();
         Ok(Some(Self {
             endpoint,
-            admin_endpoint: req("GARAGE_ADMIN_ENDPOINT")?,
-            access_key: req("GARAGE_S3_ACCESS_KEY")?,
-            secret_key: req("GARAGE_S3_SECRET_KEY")?,
-            admin_token: req("GARAGE_ADMIN_TOKEN")?,
+            admin_endpoint,
+            access_key,
+            secret_key,
+            admin_token,
             public_bucket: opt("GARAGE_PUBLIC_BUCKET").unwrap_or_else(|| "public".to_string()),
             max_upload_bytes: parse_num("GARAGE_MAX_UPLOAD_SIZE", 52_428_800)?,
             disk_min_free_pct,
@@ -112,6 +121,41 @@ impl StorageConfig {
 
 fn opt(name: &'static str) -> Option<String> {
     std::env::var(name).ok()
+}
+
+/// Unset OR empty → `None`.
+fn opt_nonempty(name: &'static str) -> Option<String> {
+    opt(name).filter(|v| !v.is_empty())
+}
+
+/// The Garage admin API is configured only when BOTH `GARAGE_ADMIN_ENDPOINT`
+/// and `GARAGE_ADMIN_TOKEN` are non-empty. Anything else — both absent or
+/// empty, or a half pair — reads as "not configured" (both fields empty).
+/// A half pair is warned about, never refused: it booted before these became
+/// optional (`req` accepted an empty string), and nothing on the data path
+/// uses the admin API. The warning names the missing variable, never a value.
+fn admin_api_pair() -> (String, String) {
+    match (
+        opt_nonempty("GARAGE_ADMIN_ENDPOINT"),
+        opt_nonempty("GARAGE_ADMIN_TOKEN"),
+    ) {
+        (Some(endpoint), Some(token)) => (endpoint, token),
+        (None, None) => (String::new(), String::new()),
+        (Some(_), None) => {
+            tracing::warn!(
+                missing = "GARAGE_ADMIN_TOKEN",
+                "GARAGE_ADMIN_ENDPOINT is set but GARAGE_ADMIN_TOKEN is not; treating the Garage admin API as not configured"
+            );
+            (String::new(), String::new())
+        }
+        (None, Some(_)) => {
+            tracing::warn!(
+                missing = "GARAGE_ADMIN_ENDPOINT",
+                "GARAGE_ADMIN_TOKEN is set but GARAGE_ADMIN_ENDPOINT is not; treating the Garage admin API as not configured"
+            );
+            (String::new(), String::new())
+        }
+    }
 }
 
 fn req(name: &'static str) -> Result<String, ConfigError> {
@@ -239,6 +283,95 @@ mod tests {
         unsafe { std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830") };
         let err = StorageConfig::from_env().unwrap_err();
         assert!(matches!(err, ConfigError::Missing(_)));
+        clear_storage_env();
+    }
+
+    /// The S3 trio every S3-compatible store needs, and nothing else.
+    fn set_s3_trio() {
+        unsafe {
+            std::env::set_var("GARAGE_S3_ENDPOINT", "http://127.0.0.1:47830");
+            std::env::set_var("GARAGE_S3_ACCESS_KEY", "GK123");
+            std::env::set_var("GARAGE_S3_SECRET_KEY", "secret");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
+    fn storage_config_admin_api_is_optional() {
+        clear_storage_env();
+        set_s3_trio();
+        let cfg = StorageConfig::from_env()
+            .expect("the S3 trio alone must load")
+            .expect("GARAGE_S3_ENDPOINT set => storage enabled");
+        assert_eq!(cfg.admin_endpoint, "");
+        assert_eq!(cfg.admin_token, "");
+        clear_storage_env();
+    }
+
+    #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
+    fn storage_config_empty_admin_pair_reads_as_unset() {
+        clear_storage_env();
+        set_s3_trio();
+        unsafe {
+            std::env::set_var("GARAGE_ADMIN_ENDPOINT", "");
+            std::env::set_var("GARAGE_ADMIN_TOKEN", "");
+        }
+        let cfg = StorageConfig::from_env().unwrap().unwrap();
+        assert_eq!(cfg.admin_endpoint, "");
+        assert_eq!(cfg.admin_token, "");
+        clear_storage_env();
+    }
+
+    #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
+    fn storage_config_half_configured_admin_api_reads_as_unconfigured() {
+        // (endpoint, token): None = unset, Some("") = present but empty.
+        let cases: [(Option<&str>, Option<&str>); 4] = [
+            (Some("http://127.0.0.1:47832"), None),
+            (Some("http://127.0.0.1:47832"), Some("")),
+            (None, Some("token")),
+            (Some(""), Some("token")),
+        ];
+        for (endpoint, token) in cases {
+            clear_storage_env();
+            set_s3_trio();
+            unsafe {
+                if let Some(e) = endpoint {
+                    std::env::set_var("GARAGE_ADMIN_ENDPOINT", e);
+                }
+                if let Some(t) = token {
+                    std::env::set_var("GARAGE_ADMIN_TOKEN", t);
+                }
+            }
+            let cfg = match StorageConfig::from_env() {
+                Ok(Some(cfg)) => cfg,
+                Ok(None) => panic!("storage disabled for {endpoint:?}/{token:?}"),
+                Err(e) => {
+                    panic!("a half admin pair must never refuse boot ({endpoint:?}/{token:?}): {e}")
+                }
+            };
+            assert_eq!(
+                (cfg.admin_endpoint.as_str(), cfg.admin_token.as_str()),
+                ("", ""),
+                "half pair {endpoint:?}/{token:?} must read as not configured"
+            );
+        }
+        clear_storage_env();
+    }
+
+    #[test]
+    #[serial_test::serial] // mutates process-global GARAGE_* / DRUST_LARGE_UPLOAD_* env vars
+    fn storage_config_full_admin_pair_is_kept() {
+        clear_storage_env();
+        set_s3_trio();
+        unsafe {
+            std::env::set_var("GARAGE_ADMIN_ENDPOINT", "http://127.0.0.1:47832");
+            std::env::set_var("GARAGE_ADMIN_TOKEN", "token");
+        }
+        let cfg = StorageConfig::from_env().unwrap().unwrap();
+        assert_eq!(cfg.admin_endpoint, "http://127.0.0.1:47832");
+        assert_eq!(cfg.admin_token, "token");
         clear_storage_env();
     }
 

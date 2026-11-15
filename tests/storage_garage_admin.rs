@@ -121,3 +121,45 @@ async fn bucket_deny_posts_key_and_bucket() {
     assert!(last.body.contains("bkt-1"));
     assert!(last.body.contains("GKkey"));
 }
+
+// ---- Garage admin API is optional (GARAGE_ADMIN_* unset or half-set) ----
+
+#[tokio::test]
+async fn admin_api_without_endpoint_errors_with_config_hint() {
+    // `from_store` leaves both admin fields empty: the "not configured" state
+    // an S3-trio-only deployment now boots into.
+    let store: std::sync::Arc<dyn object_store::ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let c = GarageClient::from_store(store, "public");
+    let err = c.lookup_bucket("x").await.unwrap_err().to_string();
+    assert!(
+        err.contains("GARAGE_ADMIN_ENDPOINT") && err.contains("not configured"),
+        "an unconfigured admin API must say which settings are missing, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn admin_api_with_endpoint_but_no_token_sends_no_request() {
+    // A half pair reads as "not configured" in config, and the client guards
+    // the same way: no request with an empty bearer ever leaves.
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "");
+    assert!(c.create_bucket("x").await.is_err());
+    assert!(c.lookup_bucket("x").await.is_err());
+    assert!(c.delete_bucket("bkt-1").await.is_err());
+    assert!(c.set_website("bkt-1", false).await.is_err());
+    assert!(
+        c.bucket_allow("bkt-1", "GK", true, true, true)
+            .await
+            .is_err()
+    );
+    assert!(c.bucket_deny("bkt-1", "GK").await.is_err());
+    assert!(
+        srv.requests().is_empty(),
+        "no admin request may be sent without a token, got {:?}",
+        srv.requests()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect::<Vec<_>>()
+    );
+}

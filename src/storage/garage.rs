@@ -1,7 +1,12 @@
-//! Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the
-//! X+ scope (single public bucket managed through drust admin UI). Admin
-//! endpoint fields on `StorageConfig` are read but not yet used — future Y
-//! scope will call Garage Admin API through them.
+//! Object-store client. Thin wrapper over `object_store::aws::AmazonS3`, so
+//! any S3-compatible store works on the data path. drust writes to two fixed
+//! buckets (`storage::files::bucket_for`) and never creates them.
+//!
+//! The Garage admin API methods (`create_bucket` … `bucket_deny`) are used
+//! only by the owner-only reconcile page's cleanup of buckets left over from
+//! the retired per-tenant layout. They need `GARAGE_ADMIN_ENDPOINT` and
+//! `GARAGE_ADMIN_TOKEN`, which are optional: unconfigured, every admin call
+//! fails up front in `admin_url` without sending a request.
 
 use crate::config::StorageConfig;
 use anyhow::{Context, Result};
@@ -13,7 +18,8 @@ use std::sync::Arc;
 pub struct GarageClient {
     // S3 object store backend
     store: Arc<dyn ObjectStore>,
-    // Admin API HTTP client — scaffolded in Task 5, used from Task 6 onwards.
+    // Garage admin API HTTP client — reconcile-page legacy cleanup only.
+    // `admin_endpoint` / `admin_token` empty = admin API not configured.
     admin: reqwest::Client,
     admin_endpoint: String,
     admin_token: String,
@@ -208,14 +214,27 @@ impl GarageClient {
         Ok(out)
     }
 
-    fn admin_url(&self, path: &str) -> String {
-        format!("{}{}", self.admin_endpoint.trim_end_matches('/'), path)
+    /// The admin API URL for `path`, or an error when the admin API is not
+    /// configured. Every admin method goes through here BEFORE building a
+    /// request, so an unconfigured (or half-configured) pair never sends a
+    /// request to a relative URL or with an empty bearer.
+    fn admin_url(&self, path: &str) -> anyhow::Result<String> {
+        if self.admin_endpoint.is_empty() || self.admin_token.is_empty() {
+            anyhow::bail!(
+                "Garage admin API not configured (GARAGE_ADMIN_ENDPOINT and GARAGE_ADMIN_TOKEN must both be set); only the reconcile page's cleanup of retired per-tenant buckets uses it"
+            );
+        }
+        Ok(format!(
+            "{}{}",
+            self.admin_endpoint.trim_end_matches('/'),
+            path
+        ))
     }
 
     pub async fn create_bucket(&self, name: &str) -> anyhow::Result<String> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket"))
+            .post(self.admin_url("/v1/bucket")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({ "globalAlias": name }))
             .send()
@@ -237,7 +256,7 @@ impl GarageClient {
     pub async fn delete_bucket(&self, bucket_id: &str) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .delete(self.admin_url("/v1/bucket"))
+            .delete(self.admin_url("/v1/bucket")?)
             .query(&[("id", bucket_id)])
             .bearer_auth(&self.admin_token)
             .send()
@@ -253,7 +272,7 @@ impl GarageClient {
     pub async fn lookup_bucket(&self, name: &str) -> anyhow::Result<Option<BucketInfo>> {
         let resp = self
             .admin
-            .get(self.admin_url("/v1/bucket"))
+            .get(self.admin_url("/v1/bucket")?)
             .query(&[("globalAlias", name)])
             .bearer_auth(&self.admin_token)
             .send()
@@ -297,7 +316,7 @@ impl GarageClient {
         };
         let resp = self
             .admin
-            .put(self.admin_url(&format!("/v1/bucket/{bucket_id}")))
+            .put(self.admin_url(&format!("/v1/bucket/{bucket_id}"))?)
             .bearer_auth(&self.admin_token)
             .json(&body)
             .send()
@@ -320,7 +339,7 @@ impl GarageClient {
     ) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket/allow"))
+            .post(self.admin_url("/v1/bucket/allow")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({
                 "bucketId": bucket_id,
@@ -340,7 +359,7 @@ impl GarageClient {
     pub async fn bucket_deny(&self, bucket_id: &str, access_key_id: &str) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket/deny"))
+            .post(self.admin_url("/v1/bucket/deny")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({
                 "bucketId": bucket_id,
