@@ -12,7 +12,7 @@
 # that a tenant service-key reroll stops the old key's live MCP session.
 #
 # Uses 2 tenants (A: main, B: reroll + cross-tenant). Everything else it creates
-# (collections, RPCs, an end user, one Garage object) lives inside tenant A or is
+# (collections, RPCs, an end user, one object-store object) lives inside tenant A or is
 # deleted explicitly; both tenants are deleted by lib.sh on exit.
 . "$(dirname "$0")/lib.sh"
 
@@ -405,7 +405,7 @@ def main():
         _, m = S.tool(tool, args)
         j = tool_json(m) or {}
         check("%s(unknown id) answers isError:true" % tool, is_error(m), short(m))
-        eq("... with error_code NOT_FOUND (Garage is configured)", "NOT_FOUND", j.get("error_code"))
+        eq("... with error_code NOT_FOUND (object storage is configured)", "NOT_FOUND", j.get("error_code"))
     _, m = S.tool("set_file_visibility", {"id": "00000000-0000-0000-0000-000000000000", "visibility": "PUBLIC"})
     check("set_file_visibility(bad visibility) answers isError:true", is_error(m), short(m))
     eq("... with error_code INVALID_VISIBILITY", "INVALID_VISIBILITY", (tool_json(m) or {}).get("error_code"))
@@ -795,7 +795,7 @@ def upload_file(visibility):
            "".join(parts))
     key = jbody(r).get("key")
     if visibility == "private" and r.status == 502 and "Bucket not found: private" in r.body:
-        note("deploy gap: Garage has no 'private' bucket in this stack (upload answered 502 NoSuchBucket) — "
+        note("deploy gap: the object store has no 'private' bucket in this stack (upload answered 502 NoSuchBucket) — "
              "get_file_url's signed arm and expires_in range not exercised")
         return None
     check("fixture: Mode-A upload of a %s file" % visibility, r.status in (200, 201) and bool(key),

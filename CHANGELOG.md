@@ -673,8 +673,9 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   rmcp >= 3.9. No operator action is needed.
 - **A local smoke stack, `deploy/smoke/`.** Developer tooling, not part of the image or of
   any deployment. `up.sh` builds the shipping `Dockerfile`, runs the repo's
-  `docker-compose.yml` unmodified next to a real Garage on loopback-only ports, and mints
-  an admin token. `run-all.sh` then drives nine check scripts (about 1,380 assertions)
+  `docker-compose.yml` unmodified next to a real object store on loopback-only ports —
+  RustFS from the repo's own `docker-compose.storage.yml` by default, Garage (what the
+  bare-metal host runs) with `SMOKE_STORE=garage` — and mints an admin token. `run-all.sh` then drives nine check scripts (about 1,380 assertions)
   against it over HTTP, and `test-linux.sh` runs `make test-shell` plus the full
   `cargo test` in a Linux container, which covers what a macOS workstation cannot run.
   It checks what `cargo test` does not reach: the built image, edge functions under the

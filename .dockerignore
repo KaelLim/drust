@@ -13,6 +13,7 @@ target/
 !.env.example
 deploy/smoke/.env
 deploy/smoke/.last-run/
+deploy/smoke/.generated/
 
 # Host-specific runtime data that must never land in an image
 /data/

@@ -3,8 +3,10 @@
 A throwaway drust deployment on your own machine (Docker Desktop or any Docker
 host) for checking a build the way a client would see it, before it goes
 anywhere real. It is the **Compose deployment target itself** — the repo's
-`docker-compose.yml`, unmodified — with one override file that adds a real
-Garage, moves the published ports, and turns the version header back on.
+`docker-compose.yml`, unmodified — with one override file that moves the
+published ports and turns the version header back on, plus an object store:
+RustFS from the repo's own `docker-compose.storage.yml` by default, or Garage with
+`SMOKE_STORE=garage` (what the bare-metal host runs).
 
 It exists because three things cannot be learned from `cargo test`:
 
@@ -25,7 +27,8 @@ that host after deploying is still required (see `CLAUDE.md`, the
 ## Use
 
 ```bash
-deploy/smoke/up.sh              # build the image, start, bootstrap Garage, mint an admin PAT
+deploy/smoke/up.sh              # build the image, start (RustFS), mint an admin PAT
+SMOKE_STORE=garage deploy/smoke/up.sh   # the same with Garage, bootstrapped by up.sh
 deploy/smoke/run-all.sh         # run every check in checks/
 deploy/smoke/run-all.sh 10 20   # only checks/10-*.sh and checks/20-*.sh
 deploy/smoke/test-linux.sh      # make test-shell + cargo test --no-fail-fast, in a Linux container
@@ -35,6 +38,16 @@ deploy/smoke/down.sh            # stop;  --wipe also deletes the volumes and the
 `up.sh --no-build` reuses the image that is already built. After a code change,
 plain `up.sh` rebuilds (the cargo cache is a BuildKit cache mount, so only the
 first build is slow).
+
+`up.sh` remembers the store in `deploy/smoke/.env` (`SMOKE_STORE`), so a later plain
+`up.sh`, `run-all.sh` and `down.sh` stay on it; switching stores removes the other
+store's container (`--remove-orphans`), and `down.sh --wipe` deletes every volume of
+the project, both stores' included. `run-all.sh` records the store it checked in
+`.last-run/store.txt`. Every public-object check goes through the stack's own
+`/public/*` route, so the assertions are the same on either store.
+
+Before a release that touches storage, run the checks on **both** stores. RustFS is the
+Compose default, and Garage is what the bare-metal host serves from.
 
 On Docker Desktop all host traffic reaches Caddy from one VM gateway address, so
 the per-IP rate limits (logins, register, anon uploads and invokes) are still
@@ -48,12 +61,15 @@ source address.
 |---|---|
 | Admin UI (through Caddy) | <http://localhost:48080/login> |
 | drust directly, no proxy | `http://127.0.0.1:48826` |
-| Garage S3 / website / admin | `127.0.0.1:48900` / `48902` / `48903` |
-| Admin username, password, PAT, Garage keys | `deploy/smoke/.env` (generated, mode 600, gitignored) |
+| Object store | RustFS has no host port (checks go through Caddy's `/public/*`). Garage mode has S3 / website / admin on `127.0.0.1:48900` / `48902` / `48903` |
+| Admin username, password, PAT, object-store keys, `SMOKE_STORE` | `deploy/smoke/.env` (generated, mode 600, gitignored) |
 
 Everything binds to loopback, and the ports are chosen not to collide with a
 drust (47826) or Garage (47830–47832) already running on the host. Override
-them with `SMOKE_HTTP_PORT`, `SMOKE_DRUST_PORT`, `SMOKE_GARAGE_*_PORT`.
+them with `SMOKE_HTTP_PORT`, `SMOKE_DRUST_PORT`, `SMOKE_GARAGE_*_PORT`. The compose
+project is `drust-smoke`; to run a second stack beside it, set
+`SMOKE_COMPOSE_PROJECT` (and move the ports) for `up.sh`, `run-all.sh` and `down.sh`
+alike — the checks that read container logs or peek into drust use it too.
 
 ## Signing in
 
@@ -76,8 +92,6 @@ table in the same commit that fixes it.
 
 | Script | Failing | Defect |
 |---|---|---|
-| `20-files`, `50-mcp` | 5 | `docker-compose.yml` does not set `DRUST_PUBLIC_BASE_URL`, so file, signed and MCP-advertised URLs point at `http://localhost:8793` |
-| `20-files`, `30-uploads-tus` | 2 | `deploy/compose.Caddyfile` has no `/public/*` route, so the public URL drust returns answers `404 NOT_FOUND` from drust |
 
 ## Writing a check
 

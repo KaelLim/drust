@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Bring up the local smoke stack: the real docker-compose.yml + a real Garage.
+# Bring up the local smoke stack: the real docker-compose.yml + an object store.
 #
-#   deploy/smoke/up.sh            # build if needed, start, bootstrap Garage
-#   deploy/smoke/up.sh --no-build # reuse the image that is already built
-#   deploy/smoke/down.sh          # stop; add --wipe to delete the volumes too
+#   deploy/smoke/up.sh                     # RustFS (the Compose default store)
+#   SMOKE_STORE=garage deploy/smoke/up.sh  # Garage (what the bare-metal host runs)
+#   deploy/smoke/up.sh --no-build          # reuse the image that is already built
+#   deploy/smoke/down.sh                   # stop; add --wipe to delete the volumes too
 #
 # Secrets are generated once into deploy/smoke/.env (gitignored) and reused on
-# later runs, so the admin password and the Garage key survive a restart.
+# later runs, so the admin password and the store keys survive a restart. The
+# store is remembered there too (SMOKE_STORE): a later plain up.sh keeps it.
+# SMOKE_COMPOSE_PROJECT (default drust-smoke) names the compose project; set it
+# for up.sh, run-all.sh and down.sh alike.
 # Works with the bash 3.2 that macOS ships.
 set -euo pipefail
 
@@ -16,95 +20,134 @@ env_file="$here/.env"
 
 hex() { openssl rand -hex "$1"; }
 
-if [ ! -f "$env_file" ]; then
-  umask 077
-  {
-    echo "SMOKE_ADMIN_USERNAME=${SMOKE_ADMIN_USERNAME:-admin}"
-    echo "SMOKE_ADMIN_PASSWORD=${SMOKE_ADMIN_PASSWORD:-$(hex 12)}"
-    echo "SMOKE_GARAGE_RPC_SECRET=$(hex 32)"
-    echo "SMOKE_GARAGE_ADMIN_TOKEN=$(hex 32)"
-    echo "SMOKE_S3_ACCESS_KEY=GK$(hex 12)"
-    echo "SMOKE_S3_SECRET_KEY=$(hex 32)"
-  } > "$env_file"
-  echo "generated $env_file"
-fi
+# Append each key only when missing, so an older .env gains the new keys and no
+# existing secret is rotated.
+want_store="${SMOKE_STORE:-}"            # before .env is sourced, which would overwrite it
+umask 077
+[ -f "$env_file" ] || { : > "$env_file"; echo "generated $env_file"; }
+ensure() { grep -q "^$1=" "$env_file" || printf '%s=%s\n' "$1" "$2" >> "$env_file"; }
+ensure SMOKE_ADMIN_USERNAME "${SMOKE_ADMIN_USERNAME:-admin}"
+ensure SMOKE_ADMIN_PASSWORD "${SMOKE_ADMIN_PASSWORD:-$(hex 12)}"
+# Garage mode (SMOKE_STORE=garage)
+ensure SMOKE_GARAGE_RPC_SECRET "$(hex 32)"
+ensure SMOKE_GARAGE_ADMIN_TOKEN "$(hex 32)"
+ensure SMOKE_S3_ACCESS_KEY "GK$(hex 12)"
+ensure SMOKE_S3_SECRET_KEY "$(hex 32)"
+# RustFS mode: exactly the names docker-compose.storage.yml interpolates, so the
+# smoke exercises that file's own ${…:?} lines. 20 / 40 characters, as probed.
+ensure RUSTFS_ACCESS_KEY "$(hex 10)"
+ensure RUSTFS_SECRET_KEY "$(hex 20)"
+ensure GARAGE_S3_ACCESS_KEY "$(hex 10)"
+ensure GARAGE_S3_SECRET_KEY "$(hex 20)"
 set -a
 # shellcheck disable=SC1090
 . "$env_file"
 set +a
+store="${want_store:-${SMOKE_STORE:-rustfs}}"
+case "$store" in rustfs|garage) ;; *) echo "SMOKE_STORE must be rustfs or garage" >&2; exit 2 ;; esac
+grep -v '^SMOKE_STORE=' "$env_file" > "$env_file.tmp" || true
+echo "SMOKE_STORE=$store" >> "$env_file.tmp"; mv "$env_file.tmp" "$env_file"; chmod 600 "$env_file"
+export SMOKE_STORE="$store"
+# shellcheck source=compose-files.sh
+. "$here/compose-files.sh"
 
 http_port="${SMOKE_HTTP_PORT:-48080}"
 drust_port="${SMOKE_DRUST_PORT:-48826}"
-admin_port="${SMOKE_GARAGE_ADMIN_PORT:-48903}"
 
-compose() {
-  docker compose --project-directory "$root" --env-file "$env_file" \
-    -f "$root/docker-compose.yml" -f "$here/docker-compose.smoke.yml" "$@"
-}
-
-garage_api() { # METHOD PATH [JSON]
-  local method="$1" path="$2" body="${3:-}"
-  if [ -n "$body" ]; then
-    curl -fsS -X "$method" "http://127.0.0.1:$admin_port$path" \
-      -H "Authorization: Bearer $SMOKE_GARAGE_ADMIN_TOKEN" \
-      -H 'Content-Type: application/json' --data "$body"
-  else
-    curl -fsS -X "$method" "http://127.0.0.1:$admin_port$path" \
-      -H "Authorization: Bearer $SMOKE_GARAGE_ADMIN_TOKEN"
-  fi
-}
+# Interpolated into the BASE docker-compose.yml's ${VAR:-default} lines (the shell
+# beats --env-file), so the smoke run exercises the real Compose wiring. Never move
+# these into an override file: an override value would hide a base-line regression.
+export DRUST_PUBLIC_BASE_URL="http://localhost:$http_port"
+if [ "$store" = garage ]; then
+  export PUBLIC_OBJECTS_UPSTREAM="garage:3902"
+  mkdir -p "$here/.generated"
+  python3 -I - "$root/deploy/compose.Caddyfile" "$here/.generated/compose.garage.Caddyfile" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+for old, new in (("rewrite * /public{path}?", "rewrite * {path}?"),
+                 ("header_up Host {upstream_hostport}", 'header_up Host "public.web.local"')):
+    hits = [i for i, l in enumerate(lines) if l.lstrip().startswith(old)]
+    if len(hits) != 1:
+        sys.exit("compose.Caddyfile: expected one active line starting %r, found %d" % (old, len(hits)))
+    l = lines[hits[0]]
+    indent = l[: len(l) - len(l.lstrip())]
+    # Whole line replaced, so the source's trailing comment does not survive on it.
+    lines[hits[0]] = indent + new + " # STORE-SHAPE: Garage s3_web form (generated by deploy/smoke/up.sh)"
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines))
+PY
+else
+  unset PUBLIC_OBJECTS_UPSTREAM      # RustFS mode tests the base default (rustfs:9000)
+fi
 
 json_get() { # KEY — first string value of KEY in the JSON on stdin
   python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
 
-# ---- 1. Garage first: drust lists the public bucket at boot ------------------
-compose up -d garage
-printf 'waiting for Garage admin API'
-for _ in $(seq 1 60); do
-  if garage_api GET /v1/status >/dev/null 2>&1; then break; fi
-  printf '.'; sleep 1
-done
-echo
-node_id="$(garage_api GET /v1/status | json_get node)"
+# ---- 1. Garage mode: bootstrap Garage before drust (RustFS mode: rustfs-init) --
+if [ "$store" = garage ]; then
+  admin_port="${SMOKE_GARAGE_ADMIN_PORT:-48903}"
+  garage_api() { # METHOD PATH [JSON]
+    local method="$1" path="$2" body="${3:-}"
+    if [ -n "$body" ]; then
+      curl -fsS -X "$method" "http://127.0.0.1:$admin_port$path" \
+        -H "Authorization: Bearer $SMOKE_GARAGE_ADMIN_TOKEN" \
+        -H 'Content-Type: application/json' --data "$body"
+    else
+      curl -fsS -X "$method" "http://127.0.0.1:$admin_port$path" \
+        -H "Authorization: Bearer $SMOKE_GARAGE_ADMIN_TOKEN"
+    fi
+  }
 
-layout_version="$(garage_api GET /v1/layout | json_get version)"
-if [ "$layout_version" = "0" ]; then
-  garage_api POST /v1/layout \
-    "[{\"id\":\"$node_id\",\"zone\":\"smoke\",\"capacity\":1000000000,\"tags\":[]}]" >/dev/null
-  garage_api POST /v1/layout/apply '{"version":1}' >/dev/null
-  echo "garage: layout applied"
+  compose up -d --remove-orphans garage
+  printf 'waiting for Garage admin API'
+  for _ in $(seq 1 60); do
+    if garage_api GET /v1/status >/dev/null 2>&1; then break; fi
+    printf '.'; sleep 1
+  done
+  echo
+  node_id="$(garage_api GET /v1/status | json_get node)"
+
+  layout_version="$(garage_api GET /v1/layout | json_get version)"
+  if [ "$layout_version" = "0" ]; then
+    garage_api POST /v1/layout \
+      "[{\"id\":\"$node_id\",\"zone\":\"smoke\",\"capacity\":1000000000,\"tags\":[]}]" >/dev/null
+    garage_api POST /v1/layout/apply '{"version":1}' >/dev/null
+    echo "garage: layout applied"
+  fi
+
+  if ! garage_api GET "/v1/key?id=$SMOKE_S3_ACCESS_KEY" >/dev/null 2>&1; then
+    garage_api POST /v1/key/import \
+      "{\"name\":\"drust-smoke\",\"accessKeyId\":\"$SMOKE_S3_ACCESS_KEY\",\"secretAccessKey\":\"$SMOKE_S3_SECRET_KEY\"}" >/dev/null
+    echo "garage: access key imported"
+  fi
+
+  # drust writes to exactly two fixed buckets and never creates them; it probes
+  # both at boot (concurrently) and warns per missing one.
+  for bucket in public private; do
+    if ! garage_api GET "/v1/bucket?globalAlias=$bucket" >/dev/null 2>&1; then
+      garage_api POST /v1/bucket "{\"globalAlias\":\"$bucket\"}" >/dev/null
+      echo "garage: bucket '$bucket' created"
+    fi
+    bucket_id="$(garage_api GET "/v1/bucket?globalAlias=$bucket" | json_get id)"
+    garage_api POST /v1/bucket/allow \
+      "{\"bucketId\":\"$bucket_id\",\"accessKeyId\":\"$SMOKE_S3_ACCESS_KEY\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true}}" >/dev/null
+    if [ "$bucket" = public ]; then
+      garage_api PUT "/v1/bucket?id=$bucket_id" \
+        '{"websiteAccess":{"enabled":true,"indexDocument":"index.html"}}' >/dev/null
+    fi
+  done
 fi
 
-if ! garage_api GET "/v1/key?id=$SMOKE_S3_ACCESS_KEY" >/dev/null 2>&1; then
-  garage_api POST /v1/key/import \
-    "{\"name\":\"drust-smoke\",\"accessKeyId\":\"$SMOKE_S3_ACCESS_KEY\",\"secretAccessKey\":\"$SMOKE_S3_SECRET_KEY\"}" >/dev/null
-  echo "garage: access key imported"
-fi
-
-# drust writes to exactly two fixed buckets and never creates them itself:
-# "public" (served by Garage's website endpoint) and "private" (proxied by
-# drust). A missing "private" bucket is not caught at boot — the boot check
-# lists "public" only — and shows up later as 502 on every private upload.
-for bucket in public private; do
-  if ! garage_api GET "/v1/bucket?globalAlias=$bucket" >/dev/null 2>&1; then
-    garage_api POST /v1/bucket "{\"globalAlias\":\"$bucket\"}" >/dev/null
-    echo "garage: bucket '$bucket' created"
+# ---- 2. drust + Caddy (RustFS mode: depends_on brings up rustfs + rustfs-init) --
+build=--build
+[ "${1:-}" = "--no-build" ] && build=--no-build
+# --remove-orphans drops the other store's container after a SMOKE_STORE switch.
+if ! compose up -d "$build" --remove-orphans drust caddy; then
+  if [ "$store" = rustfs ]; then
+    echo "compose up failed; last rustfs / rustfs-init log lines follow" >&2
+    compose logs --tail 40 rustfs rustfs-init >&2 || true
   fi
-  bucket_id="$(garage_api GET "/v1/bucket?globalAlias=$bucket" | json_get id)"
-  garage_api POST /v1/bucket/allow \
-    "{\"bucketId\":\"$bucket_id\",\"accessKeyId\":\"$SMOKE_S3_ACCESS_KEY\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true}}" >/dev/null
-  if [ "$bucket" = public ]; then
-    garage_api PUT "/v1/bucket?id=$bucket_id" \
-      '{"websiteAccess":{"enabled":true,"indexDocument":"index.html"}}' >/dev/null
-  fi
-done
-
-# ---- 2. drust + Caddy --------------------------------------------------------
-if [ "${1:-}" = "--no-build" ]; then
-  compose up -d --no-build drust caddy
-else
-  compose up -d --build drust caddy
+  exit 1
 fi
 
 printf 'waiting for drust'
@@ -147,10 +190,11 @@ fi
 cat <<EOF
 
 drust smoke stack is up.
+  store      $store
   admin UI   http://localhost:$http_port/login
   username   $SMOKE_ADMIN_USERNAME
   password   in $env_file  (SMOKE_ADMIN_PASSWORD)
   direct     http://127.0.0.1:$drust_port   (bypasses Caddy; debugging only)
-  logs       docker compose -p drust-smoke logs -f drust
+  logs       docker compose -p $smoke_project logs -f drust
   stop       deploy/smoke/down.sh           (--wipe also deletes the volumes)
 EOF

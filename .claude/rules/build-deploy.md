@@ -94,6 +94,7 @@ Per-release checklist — run it before tagging, not after:
 5. New route or route prefix? Check the chart's Ingress and `deploy/compose.Caddyfile`, not just the host Caddyfile.
 6. Migration or first-boot behaviour change? It runs on every boot in all three, and containers restart far more often than this host does.
 7. `deploy/helm/drust/tests/render_test.sh` still passes (offline `helm template` + `kubeconform`). CI's `helm-chart` job runs it on every push to main, so this is a pre-push convenience rather than the only line of defence — but it needs `helm` + `kubeconform` on PATH locally.
+8. Storage or `/public/*` change? Run the smoke on both stores: `deploy/smoke/up.sh` (RustFS) and `SMOKE_STORE=garage deploy/smoke/up.sh` (the host's store).
 
 `deploy/helm/**` is engineer-owned: read it, report divergence, do not stage it in an automated commit.
 

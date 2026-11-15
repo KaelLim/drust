@@ -631,7 +631,7 @@ else
     check_ne "a client-sent X-Forwarded-For through Caddy does not become the client address" 198.51.100.77 "$IP_AT_LOGIN"
     CADDY_CID=""
     if command -v docker >/dev/null 2>&1; then
-      CADDY_CID="$(docker compose -p drust-smoke ps -q caddy 2>/dev/null | head -1)"
+      CADDY_CID="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" ps -q caddy 2>/dev/null | head -1)"
     fi
     if [ -z "$CADDY_CID" ]; then
       note "skipped (docker not reachable): client-IP checks against the Caddy address and the drust log"
@@ -650,10 +650,10 @@ else
       # A failing `docker compose logs` reads as 0 warnings here (pass); the
       # boot-line check below reads the same log and goes red in that case, so
       # it is what keeps this one honest — do not drop it as redundant.
-      N_WARN="$(docker compose -p drust-smoke logs --no-log-prefix --since "$START_ISO" drust 2>/dev/null \
+      N_WARN="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --no-log-prefix --since "$START_ISO" drust 2>/dev/null \
         | grep -c 'client_ip: X-Forwarded-For' || true)"
       check_eq "drust logged no client_ip X-Forwarded-For fallback warning during this script" 0 "${N_WARN:-0}"
-      BOOT_LINE="$(docker compose -p drust-smoke logs --no-log-prefix drust 2>/dev/null \
+      BOOT_LINE="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --no-log-prefix drust 2>/dev/null \
         | grep 'client-IP derivation configured' | tail -1 || true)"
       check_contains "drust booted with trusted_proxies=1 (the boot line reads the global back)" \
         '"trusted_proxies":1' "$BOOT_LINE"
