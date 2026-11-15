@@ -629,6 +629,15 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   showed no regression under it. 22 assertions fail at this commit, each on a defect that
   predates this release; `deploy/smoke/README.md` lists them.
 
+### Docs
+
+- Rooms error codes: `UNKNOWN_OP` was defined but never emitted — an unrecognized `op` is,
+  and remains, `MALFORMED_FRAME` (no `ref`, the connection stays open) — and is removed.
+  `ROOM_EVICTED`, which the v1.65.0 entry calls "the existing room-level" code, is likewise
+  not emitted: a per-room evict ends that room's subscription without a frame and the
+  client re-subscribes. It is kept and documented as reserved. `WS_PUBLISH_DENIED` has not
+  been emitted since v1.32.5 and is kept for clients that still match it. No wire change.
+
 ## v1.66.1 — 2026-08-17
 
 The single finding of the v1.66.0 codex second-engine review (MED), fixed same-day. No new

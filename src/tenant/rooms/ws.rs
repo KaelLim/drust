@@ -2279,4 +2279,67 @@ mod tests {
             "the linger must stay under the grace (gap {gap:?})"
         );
     }
+
+    /// T5 — the unknown-op wire contract, EXECUTED: an unrecognized `op` is
+    /// `MALFORMED_FRAME` with no `ref`, and the connection stays open (the
+    /// next op is answered). The socket-level twin in `tests/rooms_ws.rs` is
+    /// `#[ignore]`d.
+    #[tokio::test]
+    async fn unknown_op_gets_malformed_frame_and_the_conn_stays_open() {
+        const TENANT: &str = "t_unknown_op";
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+        let cfg = RoomsConfig::test_defaults();
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+        let (frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        for f in [
+            r#"{"op":"frobnicate","ref":"u1"}"#,
+            r#"{"op":"ping","ref":"r2"}"#,
+        ] {
+            frames_in
+                .unbounded_send(Ok(Message::Text(Utf8Bytes::from_static(f))))
+                .unwrap();
+        }
+        drop(frames_in);
+
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+        handle_socket(
+            sink,
+            stream,
+            AuthCtx::Anon,
+            pc,
+            TENANT.to_string(),
+            TenantPublishPolicy::default(),
+            epoch,
+            epoch0,
+            None,
+        )
+        .await;
+        let frames = out.collect::<Vec<_>>().await;
+        assert_eq!(frames.len(), 2, "{frames:?}");
+
+        let Message::Text(t) = &frames[0] else {
+            panic!(
+                "expected the MALFORMED_FRAME error first, got {:?}",
+                frames[0]
+            );
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error", "{v}");
+        assert_eq!(v["code"], codes::MALFORMED_FRAME, "{v}");
+        assert!(v.get("ref").is_none(), "{v}");
+
+        let Message::Text(t) = &frames[1] else {
+            panic!("expected the pong next, got {:?}", frames[1]);
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "pong", "the connection must stay open: {v}");
+        assert_eq!(v["ref"], "r2", "{v}");
+    }
 }
