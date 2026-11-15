@@ -148,6 +148,7 @@ flowchart LR
 | `DRUST_BIND` | 選用（`127.0.0.1:47826`） | 監聽位址 —— 容器內設 `0.0.0.0:47826` |
 | `DRUST_PUBLIC_URL` | 選用 | 對外 base URL —— OAuth redirect/callback 連結需要 |
 | `DRUST_CORS_ORIGINS` | 選用 | 逗號分隔允許清單；支援 `https://*.example.com`、`http://localhost:*` |
+| `DRUST_TRUSTED_PROXIES` | 選用（2；映像檔 0；`docker-compose.yml` 1） | drust 前面會在 `X-Forwarded-For` 追加一項的反向代理層數；per-IP 限流以該項為 key（`0` = TCP 對端）。範圍 0–8。把映像檔放在自己的代理後面時要設定 |
 | `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用 S3 儲存功能 |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：自動建立 bucket |

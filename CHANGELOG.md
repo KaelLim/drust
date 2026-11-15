@@ -1,7 +1,8 @@
 ## v1.67.0 — 2026-11-15
 
-Fixes from the access-gate convergence review (E track). No new environment variable, no
-schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+Fixes from the access-gate convergence review (E track). One new environment variable,
+`DRUST_TRUSTED_PROXIES` (default `2`, unchanged behaviour on an existing host); the Docker
+image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
 only the row's `id` (E9). The other caller-visible changes are described in their entries:
@@ -176,6 +177,34 @@ update its toolchain first.
   unchanged; each site keeps the arm it had (caller-SQL sites stay strict). The writer-side
   `run_write_rpc` pairs are deliberately untouched: their detach must precede `RELEASE`.
   No API, env, schema or wire change.
+
+- **Per-IP rate limits work behind the bundled Compose Caddy, and with no proxy at all.**
+  `client_ip` hardcoded the bare-metal chain (browser → nginx → Caddy → drust): it trusted
+  only the second-from-right `X-Forwarded-For` entry, and fell back to a literal `127.0.0.1`
+  whenever the header was shorter — drust was never served with connect-info, so the
+  "socket peer" fallback its comment promised did not exist. Compose has one proxy, so every
+  request took the fallback, and the admin login (5/min), every tenant's end-user login
+  (5/min) and register (3/min), CLI device start and poll, the OAuth callbacks, and anon file
+  upload/delete and function invoke each shared one bucket for the whole host: a handful of
+  wrong passwords a minute kept everyone's admin password login at 429. It also logged a
+  warning carrying the raw header on every such request (485 in 30 minutes on the smoke
+  stack). The image run with no proxy had the opposite problem: a caller that sent its own
+  two-entry `X-Forwarded-For` got its own bucket.
+  `DRUST_TRUSTED_PROXIES` (default `2`, range `0`–`8`, an out-of-range or non-numeric value
+  refuses to boot) now says how many proxies append to `X-Forwarded-For`; the client is the
+  entry that many from the right, and entries a client adds on the left still cannot move it.
+  `0` ignores the header and keys on the TCP peer, which drust now actually has. The
+  bare-metal chain keeps the default and is unchanged; `docker-compose.yml` sets `1`; the image
+  defaults to `0`, so `docker run -p 47826:47826` is keyed per client. **If you run the image
+  behind your own proxy, set `DRUST_TRUSTED_PROXIES` to the number of proxies that append to
+  the header** — left at `0`, every client shares your proxy's bucket. Never count a proxy
+  that passes a client-supplied header through untouched. The fallback warning is now emitted
+  at most once every five minutes, with the header's length and a count of what it
+  suppressed; no log line at any level carries the header's value any more. Boot logs the
+  effective setting (`client-IP derivation configured`). On Compose, sessions and the login
+  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The Helm
+  chart does not set the variable yet, so k3s keeps today's single bucket until it does (see
+  the chart notes).
 
 ### Changed
 

@@ -148,6 +148,7 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_BIND` | optional (`127.0.0.1:47826`) | Listen address — set `0.0.0.0:47826` in a container |
 | `DRUST_PUBLIC_URL` | optional | Public base URL — required for OAuth redirect/callback links |
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list; supports `https://*.example.com`, `http://localhost:*` |
+| `DRUST_TRUSTED_PROXIES` | optional (2; image 0; `docker-compose.yml` 1) | Reverse proxies in front of drust that append to `X-Forwarded-For`; the per-IP rate limits key on that entry (`0` = the TCP peer). Range 0–8. Set it when you put the image behind your own proxy |
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables S3 storage features |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage-only: auto-provision buckets |

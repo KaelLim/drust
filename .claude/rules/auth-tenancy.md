@@ -87,7 +87,12 @@ so an address-book paste cannot create junk rows. The batch face runs the whole 
 Per-tenant `_system_users` + `_system_sessions`; tokens are `drust_user_*`, SHA-256-hashed,
 sliding 30 d. argon2id verification runs against a fixed `DUMMY_HASH` when the user does not
 exist, to equalize timing. Brute-force defense is per-IP: 5/min on login, 3/min on register,
-with the IP taken as `XFF[-2]`. Self-registration is opt-in per tenant.
+with the IP taken as `XFF[len - DRUST_TRUSTED_PROXIES]` (default 2 = `XFF[-2]`, the bare-metal
+nginx → Caddy chain; Compose 1; the image 0 = the TCP peer) through `safety::ip::ClientIp` —
+never a hand-rolled header read or a literal fallback address (the source pin
+`safety::ip::tests::every_client_ip_consumer_keys_on_the_real_peer` enforces it; the fallback is
+the real TCP peer from `ConnectInfo`, which `main` serves with). Self-registration is opt-in
+per tenant.
 
 `password_hash = "$oauth-only$"` is a sentinel that blocks password login and `/me/password`
 (`409 OAUTH_ONLY_NO_PASSWORD`).
