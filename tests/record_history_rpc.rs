@@ -961,3 +961,280 @@ async fn user_write_rpc_captures_user_actor() {
         "user actor carries the user id: {rows:?}"
     );
 }
+
+// ── Write-RPC deadline (anon/user callers). ────────────────────────────────
+//
+// `run_write_rpc` takes the caller's deadline as a parameter (production: the
+// REST arm passes `exec_write::deadline_for(&ctx)`), so these pass a small
+// budget directly instead of mutating the process-global env.
+//
+// Every body meant to be interrupted is a BOUNDED recursive CTE whose bound is
+// far past the deadline. The closure runs synchronously inside `with_writer`,
+// so nothing in the test runtime could stop an unbounded one: if the deadline
+// were not wired, an unbounded body would hang the whole group instead of
+// failing it. Bounded, it finishes in finite time and the test goes red on
+// the `timed_out` / 408 assertion. Do not "simplify" these to unbounded CTEs.
+
+/// ~20M rows: seconds of work, far past a 200 ms budget.
+const CTE20M: &str =
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 20000000)";
+
+async fn run_rpc_with_deadline(
+    pool: &drust::storage::pool::SharedTenantPool,
+    sql: &str,
+    dry_run: bool,
+    deadline: Option<std::time::Duration>,
+) -> Result<
+    Result<drust::rpc::exec_write::WriteRpcOutcome, drust::rpc::exec_write::RpcStatementError>,
+    drust::rpc::exec_write::TxCommitError,
+> {
+    drust::rpc::exec_write::run_write_rpc(
+        pool,
+        sql.to_string(),
+        std::collections::BTreeMap::new(),
+        dry_run,
+        drust::storage::record_history::AuditActor::service(),
+        drust::storage::record_history::CaptureLimits::from_env(),
+        1,
+        deadline,
+    )
+    .await
+}
+
+/// Unwrap a run that must come back on the statement-error channel. A
+/// `TxCommitError` here means an interrupted DML statement's COMPLETE rollback
+/// was misreported (the savepoint SQLite already closed); `Ok(Ok)` means the
+/// body ran to completion, i.e. the deadline was not wired.
+fn expect_statement_error(
+    res: Result<
+        Result<drust::rpc::exec_write::WriteRpcOutcome, drust::rpc::exec_write::RpcStatementError>,
+        drust::rpc::exec_write::TxCommitError,
+    >,
+    elapsed: std::time::Duration,
+) -> drust::rpc::exec_write::RpcStatementError {
+    match res {
+        Ok(Err(e)) => e,
+        Ok(Ok(o)) => panic!("the body ran to completion, not interrupted ({elapsed:?}): {o:?}"),
+        Err(c) => {
+            panic!("a timeout is a complete rollback, never TxCommitError: {c} ({elapsed:?})")
+        }
+    }
+}
+
+/// A DML statement interrupted by the deadline makes SQLite roll back the whole
+/// transaction and close the savepoint itself. The run must still come back on
+/// the statement-error channel (never `TxCommitError`), with data AND history
+/// fully rolled back, and leave the writer connection clean: the progress
+/// handler and the preupdate hook removed, no savepoint left open.
+#[tokio::test]
+async fn deadline_interrupts_a_runaway_dml_body_and_rolls_back_data_and_history() {
+    let (_app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rh-dl-dml").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+    let hist_before = history_rows(&pool).await.len();
+
+    let body = format!(
+        "UPDATE orders SET qty = qty + 100; \
+         INSERT INTO orders (qty) {CTE20M} SELECT x FROM c WHERE x < 0"
+    );
+    let started = std::time::Instant::now();
+    let res = run_rpc_with_deadline(
+        &pool,
+        &body,
+        false,
+        Some(std::time::Duration::from_millis(200)),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let e = expect_statement_error(res, elapsed);
+    assert!(e.timed_out, "typed as a timeout: {e:?} ({elapsed:?})");
+    assert!(!e.authorizer_denied, "{e:?}");
+    assert_eq!(e.statement_index, 2, "{e:?}");
+    assert_eq!(e.message, "query timed out after 200ms");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "interrupted near the deadline, not at the body's natural end: {elapsed:?}"
+    );
+
+    assert_eq!(qtys(&pool).await, vec![1, 2, 3], "statement 1 rolled back");
+    assert_eq!(
+        history_rows(&pool).await.len(),
+        hist_before,
+        "no history for a rolled-back run"
+    );
+
+    // Past the stale deadline: a handler left installed would interrupt this
+    // trusted run at once, a leaked hook or savepoint would show in history /
+    // in the commit.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let ok = run_rpc_with_deadline(&pool, "UPDATE orders SET qty = qty + 1", false, None)
+        .await
+        .expect("no TxCommitError")
+        .expect("a trusted run after the timeout succeeds");
+    assert_eq!(ok.affected_rows, 3);
+    assert_eq!(qtys(&pool).await, vec![2, 3, 4]);
+    assert_eq!(
+        history_rows(&pool).await.len(),
+        hist_before + 3,
+        "exactly one history row per updated row"
+    );
+}
+
+/// The other SQLite shape: an interrupted READ-ONLY statement leaves the
+/// transaction and the savepoint intact, so `ROLLBACK TO` is what undoes the
+/// earlier UPDATE.
+#[tokio::test]
+async fn deadline_interrupt_on_a_read_only_statement_resolves_the_savepoint_cleanly() {
+    let (_app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rh-dl-ro").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+    let hist_before = history_rows(&pool).await.len();
+
+    let body = format!(
+        "UPDATE orders SET qty = qty + 100; \
+         SELECT count(*) FROM ({CTE20M} SELECT x FROM c)"
+    );
+    let started = std::time::Instant::now();
+    let res = run_rpc_with_deadline(
+        &pool,
+        &body,
+        false,
+        Some(std::time::Duration::from_millis(200)),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let e = expect_statement_error(res, elapsed);
+    assert!(e.timed_out, "typed as a timeout: {e:?} ({elapsed:?})");
+    assert_eq!(e.statement_index, 2, "{e:?}");
+    assert_eq!(e.message, "query timed out after 200ms");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "interrupted near the deadline: {elapsed:?}"
+    );
+    assert_eq!(
+        qtys(&pool).await,
+        vec![1, 2, 3],
+        "ROLLBACK TO undid statement 1"
+    );
+    assert_eq!(history_rows(&pool).await.len(), hist_before);
+}
+
+/// After a timeout the writer connection is back in autocommit. A leaked
+/// savepoint would make the next `WriterTx::begin` fail with "cannot start a
+/// transaction within a transaction".
+#[tokio::test]
+async fn timed_out_write_rpc_leaves_the_writer_in_autocommit() {
+    let (_app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rh-dl-ac").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+
+    let body = format!(
+        "UPDATE orders SET qty = qty + 100; \
+         INSERT INTO orders (qty) {CTE20M} SELECT x FROM c WHERE x < 0"
+    );
+    let started = std::time::Instant::now();
+    let res = run_rpc_with_deadline(
+        &pool,
+        &body,
+        false,
+        Some(std::time::Duration::from_millis(200)),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let e = expect_statement_error(res, elapsed);
+    assert!(e.timed_out, "{e:?} ({elapsed:?})");
+    assert!(elapsed < std::time::Duration::from_secs(3), "{elapsed:?}");
+
+    let autocommit = pool.with_writer(|c| Ok(c.is_autocommit())).await;
+    assert!(autocommit.unwrap(), "no savepoint leaked");
+    let n = pool
+        .with_writer_tx(|tx| tx.execute("INSERT INTO orders (qty) VALUES (9)", []))
+        .await;
+    assert_eq!(n.unwrap(), 1);
+}
+
+/// The trusted path has no deadline: the same bounded body that a 20 ms budget
+/// interrupts runs to completion with `None`.
+#[tokio::test]
+async fn no_deadline_never_interrupts_a_long_write_rpc() {
+    let (_app, tid, _svc, _anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rh-dl-none").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    let body = "INSERT INTO orders (qty) WITH RECURSIVE c(x) AS \
+                (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 3000000) \
+                SELECT x FROM c WHERE x < 0";
+
+    let e = run_rpc_with_deadline(
+        &pool,
+        body,
+        false,
+        Some(std::time::Duration::from_millis(20)),
+    )
+    .await
+    .expect("no TxCommitError")
+    .expect_err("the body outlasts a 20 ms budget");
+    assert!(e.timed_out, "{e:?}");
+
+    let ok = run_rpc_with_deadline(&pool, body, false, None)
+        .await
+        .expect("no TxCommitError")
+        .expect("no deadline: the body runs to completion");
+    assert_eq!(ok.affected_rows, 0);
+}
+
+/// End to end: an anon bearer on an `anon_callable` write RPC is bounded by
+/// the default deadline and gets the read arm's 408, with nothing written.
+#[tokio::test]
+async fn rest_anon_runaway_write_rpc_answers_408_query_timeout() {
+    if std::env::var_os("DRUST_QUERY_DEADLINE_MS").is_some() {
+        eprintln!("DRUST_QUERY_DEADLINE_MS is set; this test pins the 5000 ms default — skipped");
+        return;
+    }
+    let (app, tid, _svc, anon, dir) =
+        helpers::spin_up_dual_role_self_register("t-rh-dl-rest").await;
+    let pool = helpers::grab_pool(&tid, &dir).await;
+    create_orders_table(&pool).await;
+    seed_orders(&pool, &[1, 2, 3]).await;
+    let hist_before = history_rows(&pool).await.len();
+    create_rpc(
+        &pool,
+        "runaway",
+        "INSERT INTO orders (qty) WITH RECURSIVE c(x) AS \
+         (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 150000000) \
+         SELECT x FROM c WHERE x < 0",
+        "[]",
+        true, // anon_callable
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let r = app
+        .oneshot(req("POST", &tid, "/rpc/runaway", Some(json!({})), &anon))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let status = r.status();
+    let v = read_json(r).await;
+    assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "{v} ({elapsed:?})");
+    assert_eq!(v["error_code"], "QUERY_TIMEOUT", "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("query timed out after ")),
+        "{v}"
+    );
+    assert!(v.get("statement_index").is_none(), "{v}");
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "interrupted near the deadline: {elapsed:?}"
+    );
+    assert_eq!(orders_count(&pool).await, 3, "nothing written");
+    assert_eq!(history_rows(&pool).await.len(), hist_before);
+}
