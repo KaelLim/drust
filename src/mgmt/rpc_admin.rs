@@ -1222,6 +1222,8 @@ pub async fn rpc_test_run(
                 actor,
                 crate::storage::record_history::CaptureLimits::from_env(),
                 tier,
+                // trusted (admin plane) — no deadline, see `exec_write::deadline_for`
+                None,
             )
             .await;
             let duration_ms = started.elapsed().as_millis();

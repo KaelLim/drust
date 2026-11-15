@@ -24,6 +24,10 @@ use thiserror::Error;
 /// the MCP `read` mirror, edge `enforce`) can arm the SAME guard on their own
 /// reader closures — the deadline is a parallel-enforcement concern and every
 /// anon-reachable reader must carry it, not just this executor's two entries.
+/// The same budget bounds the anon/user arm of write-mode stored RPCs
+/// (`rpc::exec_write::deadline_for`), which also hold the tenant writer while
+/// they run; service, cron and the admin playground run write RPCs unbounded
+/// by the trust-tier rule.
 pub(crate) fn query_deadline() -> Option<Duration> {
     use std::sync::OnceLock;
     static D: OnceLock<Option<Duration>> = OnceLock::new();

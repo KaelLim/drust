@@ -714,6 +714,8 @@ async fn run_rpc_with_limits(
         // v1.50 — quota tier 1 (10 GiB); these fixtures write kilobytes, so the
         // quota gate never fires and record-history behaviour is unchanged.
         1,
+        // trusted caller: no deadline (the service arm of `deadline_for`).
+        None,
     )
     .await
 }

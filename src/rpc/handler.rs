@@ -360,6 +360,9 @@ pub async fn call_rpc(
                     crate::storage::record_history::AuditActor::from_auth_ctx(&ctx_for_lookup),
                     crate::storage::record_history::CaptureLimits::from_env(),
                     tier,
+                    // anon/user run under DRUST_QUERY_DEADLINE_MS; service
+                    // (tenant key or admin PAT) is trusted → None.
+                    crate::rpc::exec_write::deadline_for(&ctx_for_lookup),
                 )
                 .await
                 {
