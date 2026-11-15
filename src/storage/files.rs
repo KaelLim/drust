@@ -219,6 +219,35 @@ pub fn bucket_for(visibility: Visibility) -> &'static str {
     }
 }
 
+/// Every `Visibility`, for walks that must not miss a bucket. The `match`
+/// in [`required_buckets`] is the exhaustiveness guard: a third variant
+/// fails to compile there until it is added here too.
+const ALL_VISIBILITIES: [Visibility; 2] = [Visibility::Public, Visibility::Private];
+
+/// Every bucket a write can land in (`bucket_for` over every `Visibility`),
+/// then `configured_default` — the bucket the default store was built for
+/// (`GARAGE_PUBLIC_BUCKET`, still used by the reconcile page's listing and
+/// deletes) — when it names a different one. Deduplicated, in that order.
+/// The boot probe (`GarageClient::probe_required_buckets`) walks this list,
+/// so no bucket `bucket_for` can name goes unchecked.
+pub fn required_buckets(configured_default: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(ALL_VISIBILITIES.len() + 1);
+    for v in ALL_VISIBILITIES {
+        // Exhaustiveness guard — see `ALL_VISIBILITIES`.
+        match v {
+            Visibility::Public | Visibility::Private => {}
+        }
+        let b = bucket_for(v);
+        if !out.iter().any(|x| x == b) {
+            out.push(b.to_string());
+        }
+    }
+    if !out.iter().any(|x| x == configured_default) {
+        out.push(configured_default.to_string());
+    }
+    out
+}
+
 /// Build the object key for a new upload. Admin uploads land at the
 /// bucket root (`<file-id>`); tenant uploads are prefixed with the
 /// tenant id so one bucket can host every tenant safely.
@@ -1049,5 +1078,40 @@ mod publish_grant_tests {
         assert_eq!(UploadCaller::Service.grant_role(), None);
         assert_eq!(UploadCaller::User.grant_role(), Some("user"));
         assert_eq!(UploadCaller::Anon.grant_role(), Some("anon"));
+    }
+}
+
+#[cfg(test)]
+mod required_buckets_tests {
+    use super::*;
+
+    #[test]
+    fn required_buckets_cover_every_visibility() {
+        let got = required_buckets("public");
+        for v in ALL_VISIBILITIES {
+            assert!(
+                got.iter().any(|b| b == bucket_for(v)),
+                "bucket_for({v:?}) = {} is not probed at boot: {got:?}",
+                bucket_for(v)
+            );
+        }
+        assert_eq!(got, vec!["public".to_string(), "private".to_string()]);
+    }
+
+    #[test]
+    fn required_buckets_include_a_configured_default_bucket() {
+        assert_eq!(
+            required_buckets("legacy"),
+            vec![
+                "public".to_string(),
+                "private".to_string(),
+                "legacy".to_string()
+            ]
+        );
+        // A default that already is one of the write buckets is not repeated.
+        assert_eq!(
+            required_buckets("private"),
+            vec!["public".to_string(), "private".to_string()]
+        );
     }
 }

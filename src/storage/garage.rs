@@ -142,6 +142,44 @@ impl GarageClient {
         }
     }
 
+    /// Lists at most one object in `bucket`; an empty bucket is healthy.
+    ///
+    /// Real client: a per-bucket store (`build_s3_for_bucket`), the same
+    /// client every cross-bucket write uses. `from_store` client (empty
+    /// `s3_endpoint`): lists prefix `<bucket>` on the backing store, the test
+    /// affordance `put_object_in` uses. The error names the bucket.
+    pub async fn ping_bucket(&self, bucket: &str) -> Result<()> {
+        use futures::StreamExt;
+        let first = if self.s3_endpoint.is_empty() {
+            let prefix = StorePath::from(bucket);
+            self.store.list(Some(&prefix)).next().await
+        } else {
+            let s3 = self
+                .build_s3_for_bucket(bucket)
+                .with_context(|| format!("bucket {bucket}: failed to build S3 client"))?;
+            s3.list(None).next().await
+        };
+        match first {
+            Some(Ok(_)) | None => Ok(()),
+            Some(Err(e)) => Err(e).with_context(|| format!("bucket {bucket}: list failed")),
+        }
+    }
+
+    /// Boot probe: lists every bucket in
+    /// `storage::files::required_buckets(configured_default)`, CONCURRENTLY,
+    /// so the worst case — the store unreachable at restart — costs one
+    /// list's retry budget, not one per bucket (the probe runs before the
+    /// listener binds). Read-only: it never creates anything. One entry per
+    /// bucket, in `required_buckets` order; the caller only logs.
+    pub async fn probe_required_buckets(
+        &self,
+        configured_default: &str,
+    ) -> Vec<(String, anyhow::Result<()>)> {
+        let buckets = crate::storage::files::required_buckets(configured_default);
+        let results = futures::future::join_all(buckets.iter().map(|b| self.ping_bucket(b))).await;
+        buckets.into_iter().zip(results).collect()
+    }
+
     /// Upload with metadata. `original_name` is attached both as the
     /// `x-amz-meta-original-name` header and inside a `Content-Disposition:
     /// inline; filename="..."` header so anonymous downloads present the

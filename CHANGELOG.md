@@ -218,6 +218,17 @@ update its toolchain first.
   checkout, the page no longer picks up `CHANGELOG.md` edits before the next build. No action
   needed.
 
+- **A missing `private` bucket is reported at boot.** drust writes to two fixed buckets,
+  `public` and `private`, and never creates either. The boot check listed only the
+  `GARAGE_PUBLIC_BUCKET` bucket, so a missing `private` bucket first showed up as
+  `502 GARAGE_PUT_FAILED` on the first private upload. Boot now lists both (and
+  `GARAGE_PUBLIC_BUCKET` too if it names a third bucket) at the same time, and logs one
+  warning per bucket it cannot list — missing, unreachable, or not listable with the
+  configured key. drust still boots either way, and boot takes no longer than before when the
+  object store is down. When every bucket answers, the existing `Garage reachable` line now
+  carries a `buckets` field instead of `bucket`. If the warning names a bucket, create it on
+  the object store; drust picks it up without a restart.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's

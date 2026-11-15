@@ -262,16 +262,29 @@ async fn main() -> anyhow::Result<()> {
 
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
-            Ok(client) => match client.ping().await {
-                Ok(()) => {
-                    tracing::info!(bucket = %sc.public_bucket, "Garage reachable");
-                    Some(Arc::new(client))
+            Ok(client) => {
+                // Lists every bucket a write can land in, concurrently. Logs
+                // only: drust never creates a bucket and never refuses boot
+                // over one — a store that is down at restart must not take
+                // the data plane with it.
+                let probes = client.probe_required_buckets(&sc.public_bucket).await;
+                let names: Vec<&str> = probes.iter().map(|(b, _)| b.as_str()).collect();
+                let mut all_ok = true;
+                for (bucket, res) in &probes {
+                    if let Err(e) = res {
+                        all_ok = false;
+                        tracing::warn!(
+                            bucket = %bucket,
+                            error = %format!("{e:#}"),
+                            "object store bucket check failed — storage features degraded: the bucket is missing, the store is unreachable, or these credentials cannot list it. drust never creates buckets; create it on the object store. Writes to it fail until it exists"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Garage ping failed — storage features degraded");
-                    Some(Arc::new(client))
+                if all_ok {
+                    tracing::info!(buckets = ?names, "Garage reachable");
                 }
-            },
+                Some(Arc::new(client))
+            }
             Err(e) => {
                 tracing::error!(error = %e, "failed to construct Garage client — storage disabled");
                 None
