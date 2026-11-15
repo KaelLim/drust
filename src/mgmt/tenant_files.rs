@@ -313,10 +313,22 @@ async fn stream_bytes_inner(
     let bucket = crate::storage::files::bucket_for(visibility);
     let object_key = crate::storage::files::compose_key(&Owner::Tenant(tenant_id.clone()), &key);
 
+    // The backend's error names the internal storage endpoint, bucket and
+    // object path; this face is reachable by anon/user with the `read` cap, so
+    // the detail goes to the log and the body says only what failed.
     let stream = garage
         .get_object_stream_in(bucket, &object_key)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(
+                tenant = %tenant_id,
+                key = %key,
+                bucket = %bucket,
+                error = format!("{e:#}"),
+                "garage get_object_stream_in failed"
+            );
+            (StatusCode::BAD_GATEWAY, "object store read failed".into())
+        })?;
 
     let body = Body::from_stream(stream);
     // P0-1 (2026-07-29 audit) / redesigned 2026-07-30 — this route is
@@ -761,7 +773,14 @@ async fn upload_inner(
                 })
                 .await;
         }
-        return (StatusCode::BAD_GATEWAY, format!("garage put: {e:#}")).into_response();
+        // Detail logged above; the response never carries the backend's
+        // error text (internal endpoint, bucket, object path) — the same
+        // shape tus finalize answers with.
+        return crate::error::json_error(
+            StatusCode::BAD_GATEWAY,
+            "GARAGE_PUT_FAILED",
+            "object store write failed; nothing was stored — retry the upload",
+        );
     }
 
     // v1.36 — file.uploaded function trigger (fire-and-forget).
@@ -1017,7 +1036,12 @@ async fn delete_one_inner(
             error = format!("{e:#}"),
             "garage delete_object_in failed"
         );
-        return (StatusCode::BAD_GATEWAY, format!("garage delete: {e:#}")).into_response();
+        // Detail logged above; the body names only what failed.
+        return (
+            StatusCode::BAD_GATEWAY,
+            "object store delete failed; the file was not deleted — retry",
+        )
+            .into_response();
     }
 
     // Delete the DB row — through the writer mutex.

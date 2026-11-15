@@ -126,10 +126,13 @@ pub async fn admin_signed_bytes(
     };
     let bucket = files::bucket_for(visibility);
 
+    // A signed URL is redeemed with no caller identity at all, so the
+    // backend's error text (internal endpoint, bucket, object path) is logged,
+    // never returned.
     let stream = garage
         .get_object_stream_in(bucket, &key)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+        .map_err(|e| storage_read_failed(bucket, &key, &e))?;
 
     Ok(respond(&row, stream, download))
 }
@@ -184,7 +187,20 @@ pub async fn tenant_signed_bytes(
     let stream = garage
         .get_object_stream_in(bucket, &object_key)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+        .map_err(|e| storage_read_failed(bucket, &object_key, &e))?;
 
     Ok(respond(&row, stream, download))
+}
+
+/// The 502 both signed redemptions answer when the object store fails: the
+/// detail goes to the log, the body is fixed text. Signed URLs carry no
+/// caller identity, so nothing about the storage topology may reach the body.
+fn storage_read_failed(bucket: &str, object_key: &str, e: &anyhow::Error) -> (StatusCode, String) {
+    tracing::error!(
+        bucket = %bucket,
+        object_key = %object_key,
+        error = format!("{e:#}"),
+        "signed redemption: garage get_object_stream_in failed"
+    );
+    (StatusCode::BAD_GATEWAY, "object store read failed".into())
 }

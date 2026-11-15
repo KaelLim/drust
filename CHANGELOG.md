@@ -222,9 +222,9 @@ update its toolchain first.
 - **A missing `private` bucket is reported at boot.** drust writes to two fixed buckets,
   `public` and `private`, and never creates either. The boot check listed only the
   `GARAGE_PUBLIC_BUCKET` bucket, so a missing `private` bucket first showed up as a 502 on
-  the first private write (`GARAGE_PUT_FAILED` from a tus finalize or an edge `put-file`;
-  plain-text `garage put: …` from a multipart upload, `visibility change: …` from a
-  visibility move). Boot now lists both (and
+  the first private write (`GARAGE_PUT_FAILED` from a tus finalize, an edge `put-file` or —
+  since the entry on object-store error text below — a multipart upload;
+  `visibility change: …` from a visibility move). Boot now lists both (and
   `GARAGE_PUBLIC_BUCKET` too if it names a third bucket) at the same time, and logs one
   warning per bucket it cannot list — missing, unreachable, or not listable with the
   configured key. drust still boots either way, and boot takes no longer than before when the
@@ -286,6 +286,17 @@ update its toolchain first.
   gains its `/public/*` route, to a public file URL. Requests to real routes, and their
   status codes, are unchanged; the access-log row for an unmatched path now records
   `HTTP_404` instead of `HTTP_400`. No action needed.
+- **Object-store failures no longer return the storage backend's own error text.** A failed
+  upload, download, delete or signed-URL fetch answered `502` with the object store's raw
+  error — the internal storage endpoint, bucket and object path — to any caller who reached
+  it, anon and user tokens and signed-URL holders included. The detail is now logged; the
+  response says only what failed. A multipart upload (`POST /t/<id>/files`) answers
+  `502 GARAGE_PUT_FAILED` as a JSON error (`{error_code, message}`, the code tus finalize
+  already used) instead of plain text; downloads, deletes and signed-URL fetches keep their
+  plain-text `502` with a fixed message; edge-function `get-file-bytes` / `put-file` keep
+  their `GARAGE_GET_FAILED:` / `GARAGE_PUT_FAILED:` prefix with a fixed message. Status codes
+  are unchanged. The admin plane's own file pages are unchanged. To see what failed, read
+  drust's log. No action needed.
 
 ### Changed
 
