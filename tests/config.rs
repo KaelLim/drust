@@ -1,4 +1,4 @@
-use drust::config::Config;
+use drust::config::{Config, ConfigError};
 use serial_test::serial;
 use std::path::PathBuf;
 
@@ -23,6 +23,7 @@ fn clear_env() {
             "GARAGE_ADMIN_TOKEN",
             "GARAGE_PUBLIC_BUCKET",
             "GARAGE_MAX_UPLOAD_SIZE",
+            "DRUST_TRUSTED_PROXIES",
         ] {
             std::env::remove_var(key);
         }
@@ -132,4 +133,66 @@ fn parses_index_large_table_rows_override() {
     let cfg = Config::from_env().expect("config parses");
     assert_eq!(cfg.index_large_table_rows, 1000u64);
     unsafe { std::env::remove_var("DRUST_INDEX_LARGE_TABLE_ROWS") };
+}
+
+fn base_env() {
+    clear_env();
+    unsafe {
+        std::env::set_var("DRUST_DATA_DIR", "/tmp/drust-data");
+        std::env::set_var("DRUST_LOG_DIR", "/tmp/drust-log");
+    }
+}
+
+#[test]
+#[serial]
+fn trusted_proxies_defaults_to_two() {
+    // The bare-metal nginx -> Caddy chain; identical to the pre-knob
+    // hardcoded `parts[len - 2]`, so an existing host needs no `.env` edit.
+    base_env();
+    let cfg = Config::from_env().expect("config parses");
+    assert_eq!(cfg.trusted_proxies, 2);
+    assert_eq!(
+        cfg.trusted_proxies,
+        drust::safety::ip::DEFAULT_TRUSTED_PROXIES
+    );
+}
+
+#[test]
+#[serial]
+fn trusted_proxies_accepts_zero_one_and_max() {
+    for (raw, want) in [("0", 0u8), ("1", 1), ("8", 8)] {
+        base_env();
+        unsafe { std::env::set_var("DRUST_TRUSTED_PROXIES", raw) };
+        let cfg = Config::from_env().unwrap_or_else(|e| panic!("{raw} must parse: {e}"));
+        assert_eq!(cfg.trusted_proxies, want, "DRUST_TRUSTED_PROXIES={raw}");
+    }
+    clear_env();
+}
+
+#[test]
+#[serial]
+fn trusted_proxies_rejects_above_max() {
+    base_env();
+    unsafe { std::env::set_var("DRUST_TRUSTED_PROXIES", "9") };
+    match Config::from_env() {
+        Err(ConfigError::Invalid(name, _)) => assert_eq!(name, "DRUST_TRUSTED_PROXIES"),
+        other => panic!("9 must refuse to boot, got {other:?}"),
+    }
+    clear_env();
+}
+
+#[test]
+#[serial]
+fn trusted_proxies_rejects_non_numeric() {
+    for raw in ["two", "-1", "256", ""] {
+        base_env();
+        unsafe { std::env::set_var("DRUST_TRUSTED_PROXIES", raw) };
+        match Config::from_env() {
+            Err(ConfigError::Invalid(name, _)) => {
+                assert_eq!(name, "DRUST_TRUSTED_PROXIES", "raw={raw:?}")
+            }
+            other => panic!("{raw:?} must refuse to boot, got {other:?}"),
+        }
+    }
+    clear_env();
 }

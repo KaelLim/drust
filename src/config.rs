@@ -39,6 +39,14 @@ pub struct Config {
     /// defaults to 1 000 000. The guard logic that consumes this lands
     /// in a later task — this field is plumbing only for now.
     pub index_large_table_rows: u64,
+    /// `DRUST_TRUSTED_PROXIES`: how many reverse proxies in front of drust
+    /// each append one entry to `X-Forwarded-For`. The per-IP rate limiters
+    /// key on `parts[len - N]`; `0` ignores the header and keys on the TCP
+    /// peer. Default 2 (the bare-metal nginx → Caddy chain), range `0..=8`.
+    /// Out of range or non-numeric refuses to boot rather than clamping: this
+    /// value picks which header position becomes a rate-limit key, and a
+    /// silently substituted one is wrong in a direction nobody sees.
+    pub trusted_proxies: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +154,20 @@ impl Config {
 
         let storage = StorageConfig::from_env()?;
 
+        let trusted_proxies: u8 = parse_num(
+            "DRUST_TRUSTED_PROXIES",
+            crate::safety::ip::DEFAULT_TRUSTED_PROXIES,
+        )?;
+        if trusted_proxies > crate::safety::ip::MAX_TRUSTED_PROXIES {
+            return Err(ConfigError::Invalid(
+                "DRUST_TRUSTED_PROXIES",
+                format!(
+                    "must be between 0 and {}",
+                    crate::safety::ip::MAX_TRUSTED_PROXIES
+                ),
+            ));
+        }
+
         Ok(Self {
             bind,
             public_base_url,
@@ -171,6 +193,7 @@ impl Config {
                 })
                 .unwrap_or_default(),
             index_large_table_rows: parse_num("DRUST_INDEX_LARGE_TABLE_ROWS", 1_000_000)?,
+            trusted_proxies,
         })
     }
 }

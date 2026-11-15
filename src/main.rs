@@ -47,6 +47,24 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(v) = std::env::var("DRUST_BASE_PATH") {
         drust::base_path::set(&v);
     }
+    // DRUST_TRUSTED_PROXIES: how many appending proxies sit in front of drust
+    // (bare-metal 2, Compose 1, the image alone 0). Process-global, set once
+    // before any router is built. The boot line logs the READ-BACK of the
+    // global, not `cfg`, so a missing or misplaced set call shows up as the
+    // default here instead of hiding behind the configured value.
+    drust::safety::ip::set_trusted_proxies(cfg.trusted_proxies);
+    {
+        let n = drust::safety::ip::trusted_proxies();
+        tracing::info!(
+            trusted_proxies = n,
+            keyed_on = if n == 0 {
+                "tcp-peer"
+            } else {
+                "x-forwarded-for"
+            },
+            "client-IP derivation configured"
+        );
+    }
     std::fs::create_dir_all(&cfg.data_dir)?;
     std::fs::create_dir_all(&cfg.log_dir)?;
     // Point the disk guards + admin disk panel at the real data filesystem
