@@ -535,3 +535,42 @@ async fn patch_field_dropped_behind_the_schema_cache_names_that_field() {
     assert!(existing.contains("title"), "{fix}");
     assert!(!existing.contains("views"), "{fix}");
 }
+
+// --- Unmatched path → 404 NOT_FOUND, not 400 "missing tenant in path" -------
+
+#[tokio::test]
+async fn unmatched_path_answers_404_not_found_json() {
+    let (app, tok, _d) = spin_up_tenant("blog").await;
+    for uri in ["/nope", "/drust/login", "/public/blog/some-key.txt"] {
+        for bearer in [None, Some(tok.as_str())] {
+            let mut b = Request::builder().uri(uri);
+            if let Some(t) = bearer {
+                b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            let r = app
+                .clone()
+                .oneshot(b.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = r.status();
+            let ct = r
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let body = axum::body::to_bytes(r.into_body(), 65_536).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "{uri}: {}",
+                String::from_utf8_lossy(&body)
+            );
+            assert!(
+                ct.starts_with("application/json"),
+                "{uri}: content-type {ct}"
+            );
+            assert_eq!(json_of(&body)["error_code"], "NOT_FOUND", "{uri}");
+        }
+    }
+}

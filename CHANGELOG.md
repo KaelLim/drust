@@ -275,6 +275,17 @@ update its toolchain first.
   `reroll_token_form`, `create_tenant_json` or `create_tenant_form` directly, outside the
   router, must now also pass the `AdminProfileExt` extension (and `AdminId` for the
   delete and reroll handlers).
+- **A request for a route that does not exist answers `404 NOT_FOUND` instead of
+  `400 missing tenant in path`.** The tenant routers attach their bearer-auth layer with
+  `Router::layer`, which also wraps the router's fallback, so once the routers were merged
+  every unmatched path ran that layer, found no tenant in it and answered a plain-text
+  400 that sent operators looking for a tenant problem. It now answers a JSON
+  `404 NOT_FOUND` (`no such route`). This applies on all three targets — on the
+  bare-metal host to any `/drust/<path>` that matches nothing. On Compose it is the answer
+  to a mistyped `/drust/login` (the image serves at the root) and, until the Compose proxy
+  gains its `/public/*` route, to a public file URL. Requests to real routes, and their
+  status codes, are unchanged; the access-log row for an unmatched path now records
+  `HTTP_404` instead of `HTTP_400`. No action needed.
 
 ### Changed
 

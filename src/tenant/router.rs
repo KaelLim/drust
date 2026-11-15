@@ -220,7 +220,12 @@ pub async fn bearer_auth_layer(
     let resp = async {
         let tenant_id = match params.get("tenant") {
             Some(t) => t.clone(),
-            None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
+            // Every route on the layered tenant sub-routers declares
+            // `{tenant}`, so only the fallback gets here: `Router::layer` also
+            // wraps a router's fallback, and once the routers are merged an
+            // unmatched path runs this layer with an empty `Path` map. That is
+            // "no such route", not a malformed tenant request.
+            None => return json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "no such route"),
         };
         let bearer = match extract_bearer(&req) {
             Some(t) => t,
