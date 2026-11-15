@@ -639,9 +639,17 @@ else
       CADDY_IPS="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$CADDY_CID" 2>/dev/null || true)"
       # Fails when docker-compose.yml lacks DRUST_TRUSTED_PROXIES=1 (0 keys on
       # the TCP peer = Caddy) or main never sets it (2 on a one-entry header
-      # falls back to the peer = Caddy).
-      check_not_contains "tenant login through Caddy is not keyed on the proxy's own address" \
-        " $IP_AT_LOGIN " " $CADDY_IPS "
+      # falls back to the peer = Caddy). An empty CADDY_IPS would make it pass
+      # vacuously, so that case is skipped with a note instead.
+      if [ -z "$(printf '%s' "$CADDY_IPS" | tr -d ' ')" ]; then
+        note "skipped (docker inspect gave no Caddy address): login not keyed on the proxy's own address"
+      else
+        check_not_contains "tenant login through Caddy is not keyed on the proxy's own address" \
+          " $IP_AT_LOGIN " " $CADDY_IPS "
+      fi
+      # A failing `docker compose logs` reads as 0 warnings here (pass); the
+      # boot-line check below reads the same log and goes red in that case, so
+      # it is what keeps this one honest — do not drop it as redundant.
       N_WARN="$(docker compose -p drust-smoke logs --no-log-prefix --since "$START_ISO" drust 2>/dev/null \
         | grep -c 'client_ip: X-Forwarded-For' || true)"
       check_eq "drust logged no client_ip X-Forwarded-For fallback warning during this script" 0 "${N_WARN:-0}"

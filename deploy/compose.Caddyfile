@@ -13,7 +13,9 @@
 		# default and — with no `trusted_proxies` configured — rebuilds from the TCP
 		# peer, so it carries exactly one entry: DRUST_TRUSTED_PROXIES=1 in
 		# docker-compose.yml. X-Real-IP is informational; drust does not read it.
-		# If you add `trusted_proxies` here, raise DRUST_TRUSTED_PROXIES to match.
+		# If you put a proxy in front of this Caddy and trust it (Caddy 2.x: the
+		# global `servers { trusted_proxies static <cidr> }` option), Caddy keeps
+		# that proxy's entries — raise DRUST_TRUSTED_PROXIES to match.
 		header_up X-Real-IP {remote_host}
 	}
 

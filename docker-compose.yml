@@ -34,7 +34,11 @@ services:
       # this is purely for host-side debugging. Exposing it on all interfaces let
       # an attacker hit drust directly, bypassing Caddy's X-Forwarded-For
       # normalization and defeating the per-IP login/register rate-limit via XFF
-      # rotation. Loopback-binding closes that direct-port reach.
+      # rotation. Loopback-binding closes that direct-port reach. Keep it
+      # host-local: with DRUST_TRUSTED_PROXIES=1 a caller reaching this port
+      # directly picks its own rate-limit bucket with a one-entry header (older
+      # Linux Docker Engines also exposed loopback-published ports to L2
+      # neighbours — update Docker, or drop this line if you do not need it).
       - "127.0.0.1:47826:47826"
     volumes:
       - drust-data:/data      # meta.sqlite + meta_logs.sqlite + tenants/ + backups/
@@ -52,7 +56,7 @@ services:
       # --- client IP for the per-IP rate limits ---
       # One appending proxy: the bundled Caddy, which rebuilds X-Forwarded-For
       # from its TCP peer. Add one per proxy you put in front of it AND
-      # configure Caddy to trust (`trusted_proxies`) — never count a proxy that
+      # configure Caddy to trust (global `servers { trusted_proxies … }`) — never count a proxy that
       # passes a client's header through untouched. (The image alone defaults
       # to 0 = key on the TCP peer.)
       DRUST_TRUSTED_PROXIES: "1"
