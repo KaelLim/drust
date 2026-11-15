@@ -190,6 +190,8 @@ secrets:
   adminPassword: ""              # DRUST_INIT_ADMIN_PASSWORD (first boot only)
 
 extraEnv: []                     # arbitrary DRUST_*/GARAGE_* overrides: [{name, value}]
+                                 # e.g. DRUST_QUERY_DEADLINE_MS (default 5000, 0 disables):
+                                 # caller-SQL deadline for read RPCs/raw query and anon+user write RPCs
 
 # ── B3: scheduling passthrough (empty => zero behavior change) ──
 #
