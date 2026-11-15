@@ -21,8 +21,12 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 /// RFC1918 private (10/8, 172.16/12, 192.168/16), loopback (127/8, ::1),
 /// link-local (169.254/16, fe80::/10), wildcard (0.0.0.0/8), IPv6 ULA
 /// (fc00::/7), RFC 6598 CGNAT (100.64.0.0/10), IPv6 unspecified (::/128),
-/// RFC 3849 documentation (2001:db8::/32), and IPv4-mapped private ranges
-/// (::ffff:0:0/96 when the embedded IPv4 is itself private). Returned for
+/// RFC 3849 documentation (2001:db8::/32), and every IPv6 spelling of a
+/// private IPv4 — IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96),
+/// NAT64 (64:ff9b::/96) and 6to4 (2002::/16) when the embedded IPv4 is
+/// itself private — plus the whole NAT64 local-use prefix 64:ff9b:1::/48,
+/// whose embedding is operator-chosen. (Teredo, 2001::/32, is not decoded:
+/// its embedding is obfuscated.) Returned for
 /// any IP that should never receive a webhook from an internet-facing drust
 /// instance.
 ///
@@ -95,6 +99,32 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
             // mapped address itself is private (e.g. ::ffff:10.x.x.x).
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private_ip(IpAddr::V4(v4));
+            }
+            // The other IPv6 spellings that carry an IPv4 address. On a
+            // network that routes these prefixes to IPv4 (a NAT64 gateway, a
+            // 6to4 relay), dialling one reaches the embedded IPv4, so it is
+            // judged by the V4 arm's own rules. A public embedded IPv4 still
+            // passes. A new transition prefix belongs here, not at a call site.
+            let embedded = |hi: u16, lo: u16| {
+                std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8)
+            };
+            // ::a.b.c.d — IPv4-compatible (::/96; `::` and `::1` are caught above).
+            if segs[0..6] == [0; 6] {
+                return is_private_ip(IpAddr::V4(embedded(segs[6], segs[7])));
+            }
+            // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052).
+            if segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2..6] == [0; 4] {
+                return is_private_ip(IpAddr::V4(embedded(segs[6], segs[7])));
+            }
+            // 64:ff9b:1::/48 — NAT64 local-use prefix (RFC 8215). The operator
+            // chooses where the IPv4 sits inside it, so it cannot be extracted:
+            // the whole prefix is treated as private.
+            if segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 0x0001 {
+                return true;
+            }
+            // 2002::/16 — 6to4 (RFC 3056); the IPv4 is segments 1-2.
+            if segs[0] == 0x2002 {
+                return is_private_ip(IpAddr::V4(embedded(segs[1], segs[2])));
             }
             false
         }
@@ -179,6 +209,34 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    /// Every IPv6 spelling of a private IPv4 is private; the same spellings
+    /// of a public IPv4 are not.
+    #[test]
+    fn is_private_ip_flags_embedded_private_ipv4() {
+        for private in [
+            "::a00:1",            // IPv4-compatible 10.0.0.1
+            "::7f00:1",           // IPv4-compatible 127.0.0.1
+            "64:ff9b::a9fe:a9fe", // NAT64 169.254.169.254
+            "64:ff9b::c0a8:101",  // NAT64 192.168.1.1
+            "64:ff9b:1::1",       // NAT64 local-use, private outright
+            "64:ff9b:1:abcd::1",  // anywhere inside the /48
+            "2002:c0a8:101::1",   // 6to4 192.168.1.1
+            "2002:7f00:1::",      // 6to4 127.0.0.1
+            "2002:a9fe:a9fe::1",  // 6to4 169.254.169.254
+        ] {
+            assert!(is_private_ip(ip(private)), "{private} must be private");
+        }
+        for public in [
+            "64:ff9b::808:808",     // NAT64 8.8.8.8
+            "2002:808:808::1",      // 6to4 8.8.8.8
+            "::808:808",            // IPv4-compatible 8.8.8.8
+            "2606:4700:4700::1111", // ordinary global unicast
+            "64:ff9b:2::1",         // outside both NAT64 prefixes
+        ] {
+            assert!(!is_private_ip(ip(public)), "{public} must stay public");
+        }
     }
 
     #[test]

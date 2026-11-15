@@ -297,6 +297,21 @@ update its toolchain first.
   their `GARAGE_GET_FAILED:` / `GARAGE_PUT_FAILED:` prefix with a fixed message. Status codes
   are unchanged. The admin plane's own file pages are unchanged. To see what failed, read
   drust's log. No action needed.
+- **A private IPv4 address written as an IPv6 address is now refused on every outbound
+  path.** The private-address check recognised a private IPv4 inside an IPv6 address only in
+  the `::ffff:a.b.c.d` form. The IPv4-compatible (`::a.b.c.d`), NAT64 (`64:ff9b::/96`) and
+  6to4 (`2002::/16`) forms were treated as public, so on a network that routes those
+  prefixes to IPv4 (a NAT64 gateway or a 6to4 relay) an edge function's `http-fetch` to an
+  allowlisted literal such as `https://[64:ff9b::…]:8443`, or a webhook or `http-fetch` to a
+  name resolving to such an address, could reach a private address. All of those forms are
+  now checked against the same private ranges as plain IPv4, for literals and DNS answers
+  alike, when the egress allowlist is saved (`system=function`), when a webhook is
+  registered, and at every delivery or fetch attempt. The NAT64 local-use prefix
+  `64:ff9b:1::/48`, where the operator chooses how the IPv4 is embedded, is treated as
+  private as a whole. Public addresses in those forms (`64:ff9b::808:808`) are unaffected.
+  A target that is, or resolves to, such a private mapping now fails the way a plain private
+  address always has (`EGRESS_BAD_ORIGIN` on save, `INVALID_URL` on webhook registration, a
+  terminal delivery failure, an `http-fetch` error). No action needed.
 
 ### Changed
 

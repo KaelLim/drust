@@ -292,6 +292,34 @@ mod tests {
         assert!(validate_entries(&[raw("function", "https://api.github.com")]).is_ok());
     }
 
+    /// A private IPv4 written as an IPv6 address (NAT64, 6to4) is refused for
+    /// `function` exactly like the plain IPv4. The `:8443` form normalises
+    /// even without IPv6-literal support, so this pins the shared private
+    /// predicate, not the origin parser.
+    #[test]
+    fn validate_rejects_function_ipv6_embedding_private_ipv4() {
+        for uri in [
+            "https://[64:ff9b::a9fe:a9fe]:8443", // NAT64 169.254.169.254
+            "https://[2002:a9fe:a9fe::1]:8443",  // 6to4 169.254.169.254
+        ] {
+            assert_eq!(
+                validate_entries(&[raw("function", uri)])
+                    .unwrap_err()
+                    .code(),
+                "EGRESS_BAD_ORIGIN",
+                "function origin {uri} embeds a private IPv4 and must be rejected"
+            );
+            // Webhook keeps its own registration/dispatch gates; the
+            // function-scoped config gate does not apply to it.
+            assert!(
+                validate_entries(&[raw("webhook", uri)]).is_ok(),
+                "webhook {uri} is not rejected by the function-scoped config gate"
+            );
+        }
+        // The same spelling of a PUBLIC IPv4 still validates.
+        assert!(validate_entries(&[raw("function", "https://[64:ff9b::808:808]:8443")]).is_ok());
+    }
+
     #[test]
     fn validate_enforces_count_cap() {
         let many: Vec<RawEgressEntry> = (0..(max_entries() + 1))
