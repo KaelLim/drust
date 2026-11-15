@@ -2103,7 +2103,7 @@ impl DrustMcpService {
 
     #[tool(
         annotations(read_only_hint = true, open_world_hint = false),
-        description = "List files stored by this tenant in Garage. \
+        description = "List files stored by this tenant in the object store. \
         Optional `visibility` filter: exactly \"public\" or \"private\" (lowercase); omit it to \
         list every file. A misspelt public/private (e.g. \"Public\") errors with \
         INVALID_VISIBILITY; other values are ignored. \

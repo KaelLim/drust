@@ -682,8 +682,8 @@ banner_action = "請清出資料庫磁碟的空間或擴充磁碟。"
 banner_usage = "已使用 {used} GB／共 {total} GB。"
 [files.head]
 eyebrow = "管理 · 儲存"
-sub_configured = "主機層級的 Garage 儲存桶 — 匿名讀取路徑為 <code>/public/&lt;key&gt;</code>。各租戶自己的儲存桶在該租戶的檔案頁面。"
-sub_unconfigured = "尚未設定 Garage S3。請在 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code> 後重啟 drust。"
+sub_configured = "主機層級的檔案，存放於共用的 <code>public</code> 儲存桶 — 匿名讀取路徑為 <code>/public/&lt;key&gt;</code>。各租戶的檔案在該租戶的檔案頁面。"
+sub_unconfigured = "尚未設定物件儲存。請在 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code> 及其金鑰組後重啟 drust。"
 # REVIEW (low confidence): count suffix, please verify
 pill_files_unit = "個檔案"
 pill_not_configured = "尚未設定"
@@ -692,10 +692,10 @@ title = "主機檔案"
 [files.list]
 card_title = "檔案"
 reconcile_btn = "同步稽核 ⋯"
-reconcile_hint = "比對 Garage 儲存桶內容與 drust 的中繼資料 — 找出孤兒物件（存在於 Garage 但未被追蹤）與懸空紀錄（有追蹤但檔案已不存在）。通常為空；建議在網路異常或手動改動 S3 後執行。"
+reconcile_hint = "比對 public 儲存桶內容與 drust 的中繼資料 — 找出孤兒物件（存在於儲存體但未被追蹤）與懸空紀錄（有追蹤但檔案已不存在）。通常為空；建議在網路異常或手動改動 S3 後執行。"
 
 [files.page]
-meta_description = "drust 管理 — 主機層級的檔案儲存。上傳、瀏覽並管理由 Garage S3 支援的公開與私有檔案。"
+meta_description = "drust 管理 — 主機層級的檔案儲存。上傳、瀏覽並管理存放於 S3 物件儲存的公開與私有檔案。"
 title = "drust 管理 — 檔案"
 [files.row]
 delete_btn = "刪除"
@@ -723,28 +723,28 @@ original_name = "原始檔名"
 reason = "原因"
 
 [files_reconcile.dangling_rows]
-subtitle = "存在於 drust、Garage 中無對應物件 — 刪除該列"
+subtitle = "存在於 drust、儲存體中無對應物件 — 刪除該列"
 title = "懸空列"
 
 [files_reconcile.header]
 eyebrow = "管理 · 儲存維護"
-sub = "比對 Garage bucket 內容與 drust 中繼資料。勾選要清理的項目後套用。通常為空 — 在網路異常或手動編輯 S3 之後才會出現。"
+sub = "比對 public bucket 內容與 drust 中繼資料。勾選要清理的項目後套用。通常為空 — 在網路異常或手動編輯 S3 之後才會出現。"
 title = "對齊"
 
 [files_reconcile.orphan_buckets]
-subtitle = "硬刪除期間 Garage bucket 刪除失敗 — 重試以移除"
+subtitle = "硬刪除期間舊版每租戶 bucket 刪除失敗（Garage 管理 API）— 重試以移除"
 title = "孤立 bucket"
 
 [files_reconcile.orphan_objects]
-subtitle = "存在於 Garage、未被 drust 追蹤 — 從 Garage 刪除"
+subtitle = "存在於儲存體、未被 drust 追蹤 — 從儲存體刪除"
 title = "孤立物件"
 
 [files_reconcile.page]
-meta_description = "drust 管理 — 對齊 Garage 公開 bucket 物件與 drust 的 _system_public_files 中繼資料，找出孤立物件與懸空列。"
+meta_description = "drust 管理 — 對齊公開 bucket 物件與 drust 的 _system_public_files 中繼資料，找出孤立物件與懸空列。"
 title = "drust 管理 — 公開 bucket · 同步稽核"
 
 [files_reconcile.pending_revokes]
-subtitle = "軟刪除期間 Garage 撤權失敗 — 重試以拒絕 bucket 存取"
+subtitle = "軟刪除期間舊版每租戶 bucket 撤權失敗（Garage 管理 API）— 重試以拒絕 bucket 存取"
 title = "待重試的撤權"
 
 [login.brand]
@@ -914,7 +914,7 @@ title = "尚未有檔案"
 
 [tenant_files_admin.head]
 title = "儲存空間"
-intro = "每個租戶有兩個 Garage bucket — <code>tenant-{tenant_id}-pub</code> 對外提供 <code>/public/&lt;key&gt;</code>，<code>tenant-{tenant_id}-prv</code> 需要簽署過的 URL 才能存取。"
+intro = "檔案存放於共用的 <code>public</code> 與 <code>private</code> 儲存桶，以本租戶的 <code>{tenant_id}/</code> 為前綴 — 公開檔案於 <code>/public/{tenant_id}/&lt;key&gt;</code> 提供，私有檔案只能經由 drust 或簽署 URL 存取。"
 
 [tenant_files_admin.page]
 title = "drust 管理 — 檔案"
@@ -1469,7 +1469,7 @@ confirm = "刪除"
 
 [tenants_list.head]
 eyebrow = "管理 · 平台"
-subtitle = "每個租戶都擁有獨立的 SQLite 資料庫、一組 S3 儲存桶、OAuth 註冊、anon 與 service 金鑰，以及 MCP 端點。點擊任一列進入該租戶的管理工作區。"
+subtitle = "每個租戶都擁有獨立的 SQLite 資料庫、共用檔案儲存桶中的專屬前綴、OAuth 註冊、anon 與 service 金鑰，以及 MCP 端點。點擊任一列進入該租戶的管理工作區。"
 title = "所有租戶"
 
 [tenants_list.page]
@@ -1763,11 +1763,11 @@ private = "私有（{n}）"
 public = "公開（{n}）"
 
 [files.unconfigured]
-body = "請在 drust 的 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code>（以及完整的金鑰組）後重啟。詳見 <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>。"
+body = "請在 drust 的 <code>.env</code> 設定 <code>GARAGE_S3_ENDPOINT</code>（以及完整的金鑰組）後重啟。詳見 README 的 Configuration 一節。"
 title = "尚未設定儲存空間"
 
 [tenants_list.create]
-body = "將建立 data.sqlite、該租戶專屬的 S3 儲存桶，以及 anon／service 金鑰。請輸入顯示名稱。"
+body = "將建立 data.sqlite 與 anon／service 金鑰；檔案存放於共用的 public／private 儲存桶中，以租戶 id 為前綴。請輸入顯示名稱。"
 ok = "建立"
 placeholder = "活動報名"
 title = "建立租戶"

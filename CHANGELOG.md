@@ -615,6 +615,10 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   The `files-guide.md` resource now says when to switch to tus (above
   `limits.max_upload_bytes`) and that `OPTIONS …/uploads` reports `Tus-Max-Size`.
 
+- **`list_files` no longer names Garage.** Its description said files are "stored by this
+  tenant in Garage"; it now says "in the object store", since Docker Compose bundles RustFS
+  from this release. Model-facing text only; the tool's behaviour and result are unchanged.
+
 ### Build
 
 - **Builds clean under Rust 1.100's clippy.** CI installs the latest stable toolchain, and
@@ -710,6 +714,13 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   not emitted: a per-room evict ends that room's subscription without a frame and the
   client re-subscribes. It is kept and documented as reserved. `WS_PUBLISH_DENIED` has not
   been emitted since v1.32.5 and is kept for clients that still match it. No wire change.
+- The admin UI's file and reconcile pages, the tenant files page and the tenant list (both
+  locales) described the storage layout as Garage with a bucket pair per tenant. Since the
+  per-tenant buckets were retired, files live in the shared `public` and `private` buckets
+  under each tenant's id prefix, on whatever S3-compatible store is configured; the texts
+  now say so, the reconcile rows that concern legacy per-tenant buckets say "legacy" and
+  name the Garage admin API, and the "not configured" panel points at the README instead of
+  a design document a fresh clone does not have. Text only.
 
 ## v1.66.1 — 2026-08-17
 
