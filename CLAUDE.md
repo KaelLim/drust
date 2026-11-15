@@ -244,7 +244,9 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    push capability, so a session's GET stream carries nothing and every POST
    re-authenticates. Adding any server capability or push makes reroll and the PAT family
    end MCP sessions too (`server_capabilities_declare_no_server_push` pins the exact
-   capability set and fails first).
+   capability set; rmcp does not stop an undeclared push, so
+   `mcp_sources_never_push` also fails on any code under `src/mcp/` that names the
+   peer — `call_tool` and the resource/prompt handlers hold a `RequestContext`).
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    `drop_field` deliberately does NOT evict, even when the dropped column is named by a
    select policy: the per-event filter (`eval_policy_materialized`) drops every
