@@ -68,6 +68,16 @@ jobs:
       - name: compose object-store fixtures
         run: bash deploy/tests/compose_storage_test.sh
 
+      # The Compose /public/* Caddy block serves tenant bytes from the admin
+      # origin straight out of the object store. `caddy validate` accepts a
+      # block that lost copy_response, the query strip or the bucket pin; this
+      # pins each line, and @markup in lockstep with is_unsafe_inline_type.
+      - name: compose /public route pins
+        run: bash deploy/tests/compose_public_route_test.sh
+
+      - name: janitor has no hardcoded _trash retention (#935)
+        run: bash deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh
+
   # The chart had zero CI coverage: `render_test.sh` only ever ran when someone
   # remembered to. That is how appVersion sat at 1.49.4 for nine releases while
   # values.yaml carried the real (also stale) image tag. Offline — `helm

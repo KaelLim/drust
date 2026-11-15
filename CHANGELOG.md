@@ -289,10 +289,10 @@ update its toolchain first.
   400 that sent operators looking for a tenant problem. It now answers a JSON
   `404 NOT_FOUND` (`no such route`). This applies on all three targets — on the
   bare-metal host to any `/drust/<path>` that matches nothing. On Compose it is the answer
-  to a mistyped `/drust/login` (the image serves at the root) and, until the Compose proxy
-  gains its `/public/*` route, to a public file URL. Requests to real routes, and their
-  status codes, are unchanged; the access-log row for an unmatched path now records
-  `HTTP_404` instead of `HTTP_400`. No action needed.
+  to a mistyped `/drust/login` (the image serves at the root). Public file URLs, which used
+  to reach drust there too, are now served by the Compose proxy (see *Deploy (Compose)*).
+  Requests to real routes, and their status codes, are unchanged; the access-log row for an
+  unmatched path now records `HTTP_404` instead of `HTTP_400`. No action needed.
 - **Object-store failures no longer return the storage backend's own error text.** A failed
   upload, download, delete or signed-URL fetch answered `502` with the object store's raw
   error — the internal storage endpoint, bucket and object path — to any caller who reached
@@ -482,6 +482,19 @@ update its toolchain first.
   bare-metal default `http://localhost:8793`, which nothing in the stack serves. Set it to
   your real origin when you change Caddy's port or put TLS in front. The k3s chart already
   set it; bare-metal is unchanged.
+- **`/public/*` is served on Compose.** `deploy/compose.Caddyfile` had no route for the
+  public bucket, so the public URL drust returns reached drust and answered
+  `404 NOT_FOUND`. Caddy now serves `/public/*`
+  straight from the object store's `public` bucket, never through drust. It allows GET and
+  HEAD only (anything else answers 405). It drops the query string, because an S3 API
+  honours `?response-content-type=` on anonymous requests. It forwards neither
+  `Authorization` nor cookies. It sends `nosniff` on every response, and the same sandbox
+  `Content-Security-Policy` as drust's own file responses for script-capable types.
+  `PUBLIC_OBJECTS_UPSTREAM` (a Caddy-container variable, default `rustfs:9000`) selects the
+  store. A Garage website endpoint also needs the two lines marked `STORE-SHAPE` in the file
+  swapped for the forms in their comments. A MinIO (path-style S3 API) is selected with the
+  variable alone; that is untested in this release. Without file storage, `/public/*`
+  answers 502 from Caddy.
 - **The bundled object store is RustFS, and turning it on is one step.** Run
   `deploy/compose-storage-env.sh` once, then `docker compose up -d`. The script writes `.env`
   next to the compose file, with `COMPOSE_FILE` (which adds the new

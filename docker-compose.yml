@@ -18,7 +18,8 @@ services:
   # the admin UI through here so the rate limiter sees Caddy's normalized client
   # address; drust's own port is bound to loopback for debugging only. To mount
   # drust under a sub-path instead, set DRUST_BASE_PATH=/drust and switch the
-  # Caddyfile to `handle_path /drust/*`.
+  # Caddyfile to `handle_path /drust/*`. Caddy also serves /public/* straight
+  # from the object store (deploy/compose.Caddyfile).
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -26,6 +27,10 @@ services:
       - "80:80"
     volumes:
       - ./deploy/compose.Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      # Which object store serves /public/* (see deploy/compose.Caddyfile).
+      # rustfs:9000 = the bundled RustFS (docker-compose.storage.yml).
+      PUBLIC_OBJECTS_UPSTREAM: ${PUBLIC_OBJECTS_UPSTREAM:-rustfs:9000}
     depends_on:
       - drust
 

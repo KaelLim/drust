@@ -161,7 +161,7 @@ drust never creates buckets. Before the first upload, create `public` and `priva
 - `public`: anonymous **GetObject only**, never a canned "download" policy, which also allows listing.
 - `private`: no anonymous access.
 
-drust logs a warning at boot for each one it cannot list. Public files are served by your reverse proxy straight from `public`, never through drust. The Compose storage file creates both buckets and the policy for you.
+drust logs a warning at boot for each one it cannot list. Public files are served by your reverse proxy straight from `public`, never through drust: copy the `/public/*` block of `deploy/compose.Caddyfile` (sandbox CSP, nosniff, GET/HEAD only, query dropped). The Compose storage file and Caddy do all of this for you.
 
 </details>
 
@@ -198,8 +198,19 @@ limited to those two buckets. drust never holds the RustFS root key.
   `127.0.0.1:9001:9001` on `rustfs` in an override file.
 
 **Use MinIO, Garage or another store.** Do not run the script. Put the three
-`GARAGE_S3_*` variables on `drust` in a `docker-compose.override.yml` and create the two
-buckets as described under *Configuration*.
+`GARAGE_S3_*` variables on `drust` in a `docker-compose.override.yml`, create the two buckets
+as described under *Configuration*, and point Caddy's `/public/*` at the store with
+`PUBLIC_OBJECTS_UPSTREAM` (a variable of the `caddy` service, default `rustfs:9000`):
+
+- Garage: set `PUBLIC_OBJECTS_UPSTREAM` to its `s3_web` endpoint (e.g. `garage:3902`) and
+  replace the two lines marked `STORE-SHAPE` in `deploy/compose.Caddyfile` with the Garage
+  forms in their comments.
+- MinIO (path-style S3 API): set `PUBLIC_OBJECTS_UPSTREAM`; untested in this release.
+- R2 or AWS S3: needs the provider's own public endpoint; carry the `/public/*` block across
+  with `@markup`, the query strip, the method limit and the header removals unchanged.
+
+Without storage, `/public/*` answers 502 from Caddy (the upstream does not resolve); there are
+no public files to serve, and the rest of the stack is unaffected.
 
 **Upgrading from the bundled MinIO.** Up to this release `docker compose --profile storage
 up -d` ran a bundled MinIO. That service and the `storage` profile are gone, because the

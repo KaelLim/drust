@@ -116,7 +116,7 @@ reachable by an untrusted caller.
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
-| `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |
+| `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose), never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
 file prefix policies, audit toggle) are **service-only** on every face. Storage tier and per-member tenant cap are
@@ -138,8 +138,9 @@ file prefix policies, audit toggle) are **service-only** on every face. Storage 
 > [!CAUTION]
 > **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for
 > `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects a non-loopback Host with a
-> 403/421 that looks like a WAF block. Garage's `/public/*` is the same family in reverse:
-> it routes *by* Host, so that block must send `Host: public.web.local`.
+> 403/421 that looks like a WAF block. Garage's `/public/*` (the bare-metal host) is the same
+> family in reverse: it routes *by* Host, so that block must send `Host: public.web.local`.
+> The Compose block talks to an S3 API path-style and keeps `Host {upstream_hostport}`.
 
 > [!CAUTION]
 > **The systemd unit deliberately OMITS `MemoryDenyWriteExecute`.** wasmtime's Cranelift JIT
@@ -338,7 +339,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     gain `allow-same-origin` or `allow-scripts` — either one defeats the protection
     completely, and a codified test pins the exact string. The classifier is structural
     (every `*/*+xml` essence), not an enumeration; the first version of this fix was broken
-    by `application/rss+xml`.
+    by `application/rss+xml`. The proxy's `/public/*` blocks (`../garage/deploy/Caddyfile` on
+    the host, `deploy/compose.Caddyfile` on Compose) are byte paths too: they carry the
+    `@markup` sandbox CSP and `nosniff`, and in front of an S3 API they must also drop the
+    query string, which an S3 API honours as `response-content-type` on anonymous GETs.
 
 15. **All browser-facing URL prefixes route through `crate::base_path`.** `DRUST_BASE_PATH`
     (default `/drust`; the Docker image ships `""`) is the external mount the proxy strips
@@ -374,8 +378,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     never by name suffix.
 
 19. **Publishing is never SILENT, and every after-the-fact door into the `public` bucket
-    stays service-only.** A public object is served by Caddy straight out of Garage and never
-    reaches drust, so publishing is a permanent escape from every per-file gate. The three
+    stays service-only.** A public object is served by the reverse proxy straight out of the
+    object store and never reaches drust, so publishing is a permanent escape from every
+    per-file gate — and the anonymous policy on `public` is GetObject only: a policy that also
+    lists hands out every tenant's public keys. The three
     stations with a caller identity share one decision (`files::enforce_upload_visibility` —
     Mode-A multipart, tus `create`, and edge `put-file` via `enforced_put_file`); the fourth,
     host-admin `/admin/files/upload`, is owner-only management plane. What the shared decision

@@ -47,7 +47,7 @@ Never `cargo test --release` — LTO + `codegen-units = 1` takes 40+ minutes. So
 
 Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's first gate) and `cargo clippy --all-targets -- -D warnings`.
 
-`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh` and `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker).
+`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh`, `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker), `deploy/tests/compose_public_route_test.sh` (the Compose `/public/*` block) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`.
 
 ## systemd
 
@@ -57,16 +57,15 @@ Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's f
 ## Caddy
 
 > [!WARNING]
-> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`.
+> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. The bare-metal Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`. The Compose `/public/*` block talks to an S3 API path-style and keeps `Host {upstream_hostport}`. A vhost Host sent to RustFS with `RUSTFS_SERVER_DOMAINS` unset is parsed as path-style and 403s.
 
-The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of Garage) has two traps:
+The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of the object store) has three traps:
 
 - **`copy_response` is mandatory inside that `handle_response` block** — entering `handle_response` replaces the default passthrough, so a block with only a `header` directive silently discards the entire upstream body (caught live against a real 2.6 MB object before shipping: 200 OK with a 0-byte body). `caddy adapt` validates such a block happily.
 - Caddy 2.6.2's response-matcher allowlist has **no regex or case-insensitive option**, only a plain glob on `header`. The matcher's exact shape, and the fact that it must stay in lockstep with `storage::files::is_unsafe_inline_type`, are documented once in `.claude/rules/storage-files.md` — read that before editing the `@markup` matcher.
+- **An S3-API upstream needs the query string dropped** (`rewrite * /public{path}?`). RustFS honours `?response-content-type=` on anonymous GETs, and a case-variant type slips past the case-sensitive matcher. Garage's website endpoint is not an S3 API, but the strip costs nothing there.
 
-The authoritative snippet for this block lives in `../garage/deploy/Caddyfile`, not in `drust/deploy/` — `/public/*` is Garage's route. Verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space.
-
-That block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
+The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
 ## Three deployment targets
 
@@ -77,7 +76,7 @@ not render the chart, so divergence is invisible until a user hits it.
 | | Bare-metal (this host) | Docker Compose | k3s |
 |---|---|---|---|
 | Process supervision | `deploy/drust.service` | `docker-compose.yml` | `deploy/helm/drust/templates/drust-statefulset.yaml` |
-| Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` | chart Ingress |
+| Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` (`/` → drust, `/public/*` → object store) | chart Ingress |
 | Object store | host Garage | RustFS via `docker-compose.storage.yml` + `rustfs-init` (off until `deploy/compose-storage-env.sh`) | MinIO StatefulSet (images no longer pullable; report) |
 | Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs **+ the `maintenance` sidecar** (default on, opt-out) |
 | Base path | `/drust` | `""` | `""` |

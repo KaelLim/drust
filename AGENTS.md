@@ -269,7 +269,9 @@ the other side:
   read-back faces via `eval_policy_materialized`, which adds the missing-field deny).
 - `has_dml_cap` and the `records_list.rs` cap matrix — both read `user_caps` for the User role.
 - `storage::files::is_unsafe_inline_type` and the Caddy `@markup` matcher in
-  `../garage/deploy/Caddyfile` — the Rust side is case-insensitive, Caddy's is not.
+  `../garage/deploy/Caddyfile` (bare-metal host) **and `deploy/compose.Caddyfile`** (Compose;
+  pinned by `deploy/tests/compose_public_route_test.sh`) — the Rust side is case-insensitive,
+  Caddy's is not.
 - The four config-time `RPC_ANON_OWNER_SCOPED` sites (create, update, `set_owner_field`,
   policy-attach). The runtime path is deliberately not re-checked, so a missed config site
   is a real bypass — one shipped this way once.
@@ -286,7 +288,7 @@ reviewer would open:
 
 | Concern | File |
 |---|---|
-| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*`, **`../garage/deploy/Caddyfile` for `/public/*`** |
+| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*`, **`../garage/deploy/Caddyfile` for the host's `/public/*`**. Compose: `deploy/compose.Caddyfile` for both |
 | Process sandbox, environment, restart policy | `deploy/drust.service` |
 | Secrets | `.env`, mode 0640 — a non-root read fails **silently**, so an unprivileged `grep` that finds nothing proves nothing |
 
@@ -295,9 +297,10 @@ Cross-service rules that also bind drust:
 - **TLS terminates upstream at `.221`, never on this host.** Local Caddy is plain HTTP on
   `:8793`. Never add `tls` or `auto_https`.
 - **MCP SDKs reject a non-loopback `Host` header** with a 403/421 that reads like a WAF
-  block, so the `/mcp` Caddy block needs `header_up Host "127.0.0.1:47826"`. Garage's
-  `s3_web` is the mirror image — it routes *by* Host, so `/public/*` sends
-  `Host: public.web.local`.
+  block, so the `/mcp` Caddy block needs `header_up Host "127.0.0.1:47826"`. On the
+  bare-metal host Garage's `s3_web` is the mirror image — it routes *by* Host, so `/public/*`
+  sends `Host: public.web.local`. The Compose block talks to RustFS's S3 API path-style and
+  must not.
 - **`backups/*.tar.zst` contains plaintext credentials** for every tenant and every admin
   PAT. Treat as a secret store.
 

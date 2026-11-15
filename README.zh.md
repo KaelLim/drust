@@ -161,7 +161,7 @@ drust 不會建立 bucket。首次上傳前請先建好：
 - `public`：匿名**只允許 GetObject**，切勿用同時開放列舉的「download」範本。
 - `private`：不開放匿名存取。
 
-任一個無法列出時，drust 會在啟動時記錄警告。公開檔案由反向代理直接自 `public` 提供、不經過 drust。Compose 的儲存設定檔會替你建好兩個 bucket 與政策。
+任一個無法列出時，drust 會在啟動時記錄警告。公開檔案由反向代理直接自 `public` 提供、不經過 drust：請照抄 `deploy/compose.Caddyfile` 的 `/public/*` 區塊（sandbox CSP、nosniff、僅 GET/HEAD、捨棄 query）。Compose 的儲存設定檔與 Caddy 已替你做好這一切。
 
 </details>
 
@@ -194,7 +194,16 @@ docker compose up -d
   `127.0.0.1:9001:9001`。
 
 **改用 MinIO、Garage 或其他儲存服務。** 不要執行這支腳本。在 `docker-compose.override.yml` 裡替 `drust`
-設定三個 `GARAGE_S3_*` 變數，並依「設定」一節建好兩個 bucket。
+設定三個 `GARAGE_S3_*` 變數，依「設定」一節建好兩個 bucket，並用 `PUBLIC_OBJECTS_UPSTREAM`（`caddy`
+服務的變數，預設 `rustfs:9000`）把 Caddy 的 `/public/*` 指向該儲存服務：
+
+- Garage：把 `PUBLIC_OBJECTS_UPSTREAM` 設為它的 `s3_web` 端點（例如 `garage:3902`），並把
+  `deploy/compose.Caddyfile` 裡標記 `STORE-SHAPE` 的兩行換成其註解中的 Garage 寫法。
+- MinIO（path-style S3 API）：設定 `PUBLIC_OBJECTS_UPSTREAM` 即可；本版未經測試。
+- R2 或 AWS S3：需要該服務自己的公開端點；把 `/public/*` 區塊整段搬過去，`@markup`、捨棄 query、
+  方法限制與標頭移除都保持不變。
+
+未啟用儲存時，`/public/*` 由 Caddy 回 502（上游名稱無法解析）；本來就沒有公開檔案可提供，其餘服務不受影響。
 
 **從內附的 MinIO 升級。** 直到本版之前，`docker compose --profile storage up -d` 會執行內附的 MinIO。
 這個服務與 `storage` profile 已移除，因為 `minio/minio` 映像檔已無法從 Docker Hub 取得。你的物件仍在
