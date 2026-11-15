@@ -109,12 +109,13 @@ pub async fn invoke_gate_layer(
     // EVERY non-service attempt — allow OR deny — not just the allow path. A
     // public anon key hitting a denied (flag-off) function must not be able to
     // hammer `get_function` unboundedly; bounding the attempt rate here caps
-    // that load before the lookup runs. IP via XFF, loopback fallback (prod is
-    // always behind nginx→Caddy). A purely per-IP 429 leaks nothing about the
-    // function, so it does not reopen the enumeration oracle the deny arm closes.
+    // that load before the lookup runs. IP = the DRUST_TRUSTED_PROXIES entry of
+    // X-Forwarded-For, else the real TCP peer. A purely per-IP 429 leaks
+    // nothing about the function, so it does not reopen the enumeration oracle
+    // the deny arm closes.
     let ip = crate::safety::ip::client_ip(
         req.headers(),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        crate::safety::ip::peer_addr(req.extensions()),
     );
     if !auth.fn_invoke_rl.check(ip) {
         return crate::error::json_error(

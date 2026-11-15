@@ -176,7 +176,7 @@ fn trusted_proxies_rejects_above_max() {
     unsafe { std::env::set_var("DRUST_TRUSTED_PROXIES", "9") };
     match Config::from_env() {
         Err(ConfigError::Invalid(name, _)) => assert_eq!(name, "DRUST_TRUSTED_PROXIES"),
-        other => panic!("9 must refuse to boot, got {other:?}"),
+        other => panic!("9 must refuse to boot, got {:?}", other.map(|_| ())),
     }
     clear_env();
 }
@@ -191,7 +191,7 @@ fn trusted_proxies_rejects_non_numeric() {
             Err(ConfigError::Invalid(name, _)) => {
                 assert_eq!(name, "DRUST_TRUSTED_PROXIES", "raw={raw:?}")
             }
-            other => panic!("{raw:?} must refuse to boot, got {other:?}"),
+            other => panic!("{raw:?} must refuse to boot, got {:?}", other.map(|_| ())),
         }
     }
     clear_env();

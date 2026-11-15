@@ -105,9 +105,9 @@
 //! anything, so their tests cannot tell the two placements apart.) Structural
 //! pin or nothing.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::tenant::rooms::srcpin::{code_only, prod_fn_body, production_half};
+use crate::tenant::rooms::srcpin::{code_only, collect_rs_files, prod_fn_body, production_half};
 
 /// The auth-cache clear. Deliberately the loose form rather than
 /// `auth_cache.clear_admin_pat(`: [`the_pinned_site_list_is_the_whole_site_list`]
@@ -613,23 +613,5 @@ fn no_revocation_site_hides_outside_the_pinned_files() {
              contains `{CLEAR}` — the exemption is stale. Drop the row; an allowlist nobody \
              prunes is how the next real site gets waved through.",
         );
-    }
-}
-
-/// Every `.rs` file at or below `dir`, recursively. Panics rather than skipping
-/// an unreadable directory: a walk that quietly covers less than the tree is
-/// exactly the vacuous pass this pin must not have.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries =
-        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read dir {}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|e| panic!("cannot walk {}: {e}", dir.display()))
-            .path();
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
     }
 }

@@ -729,7 +729,13 @@ async fn main() -> anyhow::Result<()> {
         let _ = sig_tx.send(true);
     });
     let drain_grace = shutdown_grace();
-    let server = axum::serve(listener, app).with_graceful_shutdown({
+    // Connect-info: the per-IP limiters' fallback key is the real TCP peer
+    // (`safety::ip::peer_addr`), not a literal loopback address.
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown({
         let mut rx = sig_rx.clone();
         async move {
             let _ = rx.wait_for(|fired| *fired).await;

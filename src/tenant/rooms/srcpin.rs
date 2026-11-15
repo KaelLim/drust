@@ -233,6 +233,25 @@ fn char_literal_end(b: &[u8], i: usize) -> Option<usize> {
     (b.get(i + 2) == Some(&b'\'')).then_some(i + 3)
 }
 
+/// Every `.rs` file at or below `dir`, recursively. Panics rather than skipping
+/// an unreadable directory: a walk that quietly covers less than the tree is
+/// exactly the vacuous pass a tree-wide pin must not have. Shared by
+/// `mgmt::pat_evict_pin` and `safety::ip`'s client-IP consumer pin.
+pub(crate) fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read dir {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|e| panic!("cannot walk {}: {e}", dir.display()))
+            .path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::code_only;

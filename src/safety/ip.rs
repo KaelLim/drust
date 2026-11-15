@@ -113,6 +113,37 @@ pub fn client_ip_with(headers: &HeaderMap, peer: SocketAddr, n: u8) -> IpAddr {
     }
 }
 
+/// The immediate TCP peer: the `ConnectInfo<SocketAddr>` the server attaches
+/// (`main` serves with `into_make_service_with_connect_info`), else
+/// `127.0.0.1:0` — `Router::oneshot` in tests, or any server built without
+/// connect-info. On bare-metal every request comes from the host Caddy over
+/// loopback, so the real peer equals that literal.
+pub fn peer_addr(ext: &axum::http::Extensions) -> SocketAddr {
+    ext.get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0)
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)))
+}
+
+/// Infallible extractor for the per-IP rate limiters:
+/// `client_ip(&parts.headers, peer_addr(&parts.extensions))`. Every handler
+/// that keys on the caller's address takes this rather than deriving it by
+/// hand — a source pin below enumerates the consumers.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientIp(pub IpAddr);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ClientIp(client_ip(
+            &parts.headers,
+            peer_addr(&parts.extensions),
+        )))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum FallbackReason {
     Short,
@@ -286,6 +317,173 @@ mod tests {
     fn ipv4_mapped_peer_is_canonicalised() {
         let peer: SocketAddr = "[::ffff:192.0.2.7]:1".parse().unwrap();
         assert_eq!(client_ip_with(&h(None), peer, 0), ip("192.0.2.7"));
+    }
+
+    #[test]
+    fn peer_addr_without_connect_info_is_loopback() {
+        let ext = axum::http::Extensions::new();
+        assert_eq!(peer_addr(&ext), loopback_peer());
+    }
+
+    #[test]
+    fn peer_addr_reads_connect_info() {
+        let mut ext = axum::http::Extensions::new();
+        ext.insert(axum::extract::ConnectInfo(doc_peer()));
+        assert_eq!(peer_addr(&ext), doc_peer());
+    }
+
+    /// Byte index one past the `)` that closes the `(` at `open`, or the end of
+    /// the input when unbalanced (the caller then sees the whole tail, which
+    /// still has to contain the needle — fail-closed in practice).
+    fn balanced_args(code: &str, open: usize) -> &str {
+        let b = code.as_bytes();
+        let mut depth = 0usize;
+        for (k, &c) in b.iter().enumerate().skip(open) {
+            match c {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &code[open + 1..k];
+                    }
+                }
+                _ => {}
+            }
+        }
+        &code[open + 1..]
+    }
+
+    fn is_ident(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_'
+    }
+
+    /// Start offsets of `needle` in `code` not preceded by an identifier byte.
+    fn call_sites(code: &str, needle: &str) -> Vec<usize> {
+        code.match_indices(needle)
+            .map(|(i, _)| i)
+            .filter(|&i| i == 0 || !is_ident(code.as_bytes()[i - 1]))
+            .collect()
+    }
+
+    /// The per-IP limiters are enforced by ENUMERATION: eleven consumers, each
+    /// of which used to hand a literal `127.0.0.1:0` to `client_ip` as its
+    /// "socket peer". This pins the list so a regressed site — or a twelfth
+    /// consumer — fails the suite instead of silently keying every caller on
+    /// loopback (or on a client-chosen header position).
+    ///
+    /// Scans the WHOLE file through `code_only` (comments blanked, so a
+    /// commented-out call can neither satisfy nor hide a needle), not
+    /// `production_half`, which cuts at the first `#[cfg(test)]` and would
+    /// fail open on files that carry one near the top.
+    #[test]
+    fn every_client_ip_consumer_keys_on_the_real_peer() {
+        use crate::tenant::rooms::srcpin::{code_only, collect_rs_files};
+        use std::path::Path;
+
+        // (file, `client_ip(` calls, `ClientIp(` extractor patterns)
+        const CONSUMERS: &[(&str, usize, usize)] = &[
+            ("functions/invoke_gate.rs", 1, 0),
+            ("tenant/file_caps.rs", 1, 0),
+            ("tenant/auth_routes.rs", 0, 3),
+            ("tenant/oauth_routes.rs", 0, 2),
+            ("mgmt/oauth_login.rs", 0, 1),
+            ("mgmt/cli_device.rs", 0, 2),
+            ("mgmt/routes.rs", 0, 1),
+        ];
+        const THIS_FILE: &str = "safety/ip.rs";
+        const LOOPBACK_LITERAL: &str = "[127, 0, 0, 1], 0";
+
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut files = Vec::new();
+        collect_rs_files(root, &mut files);
+        files.sort();
+        assert!(
+            files.len() > 100,
+            "the tree walk found only {} .rs file(s) under {} — every assertion below \
+             would pass vacuously",
+            files.len(),
+            root.display(),
+        );
+
+        let mut offenders: Vec<String> = Vec::new();
+        let mut seen = [false; CONSUMERS.len()];
+        for path in &files {
+            let rel = path
+                .strip_prefix(root)
+                .expect("collect_rs_files only yields paths under root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == THIS_FILE {
+                continue;
+            }
+            let raw = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let code = code_only(&raw);
+
+            let calls = call_sites(&code, "client_ip(");
+            for &at in &calls {
+                let args = balanced_args(&code, at + "client_ip".len());
+                if !args.contains("peer_addr(") {
+                    offenders.push(format!(
+                        "{rel}: `client_ip(` called without `peer_addr(` in its arguments \
+                         (args: `{}`) — the fallback must be the real TCP peer",
+                        args.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+            }
+            let extractors = call_sites(&code, "ClientIp(").len();
+
+            if (code.contains("client_ip") || code.contains("ClientIp"))
+                && code.contains(LOOPBACK_LITERAL)
+            {
+                offenders.push(format!(
+                    "{rel}: names client_ip/ClientIp and still builds the literal \
+                     `{LOOPBACK_LITERAL}` peer — use `ClientIp` or `peer_addr`"
+                ));
+            }
+            if rel != "main.rs" && !call_sites(&code, "set_trusted_proxies(").is_empty() {
+                offenders.push(format!(
+                    "{rel}: calls `set_trusted_proxies` — only main may set the global"
+                ));
+            }
+            if rel != "main.rs" && code.to_ascii_lowercase().contains("\"x-forwarded-for\"") {
+                offenders.push(format!(
+                    "{rel}: reads X-Forwarded-For by hand — derive the client through \
+                     `safety::ip::ClientIp`"
+                ));
+            }
+
+            match CONSUMERS.iter().position(|(f, _, _)| *f == rel) {
+                Some(k) => {
+                    seen[k] = true;
+                    let (_, want_calls, want_ext) = CONSUMERS[k];
+                    if calls.len() != want_calls || extractors != want_ext {
+                        offenders.push(format!(
+                            "{rel}: {} `client_ip(` call(s) and {extractors} `ClientIp(` \
+                             extractor(s), pinned {want_calls} and {want_ext}",
+                            calls.len()
+                        ));
+                    }
+                }
+                None if !calls.is_empty() || extractors != 0 => offenders.push(format!(
+                    "{rel}: {} `client_ip(` call(s) and {extractors} `ClientIp(` extractor(s) \
+                     outside the pinned consumer table",
+                    calls.len()
+                )),
+                None => {}
+            }
+        }
+        for (k, (f, _, _)) in CONSUMERS.iter().enumerate() {
+            if !seen[k] {
+                offenders.push(format!("{f}: pinned consumer file not found under src/"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "client-IP consumer pin failed — a new client-IP consumer? add it to this \
+             table and to the proxy-hops design §4:\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     #[test]

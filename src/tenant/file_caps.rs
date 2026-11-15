@@ -184,8 +184,9 @@ pub async fn file_caps_layer(
             }
             // v1.42 — per-IP rate-limit upload/delete for non-service callers
             // (cap already satisfied). Bounds the public anon-key DoS vector;
-            // service never reaches here (returned above). IP via XFF, loopback
-            // fallback (prod is always behind the nginx->Caddy chain).
+            // service never reaches here (returned above). IP = the
+            // DRUST_TRUSTED_PROXIES entry of X-Forwarded-For, else the real
+            // TCP peer (ConnectInfo).
             let limiter = match verb {
                 FileVerb::Upload => Some(&auth.file_upload_rl),
                 FileVerb::Delete => Some(&auth.file_delete_rl),
@@ -194,7 +195,7 @@ pub async fn file_caps_layer(
             if let Some(rl) = limiter {
                 let ip = crate::safety::ip::client_ip(
                     req.headers(),
-                    std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+                    crate::safety::ip::peer_addr(req.extensions()),
                 );
                 if !rl.check(ip) {
                     return crate::error::json_error(

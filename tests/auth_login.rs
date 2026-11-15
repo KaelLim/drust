@@ -157,3 +157,84 @@ async fn login_timing_equalized_unknown_vs_wrong_password() {
         "S1 timing skew: unknown={mu}ms wrong-pw={mw}ms (diff={diff}ms must be <60ms)"
     );
 }
+
+/// Login request carrying a hand-built `ConnectInfo` (what `main` attaches via
+/// `into_make_service_with_connect_info`; `oneshot` has none), plus an
+/// optional `X-Forwarded-For`.
+fn post_json_peer(
+    tid: &str,
+    path: &str,
+    body: serde_json::Value,
+    xff: Option<&str>,
+    peer: std::net::SocketAddr,
+) -> Request<Body> {
+    let mut b = Request::builder()
+        .method("POST")
+        .uri(format!("/t/{tid}{path}"))
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(v) = xff {
+        b = b.header("X-Forwarded-For", v);
+    }
+    let mut req = b.body(Body::from(body.to_string())).unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    req
+}
+
+fn ip_at_login_rows(dir: &std::path::Path, tid: &str) -> Vec<String> {
+    let p = dir.join("tenants").join(tid).join("data.sqlite");
+    let c = rusqlite::Connection::open(&p).unwrap();
+    let mut st = c
+        .prepare("SELECT ip_at_login FROM _system_sessions")
+        .unwrap();
+    st.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[tokio::test]
+async fn login_without_xff_records_the_connect_info_peer_as_ip_at_login() {
+    // The literal `127.0.0.1:0` "socket peer" each handler used to build would
+    // store 127.0.0.1 here; the real peer must reach `_system_sessions`.
+    let (app, _tok, dir) = helpers::spin_up_tenant_self_register("t-login-peer1").await;
+    register(&app, "t-login-peer1", "a@b.com", "longpassword").await;
+    let resp = app
+        .oneshot(post_json_peer(
+            "t-login-peer1",
+            "/auth/login",
+            json!({"email": "a@b.com", "password": "longpassword"}),
+            None,
+            "203.0.113.9:41000".parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        ip_at_login_rows(dir.path(), "t-login-peer1"),
+        vec!["203.0.113.9".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn login_with_two_entry_xff_records_the_xff_client_not_the_peer() {
+    // Under the default DRUST_TRUSTED_PROXIES = 2 (the bare-metal chain) the
+    // header's second-from-right entry still wins over the TCP peer.
+    let (app, _tok, dir) = helpers::spin_up_tenant_self_register("t-login-peer2").await;
+    register(&app, "t-login-peer2", "a@b.com", "longpassword").await;
+    let resp = app
+        .oneshot(post_json_peer(
+            "t-login-peer2",
+            "/auth/login",
+            json!({"email": "a@b.com", "password": "longpassword"}),
+            Some("198.51.100.4, 192.0.2.221"),
+            "203.0.113.9:41000".parse().unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        ip_at_login_rows(dir.path(), "t-login-peer2"),
+        vec!["198.51.100.4".to_string()]
+    );
+}

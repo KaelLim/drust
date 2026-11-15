@@ -6,13 +6,13 @@
 use crate::oauth::{
     github::GitHubAdapter, google::GoogleAdapter, provider::OauthProvider, state as oauth_state,
 };
+use crate::safety::ip::ClientIp;
 use crate::tenant::oauth_config;
 use crate::tenant::router::TenantAuthState;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 #[derive(serde::Deserialize)]
 pub(crate) struct CallbackQuery {
@@ -158,6 +158,7 @@ pub(crate) async fn oauth_start(
     Path(params): Path<HashMap<String, String>>,
     State(state): State<TenantAuthState>,
     Query(q): Query<StartQuery>,
+    ClientIp(ip): ClientIp,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let tid = match params.get("tenant") {
@@ -171,8 +172,6 @@ pub(crate) async fn oauth_start(
 
     // Rate-limit before any DB hit (shares the OAuth-flow budget with
     // /callback, 5/60s/IP). Defense-in-depth on top of the existence gate.
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.oauth_callback_rl.check(ip) {
         return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }
@@ -410,6 +409,7 @@ pub(crate) async fn oauth_callback(
     Path(params): Path<HashMap<String, String>>,
     State(state): State<TenantAuthState>,
     Query(q): Query<CallbackQuery>,
+    ClientIp(ip): ClientIp,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let tid = match params.get("tenant") {
@@ -424,8 +424,6 @@ pub(crate) async fn oauth_callback(
     // Rate-limit before any DB hit (5 / 60 s / IP). Defends the
     // provider-exchange path from brute-force replay. Plain `plain_text`
     // (no cookie clear) so retry from the same browser still has cookies.
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.oauth_callback_rl.check(ip) {
         return plain_text(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     }

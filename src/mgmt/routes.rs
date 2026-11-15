@@ -450,13 +450,11 @@ async fn login_submit(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
-    headers: axum::http::HeaderMap,
+    crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let op = "POST /login";
     // v1.19.2 — per-IP rate limit. Same shape as tenant login_handler.
-    let fallback_addr: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.admin_login_rl.check(ip) {
         let mut entry =
             crate::safety::audit::AuditEntry::failure("-", "-", op, 0, "HTTP_429", "rate limited");
