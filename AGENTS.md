@@ -158,10 +158,12 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
 - A native SQLite refusal (UNIQUE, NOT NULL, STRICT type) on the REST single-record write
   (`POST /t/<id>/records/<c>`, `PATCH …/<id>`) still answers `400 text/plain` with SQLite's
-  message, while `records:batch` and MCP each report it in their own shape. Deliberate
-  until one cross-face classifier lands for all three: converting one face alone creates a
-  fourth shape. The unknown-field and dropped-collection refusals on that path are already
-  typed (`FIELD_NOT_FOUND`, `NOT_FOUND`) by `tenant/records.rs`'s sentinels.
+  message, while `records:batch` reports it in its own shape. MCP already reports the
+  reserved names (`UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `TYPE_MISMATCH`, see the MCP verdicts below). Deliberate until the cross-face classifier
+  lands for both REST faces: converting one REST face alone creates another shape. The
+  unknown-field and dropped-collection refusals on that path are already typed
+  (`FIELD_NOT_FOUND`, `NOT_FOUND`) by `tenant/records.rs`'s sentinels.
 
 **Deliberate — schema DDL vs stored policies (not the PAT family):**
 
@@ -181,10 +183,25 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
   deliberately retry-safe: a repeat converges to the same state; the extra eviction only
   makes subscribers reconnect and re-gate.
-- Only five tools (+ `list_files`) return `isError: true`; every other tool error is still
-  a JSON-RPC error. The blanket conversion is the planned outer `call_tool` (MA1), which
-  reuses `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s `expires_in`
-  range stay `-32603` until then.
+- Only five tools (+ `list_files`) return `isError: true` for their own failures, and any
+  tool returns it for an argument that fails to deserialize (`INVALID_PARAMS`, reshaped
+  from rmcp ≥ 1.8 in `handler.rs::finish_tool_call`). Every other tool error is still a
+  JSON-RPC error, and since v1.67.0 always with a `data.error_code` from
+  `mcp::error_code::mcp_error_code`, whose output is always one of drust's own constants.
+  The blanket conversion is the planned account-level `call_tool` (MA1), which reuses
+  `finish_tool_call` / `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s
+  `expires_in` range stay `-32603` until then.
+- A per-tenant MCP session is not bound to the bearer that opened it. A key reroll or a
+  PAT revocation leaves its GET stream open, while every POST re-authenticates (old key →
+  401). Deliberate until MA1, which removes sessions: the server's capabilities are exactly
+  tools / resources / prompts with no push, so the stream carries nothing.
+  `server_capabilities_declare_no_server_push` fails the moment any capability is added.
+- MCP native constraint codes (`UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `TYPE_MISMATCH`) ship ahead of REST on purpose (owner decision 2026-11-15): they are the
+  names the deferred cross-face classifier reserves, so REST adopts them later without MCP
+  changing again. Do not "align" MCP back to REST's `text/plain` 400 or to `SQL_ERROR`, and
+  do not add a `TYPE_MISMATCH` catalogue entry — `json_error` would attach it to REST's
+  existing, unrelated `TYPE_MISMATCH` bodies (`type_mismatch_stays_uncatalogued`).
 - Edge Privileged `delete-record` still returns `{"ok":false,"error_code":"RECORD_NOT_FOUND"}`
   on the WIT ok-branch; M1 converted only the MCP wrapper.
 - `list_files` refuses only a misspelt `public` / `private` (`looks_like_misspelt_visibility`);

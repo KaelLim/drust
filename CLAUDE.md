@@ -240,6 +240,11 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
    and never-expiring tenant bearers deliberately carry no deadline.
+   Per-tenant **MCP** Streamable-HTTP sessions are outside this set: the server declares no
+   push capability, so a session's GET stream carries nothing and every POST
+   re-authenticates. Adding any server capability or push makes reroll and the PAT family
+   end MCP sessions too (`server_capabilities_declare_no_server_push` pins the exact
+   capability set and fails first).
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    `drop_field` deliberately does NOT evict, even when the dropped column is named by a
    select policy: the per-event filter (`eval_policy_materialized`) drops every

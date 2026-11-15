@@ -3933,6 +3933,20 @@ RESOURCES + PROMPTS: resources/list and resources/templates/list expose drust://
     )
 }
 
+/// The per-tenant server's declared capabilities: tools, resources and prompts,
+/// and nothing that pushes — no `listChanged`, no `subscribe`, no `logging`, no
+/// `tasks`. That absence is why an MCP session is outside CLAUDE.md invariant 5:
+/// its GET stream carries nothing, and every POST re-authenticates.
+/// `capabilities_tests::server_capabilities_declare_no_server_push` pins the
+/// exact JSON.
+pub(crate) fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities::builder()
+        .enable_tools()
+        .enable_resources()
+        .enable_prompts()
+        .build()
+}
+
 #[tool_handler]
 impl ServerHandler for DrustMcpService {
     fn get_info(&self) -> ServerInfo {
@@ -3942,15 +3956,9 @@ impl ServerHandler for DrustMcpService {
             instructions.chars().count() <= INSTRUCTIONS_MAX_CHARS,
             "server instructions exceed Claude Code's cap"
         );
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-        )
-        .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
-        .with_instructions(instructions)
+        ServerInfo::new(server_capabilities())
+            .with_server_info(Implementation::new("drust", env!("CARGO_PKG_VERSION")))
+            .with_instructions(instructions)
     }
 
     /// The single tool-call choke point: every `#[tool]` goes through here
@@ -4029,6 +4037,27 @@ impl ServerHandler for DrustMcpService {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::GetPromptResult, McpError> {
         crate::mcp::prompts::render_prompt(&self.state, &request.name, &request.arguments).await
+    }
+}
+
+#[cfg(test)]
+mod capabilities_tests {
+    use super::server_capabilities;
+
+    /// Invariant-5 tripwire. Exact JSON on purpose: rmcp's `ServerCapabilities`
+    /// also has `experimental`, `extensions`, `logging`, `completions` and
+    /// `tasks`, all omitted when unset, and the sub-capabilities omit unset
+    /// `listChanged` / `subscribe` — so enabling ANY of them (or an rmcp that
+    /// adds a default field) changes this value.
+    #[test]
+    fn server_capabilities_declare_no_server_push() {
+        assert_eq!(
+            serde_json::to_value(server_capabilities()).unwrap(),
+            serde_json::json!({"prompts": {}, "resources": {}, "tools": {}}),
+            "adding a server capability may add server push; push brings MCP sessions \
+             under invariant 5 — reroll and the admin-PAT family must then end MCP \
+             sessions too"
+        );
     }
 }
 

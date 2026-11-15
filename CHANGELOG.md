@@ -4,7 +4,8 @@ Fixes from the access-gate convergence review (E track). One new environment var
 `DRUST_TRUSTED_PROXIES` (default `2`, unchanged behaviour on an existing host); the Docker
 image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error codes:
 `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens, and `TENANT_ID_UNAVAILABLE`
-on the admin plane.
+on the admin plane. MCP gains error codes for conditions that had none (listed under
+*MCP (M1)*).
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
 only the row's `id` (E9). The other caller-visible changes are described in their entries:
@@ -490,12 +491,37 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   visibility) used to return a *successful* result whose text was `{"error_code": …}`.
   They now return `isError: true` with the JSON text
   `{"error_code", "message", "suggested_fix"?}` — the same error codes as before.
-  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors are
-  unchanged (JSON-RPC errors with `data.error_code`), and so are `delete_record`'s
-  `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The descriptions of
-  `describe_collection`, `delete_file`, `get_file_url` and `set_file_visibility` now say
-  how they fail, and `recent_writes`' description says it returns no rows yet, so an
-  empty result is not proof that nothing was written.
+  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors stay
+  JSON-RPC errors, now always with a `data.error_code` (see below), and so are
+  `delete_record`'s `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The
+  descriptions of `describe_collection`, `delete_file`, `get_file_url` and
+  `set_file_visibility` now say how they fail, and `recent_writes`' description says it
+  returns no rows yet, so an empty result is not proof that nothing was written.
+- **A malformed tool argument is an error result with `INVALID_PARAMS`, and every
+  JSON-RPC tool error carries an `error_code`.** rmcp 1.8, pulled in by the compatible
+  refresh under *Build*, turned a missing or wrongly typed argument from JSON-RPC
+  `-32602` into an `isError: true` result whose text was rmcp's own sentence
+  ("failed to deserialize parameters: missing field …"). drust now returns its one isError
+  body instead, `{"error_code": "INVALID_PARAMS", "message", "suggested_fix"}`, with
+  rmcp's sentence as the `message`, so the field at fault is still named. A call to an
+  unknown tool is still JSON-RPC `-32602` "tool not found". Separately, `data.error_code`
+  on a JSON-RPC tool error is now always an `UPPER_SNAKE` code chosen by drust. A message
+  without a `CODE:` prefix used to put the words before its first colon there — `query`'s
+  write refusal, an unknown key on `insert_record` / `update_record` / `upsert_records`, and
+  the `RPC_ANON_OWNER_SCOPED` refusals of `set_owner_field` and `set_policy` all sent prose —
+  and `create_rpc`, `update_rpc`, `delete_rpc`, `call_rpc`, `set_description` and the
+  meta-backed tools sent no `data` at all. Messages and JSON-RPC error codes are unchanged.
+  The codes match REST where REST has one: `FIELD_NOT_FOUND` for an unknown key,
+  `TYPE_MISMATCH` for a `data` that is not a non-empty object, `QUERY_FORBIDDEN`,
+  `QUERY_TOO_LARGE`, `QUERY_TIMEOUT` and `SQL_ERROR` on `query`, the admin form's
+  `INVALID_SQL_FOR_MODE`, `RPC_KIND_INVALID` and `RPC_QUERY_TEMPLATE_INVALID` on RPC saves,
+  and `RPC_NOT_FOUND` and the `PARAM_*` codes on `call_rpc`. A failed native constraint
+  reports `UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `CHECK_CONSTRAINT_FAILED` or `TYPE_MISMATCH`. An error with nothing to classify reports
+  `INTERNAL`. New codes, on MCP only for now: `RPC_EXISTS`, `COLLECTION_EXISTS`,
+  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`. REST responses are
+  unchanged. A client that matched the old prose in `data.error_code` should match the
+  code, or the `message`, instead.
 - **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other
   than `public` / `private` as "no filter" — so a typo such as `"Public"` or `"pub"`
   silently returned every file, private ones included. A value that is a case or
@@ -525,7 +551,8 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   v1.66.1. This refresh clears the ones a compatible update can reach — `cap-primitives`
   (RUSTSEC-2026-0482), `h2`, `pulldown-cmark`, `quinn-proto` / `quinn-udp`, `rustls`,
   `rustls-webpki`, `webpki-roots`, `zstd`, and the two `wasmtime` advisories fixed in
-  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0, `rusqlite` 0.40.0 → 0.40.2 and `tokio`
+  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0 (whose one caller-visible effect, on
+  tool-argument errors, is described under *MCP (M1)*), `rusqlite` 0.40.0 → 0.40.2 and `tokio`
   1.52 → 1.54. The advisories a compatible update cannot reach — the remaining
   `wasmtime` / `wasmtime-wasi` ones, `libsqlite3-sys` and `rmcp` — are handled by the
   three cross-major upgrades D1–D3 below.
