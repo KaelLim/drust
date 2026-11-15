@@ -725,6 +725,25 @@ async fn create_rpc_refusals_carry_exact_codes() {
     .await;
     assert_eq!(rpc_error(&m).2, "PROTECTED_COLLECTION", "{m}");
 
+    // A template rejection with no sentinel of its own: the stage knows it
+    // was the query arm (RPC_QUERY_TEMPLATE_INVALID, the admin form's code);
+    // the message alone would only classify as a generic prepare failure.
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q1", "kind": "query",
+               "query": {"collection": "t", "filter": {"title": {"$param": "x"}}},
+               "params": []}),
+    )
+    .await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("undeclared param"), "{m}");
+    assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
+
     // The shape check runs before any DB work (`invalid_params`): the
     // backstop finds the sentinel right after PrepareError's prefix.
     let m = call_tool(
