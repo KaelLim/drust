@@ -486,6 +486,21 @@ fn is_browser_cross_site(headers: &axum::http::HeaderMap) -> bool {
         .any(|v| v.trim().eq_ignore_ascii_case("cross-site"))
 }
 
+/// The `LOGIN_CROSS_SITE` audit row. Takes no form input BY SIGNATURE, so the
+/// refused request's `username` / `password` can never reach the audit log.
+fn cross_site_refusal_entry(op: &str) -> crate::safety::audit::AuditEntry {
+    let mut entry = crate::safety::audit::AuditEntry::failure(
+        "-",
+        "-",
+        op,
+        0,
+        "LOGIN_CROSS_SITE",
+        "cross-site login refused",
+    );
+    entry.auth_method = Some("password".to_string());
+    entry.with_extra(serde_json::json!({ "auth_kind": "admin" }))
+}
+
 async fn login_submit(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
@@ -499,21 +514,13 @@ async fn login_submit(
     // per-IP limiter (a cross-site page must not spend the victim IP's 5/min
     // login budget), before the meta lock, before argon2. Nothing below this
     // line runs for such a request, so no session row, no cookie.
-    // NEVER put `form.username` / `form.password` into this audit row.
+    // The audit row is built by `cross_site_refusal_entry`, which takes no
+    // form input, so `form.username` / `form.password` cannot reach it.
     // Anything that reads request state to shape this login's outcome (e.g. a
     // post-login redirect cookie) must be read AFTER this `if`, so a refused
     // request neither consumes nor clears it.
     if is_browser_cross_site(&headers) {
-        let mut entry = crate::safety::audit::AuditEntry::failure(
-            "-",
-            "-",
-            op,
-            0,
-            "LOGIN_CROSS_SITE",
-            "cross-site login refused",
-        );
-        entry.auth_method = Some("password".to_string());
-        entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
+        let entry = cross_site_refusal_entry(op);
         crate::safety::audit::write_entry(&state.log_dir, &entry).await;
         let mut resp = axum::Json(serde_json::json!({
             "error_code": "LOGIN_CROSS_SITE",
@@ -1608,7 +1615,7 @@ impl MgmtState {
 
 #[cfg(test)]
 mod login_cross_site_tests {
-    use super::is_browser_cross_site;
+    use super::{cross_site_refusal_entry, is_browser_cross_site};
     use axum::http::{HeaderMap, HeaderValue};
 
     fn hm(values: &[&[u8]]) -> HeaderMap {
@@ -1665,5 +1672,24 @@ mod login_cross_site_tests {
     fn non_visible_ascii_is_treated_as_absent() {
         // `to_str()` fails on obs-text; Fetch Metadata §2.1: ignore invalid values.
         assert!(!is_browser_cross_site(&hm(&[b"cross-site\xff"])));
+    }
+
+    /// The refusal row is host-level and carries no credential: sentinel
+    /// tenant and token_hint, the fixed code, and only `auth_kind` in extra.
+    #[test]
+    fn cross_site_refusal_entry_carries_only_sentinels() {
+        let e = cross_site_refusal_entry("POST /login");
+        assert_eq!(e.tenant, "-");
+        assert_eq!(e.token_hint, "-");
+        assert_eq!(e.op, "POST /login");
+        assert_eq!(e.status, "error");
+        assert_eq!(e.error_code.as_deref(), Some("LOGIN_CROSS_SITE"));
+        assert_eq!(e.error_message.as_deref(), Some("cross-site login refused"));
+        assert_eq!(e.auth_method.as_deref(), Some("password"));
+        assert_eq!(e.oauth_email, None);
+        assert_eq!(e.actor_admin_id, None);
+        let keys: Vec<&str> = e.extra.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["auth_kind"]);
+        assert_eq!(e.extra["auth_kind"], "admin");
     }
 }
