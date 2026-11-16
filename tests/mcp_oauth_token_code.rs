@@ -1311,16 +1311,30 @@ async fn a_replay_after_the_code_expired_is_refused_but_does_not_revoke() {
     assert_eq!(grant_revocation(&fx, g).await, (None, None));
 }
 
-/// Single use is a tested property, not a side effect of the meta mutex.
-#[tokio::test]
+/// Single use is a tested property, not a side effect of the meta mutex. Each
+/// request runs in its own task on a multi-thread runtime, released together,
+/// so they really contend on the meta mutex.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_valid_exchanges_issue_at_most_once() {
     let fx = fixture(true).await;
     let session = session_for(&fx, fx.owner_id).await;
-    let cg = obtain_code(&fx, &session, 53_682, None).await;
+    let cg = std::sync::Arc::new(obtain_code(&fx, &session, 53_682, None).await);
     let g = grant_of_code(&fx, &cg.code).await;
-    let resps = futures::future::join_all((0..8).map(|_| exchange(&fx.app, &cg))).await;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let app = fx.app.clone();
+            let cg = cg.clone();
+            let b = barrier.clone();
+            tokio::spawn(async move {
+                b.wait().await;
+                exchange(&app, &cg).await
+            })
+        })
+        .collect();
     let mut issued = Vec::new();
-    for r in resps {
+    for task in tasks {
+        let r = task.await.unwrap();
         if r.status() == StatusCode::OK {
             issued.push(
                 body_json(r).await["access_token"]

@@ -1230,13 +1230,26 @@ async fn many_unknown_tokens_all_answer_200() {
     assert_revoked(&fx, gid, "live after 80 misses").await;
 }
 
-#[tokio::test]
+/// Each revoke runs in its own task on a multi-thread runtime, released
+/// together, so the two really contend on the meta mutex.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoke_race_still_answers_200() {
     let fx = fixture(true).await;
     let (gid, t) = grant_with_tokens(&fx).await;
-    let pairs = [("token", t.access.as_str())];
-    let (a, b) = tokio::join!(revoke_with(&fx.app, &pairs), revoke_with(&fx.app, &pairs));
-    assert_ok_empty(a, "racer a").await;
-    assert_ok_empty(b, "racer b").await;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let tasks: Vec<_> = (0..2)
+        .map(|_| {
+            let app = fx.app.clone();
+            let token = t.access.clone();
+            let b = barrier.clone();
+            tokio::spawn(async move {
+                b.wait().await;
+                revoke_with(&app, &[("token", token.as_str())]).await
+            })
+        })
+        .collect();
+    for (i, task) in tasks.into_iter().enumerate() {
+        assert_ok_empty(task.await.unwrap(), &format!("racer {i}")).await;
+    }
     assert_revoked(&fx, gid, "race").await;
 }
