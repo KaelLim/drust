@@ -205,7 +205,10 @@ t.deleted_at IS NULL`, so `tenant_created_at` is copied in SQL, and every ticket
 `tenants` on `id`, `created_at` and `deleted_at IS NULL` in addition to the grant and admin
 join. A tenant id is recyclable (the id-recycle branch of `make_tenant_inner` hard-deletes
 the soft-deleted row), and `tenant_created_at` is what keeps a ticket from resolving to the
-new tenant, the way `admin_created_at` does for admins. Accepted residual: a ticket carries
+new tenant, the way `admin_created_at` does for admins. Like that layer, it does not hold
+for an id recycled within the same second (`created_at` is second precision), so the upload
+feature must also have the id-recycle branch delete that tenant id's tickets, as it already
+purges `quota_requests`. Accepted residual: a ticket carries
 `grant_id` only, so cutting one refresh branch (branch b below) does not reach a ticket
 minted through that branch; a nullable column naming the minting branch can be added
 through `add_column_if_missing` when tickets ship.
@@ -549,7 +552,11 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   per-IP miss budget is spent, an unknown token answers 429 while a known dead one may still
   answer `invalid_grant` (it charges its grant's bucket instead), and `Retry-After` differs
   by bucket. That reveals only that a token the caller already holds, a 256-bit secret,
-  exists.
+  exists. A full per-grant bucket splits the answers the same way: branches b) and e) are
+  never charged and still answer `invalid_grant`, while a), c) and d) answer 429, so the
+  holder of a token can tell a superseded or past-grace one from the rest. Only a holder
+  sees this, and presenting a b) or e) token ends it (the branch is cut, or the grant is
+  revoked).
 - **Check order and budgets.** `scope`, `resource` and the token's prefix + length are pure
   checks before the lock and before any budget (an access token presented as a refresh is
   refused here). Under the lock, `refresh::lookup_grant_id` looks the hash up ignoring
