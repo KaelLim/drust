@@ -21,6 +21,7 @@ use askama::Template;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::mgmt::i18n::{Locale, LocaleHint, Translator};
 use crate::mgmt::mcp_oauth::clients::{KnownClient, find_client};
@@ -313,14 +314,18 @@ pub(crate) fn evaluate(cfg: &McpOauthConfig, raw_query: Option<&str>) -> Decisio
         }
     };
     // Every later error goes back to `target`, echoing the first state value
-    // verbatim (even one that is then judged too long).
+    // verbatim, unless it is over `MAX_STATE`: that one is never echoed (a
+    // 4 KiB query would otherwise put up to 4 KiB of caller text in Location).
     match after_redirect(cfg, &p, client, &target) {
         Ok(req) => Decision::Proceed(req),
         Err((code, description)) => Decision::Back {
             target,
             code,
             description,
-            state: p.get("state").map(str::to_owned),
+            state: p
+                .get("state")
+                .filter(|s| s.len() <= envelope::MAX_STATE)
+                .map(str::to_owned),
         },
     }
 }
@@ -403,6 +408,47 @@ pub(crate) fn scope_items_ok(scope: &str) -> bool {
         .all(|t| t == "mcp" || t == "offline_access")
 }
 
+/// How often a rejected redirect from the pinned client may log at `warn`.
+const REDIRECT_WARN_EVERY_SECS: u64 = 60;
+
+/// Rate-samples the "redirect_uri not pinned" warn: the caller is
+/// unauthenticated, so a flood must not push journald's per-service limit into
+/// dropping real warnings. Process-wide; the rest go to `debug`.
+pub(crate) struct WarnSampler {
+    /// Unix second of the last warn; 0 = never.
+    last: AtomicU64,
+    suppressed: AtomicU64,
+}
+
+impl WarnSampler {
+    pub(crate) const fn new() -> Self {
+        Self {
+            last: AtomicU64::new(0),
+            suppressed: AtomicU64::new(0),
+        }
+    }
+
+    /// `Some(n)`: warn now, `n` = how many were suppressed since the last warn.
+    /// `None`: log at `debug` (counted as suppressed). At most one `Some` per
+    /// `REDIRECT_WARN_EVERY_SECS` of `now`.
+    pub(crate) fn sample(&self, now: u64) -> Option<u64> {
+        let last = self.last.load(Ordering::Relaxed);
+        let due = last == 0 || now >= last.saturating_add(REDIRECT_WARN_EVERY_SECS);
+        if due
+            && self
+                .last
+                .compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            return Some(self.suppressed.swap(0, Ordering::Relaxed));
+        }
+        self.suppressed.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+}
+
+static REDIRECT_WARN: WarnSampler = WarnSampler::new();
+
 /// `GET /oauth/authorize`. Reads the OAuth config only: no database handle,
 /// no lock, no write.
 pub async fn authorize(
@@ -420,13 +466,27 @@ pub async fn authorize(
             pinned,
         } => {
             match (reason, pinned) {
-                (PageReason::Redirect(why), Some(c)) => tracing::warn!(
-                    received = received_redirect.as_deref().unwrap_or(""),
-                    client_id = c.client_id,
-                    pinned_on = c.pinned_on,
-                    reason = ?why,
-                    "mcp_oauth: redirect_uri not pinned"
-                ),
+                (PageReason::Redirect(why), Some(c)) => {
+                    // A clock before the epoch never suppresses.
+                    let sampled = envelope::now_unix().map_or(Some(0), |n| REDIRECT_WARN.sample(n));
+                    match sampled {
+                        Some(suppressed) => tracing::warn!(
+                            received = received_redirect.as_deref().unwrap_or(""),
+                            client_id = c.client_id,
+                            pinned_on = c.pinned_on,
+                            reason = ?why,
+                            suppressed,
+                            "mcp_oauth: redirect_uri not pinned"
+                        ),
+                        None => tracing::debug!(
+                            received = received_redirect.as_deref().unwrap_or(""),
+                            client_id = c.client_id,
+                            pinned_on = c.pinned_on,
+                            reason = ?why,
+                            "mcp_oauth: redirect_uri not pinned"
+                        ),
+                    }
+                }
                 _ => tracing::debug!(reason = ?reason, "mcp_oauth: authorize error page"),
             }
             error_page(
@@ -908,6 +968,26 @@ mod tests {
     }
 
     #[test]
+    fn redirect_warn_is_sampled_once_a_minute() {
+        let w = WarnSampler::new();
+        assert_eq!(w.sample(1000), Some(0), "the first one warns");
+        assert_eq!(w.sample(1000), None);
+        assert_eq!(w.sample(1059), None, "59 s later: still debug");
+        assert_eq!(w.sample(1060), Some(2), "60 s later: warns, carrying 2");
+        assert_eq!(w.sample(1061), None);
+        assert_eq!(
+            w.sample(5000),
+            Some(1),
+            "the count restarts after each warn"
+        );
+        assert_eq!(
+            w.sample(4990),
+            None,
+            "a clock step back does not warn early"
+        );
+    }
+
+    #[test]
     fn back_echoes_first_state_verbatim() {
         let weird = "a b&c=d é";
         let p = set(set(sdk(), "state", weird), "response_type", "token");
@@ -915,10 +995,22 @@ mod tests {
         // Duplicated: the FIRST value comes back.
         let p = add(set(sdk(), "state", "first"), "state", "second");
         assert_eq!(back(&eval(&p)).and_then(|b| b.2), Some("first".to_string()));
-        // Over-long: echoed anyway.
-        let long = "s".repeat(513);
+        // Over-long: refused, and never echoed, whatever the error.
+        let long = "s".repeat(envelope::MAX_STATE + 1);
         let p = set(sdk(), "state", &long);
-        assert_eq!(back(&eval(&p)).and_then(|b| b.2), Some(long));
+        let b = back(&eval(&p));
+        assert_eq!(b.as_ref().map(|b| b.1), Some(D_STATE));
+        assert_eq!(
+            b.and_then(|b| b.2),
+            None,
+            "an over-long state is not echoed"
+        );
+        let p = set(set(sdk(), "state", &long), "response_type", "token");
+        assert_eq!(back(&eval(&p)).and_then(|b| b.2), None);
+        // Exactly at the limit: echoed.
+        let at = "s".repeat(envelope::MAX_STATE);
+        let p = set(set(sdk(), "state", &at), "response_type", "token");
+        assert_eq!(back(&eval(&p)).and_then(|b| b.2), Some(at));
         // Absent: None.
         let p = set(del(sdk(), "state"), "response_type", "token");
         let b = back(&eval(&p));

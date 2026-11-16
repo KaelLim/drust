@@ -558,6 +558,16 @@ fn back_rows() -> Vec<(&'static str, String, Pairs, &'static str)> {
             "invalid_request",
         ),
         (
+            "state 513, token",
+            l.clone(),
+            set(
+                set(base(&l, s), "state", &"s".repeat(513)),
+                "response_type",
+                "token",
+            ),
+            "unsupported_response_type",
+        ),
+        (
             "duplicated state",
             l.clone(),
             add(base(&l, s), "state", "other"),
@@ -605,10 +615,13 @@ async fn errors_after_redirect_validation_go_back_with_iss() {
         assert!(loc.starts_with(&format!("{redirect}?")), "{what}: {loc}");
         assert_eq!(query_param(&loc, "error").as_deref(), Some(want), "{what}");
         assert_eq!(query_param(&loc, "iss").as_deref(), Some(ISSUER), "{what}");
+        // The first state comes back verbatim, unless it is over 512 bytes:
+        // that one is never echoed.
         let sent_state = pairs
             .iter()
             .find(|(k, _)| k == "state")
-            .map(|(_, v)| v.clone());
+            .map(|(_, v)| v.clone())
+            .filter(|v| v.len() <= 512);
         assert_eq!(query_param(&loc, "state"), sent_state, "{what}: state");
         if let Some(d) = query_param(&loc, "error_description") {
             assert!(is_oauth_ascii(&d), "{what}: {d:?}");
@@ -646,7 +659,12 @@ async fn state_512_ok_513_back() {
         query_param(&loc, "error").as_deref(),
         Some("invalid_request")
     );
-    assert_eq!(query_param(&loc, "state"), Some(s513));
+    assert_eq!(
+        query_param(&loc, "state"),
+        None,
+        "an over-long state is not echoed"
+    );
+    assert!(!loc.contains("sss"), "{loc}");
 }
 
 // ─── C. success ─────────────────────────────────────────────────────────────
