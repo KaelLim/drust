@@ -119,7 +119,9 @@ fn empty_base_resume_target_is_root_consent() {
     let mut h = axum::http::HeaderMap::new();
     h.insert(
         axum::http::header::COOKIE,
-        format!("{}={wire}", envelope::RESUME_COOKIE).parse().unwrap(),
+        format!("{}={wire}", envelope::RESUME_COOKIE)
+            .parse()
+            .unwrap(),
     );
     assert_eq!(
         envelope::resume_target(&cfg, &h, now),
@@ -133,6 +135,9 @@ fn empty_base_consent_cookies_use_root_path() {
     let set = drust::mgmt::mcp_oauth::consent::build_csrf_cookie("x");
     let clear = drust::mgmt::mcp_oauth::consent::clear_csrf_cookie();
     assert!(set.starts_with("drust_mcp_oauth_csrf=x; Path=/;"), "{set}");
-    assert!(clear.starts_with("drust_mcp_oauth_csrf=; Path=/;"), "{clear}");
+    assert!(
+        clear.starts_with("drust_mcp_oauth_csrf=; Path=/;"),
+        "{clear}"
+    );
     assert!(clear.contains("Max-Age=0"), "{clear}");
 }
