@@ -1,4 +1,4 @@
-//! MA0-5 — `GET /oauth/authorize`: the error page before redirect validation,
+//! `GET /oauth/authorize`: the error page before redirect validation,
 //! the 303 back after it, the success redirect to consent with the resume
 //! cookie, and the invariants (writes nothing, takes no lock, absent when
 //! disabled). Every request goes through the production router at ROOT paths;

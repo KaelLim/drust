@@ -31,7 +31,7 @@ pub fn verify_s256(verifier: &str, challenge: &str) -> bool {
 /// S256 challenge = base64url_nopad(SHA-256(verifier)) — always exactly 43
 /// chars of `[A-Za-z0-9-_]`. Non-canonical trailing bits are NOT rejected
 /// here: such a challenge can never equal a computed one, so the code would
-/// simply be unredeemable (MA0-7).
+/// simply be unredeemable.
 pub fn challenge_well_formed(c: &str) -> bool {
     c.len() == 43
         && c.bytes()
@@ -75,7 +75,7 @@ mod tests {
         assert!(!challenge_well_formed(&mb));
     }
 
-    // ─── MA0-7: verifier_well_formed / verify_s256 ───────────────────────────
+    // ─── verifier_well_formed / verify_s256 ──────────────────────────────────
 
     /// RFC 7636 appendix B, copied from the RFC text.
     const RFC_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

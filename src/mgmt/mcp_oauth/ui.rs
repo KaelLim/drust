@@ -1,4 +1,4 @@
-//! MA0-9 — the admin-plane faces of MCP OAuth grants: the settings card
+//! The admin-plane faces of MCP OAuth grants: the settings card
 //! (list + self-service revoke) and the team page's "revoke this member's MCP
 //! connections". Every route here is merged only when
 //! `McpOauthConfig::enabled()`; with MCP off none of this is reachable and
@@ -7,7 +7,7 @@
 //! Revocation narrows access, so — like `cli_token_revoke` on the same page —
 //! there is no CSRF field and no rate limit (SameSite=Lax session cookie).
 //! Nothing here touches the auth cache or the realtime buses: MCP grants are
-//! not cached and an MCP token cannot open SSE or rooms (design §4.6).
+//! not cached and an MCP token cannot open SSE or rooms (store.rs module doc).
 //!
 //! Turning DRUST_MCP off hides these routes but revokes nothing: the grants
 //! stay live in meta and work again when it is turned back on.
@@ -162,7 +162,8 @@ fn internal(e: rusqlite::Error) -> Response {
 /// `GrantOwner::caller` — someone else's id, an unknown id and an
 /// already-revoked id are the SAME 404 (no existence oracle), whatever the
 /// caller's role. `caller` MUST come from the `Extension<AdminId>` extractor,
-/// never from the path (rules: auth-tenancy "MCP grant revoke UI").
+/// never from the path (`.claude/rules/auth-tenancy.md`, "Revoke UI (settings
+/// card, team page)").
 pub async fn settings_revoke(
     State(s): State<MgmtState>,
     Extension(caller): Extension<AdminId>,
@@ -656,7 +657,7 @@ mod tests {
         assert_eq!(back_links, 1, "the error page's back link");
     }
 
-    /// MA0-PLAN §3.11 rule 4: the two existing pages change only by a
+    /// The two existing pages change only by a
     /// flag-gated include appended to the END of an existing line, so with
     /// `mcp_enabled = false` they render byte-identically.
     #[test]

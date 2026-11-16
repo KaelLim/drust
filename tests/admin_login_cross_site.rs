@@ -1,4 +1,4 @@
-//! MA0-1 — `POST /login` refuses a browser-declared cross-site submission.
+//! `POST /login` refuses a browser-declared cross-site submission.
 //!
 //! A cross-site page can make a victim's browser POST `/login` with
 //! credentials the page author holds; `SameSite=Lax` does not stop the

@@ -1,4 +1,4 @@
-//! `POST /oauth/revoke` — RFC 7009, always per GRANT (MA0-PLAN §3.8.6).
+//! `POST /oauth/revoke` — RFC 7009, always per GRANT.
 //!
 //! Not rate-limited: the lookup is a primary-key probe that would already have
 //! run before any budget could be charged, so a budget saves no work, and the
@@ -118,7 +118,8 @@ pub async fn revoke(State(s): State<MgmtState>, headers: HeaderMap, body: Bytes)
 /// Written only when a grant was actually revoked, so random traffic and
 /// repeated revokes never amplify the audit log. The presenter is not strongly
 /// authenticated (an expired or rotated token suffices), so the owner goes in
-/// `extra.admin_id`, not in the top-level actor (MA0-PLAN §3.10).
+/// `extra.admin_id`, not in the top-level actor (unlike the code exchange,
+/// whose presenter passed the full PKCE binding).
 async fn audit_revoke(s: &MgmtState, grant_id: i64, admin_id: i64, started: std::time::Instant) {
     let ms = started.elapsed().as_millis() as u64;
     let mut entry =

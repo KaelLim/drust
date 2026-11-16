@@ -1,4 +1,4 @@
-//! MA0-3 — MCP OAuth revocation primitives, token lookups, the hourly sweep
+//! MCP OAuth revocation primitives, token lookups, the hourly sweep
 //! and `remove_admin`'s explicit grant DELETE. Every test runs on
 //! `fixture(false)` (DRUST_MCP off) unless it says otherwise: none of this is
 //! gated on the switch.
@@ -34,7 +34,8 @@ fn live_grant(conn: &rusqlite::Connection, admin_id: i64) -> i64 {
     )
 }
 
-/// An upload ticket row (MA1b is the real writer; DDL frozen in MA0-2).
+/// An upload ticket row. Nothing in production writes tickets yet; the
+/// future upload feature will, and the DDL is frozen.
 /// `expires` is a datetime modifier.
 fn seed_ticket(conn: &rusqlite::Connection, grant_id: i64, expires: &str) -> String {
     let ticket = tokens::new_token(TokenKind::UploadTicket);

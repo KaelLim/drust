@@ -1,4 +1,4 @@
-//! MA0-8 — the refresh_token grant's state machine (design §4.6, plan §3.8.5b).
+//! The refresh_token grant's state machine.
 //!
 //! Five branches, decided in order inside the caller's transaction, under the meta mutex:
 //!   a) dead / foreign      -> Err(InvalidGrant), writes nothing
@@ -13,11 +13,13 @@
 //! tx rolls back, but the branch is never cut). b) vs d)/e) is exclusive and order-free.
 //!
 //! DELIBERATE deviation from the strict reading of OAuth 2.1 §4.3.1: inside the grace window
-//! siblings coexist and the loser is cut alone (design §9 #8 (a)). Reuse past the grace still
-//! revokes the grant. Do not "tighten" b) into a grant revoke without re-asking the user.
+//! siblings coexist and the loser is cut alone (owner decision, 2026-11-14): several Claude
+//! Code processes on one machine share one credential and race refreshes, and a grant revoke
+//! would log every one of them out. Reuse past the grace still revokes the grant. Do not
+//! "tighten" b) into a grant revoke without re-asking the owner.
 //!
 //! No cache, no bus, no clear_admin_pat: MCP tokens are read from their own tables on every
-//! request (design §4.6, revoke table). Never stringify a rusqlite error into a response,
+//! request and open no SSE or rooms stream (store.rs module doc). Never stringify a rusqlite error into a response,
 //! and never put the presented token or its hash into tracing.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -188,8 +190,9 @@ fn issue(
 }
 
 fn db(e: rusqlite::Error) -> OAuthError {
-    // Kind only, never the SQL text (plan §3.6: no SQL or internal strings). Same shape as
-    // MA0-7's server_error in token.rs: error level, stage, sqlite_error_without_sql.
+    // Kind only, never the SQL text: no SQL or internal string reaches a log line or the
+    // caller. Same shape as server_error in token.rs: error level, stage,
+    // sqlite_error_without_sql.
     tracing::error!(
         stage = "refresh",
         err = %crate::error::sqlite_error_without_sql(&e),

@@ -1,12 +1,12 @@
-//! `POST /oauth/token` (MA0-PLAN §3.8.4): request validation, grant-type
-//! dispatch, the `authorization_code` exchange, and the `refresh_token` grant
-//! (MA0-8; the state machine is `refresh::rotate`).
+//! `POST /oauth/token`: request validation, grant-type dispatch, the
+//! `authorization_code` exchange, and the `refresh_token` grant (the state
+//! machine is `refresh::rotate`).
 //!
 //! Rate limits never read a request that presents a valid credential: an
 //! unknown code charges the per-IP miss budget, a failed check on a code that
 //! exists charges that code's budget, and an issued or replayed code reads no
-//! bucket (MA0-PLAN §4; per-code charges failures only, so whoever holds a code
-//! without its verifier cannot lock the real client out of its exchange).
+//! bucket (per-code charges failures only, so whoever holds a code without its
+//! verifier cannot lock the real client out of its exchange).
 //! Refresh is different by design: an unknown hash charges the per-IP miss
 //! budget; a known one (live or not) charges its grant's per-grant budget
 //! (10 per 60 s) only on the branches `refresh::rotate` bounds, decided from
@@ -44,8 +44,10 @@ const TOKEN_PARAMS: &[&str] = &[
     "scope",
 ];
 
-/// Steps 3-5 of MA0-PLAN §3.8.4, shared with revoke. Steps 1-2 (POST only,
-/// 16 KiB) happen in the router before the handler runs. The credential only
+/// The checks shared with revoke: form content type, no `Authorization`
+/// header, a parsable body, no repeated defined parameter — in that order, so
+/// a non-form request with an `Authorization` header is `invalid_request`.
+/// POST-only and the 16 KiB limit happen in the router before the handler runs. The credential only
 /// ever comes from the form body: no cookie, no query string is read.
 pub(crate) fn preflight(
     headers: &HeaderMap,
@@ -123,8 +125,8 @@ enum Done {
     Replayed(GrantRef, Option<String>),
 }
 
-/// MA0-PLAN §3.8.4 step 7. The parameter checks run in error-priority order
-/// before any lock; `redeem_code` decides the rest in one transaction.
+/// The `authorization_code` grant. The parameter checks run in error-priority
+/// order before any lock; `redeem_code` decides the rest in one transaction.
 async fn grant_authorization_code(s: &MgmtState, ip: &ClientIp, p: &Params) -> Response {
     let started = std::time::Instant::now();
     let Some(client_id) = p.get("client_id") else {
@@ -243,7 +245,7 @@ async fn grant_authorization_code(s: &MgmtState, ip: &ClientIp, p: &Params) -> R
     }
 }
 
-/// MA0-PLAN §3.8.5b. Every failure is `invalid_grant` — the MCP SDK only
+/// The `refresh_token` grant. Every failure is `invalid_grant` — the MCP SDK only
 /// discards its tokens and re-authorizes on that code — except a missing
 /// `refresh_token` (`invalid_request`), an unknown `scope` item
 /// (`invalid_scope`) and an exhausted budget (429). `scope`, `resource` and the
@@ -428,7 +430,8 @@ fn token_success(t: &IssuedTokens) -> Response {
         "token_type": "Bearer",
         "expires_in": t.expires_in,
         "refresh_token": t.refresh_token,
-        // MA0-PLAN §3.8.4 fixes this literal; a grant's scope is always 'mcp'.
+        // Always this literal: a grant's scope is always 'mcp' (`offline_access`
+        // is accepted at authorize, and a refresh token is always issued).
         "scope": "mcp",
     });
     // oauth_error_layer `insert`s no-store too, so the result is ONE header.
@@ -476,7 +479,7 @@ fn admin_email(conn: &rusqlite::Connection, admin_id: i64) -> Option<String> {
 
 /// Written after the meta guard is dropped. A request that passed every check
 /// presented the code and its verifier, so the grant owner is the top-level
-/// actor (MA0-PLAN §3.10). `Miss` and `Invalid` write nothing: the endpoint is
+/// actor. `Miss` and `Invalid` write nothing: the endpoint is
 /// unauthenticated and audit must not be a disk amplifier.
 async fn audit(
     s: &MgmtState,

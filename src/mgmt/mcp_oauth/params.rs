@@ -1,4 +1,4 @@
-//! Form / query parameter parsing for the OAuth endpoints (MA0-PLAN §3.3).
+//! Form / query parameter parsing for the OAuth endpoints.
 //!
 //! The endpoints parse their own bodies instead of using axum's `Form`, so a
 //! repeated key, an empty value and an oversized body each get a controlled

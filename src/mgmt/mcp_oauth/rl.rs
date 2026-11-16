@@ -56,13 +56,14 @@ impl Default for McpOauthLimiters {
     }
 }
 
-/// The ONLY place MA0 turns a caller's address into a limiter key. The address
-/// is the `ClientIp` extractor's (`safety::ip`, the one client-IP derivation in
-/// the tree, which honours `DRUST_TRUSTED_PROXIES` and the TCP peer), so a
-/// handler takes `ClientIp` and never reads a forwarding header itself. A
-/// proxy count that is wrong for the deployment collapses every client into
-/// one key; valid credentials never read the miss bucket, so only genuine
-/// misses would share it.
+/// The ONLY place the MCP OAuth AS turns a caller's address into a limiter
+/// key. The address is the `ClientIp` extractor's (`safety::ip`, the one
+/// client-IP derivation in the tree, which honours `DRUST_TRUSTED_PROXIES` and
+/// the TCP peer), so a handler takes `ClientIp` and never reads a forwarding
+/// header itself. A proxy count set too low for the deployment collapses every
+/// client into one key (valid credentials never read the miss bucket, so only
+/// genuine misses share it); one set too high reads a client-forgeable
+/// `X-Forwarded-For` entry, so a client can choose its own key.
 pub fn client_ip_key(ip: &ClientIp) -> String {
     format!("ip:{}", ip.0)
 }

@@ -1,28 +1,32 @@
-//! MA0-6 — browser consent for the MCP OAuth AS (`GET /oauth/consent`,
+//! Browser consent for the MCP OAuth AS (`GET /oauth/consent`,
 //! `POST /oauth/consent/approve`, `POST /oauth/consent/deny`).
 //!
 //! Rides `protected` (inside `admin_session_layer`), but accepts ONLY the
-//! cookie arm: an admin PAT must never become a 90-day grant (design §4.4
-//! step 9), so `AuthMethod::Pat` and a missing `AuthMethod` both get 403 JSON
+//! cookie arm: an admin PAT must never become a long-lived MCP grant (90 days
+//! by default, up to 365), and revoking the PAT would not reach the grant. So
+//! `AuthMethod::Pat` and a missing `AuthMethod` both get 403 JSON
 //! `MCP_CONSENT_COOKIE_REQUIRED` before anything else is read.
 //!
-//! Browser binding = the resume cookie (set only by `/oauth/authorize`) must be
-//! present and byte-equal to the `req` being shown or approved, plus a
-//! double-submit CSRF token HMAC-bound to `admin_id` and SHA-256(`req`). The
-//! envelope is re-validated on every step: `open` (MAC, expiry), then the
+//! Request binding: the resume cookie (set only by `/oauth/authorize`) must be
+//! present and byte-equal to the `req` being shown or approved. It selects
+//! which request resumes after login; it is not the forgery defence. That is
+//! the double-submit CSRF token, HMAC-bound to `admin_id` and SHA-256(`req`).
+//! The envelope is re-validated on every step: `open` (MAC, expiry), then the
 //! pinned client and `redirect_uri_allowed` — the SAME predicate authorize
 //! uses. Everything the page shows about the client and the return address is
 //! taken from that opened envelope and the pinned client list, never from the
 //! query or a header.
 //!
 //! Cookies are cleared only when the request proves the cookie belongs to this
-//! `req` AND the flow cannot finish with it (approve/deny success, or an
-//! envelope that no longer opens or re-validates). A mismatch or a form-level
-//! error clears nothing: the cookies most likely belong to another, newer tab.
+//! `req` AND the flow cannot finish with it: approve/deny success, an envelope
+//! that no longer opens or re-validates, and on approve a missing admin row or
+//! an internal failure of the grant write. A mismatch or a form-level error
+//! clears nothing: the cookies most likely belong to another, newer tab.
 //!
-//! Not rate-limited: the caller is a signed-in admin (MA0-PLAN §4). Log and
-//! audit hygiene: the plaintext authorization code and the redirect it rides
-//! never reach `tracing` or an audit row (pinned by a source test).
+//! Not rate-limited: the caller is a signed-in admin. Log and audit hygiene:
+//! the plaintext authorization code and the redirect it rides never reach
+//! `tracing` or an audit row (pinned by
+//! `source_pins::plaintext_code_never_reaches_logs_or_audit` in `mod.rs`).
 
 use askama::Template;
 use axum::Extension;
@@ -47,7 +51,7 @@ use crate::mgmt::theme::{Theme, ThemeHint};
 pub const CSRF_COOKIE: &str = "drust_mcp_oauth_csrf";
 const CSRF_DOMAIN: &[u8] = b"drust-mcp-csrf-v1\0";
 const CSRF_MAX_AGE_SECS: u64 = 600;
-/// Envelope (~2 KB base64 at the MA0-5 field limits) + csrf (43) + keys.
+/// Envelope (~2 KB base64 at the authorize field limits) + csrf (43) + keys.
 const FORM_MAX: usize = 8 * 1024;
 
 // ─── CSRF ────────────────────────────────────────────────────────────────────
@@ -187,8 +191,9 @@ impl Fail {
     }
 }
 
-/// `open` -> `find_client` -> `redirect_uri_allowed` (checkpoints 2 and 3 of
-/// design §4.3 rule 7). The SAME `redirect_uri_allowed` as authorize; never a
+/// `open` -> `find_client` -> `redirect_uri_allowed`: the pinned client and its
+/// redirect are re-checked on every consent step, never trusted from the
+/// envelope's MAC alone. The SAME `redirect_uri_allowed` as authorize; never a
 /// second comparison. Callers pass `envelope::now_unix().unwrap_or(u64::MAX)`.
 fn bind(cfg: &McpOauthConfig, wire: &str, now: u64) -> Result<Bound, Fail> {
     let req = envelope::open(cfg, wire, now).map_err(|e| match e {
@@ -225,7 +230,7 @@ fn return_link(cfg: &McpOauthConfig, wire: &str, now: u64) -> Option<String> {
     ))
 }
 
-/// The MA0-5 error page for `f`, plus the cookie clears the CALL SITE decided
+/// The authorize error page for `f`, plus the cookie clears the CALL SITE decided
 /// (the decision depends on where the envelope came from, not only on `f`).
 fn fail_page(
     locale: Locale,
@@ -715,7 +720,10 @@ mod tests {
     }
 
     /// The cli_device input shape (no domain tag, raw req instead of its hash)
-    /// under the same key never validates here.
+    /// never validates here, even MACed under this module's own key. In
+    /// production the two tokens also use different keys
+    /// (`McpOauthConfig::csrf_key` versus cli_device's per-process secret);
+    /// the domain tag is defence in depth.
     #[test]
     fn check_csrf_rejects_a_cli_device_token() {
         use hmac::{Hmac, Mac};

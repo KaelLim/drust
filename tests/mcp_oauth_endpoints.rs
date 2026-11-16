@@ -1,4 +1,4 @@
-//! MA0-4 — the OAuth AS routes: mount rule, metadata, the OAuth error layer,
+//! The OAuth AS routes: mount rule, metadata, the OAuth error layer,
 //! the token-endpoint skeleton and RFC 7009 revoke. Every request goes through
 //! the production router (`MgmtState::with_data_dir`) at ROOT paths: `/drust`
 //! is stripped by the proxy before axum, so only outbound strings carry it.
@@ -131,7 +131,7 @@ async fn grant_with_tokens(fx: &McpOauthFixture) -> (i64, SeededTokens) {
     (gid, t)
 }
 
-// G1 / G2 / G3 (plan §4.2.5).
+// G1: is the grant revoked, and why; G2 / G3: its unrevoked refresh / access rows.
 async fn g1(fx: &McpOauthFixture, gid: i64) -> (bool, Option<String>) {
     fx.meta
         .lock()
@@ -234,7 +234,7 @@ async fn assert_nothing_mounted(app: &axum::Router) {
     }
 }
 
-// ─── §4.2.1 mount rule ───────────────────────────────────────────────────────
+// ─── mount rule ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn disabled_paths_answer_like_a_path_that_never_existed() {
@@ -299,7 +299,8 @@ async fn on_mode_from_env_parts_mounts_the_routes() {
 
 #[tokio::test]
 async fn enabling_does_not_change_unmatched_paths() {
-    // Deliberately NOT GET /oauth/authorize: MA0-5 mounts it.
+    // Deliberately NOT GET /oauth/authorize: it is a mounted route, not an
+    // unmatched path.
     let on = fixture(true).await;
     let off = fixture(false).await;
     for (method, uri) in [
@@ -370,7 +371,7 @@ async fn public_routes_alone_keeps_a_plain_404() {
     );
 }
 
-// ─── §4.2.2 metadata ─────────────────────────────────────────────────────────
+// ─── metadata ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn metadata_is_served_with_the_final_shape() {
@@ -425,7 +426,7 @@ async fn metadata_ignores_host_and_forwarded_headers() {
     assert_eq!(spoofed.2, want);
 }
 
-// ─── §4.2.3 the OAuth error layer ────────────────────────────────────────────
+// ─── the OAuth error layer ───────────────────────────────────────────────────
 
 struct Case {
     name: &'static str,
@@ -759,7 +760,7 @@ async fn token_is_never_read_from_the_query() {
     assert_not_revoked(&fx, gid, "query token").await;
 }
 
-// ─── §4.2.4 token skeleton ───────────────────────────────────────────────────
+// ─── token skeleton ──────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn missing_grant_type_is_invalid_request() {
@@ -796,7 +797,7 @@ async fn unknown_grant_types_are_unsupported() {
     }
 }
 
-/// The refresh grant is dispatched (MA0-8): a malformed refresh token is
+/// The refresh grant is dispatched: a malformed refresh token is
 /// `invalid_grant`, no longer `unsupported_grant_type`. Rotation, siblings and
 /// reuse are tested in `mcp_oauth_refresh.rs`; the code exchange in
 /// `mcp_oauth_token_code.rs`.
@@ -838,8 +839,8 @@ async fn a_repeated_resource_is_invalid_request() {
 
 /// Every refusal the token endpoint can make without a lookup answers while
 /// the meta mutex is held elsewhere: grant-type dispatch, the refresh grant's
-/// missing token, scope, resource and token-shape checks (MA0-8 runs these
-/// before any lock or budget; a well-formed refresh token does take the lock).
+/// missing token, scope, resource and token-shape checks (these run before
+/// any lock or budget; a well-formed refresh token does take the lock).
 #[tokio::test]
 async fn token_refusals_before_the_lookup_never_take_the_meta_lock() {
     let fx = fixture(true).await;
@@ -864,7 +865,7 @@ async fn token_refusals_before_the_lookup_never_take_the_meta_lock() {
     }
 }
 
-// ─── §4.2.5 revoke ───────────────────────────────────────────────────────────
+// ─── revoke ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn revoking_an_access_token_revokes_the_whole_grant() {

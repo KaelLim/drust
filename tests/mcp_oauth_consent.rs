@@ -1,4 +1,4 @@
-//! MA0-6 — the consent page, approve and deny: cookie-only (an admin PAT is
+//! The consent page, approve and deny: cookie-only (an admin PAT is
 //! refused), browser binding (resume cookie == req), double-submit CSRF bound
 //! to the admin and the request, re-validation of the pinned client and
 //! redirect, the cookie-clearing rules, the page's content and headers, and
@@ -287,7 +287,7 @@ async fn approve_without_state_has_no_state_key() {
     assert_eq!(query_keys(&loc), ["code", "iss"]);
 }
 
-/// Pins today's behaviour (MA0-PLAN §3.8.7's abandoned-grant sweep is the
+/// Pins today's behaviour (the sweep's abandoned-grant rule is the
 /// counterpart): no idempotence, no UNIQUE — a double click makes two grants.
 #[tokio::test]
 async fn double_approve_of_one_envelope_creates_two_grants() {
@@ -537,7 +537,7 @@ async fn duplicate_req_or_csrf_is_refused() {
 
 /// MAC-valid envelopes that fail the pinned check (seal only checks field
 /// lengths): a look-alike host, userinfo, an unpinned client. Strings from the
-/// MA0-5 redirect corpus, so authorize and approve share one predicate.
+/// authorize redirect corpus, so authorize and approve share one predicate.
 #[tokio::test]
 async fn approve_rechecks_client_and_redirect() {
     let (fx, session) = signed_in().await;

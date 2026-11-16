@@ -1,4 +1,4 @@
-//! MA0-9 — the admin-plane faces of MCP OAuth grants: the settings card's
+//! The admin-plane faces of MCP OAuth grants: the settings card's
 //! per-row revoke and revoke-all, and the team page's
 //! `DELETE /admin/team/{id}/mcp-grants`. Every request goes through the
 //! production router at ROOT paths; only outbound strings (`Location`) carry

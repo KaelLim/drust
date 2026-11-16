@@ -1,6 +1,6 @@
-//! `redirect_uri` validation for `GET /oauth/authorize` (MA0-PLAN §3.8.2).
+//! `redirect_uri` validation for `GET /oauth/authorize`.
 //!
-//! This file is the review surface of MA0-5. It deliberately never runs the
+//! This file is the review surface of the redirect rule. It deliberately never runs the
 //! input through the `url` crate's parser outside its tests: WHATWG parsing
 //! lower-cases hosts, resolves dot-segments, rewrites numeric IPv4 and drops
 //! an explicit default port, so a parse-then-compare check would accept
@@ -17,7 +17,7 @@ pub const MAX_REDIRECT_URI_BYTES: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RedirectTarget {
     /// The validated input, byte for byte — never a re-serialised form. The
-    /// consent approval stores it in `codes.redirect_uri` (MA0-6), and the
+    /// consent approval stores it in `codes.redirect_uri`, and the
     /// token endpoint compares the client's resent string against it.
     pub raw: String,
     /// `"localhost"` or `"127.0.0.1"` (becomes `grants.redirect_host`).

@@ -1,4 +1,5 @@
-//! Resume envelope and resume cookie (MA0-PLAN §3.5.2, §3.5.3).
+//! Resume envelope and resume cookie: the signed authorize request that the
+//! consent page and a resumed login carry.
 //!
 //! `GET /oauth/authorize` seals the validated request into an HMAC envelope
 //! and sends it both as the consent page's `req` query value and as the
@@ -23,11 +24,12 @@
 //! a `Strict` cookie does not ride, so the consent flow would break after
 //! sign-in (the session cookie is Lax for the same reason).
 //!
-//! The resume cookie is login continuation, NOT a CSRF or browser-binding
+//! The resume cookie selects which request resumes after login, and consent
+//! requires it to equal the `req` it shows or approves. It is NOT the CSRF
 //! defence: anyone who can steer a browser into the consent page with a given
 //! `req` can first steer it through authorize. Forged approvals are stopped by
-//! the consent CSRF token (MA0-6), which must never be dropped on the strength
-//! of this cookie.
+//! the consent CSRF token, which must never be dropped on the strength of this
+//! cookie.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -262,7 +264,8 @@ pub fn read_resume_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 /// `None` when the system clock reads before the epoch. Seal side
-/// (authorize): `None` -> 303 `server_error`. Open side (MA0-6): pass
+/// (authorize): `None` -> 303 `server_error`. Open side (consent, login
+/// resume): pass
 /// `now_unix().unwrap_or(u64::MAX)`, so every MAC-valid envelope opens as
 /// `Expired { req }` — fail closed, redirect still trustworthy. Never map a
 /// clock failure to 0: `open(.., 0)` would treat every envelope as unexpired.
@@ -273,7 +276,7 @@ pub fn now_unix() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Where a successful admin login goes next (MA0-6).
+/// Where a successful admin login goes next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResumeDecision {
     /// No in-flight MCP authorization: the usual landing page.

@@ -1,4 +1,4 @@
-//! `GET /oauth/authorize` (MA0-PLAN §3.8.3, §3.6).
+//! `GET /oauth/authorize`: validates the request and hands it to the consent page.
 //!
 //! Writes nothing, takes no lock, is not rate-limited and writes no audit row:
 //! the whole cost is parameter checks, one HMAC and one `Set-Cookie`.
@@ -7,7 +7,7 @@
 //! failure is an HTML error page (400, no `Location`, no `Set-Cookie`) — an
 //! unvalidated redirect must never be followed. After that, every failure is a
 //! 303 back to the validated `redirect_uri` with `error`, an ASCII
-//! `error_description`, `state` (only when sent) and `iss`. Mounted OUTSIDE
+//! `error_description`, `state` (only when sent and at most 512 bytes) and `iss`. Mounted OUTSIDE
 //! `oauth_error_layer`, which would rewrite both shapes into OAuth JSON.
 //!
 //! `prompt` is always ignored (drust is not an OpenID provider; consent is
@@ -38,7 +38,7 @@ use crate::mgmt::theme::{Theme, ThemeHint};
 /// The whole query string, checked before parsing.
 pub const MAX_QUERY_BYTES: usize = 4096;
 
-/// The `error` values authorize (and MA0-6's consent deny) send back.
+/// The `error` values authorize (and consent's deny) send back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthzErrorCode {
     InvalidRequest,
@@ -115,14 +115,14 @@ pub fn consent_location(wire: &str) -> String {
     format!("{}?req={enc}", crate::base_path::base("/oauth/consent"))
 }
 
-/// Which error page. MA0-6 adds variants (and their `code()` strings and
-/// template branches); it never renames these.
+/// Which error page. New variants come with their `code()` strings and
+/// template branches; existing ones are never renamed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
     RequestInvalid,
     ClientUnknown,
     RedirectRejected,
-    // MA0-6 consent (`consent.rs` maps its `Fail` onto these).
+    // Consent (`consent.rs` maps its `Fail` onto these).
     ConsentNoRequest,
     ConsentMalformed,
     ConsentBadMac,
@@ -243,7 +243,8 @@ pub(crate) enum Decision {
     Proceed(AuthzRequest),
 }
 
-/// MA0-PLAN §3.8.3 steps 1-9. Pure: no log, no clock, no I/O.
+/// Every check, in error-priority order: query size, `client_id`, `redirect_uri`,
+/// then the checks that answer with a redirect. Pure: no log, no clock, no I/O.
 pub(crate) fn evaluate(cfg: &McpOauthConfig, raw_query: Option<&str>) -> Decision {
     let page = |kind, reason, received_redirect, pinned| Decision::Page {
         kind,
@@ -697,7 +698,7 @@ mod tests {
     }
 
     /// The one scope-item rule, shared by authorize step 6 and the refresh
-    /// grant (MA0-8): space-separated, empty items skipped, each `mcp` or
+    /// grant: space-separated, empty items skipped, each `mcp` or
     /// `offline_access`, case-sensitive.
     #[test]
     fn scope_items_ok_table() {

@@ -1,5 +1,5 @@
 //! Pinned OAuth clients. drust accepts exactly the clients listed here; there
-//! is no dynamic registration and no live CIMD fetch (MA3).
+//! is no dynamic registration and no live CIMD fetch.
 
 pub struct KnownClient {
     pub client_id: &'static str,
@@ -9,9 +9,10 @@ pub struct KnownClient {
     pub pinned_on: &'static str,
 }
 
-/// Pinned copy of Claude Code's client ID metadata document (no live fetch
-/// until MA3). Release checklist: re-fetch `source_url` and compare every
-/// release (design §4.3).
+/// Pinned copy of Claude Code's client ID metadata document (never fetched at
+/// runtime). Re-fetch `source_url` and compare at every release
+/// (`.claude/rules/build-deploy.md`, per-release checklist item 7): a stale pin
+/// shows up only as users stuck on the authorize error page.
 pub const KNOWN_CLIENTS: &[KnownClient] = &[KnownClient {
     client_id: "https://claude.ai/oauth/claude-code-client-metadata",
     display_name: "Claude Code",

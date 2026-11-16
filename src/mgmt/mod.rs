@@ -14,8 +14,8 @@ pub mod frame_guard;
 pub mod functions_admin;
 pub mod i18n;
 pub mod locale_layer;
-/// MA0 — the MCP OAuth authorization server (config, token primitives, limiters).
-/// Mounted only when `DRUST_MCP=on` resolves to enabled.
+/// The MCP OAuth authorization server (config, token primitives, limiters).
+/// Mounted only when `DRUST_MCP` resolves to enabled.
 pub mod mcp_oauth;
 pub mod metrics;
 pub mod oauth_login;

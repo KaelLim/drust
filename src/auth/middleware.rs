@@ -66,7 +66,7 @@ impl AuthCtx {
 #[derive(Clone, Debug)]
 pub struct AdminId(pub i64);
 
-/// How `admin_session_layer` authenticated this request (MA0-6). Inserted next to
+/// How `admin_session_layer` authenticated this request. Inserted next to
 /// `AdminId` on BOTH arms, so a handler can tell a browser session from an admin PAT.
 ///
 /// Deliberately has NO `Default`: the MCP consent handlers read
@@ -319,7 +319,7 @@ mod ctx_tests {
         assert!(clear.contains("SameSite=Lax"), "got: {clear}");
     }
 
-    // ─── AuthMethod (MA0-6): which arm of admin_session_layer let a request in.
+    // ─── AuthMethod: which arm of admin_session_layer let a request in.
 
     /// meta with the bootstrap admin (id 1), one live session and one active
     /// UI PAT. Returns (state, "drust_session=<v>", pat, tempdir).

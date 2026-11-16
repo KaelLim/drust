@@ -17,7 +17,8 @@ pub struct SweepCounts {
     pub refresh: usize,
     pub tickets: usize,
     pub grants: usize,
-    /// Grants that can never be redeemed any more (MA0-PLAN §3.8.7).
+    /// Grants that can never be redeemed any more (an approval whose code
+    /// expired unused).
     pub abandoned: usize,
     pub orphans: usize,
 }
@@ -46,9 +47,10 @@ const SQL_TICKETS: &str = "DELETE FROM _mcp_upload_tickets WHERE expires_at < da
 const SQL_GRANTS: &str = "\
 DELETE FROM _mcp_oauth_grants \
  WHERE COALESCE(revoked_at, MIN(idle_expires_at, absolute_expires_at)) < datetime('now', '-30 days')";
-// MA0-PLAN §3.8.7: a grant that can never be redeemed any more — approve built
-// it, but its code already expired (deleted above, same tx) and it never issued
-// a token. Double-click approvals and cancelled logins leave these behind.
+// A grant that can never be redeemed any more — approve built it, but its code
+// already expired (deleted above, same tx), it has no refresh row left and it
+// was never used (`last_used_at`, which the code exchange sets). Double-click
+// approvals and cancelled logins leave these behind.
 const SQL_ABANDONED: &str = "\
 DELETE FROM _mcp_oauth_grants \
  WHERE kind = 'authorization_code' \

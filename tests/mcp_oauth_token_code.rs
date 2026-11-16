@@ -1,4 +1,4 @@
-//! MA0-7 — `POST /oauth/token` with `grant_type=authorization_code`: the store
+//! `POST /oauth/token` with `grant_type=authorization_code`: the store
 //! layer (`redeem_code`, `issue_token_pair`) called directly on the fixture's
 //! meta connection, and the HTTP exchange through the production router at
 //! ROOT paths (`/oauth/token`, `/admin/team/{id}`; only outbound strings carry
@@ -419,7 +419,7 @@ async fn an_exchanged_grant_is_not_swept_as_abandoned() {
 
 /// R5: one grant has exactly one code, so revoking the grant on a replay is
 /// exactly "revoke every token issued from that code". A protective test: it
-/// holds since MA0-6 and pins the shape `code_replay` relies on.
+/// holds since consent approval was written and pins the shape `code_replay` relies on.
 #[tokio::test]
 async fn each_grant_has_exactly_one_code() {
     let fx = fixture(true).await;
@@ -1561,9 +1561,9 @@ async fn token_exchange_is_unmounted_when_disabled() {
 
 // ─── the whole flow, from signed out ─────────────────────────────────────────
 
-/// Design §7.2: not signed in → authorize → consent sends to login →
+/// Not signed in → authorize → consent sends to login →
 /// password login with the resume cookie → back to consent → approve → code →
-/// token. MA0-6's flow test stops at the code and `obtain_tokens` starts
+/// token. The consent flow test stops at the code and `obtain_tokens` starts
 /// signed in; this is the one test that walks the whole chain.
 #[tokio::test]
 async fn signed_out_authorize_to_token_end_to_end() {
@@ -1635,7 +1635,7 @@ async fn signed_out_authorize_to_token_end_to_end() {
     assert_eq!(grant.admin_id(), fx.owner_id);
 }
 
-/// `obtain_tokens` (MA0-8 starts from it): signed in → tokens, grant id
+/// `obtain_tokens` (the refresh tests start from it): signed in → tokens, grant id
 /// resolved through the access token.
 #[tokio::test]
 async fn obtain_tokens_yields_a_live_pair() {

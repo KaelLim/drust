@@ -1,4 +1,4 @@
-//! MA0-8 — `POST /oauth/token` with `grant_type=refresh_token`: rotation, the
+//! `POST /oauth/token` with `grant_type=refresh_token`: rotation, the
 //! in-grace sibling, the superseded-sibling branch cut, reuse detection past the
 //! grace, and the per-grant budget. Every request goes through the production
 //! router at ROOT paths (`/oauth/token`, `/oauth/revoke`, `/admin/team/{id}`);

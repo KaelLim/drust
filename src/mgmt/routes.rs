@@ -106,11 +106,12 @@ pub struct MgmtState {
     /// `soft_delete_tenant` can invalidate the tenant's schedule-index entry
     /// (and the admin `⏰ _cron` page can reach the ops cores).
     pub cron: Arc<crate::cron::CronState>,
-    /// MA0 — MCP OAuth AS configuration (`DRUST_MCP`, `DRUST_PUBLIC_URL`, four TTL knobs).
+    /// MCP OAuth AS configuration (`DRUST_MCP`, `DRUST_PUBLIC_URL`, four TTL knobs).
     /// Every reader checks `enabled()` first; while disabled nothing reads it and no
-    /// route is mounted, which is what keeps a DRUST_MCP-unset host byte-identical.
+    /// route is mounted, which is why a DRUST_MCP-unset host gains no route or page
+    /// (the exceptions are listed in the `mcp_oauth` module doc).
     pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
-    /// MA0 — in-memory limiters for `/oauth/token` (miss-only per-IP, per-code,
+    /// In-memory limiters for `/oauth/token` (miss-only per-IP, per-code,
     /// per-grant); `/oauth/revoke` reads no budget. Cleanup task spawned by main.rs
     /// only when enabled.
     pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
@@ -203,14 +204,14 @@ struct SettingsPage {
     /// v1.44 (T7) — caller's active labeled CLI PATs (device-flow / `drust auth
     /// login`), listed with a per-row revoke form.
     cli_tokens: Vec<CliTokenRow>,
-    /// MA0-9 — `McpOauthConfig::enabled()`. False ⇒ the "MCP connections"
+    /// `McpOauthConfig::enabled()`. False ⇒ the "MCP connections"
     /// card and its script (both `{% if mcp_enabled %}` partials) emit nothing,
     /// so the page is byte-identical to a build without MCP OAuth.
     mcp_enabled: bool,
-    /// MA0-9 — the caller's live MCP OAuth grants; always empty when disabled
+    /// The caller's live MCP OAuth grants; always empty when disabled
     /// (`settings_page` does not even query the table then).
     mcp_grants: Vec<crate::mgmt::mcp_oauth::ui::McpGrantRow>,
-    /// MA0-9 — the list query failed. The card then says so and STILL offers
+    /// The list query failed. The card then says so and STILL offers
     /// "Revoke all" (which finds live ids itself), instead of an "empty" card
     /// that reads as "nothing to revoke" during an incident.
     mcp_grants_error: bool,
@@ -265,8 +266,8 @@ async fn settings_page(
         .unwrap_or_default()
     };
 
-    // MA0-9 — read the grants only when MCP OAuth is on; off ⇒ no query, no
-    // new bytes (MA0-PLAN §3.11 rule 2).
+    // Read the grants only when MCP OAuth is on; off ⇒ no query, no new
+    // bytes (the page stays byte-identical with MCP off).
     let mcp_enabled = state.mcp_oauth.enabled();
     let (mcp_grants, mcp_grants_error) = if mcp_enabled {
         let conn = state.meta.lock().await;
@@ -484,7 +485,7 @@ async fn login_page(
     )
 }
 
-/// MA0-1 — login CSRF guard (W3C Fetch Metadata). True only when a browser
+/// Login CSRF guard (W3C Fetch Metadata). True only when a browser
 /// has declared this request `Sec-Fetch-Site: cross-site`.
 ///
 /// Why this shape and not a CSRF field or an Origin check:
@@ -493,7 +494,7 @@ async fn login_page(
 ///   can sign the victim's browser in as an account whose credentials the page
 ///   author holds (any admin or member on this host).
 /// - A required form field would break the trusted automation that POSTs
-///   `/login` directly (eval harness, ~33 test files). Those clients send no
+///   `/login` directly (eval harness, dozens of test files). Those clients send no
 ///   Fetch Metadata, so they are untouched here.
 /// - `Origin` vs `DRUST_PUBLIC_URL` would refuse operators who browse the admin
 ///   UI by an internal hostname, and the proxy rewrites `Host`.
@@ -541,7 +542,7 @@ async fn login_submit(
     Form(form): Form<LoginForm>,
 ) -> Response {
     let op = "POST /login";
-    // MA0-1 — refuse a browser-declared cross-site POST FIRST: before the
+    // Refuse a browser-declared cross-site POST FIRST: before the
     // per-IP limiter (a cross-site page must not spend the victim IP's 5/min
     // login budget), before the meta lock, before argon2. Nothing below this
     // line runs for such a request, so no session row, no cookie.
@@ -620,7 +621,7 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    // MA0-6: an in-flight MCP authorization resumes at the consent page. Read
+    // An in-flight MCP authorization resumes at the consent page. Read
     // only here, after the cross-site refusal and the password check. Disabled
     // (`DRUST_MCP` not on) => ResumeDecision::None without reading any cookie,
     // so this response stays byte-identical.
@@ -1002,7 +1003,7 @@ impl MgmtState {
                 axum::routing::delete(crate::mgmt::admin_pat::cli_token_logout),
             )
             .with_state(self.clone());
-        // MA0 — OAuth AS, unauthenticated half: metadata, authorize, token,
+        // MCP OAuth AS, unauthenticated half: metadata, authorize, token,
         // revoke (`mcp_oauth::public_routes`). The consent half (`/oauth/consent`,
         // `/oauth/consent/approve`, `/oauth/consent/deny`) needs a session and is
         // merged into `protected` below. Both merge ONLY when DRUST_MCP resolves to
@@ -1532,7 +1533,7 @@ impl MgmtState {
                 axum::routing::post(super::admin_pat::cli_token_revoke),
             )
             .with_state(settings_state);
-        // MA0-9 — MCP grant revoke routes, mounted only when MCP OAuth is on.
+        // MCP grant revoke routes, mounted only when MCP OAuth is on.
         let settings_router = if self.mcp_oauth.enabled() {
             settings_router.merge(crate::mgmt::mcp_oauth::settings_routes(&self))
         } else {
@@ -1574,7 +1575,7 @@ impl MgmtState {
                 crate::mgmt::tenant_authz::require_sees_team_layer,
             ))
             .with_state(self.clone());
-        // MA0-9 — "revoke this admin's MCP connections", mounted only when MCP
+        // "Revoke this admin's MCP connections", mounted only when MCP
         // OAuth is on. Merged after `.with_state` (a `with_state` router cannot
         // join a `Router<MgmtState>`); `require_sees_team_layer` gates only GET
         // (tenant_authz.rs), and the handler carries the remove_admin matrix.
@@ -1635,7 +1636,7 @@ impl MgmtState {
             .merge(settings_router)
             .merge(team_router)
             .merge(cli_device_router);
-        // MA0-6: consent needs AdminId + AuthMethod + the inner theme layer, so it
+        // Consent needs AdminId + AuthMethod + the inner theme layer, so it
         // rides `protected`; not merged at all when MCP OAuth is disabled.
         let protected_routes = if self.mcp_oauth.enabled() {
             protected_routes.merge(crate::mgmt::mcp_oauth::session_routes(&self))

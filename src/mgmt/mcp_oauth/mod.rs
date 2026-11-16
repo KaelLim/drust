@@ -1,6 +1,8 @@
 //! MCP OAuth authorization server. Routes are mounted only when
-//! `config::McpOauthConfig::enabled()`; with DRUST_MCP unset every HTTP response is
-//! byte-identical to a build without this module. Tables:
+//! `config::McpOauthConfig::enabled()`; with MCP off no route or page changes.
+//! The exceptions with MCP off: the admin CHANGELOG viewer shows these release
+//! notes, the `admin.team.remove` audit row gains `revoked_mcp_grants` (0), and
+//! `login_submit`'s cross-site refusal is always on. Tables:
 //! `db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`. Release notes: CHANGELOG.md.
 pub mod authorize;
 pub mod clients;
@@ -56,7 +58,7 @@ pub fn public_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
-/// Consent routes (MA0-6), already `with_state`. `MgmtState::with_data_dir`
+/// Consent routes, already `with_state`. `MgmtState::with_data_dir`
 /// merges them into `protected` ONLY when `McpOauthConfig::enabled()`, so they
 /// sit under `admin_session_layer` (`AdminId` + `AuthMethod`), the profile and
 /// inner theme layers, and inside `frame_guard_layers`.
@@ -68,7 +70,7 @@ pub fn session_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
-/// MA0-9 settings-page revoke routes, already `with_state`.
+/// Settings-page revoke routes, already `with_state`.
 /// `MgmtState::with_data_dir` merges them into `settings_router` (after its
 /// `.with_state`) ONLY when `McpOauthConfig::enabled()`, so they sit inside
 /// `protected` (`admin_session_layer`: cookie or `drust_pat_*`).
@@ -85,7 +87,7 @@ pub fn settings_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
-/// MA0-9 team-page revoke route, already `with_state`. Merged into
+/// Team-page revoke route, already `with_state`. Merged into
 /// `team_router` after its `.with_state` (so after `require_sees_team_layer`,
 /// which gates only GET anyway) ONLY when enabled; the authority matrix is
 /// `ui::team_authority`, inside the handler.
@@ -99,8 +101,7 @@ pub fn team_routes(state: &MgmtState) -> Router {
 }
 
 /// en and zh-TW must carry the same keys under every MCP OAuth prefix (build.rs
-/// only checks en). The two later prefixes are empty until MA0-9 and are
-/// checked automatically from then on.
+/// only checks en).
 #[cfg(test)]
 mod i18n_parity {
     use std::collections::BTreeMap;
@@ -144,7 +145,7 @@ mod i18n_parity {
             let z: Vec<_> = zh.keys().filter(|k| k.starts_with(p)).collect();
             assert_eq!(e, z, "en and zh-TW disagree under `{p}`");
         }
-        // Anti-vacuous: MA0-5 ships the error page section.
+        // Anti-vacuous: the error page section must exist.
         assert!(en.keys().any(|k| k.starts_with("mcp_oauth.error.")));
         // No empty translation.
         for (k, v) in zh

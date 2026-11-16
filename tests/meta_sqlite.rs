@@ -22,7 +22,7 @@ fn opens_fresh_db_with_schema() {
     // here. v1.57 added `tenant_cap_requests` (the per-member tenant-cap
     // upgrade-request queue), created by `open_meta` from the same shared const
     // the boot migration uses, so fresh and upgraded databases stay identical.
-    // MA0 added the five `_mcp_*` tables (MCP OAuth AS grants, codes, refresh,
+    // The MCP OAuth AS added the five `_mcp_*` tables (MCP OAuth AS grants, codes, refresh,
     // access, upload tickets), created by `open_meta` from
     // `SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`, the same const the boot migration uses.
     assert_eq!(

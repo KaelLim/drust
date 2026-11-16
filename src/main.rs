@@ -425,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
 
     let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
 
-    // MA0 — MCP OAuth AS config. Reads DRUST_MCP, DRUST_PUBLIC_URL (raw; the global
+    // MCP OAuth AS config. Reads DRUST_MCP, DRUST_PUBLIC_URL (raw; the global
     // `public_url` above is NOT rewritten) and the four DRUST_MCP_OAUTH_* knobs. An
     // unusable value disables MCP with an error line; it never aborts boot.
     let mcp_oauth = Arc::new(drust::mgmt::mcp_oauth::config::McpOauthConfig::from_env());
@@ -510,7 +510,8 @@ async fn main() -> anyhow::Result<()> {
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
     // v1.44 (CLI Phase 2, T1) — hourly reaper for expired device-flow codes.
-    // MA0-3 — the same tick sweeps the MCP OAuth tables (`mcp_oauth::sweep`).
+    // The same tick sweeps the MCP OAuth tables (`mcp_oauth::sweep`); the
+    // first sweep runs one hour after boot, never at boot.
     // Both are unconditional: device codes are independent of Garage, and the
     // MCP sweep runs whether or not DRUST_MCP is on (rows a previous `on`
     // left behind still need clearing). Reaping is best-effort cleanup;

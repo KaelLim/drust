@@ -5,19 +5,23 @@
 //! Every function here runs on the caller's connection or transaction. None of
 //! them locks `meta`, awaits, commits, or writes audit: the handler does
 //! `s.meta.lock().await` -> `unchecked_transaction()` -> call -> `commit()` ->
-//! drop the guard -> audit (MA0-PLAN §3.3).
+//! drop the guard -> audit.
 //!
 //! Revocation is per GRANT and has no post-commit step. That holds only while
 //! all three of these hold:
 //!   1. MCP OAuth tokens never enter `tenant::auth_cache` (or any other cache);
 //!   2. they cannot open SSE or rooms streams;
 //!   3. no MCP request holds a connection or session open past a single
-//!      request — the account MCP endpoint is stateless (no GET stream, no
-//!      rmcp session; design §3.7), and an upload ticket bound to a tus
-//!      session is re-checked on every PATCH (MA1b).
+//!      request.
 //!
-//! A phase that breaks any of them gives every caller of `revoke_mcp_grant`
-//! and `remove_admin` an eviction duty — CLAUDE.md invariants 4 / 5.
+//! Today nothing accepts a `drust_mcpat_` token, so all three hold trivially.
+//! They are conditions the features that will consume these tokens must keep:
+//! the account-level MCP endpoint must stay stateless (no GET stream, no rmcp
+//! session, every request re-authenticated through `find_grant_by_access`),
+//! and an upload bound to a ticket must re-check the ticket and its grant on
+//! every tus PATCH. A feature that breaks any of them gives every caller of
+//! `revoke_mcp_grant` and `remove_admin` an eviction duty — CLAUDE.md
+//! invariants 4 / 5.
 //!
 //! Two lookup strengths. `find_grant_by_access` is AUTHORIZATION strength and
 //! is the only lookup whose `GrantRef` may authorize an MCP call.
@@ -39,7 +43,9 @@ use crate::mgmt::mcp_oauth::redirect::RedirectTarget;
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
 
 /// Stored in `revoke_reason` on the grant and on each refresh row it revokes.
-/// The strings are a contract with the DDL comment (MA0-PLAN §3.1 #9).
+/// The strings are a contract with the `revoke_reason` column comments in the
+/// `_mcp_*` DDL (`db::migrations`), which name this function: rows already
+/// written keep their string, so a variant's string is never changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RevokeReason {
     User,
@@ -79,7 +85,7 @@ pub struct GrantOwner {
 }
 
 impl GrantOwner {
-    /// Self-service: the session's own admin (settings page, MA0-9). Pass the
+    /// Self-service: the session's own admin (settings page). Pass the
     /// request's `Extension<AdminId>` only.
     pub fn caller(caller: &AdminId) -> Self {
         Self {
@@ -97,7 +103,7 @@ impl GrantOwner {
         }
     }
 
-    /// The team page (MA0-9): an admin acting on another admin's grants. Only
+    /// The team page: an admin acting on another admin's grants. Only
     /// `ui::team_authority` mints the proof, after the `remove_admin` matrix.
     pub fn managed(authority: &super::ui::TeamAuthority) -> Self {
         Self {
@@ -110,9 +116,10 @@ impl GrantOwner {
 /// Only `store.rs` constructs this (private fields). It proves the caller
 /// presented a genuine token of this grant; how strong that proof is depends
 /// on the lookup that built it. Only a `GrantRef` from `find_grant_by_access`
-/// may authorize an MCP call (MA1a). Every other one — `find_grant_for_revocation`,
-/// `find_grant_by_refresh`, MA0-7 replay, MA0-8 reuse — may only feed
-/// `GrantOwner::holder`. MA0-8's (`RefreshState::holder`) exists only for a
+/// may authorize an MCP call (once an endpoint accepts MCP access tokens). Every
+/// other one — from `find_grant_for_revocation`, `find_grant_by_refresh`, a code
+/// replay or refresh reuse — may only feed `GrantOwner::holder`. Refresh
+/// reuse's (`RefreshState::holder`) exists only for a
 /// genuine, unrevoked, already-rotated refresh of a live grant whose admin
 /// still matches.
 #[derive(Debug)]
@@ -156,7 +163,8 @@ const SQL_REVOKE_ACCESS: &str = "\
 UPDATE _mcp_oauth_access SET revoked_at = ?2 \
  WHERE grant_id = ?1 AND revoked_at IS NULL";
 
-// codes has no revoked_at (MA0-PLAN §5 #25): a deleted code redeems as a miss.
+// codes has no revoked_at: a revoke deletes the unredeemed codes, and a deleted
+// code redeems as a miss.
 // Redeemed codes stay until the sweep: the replay check needs them while live.
 const SQL_DELETE_UNREDEEMED_CODES: &str = "\
 DELETE FROM _mcp_oauth_codes WHERE grant_id = ?1 AND redeemed_at IS NULL";
@@ -172,7 +180,7 @@ SELECT id FROM _mcp_oauth_grants WHERE admin_id = ?1 AND revoked_at IS NULL ORDE
 // not revoked, idle and absolute not passed; admins row matches BOTH id and
 // created_at (rowid-recycle layer 3 — second precision, see remove_admin).
 // Rotation state is NOT checked on refresh: that decision (with its grace
-// window) belongs to refresh::rotate alone (MA0-8); find_grant_by_refresh is a
+// window) belongs to refresh::rotate alone; find_grant_by_refresh is a
 // validity probe and never decides whether to issue tokens.
 const SQL_FIND_BY_ACCESS: &str = "\
 SELECT g.id, g.admin_id \
@@ -225,7 +233,8 @@ pub fn revoke_mcp_grant(
     if owner.pinned_grant.is_some_and(|p| p != grant_id) {
         return Ok(RevokedGrant::NotFound);
     }
-    // One SQLite-generated instant for all five statements (MA0-PLAN §3.2 format).
+    // One SQLite-generated instant for all five statements (datetime() text, see
+    // the DDL header).
     let now: String = tx.query_row("SELECT datetime('now')", [], |r| r.get(0))?;
     let hit = tx.execute(
         SQL_REVOKE_GRANT,
@@ -270,7 +279,7 @@ pub fn find_grant_by_refresh(conn: &Connection, token: &str) -> rusqlite::Result
     find(conn, TokenKind::Refresh, SQL_FIND_BY_REFRESH, token)
 }
 
-/// `/oauth/revoke` only (MA0-4 `lookup_for_revoke`). Accepts an access or a
+/// `/oauth/revoke` only (`lookup_for_revoke`). Accepts an access or a
 /// refresh by prefix; any other shape is `None` without touching SQL.
 pub fn find_grant_for_revocation(
     conn: &Connection,
@@ -348,7 +357,7 @@ INSERT INTO _mcp_oauth_codes \
        (code_hash, grant_id, client_id, redirect_uri, code_challenge, resource, expires_at) \
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+300 seconds'))";
 
-/// MA0-6 consent approval: one grant (`kind = 'authorization_code'`, scope
+/// Consent approval: one grant (`kind = 'authorization_code'`, scope
 /// `mcp`, absolute = now + max_days, idle = MIN(now + idle_days, absolute))
 /// and its one code (hash only, 300 s), in the caller's transaction. The admins
 /// row is re-read inside the INSERT; no row => `Err(QueryReturnedNoRows)` and
@@ -392,13 +401,13 @@ pub fn insert_grant_and_code(
     Ok(NewCode { grant_id, code })
 }
 
-// ─── Code redemption and token issuance (MA0-7; issue_token_pair also MA0-8) ──
+// ─── Code redemption and token issuance (issue_token_pair also serves refresh) ──
 
 /// One read for the whole decision: the code, its grant, and whether the admin
 /// row still matches BOTH id and created_at. The INNER JOIN means a code whose
 /// grant row is gone (FK off) is a Miss: a child row never vouches for itself.
 /// Booleans are computed in SQL, so every time comparison uses SQLite's
-/// `datetime('now')` (MA0-PLAN §3.2).
+/// `datetime('now')` (datetime() text, see the DDL header).
 const REDEEM_SELECT: &str = "\
 SELECT c.grant_id,
        g.admin_id,
@@ -428,10 +437,10 @@ UPDATE _mcp_oauth_codes
    AND expires_at > datetime('now')";
 
 /// Root or child refresh. expires_at = the grant's MIN(idle, absolute) as it
-/// stands NOW (MA0-8 slides idle BEFORE calling issue_token_pair). A parent must
+/// stands NOW (refresh rotation slides idle BEFORE calling issue_token_pair). A parent must
 /// belong to the same grant (ids are AUTOINCREMENT but never trusted alone).
 /// Parent LIVENESS (revoked / rotated / superseded) is NOT checked here: that is
-/// the caller's job (MA0-8 `refresh::rotate`).
+/// the caller's job (`refresh::rotate`).
 const ISSUE_REFRESH: &str = "\
 INSERT INTO _mcp_oauth_refresh (grant_id, parent_id, token_hash, expires_at)
 SELECT g.id, ?2, ?3, MIN(g.idle_expires_at, g.absolute_expires_at)
@@ -557,7 +566,7 @@ pub enum RedeemOutcome {
     },
 }
 
-/// MA0-PLAN §3.8.4 step 7. One read, then every check in a fixed order (code
+/// The code exchange's decision. One read, then every check in a fixed order (code
 /// live → grant live and admin id + created_at → client_id → redirect_uri byte
 /// for byte → resource → verifier shape → S256 in constant time); ANY failure
 /// returns `Invalid` before anything is written, so a wrong verifier never
@@ -589,7 +598,7 @@ pub fn redeem_code(
         return Ok(RedeemOutcome::Miss);
     };
 
-    // ---- every check, in the §3.8.4 order; any failure returns BEFORE any write ----
+    // ---- every check, in the order above; any failure returns BEFORE any write ----
     if !row.code_live || !row.grant_live || !row.admin_ok {
         return Ok(RedeemOutcome::Invalid);
     }
@@ -636,13 +645,13 @@ pub fn redeem_code(
     Ok(RedeemOutcome::Issued { grant, tokens })
 }
 
-// ─── Refresh rotation (MA0-8; the state machine is refresh::rotate) ──────────
+// ─── Refresh rotation (the state machine is refresh::rotate) ─────────────────
 
-/// MA0-8. Revokes ONE refresh and the access rows whose refresh_id is it; stamps
+/// Revokes ONE refresh and the access rows whose refresh_id is it; stamps
 /// grants.sibling_rejected_at; the grant itself stays live. Returns the number of refresh
 /// rows revoked (0 or 1). No GrantOwner: the only caller (refresh::rotate) passes ids read
 /// from the presented token's own row in the same transaction — never from request input.
-/// pub(crate) on purpose (R8): a handler outside this crate's MCP module must not be able to
+/// pub(crate) on purpose: a handler outside this crate's MCP module must not be able to
 /// call it with ids taken from a request.
 #[must_use = "0 means the branch was already revoked; the caller reports branch_revoked from it"]
 pub(crate) fn revoke_mcp_refresh_branch(
@@ -704,7 +713,7 @@ pub(crate) struct RefreshState {
 /// is `None`: a child row never vouches for itself. The admins match is a
 /// column (`admin_ok`) because `holder` depends on it; a mismatch is refused
 /// by branch a). Booleans are computed in SQL so every time comparison uses
-/// SQLite's `datetime('now')` (MA0-PLAN §3.2).
+/// SQLite's `datetime('now')` (datetime() text, see the DDL header).
 const LOAD_REFRESH_FOR_ROTATE: &str = "\
 SELECT r.id,
        r.grant_id,
@@ -777,7 +786,7 @@ fn find(
     sql: &str,
     token: &str,
 ) -> rusqlite::Result<Option<GrantRef>> {
-    // Wrong prefix or length: answer without touching SQL (MA0-PLAN §3.5.1).
+    // Wrong prefix or length: answer without touching SQL.
     if !tokens::looks_like(kind, token) {
         return Ok(None);
     }
@@ -878,7 +887,7 @@ mod tests {
         );
     }
 
-    // ─── MA0-8: branch revoke and the rotate snapshot ────────────────────────
+    // ─── branch revoke and the rotate snapshot ───────────────────────────────
 
     fn cfg() -> McpOauthConfig {
         McpOauthConfig::for_tests("https://drust.test")
@@ -994,7 +1003,7 @@ mod tests {
         assert_eq!(grant_marks(&conn, g1), (None, None), "G1 not stamped");
     }
 
-    /// S3. The snapshot's `holder` (the only GrantRef MA0-8 can hand to
+    /// S3. The snapshot's `holder` (the only GrantRef refresh rotation can hand to
     /// GrantOwner::holder) exists only for a rotated, unsuperseded, live
     /// refresh of a live grant whose admin still matches.
     #[test]

@@ -84,7 +84,7 @@ struct AdminTeamPage {
     mascot_json_static: String,
     mascot_json_light: String,
     mascot_json_dark: String,
-    /// MA0-9 — `McpOauthConfig::enabled()`. False ⇒ the "Revoke MCP" button and
+    /// `McpOauthConfig::enabled()`. False ⇒ the "Revoke MCP" button and
     /// its script (both `{% if mcp_enabled %}` partials) emit nothing, so the
     /// page is byte-identical to a build without MCP OAuth.
     mcp_enabled: bool,
@@ -741,7 +741,7 @@ pub async fn change_role(
 /// Invariant: removing the last Owner is rejected with 409 LAST_OWNER.
 /// Enforced TOCTOU-safely inside an `unchecked_transaction`.
 /// Admin sessions are deleted manually; `_admin_tokens` CASCADE on FK delete.
-/// MCP OAuth grants are deleted explicitly inside the same transaction (MA0-3).
+/// MCP OAuth grants are deleted explicitly inside the same transaction.
 pub async fn remove_admin(
     State(s): State<MgmtState>,
     Path(target_id): Path<i64>,
@@ -888,7 +888,7 @@ pub async fn remove_admin(
                 .into_response();
         }
 
-        // MA0-3 — the removed admin's MCP OAuth grants go with them, explicitly.
+        // The removed admin's MCP OAuth grants go with them, explicitly.
         // Layer 1 is this DELETE, in the same transaction as the admins row.
         // Layer 2 is the FK `ON DELETE CASCADE` on `_mcp_oauth_grants.admin_id`,
         // which only fires on a connection with `PRAGMA foreign_keys = ON`.

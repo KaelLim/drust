@@ -1,4 +1,4 @@
-//! OAuth JSON errors for `/oauth/token` and `/oauth/revoke` (MA0-PLAN §3.6).
+//! OAuth JSON errors for `/oauth/token` and `/oauth/revoke`.
 //!
 //! `OAuthError` is the only way these two routes emit an error as-is: its
 //! response carries the module-private `OAuthErrorMark`, and `oauth_error_layer`

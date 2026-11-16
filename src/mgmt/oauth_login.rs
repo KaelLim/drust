@@ -75,7 +75,7 @@ pub async fn oauth_callback(
     cookies: CookieJar,
     crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
     State(s): State<MgmtState>,
-    // MA0-6: read only for the resume cookie, after the session is created.
+    // Read only for the MCP resume cookie, after the session is created.
     headers: HeaderMap,
 ) -> Response {
     // v1.19.2 — per-IP rate limit. Same shape as tenant oauth_callback.
@@ -198,7 +198,7 @@ pub async fn oauth_callback(
     drop(conn);
     let session_cookie = build_session_cookie(&token, s.session_ttl_days * 86_400);
     audit_oauth_success(&s, &provider, &user.email, admin_id).await;
-    // MA0-6: an in-flight MCP authorization resumes at the consent page (the
+    // An in-flight MCP authorization resumes at the consent page (the
     // Lax resume cookie rides this cross-site top-level GET). Disabled =>
     // ResumeDecision::None without reading any cookie: byte-identical.
     let resume = crate::mgmt::mcp_oauth::envelope::resume_target(

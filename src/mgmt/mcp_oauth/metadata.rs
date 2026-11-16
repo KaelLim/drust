@@ -1,4 +1,4 @@
-//! RFC 8414 authorization-server metadata (MA0-PLAN §3.7, §3.8.1).
+//! RFC 8414 authorization-server metadata (`GET /.well-known/oauth-authorization-server`).
 
 use axum::extract::State;
 use axum::http::{HeaderValue, header};

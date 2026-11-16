@@ -1,5 +1,4 @@
-//! MA0 shared fixtures for the MCP OAuth authorization-server tests
-//! (MA0-PLAN §3.9). Compiled into every harness that declares `mod common;`
+//! Shared fixtures for the MCP OAuth authorization-server tests. Compiled into every harness that declares `mod common;`
 //! (g_admin, g_tenant, g_storage), so: dev-dependencies only, no unused imports.
 
 use std::sync::Arc;
@@ -209,7 +208,7 @@ pub fn seed_code(
     code
 }
 
-// ─── HTTP helpers (MA0-4). Full paths only: this file compiles in three
+// ─── HTTP helpers. Full paths only: this file compiles in three
 // harnesses, and a file-level `use` that only these need would be unused there.
 
 /// Sends one request through the production router.
@@ -276,7 +275,7 @@ pub async fn body_text(resp: axum::http::Response<axum::body::Body>) -> String {
     String::from_utf8(b.to_vec()).unwrap()
 }
 
-// ─── Authorize helpers (MA0-5). Full paths only, same reason as above.
+// ─── Authorize helpers. Full paths only, same reason as above.
 
 /// `(verifier, challenge)` from the production PKCE generator.
 pub fn pkce() -> (String, String) {
@@ -347,7 +346,7 @@ pub fn set_cookie(resp: &axum::http::Response<axum::body::Body>, name: &str) -> 
         .map(str::to_string)
 }
 
-// ─── Consent helpers (MA0-6). Full paths only, same reason as above.
+// ─── Consent helpers. Full paths only, same reason as above.
 //
 // Two constraints on every caller, both from sharing a test binary:
 // - Login budget: `test_default` gives `/login` and the admin OAuth callback
@@ -572,7 +571,7 @@ pub async fn obtain_code(
     }
 }
 
-// ─── Token helpers (MA0-7). Full paths only, same reason as above.
+// ─── Token helpers. Full paths only, same reason as above.
 
 /// The MCP SDK's token request for a code, in its order: grant_type, code,
 /// code_verifier, redirect_uri, client_id, resource (`RESOURCE`, as
@@ -635,7 +634,7 @@ pub async fn obtain_tokens(fx: &McpOauthFixture, session_cookie: &str) -> Tokens
     }
 }
 
-// ─── Refresh helper (MA0-8). Full paths only, same reason as above.
+// ─── Refresh helper. Full paths only, same reason as above.
 
 /// The MCP SDK's refresh request: grant_type, refresh_token, client_id,
 /// resource; no scope. The request path is root-relative: the production
