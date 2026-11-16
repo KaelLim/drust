@@ -155,3 +155,297 @@ mod i18n_parity {
         }
     }
 }
+
+/// Source pins over this directory's credential-handling files. Every needle is
+/// matched against comment-stripped production code (`srcpin`), so a comment
+/// is never a hiding place and a pin's own literals never count.
+#[cfg(test)]
+mod source_pins {
+    use crate::tenant::rooms::srcpin::{code_only, production_half};
+
+    /// `AuditEntry`'s fields: `entry.<field> = …;` is an audit write.
+    const AUDIT_FIELDS: &[&str] = &[
+        "ts",
+        "tenant",
+        "token_hint",
+        "op",
+        "status",
+        "duration_ms",
+        "collection",
+        "sql_hash",
+        "record_id",
+        "error_code",
+        "error_message",
+        "auth_method",
+        "oauth_email",
+        "oauth_error_code",
+        "actor_admin_id",
+        "actor_email_snapshot",
+        "extra",
+    ];
+
+    fn is_ident(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_'
+    }
+
+    /// The index one past the bracket that closes `s[open]`, skipping string
+    /// and char literals. Unbalanced input runs to the end (fails loudly).
+    fn close_of(s: &[u8], open: usize) -> usize {
+        let (o, c) = (s[open], if s[open] == b'(' { b')' } else { b'}' });
+        let (mut depth, mut i) = (0usize, open);
+        while i < s.len() {
+            match s[i] {
+                b'"' => {
+                    i += 1;
+                    while i < s.len() && s[i] != b'"' {
+                        i += if s[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b if b == o => depth += 1,
+                b if b == c => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        s.len()
+    }
+
+    /// Every log, print or audit site in `code`: the text from its opener to
+    /// the bracket that closes its argument list (or the `;` that ends a field
+    /// assignment).
+    fn sites(code: &str) -> Vec<&str> {
+        let b = code.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let boundary = i == 0 || !is_ident(b[i - 1]);
+            let rest = &code[i..];
+            // Macros and calls whose arguments reach a log or an audit row.
+            let call = boundary
+                && [
+                    "tracing::",
+                    "log::",
+                    "println!",
+                    "eprintln!",
+                    "dbg!",
+                    "with_extra(",
+                    "AuditEntry",
+                ]
+                .iter()
+                .any(|o| rest.starts_with(o));
+            // `audit…(`: a module-local audit helper call (or its signature).
+            let helper = boundary && rest.starts_with("audit") && {
+                let n = rest.bytes().take_while(|c| is_ident(*c)).count();
+                rest.as_bytes().get(n) == Some(&b'(')
+            };
+            if call || helper {
+                if let Some(open) = rest.find(['(', '{']) {
+                    let end = close_of(rest.as_bytes(), open);
+                    out.push(&rest[..end]);
+                    i += end;
+                    continue;
+                }
+            }
+            if b[i] == b'.' {
+                let n = rest[1..].bytes().take_while(|c| is_ident(*c)).count();
+                let field = &rest[1..1 + n];
+                let after = rest[1 + n..].trim_start();
+                if AUDIT_FIELDS.contains(&field)
+                    && after.starts_with('=')
+                    && !after.starts_with("==")
+                {
+                    let end = rest.find(';').unwrap_or(rest.len());
+                    out.push(&rest[..end]);
+                    i += end;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// The identifiers a site can put into its output: every identifier of
+    /// its code, plus inline format captures (`{name}`, `{name:?}`) inside
+    /// its string literals. Other string text (a log message) does not count.
+    fn idents(site: &str) -> Vec<&str> {
+        let b = site.as_bytes();
+        let mut out = Vec::new();
+        let (mut i, mut in_str) = (0, false);
+        while i < b.len() {
+            if in_str {
+                match b[i] {
+                    b'\\' => i += 1,
+                    b'"' => in_str = false,
+                    b'{' if b.get(i + 1).is_some_and(|c| is_ident(*c)) => {
+                        let n = site[i + 1..].bytes().take_while(|c| is_ident(*c)).count();
+                        out.push(&site[i + 1..i + 1 + n]);
+                        i += n;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            } else if b[i] == b'"' {
+                in_str = true;
+                i += 1;
+            } else if is_ident(b[i]) {
+                let n = site[i..].bytes().take_while(|c| is_ident(*c)).count();
+                out.push(&site[i..i + n]);
+                i += n;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// `(sites scanned, violations)` for `src` with `banned` identifiers.
+    fn scan(src: &str, banned: &[&str]) -> (usize, Vec<String>) {
+        let stripped = code_only(src);
+        let prod = production_half(&stripped);
+        let mut bad = Vec::new();
+        let found = sites(prod);
+        for site in &found {
+            for id in idents(site) {
+                if banned.contains(&id) {
+                    bad.push(format!("`{id}` in: {site}"));
+                }
+            }
+        }
+        (found.len(), bad)
+    }
+
+    /// No identifier that holds a plaintext authorization code, verifier or
+    /// token (or a value carrying one: the parsed form, the redeem request, the
+    /// issued pair) appears in a `tracing::`/`log::` call, `println!`,
+    /// `eprintln!`, `dbg!`, `with_extra(`, an `AuditEntry` constructor or field
+    /// assignment, or a module-local `audit…(` helper call. Identifiers are
+    /// matched whole, so `locale` or `grant_id` do not count; log messages may
+    /// therefore use the words.
+    #[test]
+    fn plaintext_code_never_reaches_logs_or_audit() {
+        let files: [(&str, &str, &[&str], usize); 4] = [
+            (
+                "consent.rs",
+                include_str!("consent.rs"),
+                &["code", "loc", "location", "csrf", "body"],
+                5,
+            ),
+            (
+                "token.rs",
+                include_str!("token.rs"),
+                &[
+                    "code",
+                    "presented",
+                    "hash",
+                    "p",
+                    "req",
+                    "t",
+                    "tokens",
+                    "body",
+                    "verifier",
+                    "refresh_token",
+                    "access_token",
+                ],
+                8,
+            ),
+            (
+                "refresh.rs",
+                include_str!("refresh.rs"),
+                &[
+                    "presented_hash",
+                    "token_hash",
+                    "t",
+                    "tokens",
+                    "refresh_token",
+                    "access_token",
+                ],
+                2,
+            ),
+            (
+                "revoke.rs",
+                include_str!("revoke.rs"),
+                &["presented", "p", "body", "token"],
+                4,
+            ),
+        ];
+        for (name, src, banned, min) in files {
+            let (n, bad) = scan(src, banned);
+            assert!(bad.is_empty(), "{name}: {bad:#?}");
+            assert!(
+                n >= min,
+                "{name}: only {n} log/audit sites scanned (want >= {min})"
+            );
+        }
+    }
+
+    /// The scanner itself can fail: each planted leak is caught, and the same
+    /// text in a comment or as plain message words is not.
+    #[test]
+    fn the_hygiene_scanner_flags_planted_leaks() {
+        let bad = r#"
+fn f() {
+    tracing::warn!(code = %code, "x");
+    tracing::debug!("got {code:?} here");
+    e.actor_email_snapshot = Some(code.to_string());
+    e = e.with_extra(serde_json::json!({ "c": code }));
+    let e = crate::safety::audit::AuditEntry::failure("-", "-", "op", 0, "x", code);
+    audit_thing(s, code).await;
+    eprintln!("{}", code);
+    dbg!(code);
+    log::info!("{}", code);
+}
+"#;
+        let (n, found) = scan(bad, &["code"]);
+        assert_eq!(n, 9, "sites: {found:#?}");
+        // Every site is flagged; the first one twice (field and value).
+        assert_eq!(found.len(), 10, "{found:#?}");
+        let good = r#"
+fn f() {
+    // tracing::warn!(code = %code);
+    tracing::warn!(grant_id = g, "authorization code replay");
+    e.auth_method = Some("mcp_oauth".to_string());
+    if x.status == code { }
+}
+"#;
+        let (n, found) = scan(good, &["code"]);
+        assert_eq!(n, 2, "a comment and a comparison are not sites");
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    /// `GrantOwner::caller` trusts the `AdminId` it is handed, so under this
+    /// directory `AdminId(` appears only in an extractor's destructuring
+    /// pattern (`Extension(AdminId(…))`), never built from a path, form or
+    /// query value.
+    #[test]
+    fn admin_id_is_only_ever_destructured_from_the_extension() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mgmt/mcp_oauth");
+        let mut files = Vec::new();
+        crate::tenant::rooms::srcpin::collect_rs_files(&dir, &mut files);
+        let mut seen = 0;
+        for f in files {
+            let src = std::fs::read_to_string(&f).unwrap();
+            let stripped = code_only(&src);
+            let prod = production_half(&stripped);
+            let b = prod.as_bytes();
+            for (i, _) in prod.match_indices("AdminId(") {
+                if i > 0 && is_ident(b[i - 1]) {
+                    continue; // another identifier ending in AdminId
+                }
+                seen += 1;
+                assert!(
+                    prod[..i].ends_with("Extension("),
+                    "{}: `AdminId(` outside `Extension(AdminId(`: {}",
+                    f.display(),
+                    &prod[i.saturating_sub(40)..(i + 40).min(prod.len())]
+                );
+            }
+        }
+        assert!(seen >= 4, "only {seen} AdminId( sites found");
+    }
+}

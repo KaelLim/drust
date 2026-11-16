@@ -815,35 +815,4 @@ mod tests {
         );
         assert_eq!(return_link(&other_key_cfg(), &ok, now), None);
     }
-
-    /// Source pin: the plaintext code (`nc.code`) and the redirect it rides
-    /// (`loc`, `location`) never appear in a `tracing::` call or an audit
-    /// `with_extra(` argument. Identifiers are matched whole, so `locale` and
-    /// `AuthzErrorCode` do not count; log messages therefore avoid the word.
-    #[test]
-    fn plaintext_code_never_reaches_logs_or_audit() {
-        let prod = include_str!("consent.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
-        let mut checked = 0;
-        for opener in ["tracing::", "with_extra("] {
-            let mut rest = prod;
-            while let Some(i) = rest.find(opener) {
-                let tail = &rest[i..];
-                let end = tail.find(';').unwrap_or(tail.len());
-                let stmt = &tail[..end];
-                assert!(!stmt.contains("nc.code"), "{stmt}");
-                for ident in stmt.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
-                    assert!(
-                        !matches!(ident, "code" | "loc" | "location"),
-                        "identifier `{ident}` in: {stmt}"
-                    );
-                }
-                checked += 1;
-                rest = &tail[opener.len()..];
-            }
-        }
-        assert!(checked >= 5, "only {checked} log/audit sites scanned");
-    }
 }
