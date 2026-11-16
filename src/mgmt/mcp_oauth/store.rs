@@ -279,6 +279,33 @@ pub fn find_grant_for_revocation(
     }
 }
 
+/// `/oauth/revoke` only. A genuine token of an unrevoked grant was presented
+/// (REVOCATION strength, `find_grant_for_revocation`), plus the grant's
+/// `client_id` for the RFC 7009 §2.1 "was it issued to this client" check.
+/// `grant` may only feed `GrantOwner::holder` — never authorize an MCP call.
+#[derive(Debug)]
+pub struct RevokeTarget {
+    pub grant: GrantRef,
+    pub client_id: String,
+}
+
+const SQL_GRANT_CLIENT_ID: &str = "SELECT client_id FROM _mcp_oauth_grants WHERE id = ?1";
+
+/// Wrong shape (neither access nor refresh) is `None` without touching SQL.
+/// Call it on the revoke transaction, so the lookup, this read and the revoke
+/// that follows see one state. The revocation predicate lives only in
+/// `find_grant_for_revocation`; this adds nothing to it.
+pub fn lookup_for_revoke(conn: &Connection, token: &str) -> rusqlite::Result<Option<RevokeTarget>> {
+    let Some(grant) = find_grant_for_revocation(conn, token)? else {
+        return Ok(None);
+    };
+    // The JOIN above just proved this row exists; a QueryReturnedNoRows here is
+    // a bug and surfaces as Err (the caller answers 500 and revokes nothing).
+    let client_id: String =
+        conn.query_row(SQL_GRANT_CLIENT_ID, params![grant.grant_id], |r| r.get(0))?;
+    Ok(Some(RevokeTarget { grant, client_id }))
+}
+
 fn find(
     conn: &Connection,
     kind: TokenKind,

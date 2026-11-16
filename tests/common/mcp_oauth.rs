@@ -190,3 +190,70 @@ pub fn seed_code(
     assert_eq!(n, 1, "seed_code: grant {grant_id} does not exist");
     code
 }
+
+// ─── HTTP helpers (MA0-4). Full paths only: this file compiles in three
+// harnesses, and a file-level `use` that only these need would be unused there.
+
+/// Sends one request through the production router.
+pub async fn send(
+    app: &axum::Router,
+    req: axum::http::Request<axum::body::Body>,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    app.clone().oneshot(req).await.unwrap()
+}
+
+/// `GET <uri>` (a root path, never `/drust/...`) with the given `name=value` cookies.
+pub async fn get(
+    app: &axum::Router,
+    uri: &str,
+    cookies: &[&str],
+) -> axum::http::Response<axum::body::Body> {
+    let mut b = axum::http::Request::builder().method("GET").uri(uri);
+    if !cookies.is_empty() {
+        b = b.header(axum::http::header::COOKIE, cookies.join("; "));
+    }
+    send(app, b.body(axum::body::Body::empty()).unwrap()).await
+}
+
+/// `POST <uri>` with an `application/x-www-form-urlencoded` body built from
+/// `pairs`, the given cookies, and `headers` appended as-is.
+pub async fn post_form(
+    app: &axum::Router,
+    uri: &str,
+    pairs: &[(&str, &str)],
+    cookies: &[&str],
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish();
+    let mut b = axum::http::Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        );
+    if !cookies.is_empty() {
+        b = b.header(axum::http::header::COOKIE, cookies.join("; "));
+    }
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    send(app, b.body(axum::body::Body::from(body)).unwrap()).await
+}
+
+pub async fn body_json(resp: axum::http::Response<axum::body::Body>) -> serde_json::Value {
+    let b = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    serde_json::from_slice(&b).unwrap()
+}
+
+pub async fn body_text(resp: axum::http::Response<axum::body::Body>) -> String {
+    let b = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    String::from_utf8(b.to_vec()).unwrap()
+}

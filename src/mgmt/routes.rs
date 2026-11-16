@@ -942,6 +942,15 @@ impl MgmtState {
                 axum::routing::delete(crate::mgmt::admin_pat::cli_token_logout),
             )
             .with_state(self.clone());
+        // MA0 — OAuth AS (metadata, token, revoke). Merged ONLY when DRUST_MCP
+        // resolves to enabled, so a disabled host answers these paths exactly like
+        // a path that never existed. Inside `frame_guard_layers` below like the
+        // rest of `public`.
+        let public = if self.mcp_oauth.enabled() {
+            public.merge(crate::mgmt::mcp_oauth::public_routes(&self))
+        } else {
+            public
+        };
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
         // authentication since they're just static redirects.

@@ -48,3 +48,20 @@ fn mcp_oauth_urls_drop_the_prefix() {
     assert!(cfg.is_our_resource("https://drust.test/mcp"));
     assert!(!cfg.is_our_resource("https://drust.test/drust/mcp"));
 }
+
+#[test]
+fn mcp_oauth_metadata_under_empty_base() {
+    // First-write-wins OnceLock: every #[test] in this binary sets "".
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    let m = drust::mgmt::mcp_oauth::metadata::metadata_json(&cfg);
+    assert_eq!(m["issuer"], "https://drust.test"); // no trailing '/'
+    assert_eq!(cfg.issuer(), "https://drust.test");
+    assert_eq!(
+        m["authorization_endpoint"],
+        "https://drust.test/oauth/authorize"
+    );
+    assert_eq!(m["token_endpoint"], "https://drust.test/oauth/token");
+    assert_eq!(m["revocation_endpoint"], "https://drust.test/oauth/revoke");
+    assert!(!m["issuer"].as_str().unwrap().ends_with('/'));
+}
