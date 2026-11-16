@@ -310,6 +310,18 @@ fn role_label(t: &Translator, role: &str) -> String {
     .into_owned()
 }
 
+/// The audit `actor_email_snapshot`: `COALESCE(email, username)`, read the way
+/// the GET page reads it. A read failure or a missing row only loses the
+/// snapshot, never the request.
+fn actor_email_snapshot(conn: &rusqlite::Connection, admin_id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT COALESCE(email, username) FROM admins WHERE id = ?1",
+        rusqlite::params![admin_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 /// `(COALESCE(email, username), role, visible live tenant count)`; `None` when
 /// the admins row is gone. Its own query — never `AdminProfileExt`, whose
 /// fallback is a placeholder member.
@@ -542,13 +554,16 @@ pub async fn consent_approve(
         match conn.unchecked_transaction() {
             Err(e) => Err(e),
             Ok(tx) => match store::insert_grant_and_code(&tx, cfg, admin_id, &b.req, &b.redirect) {
-                Ok(nc) => tx.commit().map(|_| nc),
+                Ok(nc) => {
+                    let email = actor_email_snapshot(&tx, admin_id);
+                    tx.commit().map(|_| (nc, email))
+                }
                 Err(e) => Err(e), // tx drops -> rollback
             },
         }
     }; // meta guard dropped here; audit is written after it
-    let nc = match outcome {
-        Ok(nc) => nc,
+    let (nc, email) = match outcome {
+        Ok(v) => v,
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             return fail_page(locale, theme, Fail::AdminMissing, back(), true, true);
         }
@@ -567,6 +582,7 @@ pub async fn consent_approve(
             }));
     entry.auth_method = Some("mcp_oauth".to_string());
     entry.actor_admin_id = Some(admin_id);
+    entry.actor_email_snapshot = email;
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
 
     // Exactly `code`, `state` (only when authorize carried one), `iss`.
@@ -602,6 +618,8 @@ pub async fn consent_deny(
         Ok(b) => b,
         Err(resp) => return resp,
     };
+    // Its own short lock; the guard is dropped before the audit write.
+    let email = actor_email_snapshot(&*s.meta.lock().await, admin_id);
     let mut entry =
         crate::safety::audit::AuditEntry::success("-", "-", "mcp_oauth.consent.deny", 0)
             .with_extra(serde_json::json!({
@@ -610,6 +628,7 @@ pub async fn consent_deny(
             }));
     entry.auth_method = Some("mcp_oauth".to_string());
     entry.actor_admin_id = Some(admin_id);
+    entry.actor_email_snapshot = email;
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
     finish_redirect(
         locale,
