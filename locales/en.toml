@@ -235,6 +235,7 @@ revoke_title = "Revoke MCP connections"
 revoke_body = "Revoke every MCP connection authorized by {email}? Their Claude Code sessions stop at the next request. The account itself is kept."
 revoke_ok = "Revoke"
 revoked_n = "Revoked {n} MCP connection(s)."
+
 [audit_body.aria]
 show_details_for = "show details for {op}"
 
@@ -872,9 +873,9 @@ never = "never"
 
 [settings.mcp_grants]
 card_title = "MCP connections"
-desc = "Claude Code sessions you authorized in the browser. Each one can do what your account can do. Revoking one stops it at its next request. This is separate from the PAT and CLI tokens above, and signing out does not revoke these."
+desc = "Claude Code sessions you authorized in the browser. Each one can act on every tenant your account can see, with the same permissions as the service key of that tenant. Revoking one stops it at its next request. This is separate from the PAT and CLI tokens above, and signing out does not revoke these."
 empty = "No MCP connections."
-load_failed = "Could not load your MCP connections. Revoke all below still revokes every one of them."
+load_failed = "Could not load your MCP connections. You can still try Revoke all below."
 col_kind = "Type"
 col_host = "Callback host"
 col_created = "Authorized (UTC)"
