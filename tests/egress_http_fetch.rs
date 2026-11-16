@@ -174,6 +174,35 @@ async fn audit_ops(tenant: &str) -> Vec<String> {
         .collect()
 }
 
+/// `(op, extra)` of every audit row for `tenant`, oldest first. The writer
+/// flushes on a 100 ms window, so this polls (40 x 50 ms) until the tenant has
+/// a row instead of reading once after a fixed sleep, which a loaded machine
+/// can outlast.
+async fn audit_extras(tenant: &str) -> Vec<(String, Option<String>)> {
+    use drust::safety::audit_db::open_audit_db_read;
+    let path = ensure_global_audit_writer();
+    let mut rows = Vec::new();
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let r = open_audit_db_read(path).unwrap();
+        let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        let mut stmt = r
+            .prepare("SELECT op, extra FROM audit WHERE tenant = ?1 ORDER BY id ASC")
+            .unwrap();
+        rows = stmt
+            .query_map(rusqlite::params![tenant], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        if !rows.is_empty() {
+            break;
+        }
+    }
+    rows
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 /// (1) An origin absent from the `system=function` allowlist is denied before
@@ -336,6 +365,82 @@ async fn allowlisted_private_ip_literal_rejected_before_dial() {
             started.elapsed()
         );
     }
+}
+
+/// (2a) A portless IPv6-literal origin now normalises — and a private one still
+/// meets the explicit private-IP gate before any dial (it used to be refused
+/// earlier, as a malformed origin).
+#[tokio::test(flavor = "multi_thread")]
+async fn private_ipv6_literal_origin_rejected_before_dial() {
+    let (mcp, _tmp) = mcp_for("t-fetch-v6priv").await;
+    let list = r#"[{"system":"function","uri":"https://[::1]"}]"#;
+    let mut store = StoreData::new_for_test(
+        mcp,
+        CallerCtx::Privileged,
+        http_state(list, None, 5 * 1024 * 1024),
+    );
+    let started = std::time::Instant::now();
+    let err = store
+        .http_fetch_for_test(
+            "https://[::1]".into(),
+            "/".into(),
+            "GET".into(),
+            vec![],
+            vec![],
+        )
+        .await
+        .expect_err("a private IPv6 literal must be rejected before dial");
+    assert!(err.contains("private"), "got: {err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "must fail fast, took {:?}",
+        started.elapsed()
+    );
+}
+
+/// (2b) A private IPv4 written as a NAT64 IPv6 literal. The bracketed form with
+/// a non-default port has always normalised, so an allowlist entry like this
+/// one could be stored and dialled directly (hyper never consults the resolver
+/// for an IP literal); on a network that routes 64:ff9b::/96 to IPv4 that dial
+/// lands on 169.254.169.254. It must meet the same explicit private-IP gate as
+/// the plain IPv4, before any dial, and leave a denial audit row.
+#[tokio::test(flavor = "multi_thread")]
+async fn allowlisted_nat64_private_literal_rejected_before_dial() {
+    ensure_global_audit_writer();
+    let tenant = "t-fetch-nat64";
+    let origin = "https://[64:ff9b::a9fe:a9fe]:8443";
+    let (mcp, _tmp) = mcp_for(tenant).await;
+    // Written into the allowlist directly — `validate_entries` refuses it for
+    // `function` (see egress_config.rs), and this pins the per-attempt gate.
+    let list = format!(r#"[{{"system":"function","uri":"{origin}"}}]"#);
+    let mut store = StoreData::new_for_test(
+        mcp,
+        CallerCtx::Privileged,
+        http_state(&list, None, 5 * 1024 * 1024),
+    );
+    let started = std::time::Instant::now();
+    let err = store
+        .http_fetch_for_test(origin.into(), "/".into(), "GET".into(), vec![], vec![])
+        .await
+        .expect_err("a NAT64 spelling of a private IPv4 must be rejected before dial");
+    assert_eq!(err, "origin host is a private/loopback address");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "must fail fast before any dial, took {:?}",
+        started.elapsed()
+    );
+    let rows = audit_extras(tenant).await;
+    let denied = rows.iter().any(|(op, extra)| {
+        op == "function.http_fetch"
+            && extra.as_deref().is_some_and(|x| {
+                let v: serde_json::Value = serde_json::from_str(x).unwrap();
+                v["outcome"] == "denied" && v["reason"] == "private/loopback origin"
+            })
+    });
+    assert!(
+        denied,
+        "want a private/loopback denial audit row, got {rows:?}"
+    );
 }
 
 /// (3) A response larger than `max_response_bytes` aborts with an Err (the

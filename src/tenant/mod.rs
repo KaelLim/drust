@@ -181,18 +181,25 @@ fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
 /// v1.33.2 — re-attach tus capability headers (`Tus-Version` / `Tus-Extension`
 /// / `Tus-Max-Size`) onto `OPTIONS /t/<id>/uploads`.
 ///
-/// The `.options(uploads::options)` handler is unreachable over HTTP: the CORS
-/// layer is mounted OUTSIDE bearer_auth (so preflight short-circuits before auth
-/// — see `build_tenant_router`) and answers every OPTIONS before it reaches the
-/// router, returning a bare CORS 200 without the tus headers. A unit test that
-/// calls the handler directly can't see this; only a live HTTP probe does.
+/// Whether `.options(uploads::options)` runs depends on the CORS allow-list:
 ///
-/// This layer is mounted OUTSIDE the CORS layer, so on the response path it runs
-/// last and re-attaches the static capabilities onto the CORS-generated preflight
-/// response. Scoped to OPTIONS on paths ending `/uploads` (the creation endpoint;
-/// `/uploads/{token}` PATCH preflights are left untouched). Capability discovery
-/// is unauthenticated by tus convention and the advertised value is a public
-/// config constant, matching the unauthenticated CORS preflight it rides on.
+/// - `DRUST_CORS_ORIGINS` non-empty — the CORS layer sits OUTSIDE bearer_auth
+///   (see `build_tenant_router`) and tower-http answers EVERY `OPTIONS` itself
+///   (a bare CORS 200 with no tus headers), so the handler never runs. This
+///   layer re-attaches the capabilities onto that response, which is what makes
+///   discovery work for an unauthenticated browser preflight.
+/// - allow-list empty (the default; `build_cors_layer` returns `None`) — there
+///   is no CORS layer, and `OPTIONS` goes through `bearer_auth_layer` like any
+///   other verb: a service bearer reaches the handler (204 + tus headers), a
+///   non-service bearer is refused `ServiceOnly` by `file_caps_layer` (403
+///   `WRITE_DENIED`), and no bearer gets 401. This layer is outermost, so it
+///   adds the tus headers to those refusals too.
+///
+/// Discovery is therefore unauthenticated only when an allow-list is
+/// configured; the advertised values are public config constants either way.
+/// A unit test that calls the handler directly sees neither path; only the
+/// router does. Scoped to OPTIONS on paths ending `/uploads` (the creation
+/// endpoint; `/uploads/{token}` PATCH preflights are left untouched).
 async fn inject_tus_capabilities(
     axum::extract::State(max_size): axum::extract::State<usize>,
     req: axum::extract::Request,
@@ -250,7 +257,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let rec_body_limit = max_record_body_bytes();
     // Captured before `state.files` is moved into files_router below; feeds the
     // tus capability layer (Tus-Max-Size) that re-attaches headers onto the
-    // CORS-shadowed OPTIONS /uploads response. None when Garage is unconfigured
+    // OPTIONS /uploads response (CORS-shadowed when an allow-list is set). None when Garage is unconfigured
     // (files_router empty), so the layer is simply not mounted.
     let tus_max_size: Option<usize> = state.files.as_ref().map(|f| f.large_upload_max_bytes);
 
@@ -837,7 +844,8 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     };
     // Mounted OUTSIDE the CORS layer (applied after it = outermost) so it post-
     // processes the CORS-short-circuited OPTIONS /uploads preflight and re-adds
-    // the tus capability headers the shadowed `uploads::options` handler can't.
+    // the tus capability headers, which the handler can't when CORS shadows
+    // `uploads::options`.
     if let Some(max_size) = tus_max_size {
         merged.layer(axum::middleware::from_fn_with_state(
             max_size,

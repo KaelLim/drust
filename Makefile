@@ -63,7 +63,17 @@ test-all: test-shell
 # Fixture tests for the deploy scripts. Not Rust, so `cargo test` cannot see
 # them — and deploy/drust-backup.sh is the only code here that deletes
 # credential-bearing production archives, so it must not be the untested half.
+# compose_storage_test.sh pins the bundled Compose object store (overlay, init,
+# key generator); its Docker part skips itself when docker is absent.
+# compose_public_route_test.sh pins the Compose /public/* Caddy block, and
+# janitor_no_hardcoded_trash_mtime_test.sh the bare-metal janitor (#935).
+# backup_retention_test.sh runs LAST: three of its assertions need GNU bash and
+# GNU find, so on macOS it fails and make stops there. Anything after it would
+# never run on a Mac.
 test-shell:
+	bash deploy/tests/compose_storage_test.sh
+	bash deploy/tests/compose_public_route_test.sh
+	bash deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh
 	bash deploy/tests/backup_retention_test.sh
 
 groups:

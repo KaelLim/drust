@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Mode B / tus 1.0 resumable uploads (/t/<id>/uploads/*) against the real Garage:
+# Mode B / tus 1.0 resumable uploads (/t/<id>/uploads/*) against the real object
+# store (RustFS or Garage, SMOKE_STORE):
 # capability discovery (OPTIONS + CORS preflight), create (Upload-Length,
 # Upload-Metadata, Location without a base-path prefix, Upload-Expires), PATCH
 # in several chunks of a ~20 MB random file (> the 16 MiB finalize part size, so
-# the object_store multipart upload to Garage carries two parts), HEAD offsets,
+# the object_store multipart upload to the store carries two parts), HEAD offsets,
 # the 409 wrong-offset refusal, an interrupted chunk + resume, overflow, the
 # finalize (row in /files, sha256 of the bytes through drust AND through the
-# Garage website endpoint), the tus private default (invariant 19) and the
+# deployment's own /public/* route), the tus private default (invariant 19) and the
 # private bucket finalize, termination cleanup (session row + spool file),
 # Upload-Length above Tus-Max-Size, the per-tenant session cap, anon/user file
 # caps + per-bearer session binding + the per-prefix publish grant, and the
@@ -51,18 +52,20 @@ tus_head_rl() {
 }
 
 # download KEY URL OUTFILE [curl args] — sets DL_STATUS; never loads bytes into bash.
+# An empty KEY sends no Authorization header at all (an empty "Bearer " is never right).
 download() {
   local k="$1" u="$2" o="$3"; shift 3
+  if [ -n "$k" ]; then set -- -H "Authorization: Bearer $k" "$@"; fi
   DL_STATUS="$(curl -sS -o "$o" -D "$TMP/dl.h" -w '%{http_code}' --max-time "${REQ_TIMEOUT:-120}" \
-    -H "Authorization: Bearer $k" "$u" "$@" 2>/dev/null)" || DL_STATUS=000
+    "$u" "$@" 2>/dev/null)" || DL_STATUS=000
 }
 
 # Read-only peeks into the drust container (spool directory). Optional.
 have_docker=0
-if command -v docker >/dev/null 2>&1 && docker compose -p drust-smoke ps drust >/dev/null 2>&1; then
+if command -v docker >/dev/null 2>&1 && docker compose -p "$SMOKE_COMPOSE_PROJECT" ps drust >/dev/null 2>&1; then
   have_docker=1
 fi
-in_drust() { docker compose -p drust-smoke exec -T drust sh -c "$1" 2>/dev/null; }
+in_drust() { docker compose -p "$SMOKE_COMPOSE_PROJECT" exec -T drust sh -c "$1" 2>/dev/null; }
 spool_size() { # TENANT TOKEN — prints byte size or "absent"
   in_drust "stat -c %s $SPOOL_ROOT/$1/_uploads/$2.part 2>/dev/null || echo absent"
 }
@@ -80,7 +83,7 @@ print("")' "$1" "$2"
 token_of() { printf '%s' "$1" | sed -n 's#.*/uploads/##p'; }
 
 # ============================================================================
-# Tenant A — service flows against Garage
+# Tenant A — service flows against the object store
 # ============================================================================
 new_tenant tusa
 A_ID="$TENANT_ID"; A_SVC="$SERVICE_KEY"; A_T="$T"
@@ -237,7 +240,7 @@ check_eq "the session list shows the declared total_length" 20000000 "$(session_
 case "$BIG_KEY" in *.bin) ok "server-minted key keeps the .bin extension" ;; *) bad "server-minted key keeps the .bin extension" "key [$BIG_KEY]" ;; esac
 
 REQ_TIMEOUT=180 tus "$A_SVC" PATCH "$URL" -H "$OCT" -H "Upload-Offset: 14000000" --data-binary @"$TMP/c3"
-check_eq "final PATCH finalizes the 2-part multipart upload to Garage (204)" 204 "$STATUS"
+check_eq "final PATCH finalizes the 2-part multipart upload to the object store (204)" 204 "$STATUS"
 [ "$STATUS" = 204 ] || note "final PATCH body: $(printf '%s' "$BODY" | head -c 200)"
 check_eq "final PATCH returns Upload-Offset 20000000" 20000000 "$(hval upload-offset)"
 
@@ -262,16 +265,16 @@ download "$A_SVC" "$A_T/files/$BIG_KEY/bytes" "$TMP/dl1"
 check_eq "GET /files/<key>/bytes answers 200" 200 "$DL_STATUS"
 check_eq "bytes streamed back through drust have the same sha256" "$BIG_SHA" "$(sha_file "$TMP/dl1" 2>/dev/null)"
 
-download "" "$GARAGE_WEB/$A_ID/$BIG_KEY" "$TMP/dl2" -H 'Host: public.web.local'
-check_eq "public object is served by the Garage website endpoint (200)" 200 "$DL_STATUS"
-check_eq "Garage website bytes have the same sha256" "$BIG_SHA" "$(sha_file "$TMP/dl2" 2>/dev/null)"
+download "" "$PUBLIC/$A_ID/$BIG_KEY" "$TMP/dl2"
+check_eq "public object is served by the public route (200)" 200 "$DL_STATUS"
+check_eq "public route bytes have the same sha256" "$BIG_SHA" "$(sha_file "$TMP/dl2" 2>/dev/null)"
 etag="$(tr -d '\r' < "$TMP/dl.h" | awk -F': ' 'tolower($1)=="etag"{print $2}' | tr -d '"')"
 case "$etag" in
-  *-2) ok "Garage ETag shows a 2-part multipart object (16 MiB part size)" ;;
-  *) bad "Garage ETag shows a 2-part multipart object (16 MiB part size)" "etag [$etag]" ;;
+  *-2) ok "public route ETag shows a 2-part multipart object (16 MiB part size)" ;;
+  *) bad "public route ETag shows a 2-part multipart object (16 MiB part size)" "etag [$etag]" ;;
 esac
 gct="$(tr -d '\r' < "$TMP/dl.h" | awk -F': ' 'tolower($1)=="content-type"{print $2}')"
-check_eq "Garage serves the declared Content-Type" application/octet-stream "$gct"
+check_eq "the public route serves the declared Content-Type" application/octet-stream "$gct"
 
 svc POST "/files/$BIG_KEY/sign" '{}'
 check_eq "sign on a public file answers 200" 200 "$STATUS"
@@ -282,13 +285,13 @@ case "$PUB_URL" in
 esac
 pub_path="/${PUB_URL#*://*/}"
 download "" "$BASE$pub_path" "$TMP/dl3"
-check_eq "the public URL drust advertises (<DRUST_PUBLIC_URL>/public/<tenant>/<key>) serves the object through the Compose proxy deploy/compose.Caddyfile (200)" 200 "$DL_STATUS"
-[ "$DL_STATUS" = 200 ] || note "the Compose Caddy forwards /public/* to drust, which answers: $(head -c 80 "$TMP/dl3")"
+check_eq "the public URL drust advertises (<DRUST_PUBLIC_BASE_URL>/public/<tenant>/<key>) serves the object through the Compose proxy deploy/compose.Caddyfile (200)" 200 "$DL_STATUS"
+[ "$DL_STATUS" = 200 ] || note "the advertised public URL answered: $(head -c 80 "$TMP/dl3")"
 
 svc DELETE "/files/$BIG_KEY"
 check_eq "deleting the finalized file answers 204" 204 "$STATUS"
-download "" "$GARAGE_WEB/$A_ID/$BIG_KEY" "$TMP/dl4" -H 'Host: public.web.local'
-check_eq "after delete the Garage object is gone (404)" 404 "$DL_STATUS"
+download "" "$PUBLIC/$A_ID/$BIG_KEY" "$TMP/dl4"
+check_eq "after delete the public object is gone (404)" 404 "$DL_STATUS"
 
 # ---- private default (invariant 19: tus default is private, even for service)
 printf 'hello' > "$TMP/hello"
@@ -301,14 +304,13 @@ p_status="$STATUS"
 check_eq "a private tus upload finalizes into the hard-coded 'private' bucket (204; needs that bucket to exist in the object store)" 204 "$p_status"
 if [ "$p_status" != 204 ]; then
   note "finalize answered $p_status $(body error_code)"
-  if [ -n "${SMOKE_GARAGE_ADMIN_TOKEN:-}" ]; then
-    pb="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
-      "http://127.0.0.1:${SMOKE_GARAGE_ADMIN_PORT:-48903}/v1/bucket?globalAlias=private" \
-      -H "Authorization: Bearer $SMOKE_GARAGE_ADMIN_TOKEN" 2>/dev/null)"
-    note "Garage admin API: bucket 'private' lookup answers $pb (404 = the bucket was never created)"
-  fi
   if [ $have_docker = 1 ]; then
-    hits="$(docker compose -p drust-smoke logs --tail 200 drust 2>/dev/null | grep "$P_KEY" | grep -c '/private/.*404 Not Found')"
+    # The boot probe warns once per bucket it cannot list (c1).
+    probe="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --no-log-prefix drust 2>/dev/null \
+      | grep 'object store bucket check failed' \
+      | grep -cE 'bucket[^[:space:]]*[=:][^[:space:]]*private([^[:alnum:]_-]|$)')"
+    note "drust boot log: $probe 'object store bucket check failed' warning(s) naming bucket 'private'"
+    hits="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" logs --tail 200 drust 2>/dev/null | grep "$P_KEY" | grep -c '/private/.*404 Not Found')"
     note "drust log lines showing S3 404 on bucket 'private' for this key: $hits"
   fi
 fi
@@ -317,8 +319,8 @@ check_eq "a tus upload that states no visibility is stored private (service defa
 if [ "$p_status" = 204 ]; then
   download "$A_SVC" "$A_T/files/$P_KEY/bytes" "$TMP/dl5"
   check_eq "private bytes come back intact" "$(sha_file "$TMP/hello")" "$(sha_file "$TMP/dl5" 2>/dev/null)"
-  download "" "$GARAGE_WEB/$A_ID/$P_KEY" "$TMP/dl6" -H 'Host: public.web.local'
-  check_eq "a private object is NOT served by the public website endpoint" 404 "$DL_STATUS"
+  download "" "$PUBLIC/$A_ID/$P_KEY" "$TMP/dl6"
+  check_eq "a private object is NOT served by the public route" 404 "$DL_STATUS"
 else
   tus_head "$A_SVC" "$PURL"
   check_eq "after a failed finalize the session is retained for a retry (offset = length)" "200 5" "$STATUS $(hval upload-offset)"

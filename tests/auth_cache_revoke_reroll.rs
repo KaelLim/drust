@@ -30,6 +30,8 @@ async fn reroll_clears_cached_service_bearer() {
     // Fire the real reroll handler for (t1, service) — hook 1 must scan-clear.
     let resp = drust::mgmt::tokens::reroll_token_json(
         State(state),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
         Path(("t1".to_string(), "service".to_string())),
     )
     .await;
@@ -62,6 +64,8 @@ async fn reroll_evicts_in_flight_realtime_subscribers() {
 
     let resp = drust::mgmt::tokens::reroll_token_json(
         State(state),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
         Path(("t1".to_string(), "service".to_string())),
     )
     .await;

@@ -1,7 +1,12 @@
-//! Garage S3 client. Thin wrapper over `object_store::aws::AmazonS3` for the
-//! X+ scope (single public bucket managed through drust admin UI). Admin
-//! endpoint fields on `StorageConfig` are read but not yet used — future Y
-//! scope will call Garage Admin API through them.
+//! Object-store client. Thin wrapper over `object_store::aws::AmazonS3`, so
+//! any S3-compatible store works on the data path. drust writes to two fixed
+//! buckets (`storage::files::bucket_for`) and never creates them.
+//!
+//! The Garage admin API methods (`create_bucket` … `bucket_deny`) are used
+//! only by the owner-only reconcile page's cleanup of buckets left over from
+//! the retired per-tenant layout. They need `GARAGE_ADMIN_ENDPOINT` and
+//! `GARAGE_ADMIN_TOKEN`, which are optional: unconfigured, every admin call
+//! fails up front in `admin_url` without sending a request.
 
 use crate::config::StorageConfig;
 use anyhow::{Context, Result};
@@ -13,7 +18,8 @@ use std::sync::Arc;
 pub struct GarageClient {
     // S3 object store backend
     store: Arc<dyn ObjectStore>,
-    // Admin API HTTP client — scaffolded in Task 5, used from Task 6 onwards.
+    // Garage admin API HTTP client — reconcile-page legacy cleanup only.
+    // `admin_endpoint` / `admin_token` empty = admin API not configured.
     admin: reqwest::Client,
     admin_endpoint: String,
     admin_token: String,
@@ -125,8 +131,11 @@ impl GarageClient {
         }
     }
 
-    /// Health check. Lists at most one object; an empty bucket is a valid
-    /// healthy state.
+    /// Health check of the default store's bucket only: fetches one
+    /// ListObjectsV2 page and reads its first entry; an empty bucket is a
+    /// valid healthy state. Boot does NOT use this — it calls
+    /// [`Self::probe_required_buckets`], which checks every bucket a write
+    /// can land in; do not re-wire boot to this single-bucket check.
     pub async fn ping(&self) -> Result<()> {
         use futures::StreamExt;
         let mut stream = self.store.list(None);
@@ -134,6 +143,45 @@ impl GarageClient {
             Some(Ok(_)) | None => Ok(()),
             Some(Err(e)) => Err(e).context("garage ping list failed"),
         }
+    }
+
+    /// Fetches one ListObjectsV2 page of `bucket` and reads its first entry;
+    /// an empty bucket is healthy.
+    ///
+    /// Real client: a per-bucket store (`build_s3_for_bucket`), the same
+    /// client every cross-bucket write uses. `from_store` client (empty
+    /// `s3_endpoint`): lists prefix `<bucket>` on the backing store, the test
+    /// affordance `put_object_in` uses. The error names the bucket.
+    pub async fn ping_bucket(&self, bucket: &str) -> Result<()> {
+        use futures::StreamExt;
+        let first = if self.s3_endpoint.is_empty() {
+            let prefix = StorePath::from(bucket);
+            self.store.list(Some(&prefix)).next().await
+        } else {
+            let s3 = self
+                .build_s3_for_bucket(bucket)
+                .with_context(|| format!("bucket {bucket}: failed to build S3 client"))?;
+            s3.list(None).next().await
+        };
+        match first {
+            Some(Ok(_)) | None => Ok(()),
+            Some(Err(e)) => Err(e).with_context(|| format!("bucket {bucket}: list failed")),
+        }
+    }
+
+    /// Boot probe: lists every bucket in
+    /// `storage::files::required_buckets(configured_default)`, CONCURRENTLY,
+    /// so the worst case — the store unreachable at restart — costs one
+    /// list's retry budget, not one per bucket (the probe runs before the
+    /// listener binds). Read-only: it never creates anything. One entry per
+    /// bucket, in `required_buckets` order; the caller only logs.
+    pub async fn probe_required_buckets(
+        &self,
+        configured_default: &str,
+    ) -> Vec<(String, anyhow::Result<()>)> {
+        let buckets = crate::storage::files::required_buckets(configured_default);
+        let results = futures::future::join_all(buckets.iter().map(|b| self.ping_bucket(b))).await;
+        buckets.into_iter().zip(results).collect()
     }
 
     /// Upload with metadata. `original_name` is attached both as the
@@ -191,6 +239,22 @@ impl GarageClient {
         }
     }
 
+    /// Delete an object by a key exactly as [`Self::list_objects`] returned it.
+    ///
+    /// A listed key is already in object_store's encoded form (the S3 listing
+    /// builds it with `Path::parse`, which does not decode), so
+    /// [`Self::delete_object`] — which applies `Path::from` — would encode its
+    /// `%` again and delete nothing (silently: delete is idempotent on
+    /// NotFound). This parses the key instead. Idempotent: a missing key is `Ok`.
+    pub async fn delete_listed_object(&self, listed_key: &str) -> Result<()> {
+        let path = StorePath::parse(listed_key).context("listed key is not a valid object path")?;
+        match self.store.delete(&path).await {
+            Ok(()) => Ok(()),
+            Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e).context("garage delete_listed_object failed"),
+        }
+    }
+
     /// List every object in the bucket. Intended for reconciliation (admin
     /// action, low frequency).
     pub async fn list_objects(&self) -> Result<Vec<ObjectSummary>> {
@@ -208,14 +272,27 @@ impl GarageClient {
         Ok(out)
     }
 
-    fn admin_url(&self, path: &str) -> String {
-        format!("{}{}", self.admin_endpoint.trim_end_matches('/'), path)
+    /// The admin API URL for `path`, or an error when the admin API is not
+    /// configured. Every admin method goes through here BEFORE building a
+    /// request, so an unconfigured (or half-configured) pair never sends a
+    /// request to a relative URL or with an empty bearer.
+    fn admin_url(&self, path: &str) -> anyhow::Result<String> {
+        if self.admin_endpoint.is_empty() || self.admin_token.is_empty() {
+            anyhow::bail!(
+                "Garage admin API not configured (GARAGE_ADMIN_ENDPOINT and GARAGE_ADMIN_TOKEN must both be set); only the reconcile page's cleanup of retired per-tenant buckets uses it"
+            );
+        }
+        Ok(format!(
+            "{}{}",
+            self.admin_endpoint.trim_end_matches('/'),
+            path
+        ))
     }
 
     pub async fn create_bucket(&self, name: &str) -> anyhow::Result<String> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket"))
+            .post(self.admin_url("/v1/bucket")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({ "globalAlias": name }))
             .send()
@@ -237,7 +314,7 @@ impl GarageClient {
     pub async fn delete_bucket(&self, bucket_id: &str) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .delete(self.admin_url("/v1/bucket"))
+            .delete(self.admin_url("/v1/bucket")?)
             .query(&[("id", bucket_id)])
             .bearer_auth(&self.admin_token)
             .send()
@@ -253,7 +330,7 @@ impl GarageClient {
     pub async fn lookup_bucket(&self, name: &str) -> anyhow::Result<Option<BucketInfo>> {
         let resp = self
             .admin
-            .get(self.admin_url("/v1/bucket"))
+            .get(self.admin_url("/v1/bucket")?)
             .query(&[("globalAlias", name)])
             .bearer_auth(&self.admin_token)
             .send()
@@ -297,7 +374,7 @@ impl GarageClient {
         };
         let resp = self
             .admin
-            .put(self.admin_url(&format!("/v1/bucket/{bucket_id}")))
+            .put(self.admin_url(&format!("/v1/bucket/{bucket_id}"))?)
             .bearer_auth(&self.admin_token)
             .json(&body)
             .send()
@@ -320,7 +397,7 @@ impl GarageClient {
     ) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket/allow"))
+            .post(self.admin_url("/v1/bucket/allow")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({
                 "bucketId": bucket_id,
@@ -340,7 +417,7 @@ impl GarageClient {
     pub async fn bucket_deny(&self, bucket_id: &str, access_key_id: &str) -> anyhow::Result<()> {
         let resp = self
             .admin
-            .post(self.admin_url("/v1/bucket/deny"))
+            .post(self.admin_url("/v1/bucket/deny")?)
             .bearer_auth(&self.admin_token)
             .json(&serde_json::json!({
                 "bucketId": bucket_id,
@@ -669,6 +746,49 @@ mod tests {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let client = GarageClient::from_store(store.clone(), "public");
         (store, client)
+    }
+
+    /// The premise of the reconcile fix: listing does not decode, so an
+    /// object written under a non-ASCII key is listed in its encoded form.
+    #[tokio::test]
+    async fn listed_key_of_encodable_object_is_its_encoded_form() {
+        let (_store, client) = client();
+        client
+            .put_object("x.檔案", bytes::Bytes::from_static(b"1"), None, "x.檔案")
+            .await
+            .unwrap();
+        let keys: Vec<String> = client
+            .list_objects()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.key)
+            .collect();
+        assert_eq!(keys, vec!["x.%E6%AA%94%E6%A1%88".to_string()]);
+    }
+
+    /// `delete_object` on a listed key encodes its `%` again and deletes
+    /// nothing; `delete_listed_object` removes it.
+    #[tokio::test]
+    async fn delete_listed_object_removes_an_encoded_key() {
+        let (_store, client) = client();
+        client
+            .put_object("x.檔案", bytes::Bytes::from_static(b"1"), None, "x.檔案")
+            .await
+            .unwrap();
+        let listed = client.list_objects().await.unwrap().remove(0).key;
+
+        client.delete_object(&listed).await.unwrap();
+        assert_eq!(
+            client.list_objects().await.unwrap().len(),
+            1,
+            "delete_object re-encodes a listed key and misses the object"
+        );
+
+        client.delete_listed_object(&listed).await.unwrap();
+        assert!(client.list_objects().await.unwrap().is_empty());
+        // Idempotent.
+        client.delete_listed_object(&listed).await.unwrap();
     }
 
     #[tokio::test]

@@ -115,7 +115,7 @@ pub async fn admin_signed_bytes(
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, "not found".into()),
-            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+            other => db_read_failed(&other),
         })?;
     drop(conn);
 
@@ -126,10 +126,13 @@ pub async fn admin_signed_bytes(
     };
     let bucket = files::bucket_for(visibility);
 
+    // A signed URL is redeemed with no caller identity at all, so the
+    // backend's error text (internal endpoint, bucket, object path) is logged,
+    // never returned.
     let stream = garage
         .get_object_stream_in(bucket, &key)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+        .map_err(|e| storage_read_failed(bucket, &key, &e))?;
 
     Ok(respond(&row, stream, download))
 }
@@ -159,8 +162,17 @@ pub async fn tenant_signed_bytes(
         )
     })?;
 
-    let conn = crate::storage::tenant_db::open_read(&state.data_root, &tenant_id)
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("tenant: {e}")))?;
+    let conn = crate::storage::tenant_db::open_read(&state.data_root, &tenant_id).map_err(|e| {
+        // A soft-deleted tenant's directory has moved to `_trash`, and
+        // `open_read`'s error names the absolute path it looked for. Same
+        // answer as an absent file; the detail goes to the log.
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            error = %e,
+            "signed-url redemption: tenant database not readable"
+        );
+        (StatusCode::NOT_FOUND, "not found".into())
+    })?;
     let row = conn
         .query_row(
             "SELECT * FROM _system_files WHERE key = ?1",
@@ -169,7 +181,7 @@ pub async fn tenant_signed_bytes(
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, "not found".into()),
-            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+            other => db_read_failed(&other),
         })?;
     drop(conn);
 
@@ -184,7 +196,27 @@ pub async fn tenant_signed_bytes(
     let stream = garage
         .get_object_stream_in(bucket, &object_key)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("get: {e}")))?;
+        .map_err(|e| storage_read_failed(bucket, &object_key, &e))?;
 
     Ok(respond(&row, stream, download))
+}
+
+/// The 500 both signed redemptions answer when the row lookup fails for any
+/// reason but "no such row": SQLite's text goes to the log, the body is fixed.
+fn db_read_failed(e: &rusqlite::Error) -> (StatusCode, String) {
+    tracing::error!(error = %e, "signed-url redemption: file row lookup failed");
+    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+}
+
+/// The 502 both signed redemptions answer when the object store fails: the
+/// detail goes to the log, the body is fixed text. Signed URLs carry no
+/// caller identity, so nothing about the storage topology may reach the body.
+fn storage_read_failed(bucket: &str, object_key: &str, e: &anyhow::Error) -> (StatusCode, String) {
+    tracing::error!(
+        bucket = %bucket,
+        object_key = %object_key,
+        error = format!("{e:#}"),
+        "signed redemption: garage get_object_stream_in failed"
+    );
+    (StatusCode::BAD_GATEWAY, "object store read failed".into())
 }

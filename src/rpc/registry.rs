@@ -93,6 +93,23 @@ pub enum RegistryError {
     Sqlite(#[from] rusqlite::Error),
 }
 
+impl RegistryError {
+    /// The error code for this failure at SAVE time (MCP `create_rpc` /
+    /// `update_rpc`). One deliberate divergence from REST's call-path match in
+    /// `rpc/handler.rs`: at save, `BadParams` is the CALLER's params
+    /// (`INVALID_PARAMS`); at call, it is a bad STORED row (`PARAM_BAD_STORED`).
+    /// Do not rewrite REST's match onto this — its bytes would change.
+    pub fn save_code(&self) -> &'static str {
+        match self {
+            RegistryError::NotFound(_) => "RPC_NOT_FOUND",
+            RegistryError::AlreadyExists(_) => "RPC_EXISTS",
+            RegistryError::BadParams(_) => "INVALID_PARAMS",
+            RegistryError::KindInvalid(_) => crate::rpc::prepare::RPC_KIND_INVALID,
+            RegistryError::Sqlite(_) => "DB_ERROR",
+        }
+    }
+}
+
 pub fn lookup(conn: &Connection, name: &str) -> Result<Option<StoredRpc>, RegistryError> {
     let row = conn.query_row(
         "SELECT name, sql, params_json, description, anon_callable,
@@ -460,6 +477,30 @@ mod tests {
     use super::*;
     use crate::storage::tenant_db::open_write;
     use tempfile::TempDir;
+
+    #[test]
+    fn registry_error_save_codes() {
+        assert_eq!(
+            RegistryError::NotFound("r".into()).save_code(),
+            "RPC_NOT_FOUND"
+        );
+        assert_eq!(
+            RegistryError::AlreadyExists("r".into()).save_code(),
+            "RPC_EXISTS"
+        );
+        assert_eq!(
+            RegistryError::BadParams("x".into()).save_code(),
+            "INVALID_PARAMS"
+        );
+        assert_eq!(
+            RegistryError::KindInvalid("x".into()).save_code(),
+            "RPC_KIND_INVALID"
+        );
+        assert_eq!(
+            RegistryError::Sqlite(rusqlite::Error::QueryReturnedNoRows).save_code(),
+            "DB_ERROR"
+        );
+    }
 
     fn fresh() -> (TempDir, Connection) {
         let tmp = TempDir::new().unwrap();

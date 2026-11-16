@@ -44,6 +44,19 @@ pub enum ParamError {
     BadParamsJson(String),
 }
 
+impl ParamError {
+    /// The error code every face reports for this failure — REST's RPC handler
+    /// (`rpc/handler.rs`) and MCP `call_rpc` share this one table.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ParamError::Missing(_) => "PARAM_MISSING",
+            ParamError::TypeMismatch { .. } => "PARAM_TYPE_MISMATCH",
+            ParamError::Unknown(_) => "PARAM_UNKNOWN",
+            ParamError::BadParamsJson(_) => "PARAM_BAD_STORED",
+        }
+    }
+}
+
 pub fn parse_params_json(s: &str) -> Result<Vec<ParamSpec>, ParamError> {
     serde_json::from_str(s).map_err(|e| ParamError::BadParamsJson(e.to_string()))
 }
@@ -136,6 +149,23 @@ impl BoundValue {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The strings REST's RPC handler emitted before it switched to `code()`.
+    #[test]
+    fn param_error_codes() {
+        assert_eq!(ParamError::Missing("n".into()).code(), "PARAM_MISSING");
+        let tm = ParamError::TypeMismatch {
+            name: "n".into(),
+            expected: ParamType::Integer,
+            got: "string".into(),
+        };
+        assert_eq!(tm.code(), "PARAM_TYPE_MISMATCH");
+        assert_eq!(ParamError::Unknown("n".into()).code(), "PARAM_UNKNOWN");
+        assert_eq!(
+            ParamError::BadParamsJson("x".into()).code(),
+            "PARAM_BAD_STORED"
+        );
+    }
 
     fn spec(name: &str, ty: ParamType, required: bool) -> ParamSpec {
         ParamSpec {

@@ -79,7 +79,23 @@ fn validate_role(s: &str) -> Option<&'static str> {
 
 pub async fn reroll_token_json(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, role)): Path<(String, String)>,
+) -> Response {
+    reroll_token_inner(&state, tenant_id, role, caller_id, admin.email).await
+}
+
+/// Shared body of `reroll_token_json` and `reroll_token_form`, so both faces
+/// evict and audit the same way.
+async fn reroll_token_inner(
+    state: &TenantsState,
+    tenant_id: String,
+    role: String,
+    actor_admin_id: i64,
+    actor_email: Option<String>,
 ) -> Response {
     let role_str = match validate_role(&role) {
         Some(r) => r,
@@ -158,6 +174,17 @@ pub async fn reroll_token_json(
             |r| r.get(0),
         )
         .unwrap_or_default();
+    drop(conn);
+    // After both bus evictions (invariants 4 and 5), 201 path only. The new
+    // key is identified by its `tokens.id`, never by its plaintext, hash or
+    // a hint derived from either.
+    crate::mgmt::tenants::crud::emit_tenant_admin_audit(
+        "admin.tenant_key.reroll",
+        &tenant_id,
+        actor_admin_id,
+        actor_email,
+        json!({"role": role_str, "token_id": id, "revoked_count": revoked}),
+    );
     (
         StatusCode::CREATED,
         Json(RerollResp {
@@ -176,10 +203,14 @@ pub struct RerollForm {}
 
 pub async fn reroll_token_form(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path((tenant_id, role)): Path<(String, String)>,
     Form(_): Form<RerollForm>,
 ) -> Response {
-    let resp = reroll_token_json(State(state), Path((tenant_id.clone(), role))).await;
+    let resp = reroll_token_inner(&state, tenant_id.clone(), role, caller_id, admin.email).await;
     if !resp.status().is_success() {
         return resp;
     }

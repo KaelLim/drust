@@ -78,11 +78,9 @@ fn poll_status(status: &str) -> Response {
 /// (the device_code IS the issued secret); per-IP rate-limited.
 pub async fn device_start(
     State(s): State<MgmtState>,
-    headers: HeaderMap,
+    crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
     body: Option<Json<StartReq>>,
 ) -> Response {
-    let fallback: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback);
     if !s.cli_device_rl.check(ip) {
         return json_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -148,11 +146,9 @@ pub async fn device_start(
 /// `expired` (no enumeration signal).
 pub async fn device_poll(
     State(s): State<MgmtState>,
-    headers: HeaderMap,
+    crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
     Json(req): Json<PollReq>,
 ) -> Response {
-    let fallback: std::net::SocketAddr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback);
     if !s.cli_poll_rl.check(ip) {
         return json_error(
             StatusCode::TOO_MANY_REQUESTS,

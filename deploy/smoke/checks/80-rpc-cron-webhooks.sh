@@ -2,8 +2,9 @@
 # Jobs surface: stored RPC (kind='sql' read/write, kind='query'), anon_callable
 # semantics + RPC_ANON_OWNER_SCOPED config-time guard, validate_rpc_sql
 # refusals, write-RPC record history via the preupdate hook (rusqlite 0.42),
-# the read query deadline (progress handler, rusqlite 0.42), cron (a real
-# minute fire of a write RPC + limits/error codes), webhooks + egress allowlist
+# the query deadline (progress handler, rusqlite 0.42) on read RPCs and on
+# anon write RPCs, cron (a real minute fire of a write RPC + limits/error
+# codes), webhooks + egress allowlist
 # (deny-all default, register-time private-IP refusal even when allowlisted,
 # dispatch-time egress denial recorded on the subscription, registration cap).
 # Uses 3 throwaway tenants; never makes an outbound connection to a third party
@@ -278,6 +279,7 @@ check_eq "rpc: anon may call an anon_callable RPC over an unrestricted collectio
 mcp create_rpc '{"name":"bad_owned","sql":"SELECT id, title FROM owned","params":[],"anon_callable":true}'
 check_eq "rpc guard (create): anon_callable RPC over an owner-scoped collection without :user_id is refused" false "$MCP_OK"
 check_contains "rpc guard (create): refusal names RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (create): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp create_rpc '{"name":"bad_owned2","sql":"SELECT id, title FROM owned WHERE :user_id IS NOT NULL","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
 check_contains "rpc guard (create): declaring :user_id without constraining the owner column is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
 mcp create_rpc '{"name":"bad_policy","sql":"SELECT id, title FROM posts WHERE title = :user_id","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
@@ -291,6 +293,7 @@ mcp create_rpc '{"name":"r_owned_svc","sql":"SELECT id, title FROM owned","param
 setup_ok "rpc: create service-only RPC over owned"
 mcp update_rpc '{"name":"r_owned_svc","anon_callable":true}'
 check_contains "rpc guard (update): flipping anon_callable on an RPC over owned is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (update): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 anon POST /rpc/r_owned_svc '{}'
 check_eq "rpc guard (update): after the refused flip anon still gets 403 ANON_DENIED" "403 ANON_DENIED" "$STATUS $(body error_code)"
 mcp create_collection '{"name":"pubtab","fields":[{"name":"title","sql_type":"text"},{"name":"owner","sql_type":"text","foreign_key":"_system_users"}]}'
@@ -299,8 +302,10 @@ mcp create_rpc '{"name":"r_pubtab","sql":"SELECT id, title FROM pubtab","params"
 setup_ok "rpc: create anon_callable RPC over pubtab (not yet restricted)"
 mcp set_owner_field '{"collection":"pubtab","field":"owner"}'
 check_contains "rpc guard (set_owner_field): making a collection owner-scoped under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (set_owner_field): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp set_policy '{"collection":"pubtab","op":"select","using":{"title":"x"}}'
 check_contains "rpc guard (policy attach): attaching an RLS policy under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
+check_eq "rpc guard (policy attach): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 
 # ── validate_rpc_sql refusals (create-time, mode-matched authorizer) ───────
 # Every PrepareError carries the "prepare-time validation" prefix — a syntax
@@ -316,6 +321,7 @@ mcp create_rpc '{"name":"bad_attach","sql":"ATTACH DATABASE '"'"'/tmp/smoke80.db
 check_authz_refusal "rpc validate: ATTACH in a read RPC is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_master","sql":"SELECT name FROM sqlite_master","params":[]}'
 check_authz_refusal "rpc validate: a sqlite_master read is refused at create by the authorizer"
+check_eq "rpc validate: MCP create_rpc's authorizer refusal carries data.error_code INVALID_SQL_FOR_MODE" INVALID_SQL_FOR_MODE "$MCP_CODE"
 mcp create_rpc '{"name":"bad_sysread","sql":"SELECT * FROM _system_users","params":[]}'
 check_authz_refusal "rpc validate: a _system_* read is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_rw","sql":"INSERT INTO items(title) VALUES('"'"'x'"'"')","params":[]}'
@@ -331,7 +337,6 @@ check_authz_refusal "rpc validate: a sqlite_sequence write in a write-mode RPC i
 mcp list_rpc '{}'
 stored_bad="$(printf '%s' "$MCP_TEXT" | pyj 'sorted(r["name"] for r in d if r["name"].startswith("bad_"))')"
 check_eq "rpc validate/guard: none of the refused RPCs was stored" "[]" "$stored_bad"
-note "MCP create_rpc refusals arrive as JSON-RPC -32603 with no data.error_code (see report)"
 
 # ── runtime errors never echo the stored SQL (sqlite_error_without_sql) ────
 mcp create_rpc '{"name":"r_drift","sql":"SELECT a, b FROM drift WHERE a = '"'"'LITERAL_MARKER'"'"' OR 1","params":[],"anon_callable":true}'
@@ -461,15 +466,38 @@ fast_ok=0
 for i in 1 2 3 4 5 6; do svc POST /rpc/r_items '{"min":0}'; [ "$STATUS" = "200" ] && fast_ok=$((fast_ok + 1)); done
 check_eq "rpc deadline: pooled readers serve fast RPCs after the interrupt (progress handler removed)" 6 "$fast_ok"
 
-# Measurement only (no check): does a WRITE RPC carry the same deadline? The
-# source arms DeadlineGuard only on the read executor; this records what the
-# deployed binary does with a bounded CTE calibrated to run ~7 s.
+# Write RPCs: anon and user callers run under the same deadline; service is
+# trusted and unbounded. One bounded CTE body, calibrated to run ~7.5 s here
+# (n=3M timed with the service key first), so the anon call must be cut off
+# at ~5 s and the service call must run past the deadline to completion.
+# The anon twin writes a marker row BEFORE the slow statement, so "wrote
+# nothing" can only hold if the interrupt rolled the whole body back. (Every
+# statement is bound with every param, and an unknown name is an error, so
+# the marker statement names :n too.)
 mcp create_rpc '{"name":"w_slow","mode":"write","sql":"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}]}'
+setup_ok "rpc deadline: create bounded-CTE write RPC w_slow (service only)"
+mcp create_rpc '{"name":"w_slow_anon","mode":"write","sql":"INSERT INTO items(title, n) VALUES ('"'"'dl-marker'"'"', :n * 0); WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < :n) INSERT INTO items(title, n) SELECT '"'"'never'"'"', x FROM c WHERE x < 0","params":[{"name":"n","type":"integer"}],"anon_callable":true}'
+setup_ok "rpc deadline: create the same write RPC, plus a leading marker insert, as anon_callable w_slow_anon"
 t0=$(now_ms); svc POST /rpc/w_slow '{"n":3000000}'; t1=$(now_ms)
 cal=$((t1 - t0)); [ "$cal" -lt 50 ] && cal=50
 N2=$(python3 -c "print(min(400000000, int(3000000 * 7500 / $cal)))")
+svc POST /collections/items/list '{}'
+items_before="$(body total)"
+t0=$(now_ms); REQ_TIMEOUT=60 anon POST /rpc/w_slow_anon "{\"n\":$N2}"; t1=$(now_ms)
+el=$((t1 - t0))
+check_eq "rpc deadline: an anon runaway write RPC is interrupted with 408 QUERY_TIMEOUT" "408 QUERY_TIMEOUT" "$STATUS $(body error_code)"
+if [ "$STATUS" = "408" ] && [ "$el" -ge 4500 ] && [ "$el" -lt 20000 ]; then ok "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline (${el} ms), not at the HTTP timeout"
+else bad "rpc deadline: the anon write RPC was interrupted near the 5000 ms deadline" "status $STATUS after ${el} ms (n=$N2; 3M rows took ${cal} ms)"; fi
+svc POST /collections/items/list '{}'
+check_eq "rpc deadline: the interrupted anon write RPC wrote nothing (its leading marker row was rolled back)" "$items_before" "$(body total)"
+t0=$(now_ms); svc POST /records/items '{"data":{"title":"after-deadline","n":1}}'; t1=$(now_ms)
+if [ "$STATUS" = "201" ] && [ $((t1 - t0)) -lt 2000 ]; then ok "rpc deadline: the tenant writer serves a fast write right after the interrupt"
+else bad "rpc deadline: the tenant writer serves a fast write right after the interrupt" "status $STATUS after $((t1 - t0)) ms"; fi
 t0=$(now_ms); REQ_TIMEOUT=60 svc POST /rpc/w_slow "{\"n\":$N2}"; t1=$(now_ms)
-note "measurement: write RPC calibrated to ~7.5 s (n=$N2; 3M rows took ${cal} ms) answered $STATUS $(body error_code 2>/dev/null) after $((t1 - t0)) ms"
+el=$((t1 - t0))
+if [ "$STATUS" = "200" ] && [ "$el" -ge 5500 ]; then ok "rpc deadline: a service write RPC past the deadline is not interrupted (200 after ${el} ms)"
+elif [ "$STATUS" = "200" ]; then note "rpc deadline: service control under-calibrated (${el} ms) — proves nothing"
+else bad "rpc deadline: a service write RPC past the deadline is not interrupted (200)" "status $STATUS $(body error_code) after ${el} ms"; fi
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tenant C — webhooks + egress allowlist.
@@ -503,13 +531,12 @@ check_contains "egress: MCP set_egress_allowlist refuses an unknown system" EGRE
 # Allowlist the private targets on purpose: invariant 6 says the private-IP
 # block is orthogonal to the allowlist, so allowlisting must not open them.
 PRIV_URLS="https://127.0.0.1/h https://10.0.0.5/h https://172.16.0.9/h https://192.168.1.1/h https://169.254.169.254/h https://100.64.0.1/h https://0.0.0.0/h https://2852039166/h https://0x7f000001/h https://localhost/h http://127.0.0.1:9/h"
-# IPv6-literal origins cannot be stored at all (normalize_origin splits the
-# authority on the last ':'), so these are checked without an allowlist entry.
+# Private IPv6 targets are checked without an allowlist entry: check_url refuses
+# them at registration before the egress gate is consulted.
 PRIV6_URLS="https://[::1]/h https://[::ffff:127.0.0.1]/h https://[fe80::1]/h https://[fd00::1]/h"
-# Intended: a well-formed https origin is storable (normalize_origin doc) and a
-# stored entry matches across default-port differences (check_egress doc).
-# Both currently fail for bracketed IPv6 (rsplit_once(':') in normalize_origin)
-# — kept as failing checks; see the report. No outbound connection: the hook
+# A bracketed IPv6 origin is storable (normalize_origin parses the literal and
+# stores its canonical text) and a stored entry matches across default-port
+# and spelling differences (check_egress doc). No outbound connection: the hook
 # goes on a collection nothing writes and is deleted at once if it registers.
 svc PUT /egress-allowlist '{"entries":[{"system":"webhook","uri":"https://[2606:4700:4700::1111]"}]}'
 check_eq "egress: a public IPv6-literal webhook origin without a port is accepted by the allowlist (200)" 200 "$STATUS"

@@ -87,7 +87,15 @@ so an address-book paste cannot create junk rows. The batch face runs the whole 
 Per-tenant `_system_users` + `_system_sessions`; tokens are `drust_user_*`, SHA-256-hashed,
 sliding 30 d. argon2id verification runs against a fixed `DUMMY_HASH` when the user does not
 exist, to equalize timing. Brute-force defense is per-IP: 5/min on login, 3/min on register,
-with the IP taken as `XFF[-2]`. Self-registration is opt-in per tenant.
+with the IP taken as `XFF[len - DRUST_TRUSTED_PROXIES]` (default 2 = `XFF[-2]`, the bare-metal
+nginx → Caddy chain; Compose 1; the image 0 = the TCP peer; the chain is every
+`X-Forwarded-For` field line concatenated in order) through `safety::ip::ClientIp` —
+never a hand-rolled `X-Forwarded-For` / `X-Real-IP` / `Forwarded` read, a direct
+`client_ip_with` call, or a literal fallback address (the source pin
+`safety::ip::tests::every_client_ip_consumer_keys_on_the_real_peer` enforces the header and
+call rules and the common loopback-peer spellings in any consumer file; `ClientIp`/`peer_addr` themselves are held by
+behavioural tests in `auth_login.rs` and `admin_login_rate_limit.rs`; the fallback is the real
+TCP peer from `ConnectInfo`, which `main` serves with). Self-registration is opt-in per tenant.
 
 `password_hash = "$oauth-only$"` is a sentinel that blocks password login and `/me/password`
 (`409 OAUTH_ONLY_NO_PASSWORD`).
@@ -158,6 +166,12 @@ entry points hold the `meta.sqlite` mutex across the call, so the count-read and
 are one critical section. The signature takes the role from the DB and `owner_admin_id` as a
 plain `i64` (not `Option`), because two review rounds showed that every parameter which
 *could* be wrong eventually was.
+
+A live id and a soft-deleted id the caller may not recycle both answer `400
+TENANT_ID_UNAVAILABLE` with one handler-built message (`make_tenant_inner` bails with the
+same `TENANT_ID_UNAVAILABLE:`-prefixed literal in both places, and `create_tenant_json`
+maps it — and any `UNIQUE` failure — to a single arm). Keep them a single arm, or the
+create route becomes an ownership oracle.
 
 Approve paths on both the quota and the cap queue must re-validate that the target is still
 an increase (`409 …_NOT_INCREASE`) and must 404 a vanished requester — `admins.id` is

@@ -104,8 +104,8 @@ reachable by an untrusted caller.
 | `/t/<id>/records/<c>?filter=&sort=` (legacy raw params) | **service only** — interpolated, not `?`-bound. Deprecated, Sunset 2027-01-01 |
 | `/t/<id>/query`, `/query/explain` | **service only** |
 | `/t/<id>/records:batch`, `records:upsert` | **service only** on both REST and MCP |
-| `/t/<id>/collections/<c>/subscribe` (SSE) | anon, gated on `realtime_enabled` AND `anon_caps[select]` AND any select policy |
-| `/t/<id>/realtime` (WS rooms) | subscribe: anyone with a tenant token. publish: service, unless the per-tenant publish flags are on |
+| `/t/<id>/records/<c>/subscribe` (SSE) | service (tenant key or admin PAT) and anon, only while the collection's `realtime_enabled` is on. Anon also needs `anon_caps[select]` and a collection with no `owner_field` (`ANON_FORBIDDEN_OWNER_SCOPED`, whatever `read_scope`). A select policy is not needed to connect — it filters anon's events (`Deleted` dropped under any policy; a clause-less one hides all). user: never (`SSE_USER_DENIED`) |
+| `/t/<id>/realtime` (WS rooms) | subscribe: any tenant token or an admin PAT. publish: service, unless the per-tenant publish flags are on |
 | `/t/<id>/files/*` (Mode A) and `/t/<id>/uploads/*` (tus) | per-verb cap-gated via `file_caps_layer` **AND** per-file gated by the prefix policy registry (`authorize_file` on read/delete, `build_file_list_filter` on list) — the two AND. Uploading with `visibility=public` needs a third thing on top: the matching prefix rule's `public_upload_roles` grant (invariant 19). `sign` and set-visibility stay service-only |
 | `/t/<id>/file-policies` (PUT / GET / DELETE) | **service only** on every verb, list included — the registry IS the tenant's file-access map |
 | `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
@@ -116,7 +116,7 @@ reachable by an untrusted caller.
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
-| `/public/*` | unauthenticated — served by Caddy straight from Garage, never through drust |
+| `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose), never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
 file prefix policies, audit toggle) are **service-only** on every face. Storage tier and per-member tenant cap are
@@ -138,8 +138,9 @@ file prefix policies, audit toggle) are **service-only** on every face. Storage 
 > [!CAUTION]
 > **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for
 > `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects a non-loopback Host with a
-> 403/421 that looks like a WAF block. Garage's `/public/*` is the same family in reverse:
-> it routes *by* Host, so that block must send `Host: public.web.local`.
+> 403/421 that looks like a WAF block. Garage's `/public/*` (the bare-metal host) is the same
+> family in reverse: it routes *by* Host, so that block must send `Host: public.web.local`.
+> The Compose block talks to an S3 API path-style and keeps `Host {upstream_hostport}`.
 
 > [!CAUTION]
 > **The systemd unit deliberately OMITS `MemoryDenyWriteExecute`.** wasmtime's Cranelift JIT
@@ -240,6 +241,13 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
    and never-expiring tenant bearers deliberately carry no deadline.
+   Per-tenant **MCP** Streamable-HTTP sessions are outside this set: the server declares no
+   push capability, so a session's GET stream carries nothing and every POST
+   re-authenticates. Adding any server capability or push makes reroll and the PAT family
+   end MCP sessions too (`server_capabilities_declare_no_server_push` pins the exact
+   capability set; rmcp does not stop an undeclared push, so
+   `mcp_sources_never_push` also fails on any code under `src/mcp/` that names the
+   peer — `call_tool` and the resource/prompt handlers hold a `RequestContext`).
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    `drop_field` deliberately does NOT evict, even when the dropped column is named by a
    select policy: the per-event filter (`eval_policy_materialized`) drops every
@@ -331,7 +339,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     gain `allow-same-origin` or `allow-scripts` — either one defeats the protection
     completely, and a codified test pins the exact string. The classifier is structural
     (every `*/*+xml` essence), not an enumeration; the first version of this fix was broken
-    by `application/rss+xml`.
+    by `application/rss+xml`. The proxy's `/public/*` blocks (`../garage/deploy/Caddyfile` on
+    the host, `deploy/compose.Caddyfile` on Compose) are byte paths too: they carry the
+    `@markup` sandbox CSP and `nosniff`, and in front of an S3 API they must also drop the
+    query string, which an S3 API honours as `response-content-type` on anonymous GETs.
 
 15. **All browser-facing URL prefixes route through `crate::base_path`.** `DRUST_BASE_PATH`
     (default `/drust`; the Docker image ships `""`) is the external mount the proxy strips
@@ -367,8 +378,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     never by name suffix.
 
 19. **Publishing is never SILENT, and every after-the-fact door into the `public` bucket
-    stays service-only.** A public object is served by Caddy straight out of Garage and never
-    reaches drust, so publishing is a permanent escape from every per-file gate. The three
+    stays service-only.** A public object is served by the reverse proxy straight out of the
+    object store and never reaches drust, so publishing is a permanent escape from every
+    per-file gate — and the anonymous policy on `public` is GetObject only: a policy that also
+    lists hands out every tenant's public keys. The three
     stations with a caller identity share one decision (`files::enforce_upload_visibility` —
     Mode-A multipart, tus `create`, and edge `put-file` via `enforced_put_file`); the fourth,
     host-admin `/admin/files/upload`, is owner-only management plane. What the shared decision
@@ -435,12 +448,12 @@ the glob fires, just read the file.
 
 | File | Fires on | Covers |
 |---|---|---|
-| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
+| `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**`, `docker-compose*.yml` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
 | `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
-| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | Garage integration, upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
+| `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | object-store integration (S3 client, bucket probe), upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
 | `.claude/rules/background-jobs.md` | `src/{functions,cron,rpc,safety}/**`, `src/tenant/{webhook*,egress,rooms}` | edge functions, cron semantics, stored-RPC guards, webhooks, egress, audit writer, SSE |
 | `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **eight `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
 

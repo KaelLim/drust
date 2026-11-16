@@ -156,6 +156,14 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   by `records::readback_for`): the row is the caller's own write plus id/timestamps/schema
   defaults — no exploit path, and narrowing it breaks insert-only anon forms. DELETE's
   204/404 existence signal is likewise accepted (ids are AUTOINCREMENT).
+- A native SQLite refusal (UNIQUE, NOT NULL, STRICT type) on the REST single-record write
+  (`POST /t/<id>/records/<c>`, `PATCH …/<id>`) still answers `400 text/plain` with SQLite's
+  message, while `records:batch` reports it in its own shape. MCP already reports the
+  reserved names (`UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `TYPE_MISMATCH`, see the MCP verdicts below). Deliberate until the cross-face classifier
+  lands for both REST faces: converting one REST face alone creates another shape. The
+  unknown-field and dropped-collection refusals on that path are already typed
+  (`FIELD_NOT_FOUND`, `NOT_FOUND`) by `tenant/records.rs`'s sentinels.
 
 **Deliberate — schema DDL vs stored policies (not the PAT family):**
 
@@ -175,10 +183,30 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
   deliberately retry-safe: a repeat converges to the same state; the extra eviction only
   makes subscribers reconnect and re-gate.
-- Only five tools (+ `list_files`) return `isError: true`; every other tool error is still
-  a JSON-RPC error. The blanket conversion is the planned outer `call_tool` (MA1), which
-  reuses `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s `expires_in`
-  range stay `-32603` until then.
+- Only five tools (+ `list_files`) return `isError: true` for their own failures, and any
+  tool returns it for an argument that fails to deserialize (`INVALID_PARAMS`, reshaped
+  from rmcp ≥ 1.8 in `handler.rs::finish_tool_call`). Every other tool error is still a
+  JSON-RPC error, and since v1.67.0 always with a `data.error_code` from
+  `mcp::error_code::mcp_error_code`. Its output is a constant from its tables, or a
+  message's own leading `UPPER_SNAKE:` token — drust's prefix, as long as no message
+  starts with caller text, which is pinned for the tool-module literals but not for
+  verbatim forwards (none found today; the surface is service-only).
+  The blanket conversion is the planned account-level `call_tool` (MA1), which reuses
+  `finish_tool_call` / `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s
+  `expires_in` range stay `-32603` until then.
+- A per-tenant MCP session is not bound to the bearer that opened it. A key reroll or a
+  PAT revocation leaves its GET stream open, while every POST re-authenticates (old key →
+  401). Deliberate until MA1, which removes sessions: the server's capabilities are exactly
+  tools / resources / prompts with no push, so the stream carries nothing.
+  `server_capabilities_declare_no_server_push` fails the moment any capability is added,
+  and `mcp_sources_never_push` the moment code under `src/mcp/` names the peer (rmcp
+  does not stop a push the capabilities never declared).
+- MCP native constraint codes (`UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `TYPE_MISMATCH`) ship ahead of REST on purpose (owner decision 2026-11-15): they are the
+  names the deferred cross-face classifier reserves, so REST adopts them later without MCP
+  changing again. Do not "align" MCP back to REST's `text/plain` 400 or to `SQL_ERROR`, and
+  do not add a `TYPE_MISMATCH` catalogue entry — `json_error` would attach it to REST's
+  existing, unrelated `TYPE_MISMATCH` bodies (`type_mismatch_stays_uncatalogued`).
 - Edge Privileged `delete-record` still returns `{"ok":false,"error_code":"RECORD_NOT_FOUND"}`
   on the WIT ok-branch; M1 converted only the MCP wrapper.
 - `list_files` refuses only a misspelt `public` / `private` (`looks_like_misspelt_visibility`);
@@ -188,6 +216,35 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
 - `set_file_visibility` is `destructiveHint: true` although it looks like a toggle: it
   resets `cache_control`, and a publish cannot be recalled once Caddy serves the object
   (invariant 19).
+
+**Deliberate — write-mode stored RPC deadline (not the PAT family):**
+
+- Write-mode stored RPCs run **without** a deadline for service / admin PAT / admin
+  playground / cron: deliberate (trust tiers — a tenant's nightly cron write RPC that
+  legitimately runs for 20 s must not start failing). Untrusted callers are bounded by
+  `exec_write::deadline_for`, the only producer of `Some`; the playground and cron pass a
+  literal `None`. Do not "fix" it by arming the deadline for every caller.
+- The deadline guard in `run_write_rpc` is armed **only around the statement loop**, not
+  at the top of the closure: an interrupt inside the history flush is a 500, and one inside
+  STEP 5c would interrupt invariant 2's last-in-tx quota gate. `abandon_savepoint` skips
+  `ROLLBACK TO`/`RELEASE` only when the run timed out AND the connection is back in
+  autocommit (SQLite already rolled back an interrupted DML statement); widening it to every
+  error class would relabel SQLITE_FULL/IOERR/NOMEM for trusted callers.
+- Anon/user write RPCs take a per-tenant admission slot (`TenantPool::untrusted_write_rpc_gate`,
+  one permit) in the REST write arm and answer `429 RATE_LIMITED` after waiting one deadline
+  for it; service, admin PAT, playground and cron never touch it. Deliberate (owner decision
+  2026-11-15): the deadline bounds one occupancy of the writer, the slot bounds the untrusted
+  queue in front of it. Do not move the acquire into `with_writer` (it would sit under the
+  mutex and invert the bound) and do not extend it to trusted callers. Two consequences are
+  accepted, not bugs: (a) the slot is held while its holder waits for the writer, so a fast
+  anon/user write RPC queued behind a long trusted write (service/cron write RPC, playground,
+  FTS rebuild, large batch) occupies it, and a second one gets 429 after one deadline;
+  (b) known residual — one untrusted caller hitting a caller-cost-controlled (or slow by
+  nature) `anon_callable` write RPC about once per deadline, well under the per-token rate
+  limit, can keep the tenant's OTHER anon/user write RPCs at 429. That shifts the old
+  "delay every writer, trusted included, without bound" onto untrusted callers only; the
+  operator's remedy is to move that RPC behind a service key or make its cost independent of
+  caller parameters.
 
 ## Canonical sources — do not hand-verify against prose
 
@@ -212,7 +269,9 @@ the other side:
   read-back faces via `eval_policy_materialized`, which adds the missing-field deny).
 - `has_dml_cap` and the `records_list.rs` cap matrix — both read `user_caps` for the User role.
 - `storage::files::is_unsafe_inline_type` and the Caddy `@markup` matcher in
-  `../garage/deploy/Caddyfile` — the Rust side is case-insensitive, Caddy's is not.
+  `../garage/deploy/Caddyfile` (bare-metal host) **and `deploy/compose.Caddyfile`** (Compose;
+  pinned by `deploy/tests/compose_public_route_test.sh`) — the Rust side is case-insensitive,
+  Caddy's is not.
 - The four config-time `RPC_ANON_OWNER_SCOPED` sites (create, update, `set_owner_field`,
   policy-attach). The runtime path is deliberately not re-checked, so a missed config site
   is a real bypass — one shipped this way once.
@@ -229,7 +288,7 @@ reviewer would open:
 
 | Concern | File |
 |---|---|
-| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*`, **`../garage/deploy/Caddyfile` for `/public/*`** |
+| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*`, **`../garage/deploy/Caddyfile` for the host's `/public/*`**. Compose: `deploy/compose.Caddyfile` for both |
 | Process sandbox, environment, restart policy | `deploy/drust.service` |
 | Secrets | `.env`, mode 0640 — a non-root read fails **silently**, so an unprivileged `grep` that finds nothing proves nothing |
 
@@ -238,9 +297,10 @@ Cross-service rules that also bind drust:
 - **TLS terminates upstream at `.221`, never on this host.** Local Caddy is plain HTTP on
   `:8793`. Never add `tls` or `auto_https`.
 - **MCP SDKs reject a non-loopback `Host` header** with a 403/421 that reads like a WAF
-  block, so the `/mcp` Caddy block needs `header_up Host "127.0.0.1:47826"`. Garage's
-  `s3_web` is the mirror image — it routes *by* Host, so `/public/*` sends
-  `Host: public.web.local`.
+  block, so the `/mcp` Caddy block needs `header_up Host "127.0.0.1:47826"`. On the
+  bare-metal host Garage's `s3_web` is the mirror image — it routes *by* Host, so `/public/*`
+  sends `Host: public.web.local`. The Compose block talks to RustFS's S3 API path-style and
+  must not.
 - **`backups/*.tar.zst` contains plaintext credentials** for every tenant and every admin
   PAT. Treat as a secret store.
 

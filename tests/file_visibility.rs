@@ -120,6 +120,84 @@ async fn garage_object_methods_distinguish_buckets_in_memory() {
     garage.delete_object_in("public", key).await.unwrap(); // idempotent
 }
 
+/// A legacy row (written before ingest normalization) can carry a case-variant
+/// markup type. Publishing it must land the object — and the row — with the
+/// essence lowercased, or the case-sensitive `@markup` matcher of a
+/// `/public/*` proxy block serves it without the sandbox CSP. Parameters stay
+/// byte-for-byte.
+#[tokio::test]
+async fn publish_normalizes_legacy_case_variant_content_type() {
+    use object_store::{Attribute, ObjectStoreExt, path::Path as ObjPath};
+
+    let dir = tempfile::tempdir().unwrap();
+    let tenant_id = "tnt-vis-case";
+    let pool = make_tenant(&dir, tenant_id);
+    let mem = Arc::new(object_store::memory::InMemory::new());
+    let garage = Arc::new(GarageClient::from_store(mem.clone(), "unused"));
+    let key = "ffffffff-0000-0000-0000-0000000000ca.html";
+    let object_key = compose_key(&Owner::Tenant(tenant_id.to_string()), key);
+    let legacy_ct = "TEXT/HTML; charset=UTF-8";
+
+    garage
+        .put_object_in(
+            "private",
+            &object_key,
+            bytes::Bytes::from_static(b"<p>hi</p>"),
+            Some(legacy_ct),
+            "inline",
+            "page.html",
+            Some("private, no-store"),
+            None,
+        )
+        .await
+        .unwrap();
+    let (k, ct) = (key.to_string(), legacy_ct.to_string());
+    pool.with_writer(move |c| {
+        c.execute(
+            "INSERT INTO _system_files
+                (key, original_name, content_type, size_bytes, content_disposition,
+                 visibility, cache_control, uploader)
+             VALUES (?1, 'page.html', ?2, 9, 'inline', 'private', 'private, no-store', 'service')",
+            rusqlite::params![k, ct],
+        )
+        .map(|_| ())
+    })
+    .await
+    .unwrap();
+
+    let outcome = change_visibility(&garage, &pool, tenant_id, key, Visibility::Public)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, VisibilityOutcome::Changed { .. }));
+
+    let k = key.to_string();
+    let row_ct: String = pool
+        .with_reader(move |c| {
+            c.query_row(
+                "SELECT content_type FROM _system_files WHERE key=?1",
+                rusqlite::params![k],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(row_ct, "text/html; charset=UTF-8", "row essence lowercased");
+
+    let got = mem
+        .get(&ObjPath::from(format!("public/{object_key}")))
+        .await
+        .expect("object published into the public bucket");
+    let obj_ct = got
+        .attributes
+        .get(&Attribute::ContentType)
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        obj_ct, "text/html; charset=UTF-8",
+        "published object's Content-Type essence lowercased"
+    );
+}
+
 #[tokio::test]
 async fn change_public_to_private_moves_bucket_and_updates_row() {
     let dir = tempfile::tempdir().unwrap();

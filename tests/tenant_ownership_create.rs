@@ -293,3 +293,85 @@ async fn a_member_cannot_recycle_a_tenant_id_they_cannot_see() {
     );
     assert_eq!(tokens, 2, "the victim's tokens must not be cascaded away");
 }
+
+/// POST /admin/api/tenants as `cookie`; returns (status, JSON body).
+async fn create_tenant_json_body(
+    app: &axum::Router,
+    cookie: &str,
+    id: &str,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/admin/api/tenants")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"id": id, "name": "Mine"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let b = axum::body::to_bytes(resp.into_body(), 65_536)
+        .await
+        .unwrap();
+    let v = serde_json::from_slice(&b)
+        .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&b)));
+    (status, v)
+}
+
+/// Invariant 7 at the HTTP face: a live id and a soft-deleted id the caller
+/// may not recycle must be indistinguishable (status, code, fix, message
+/// modulo the id) — the twin of `tenant_id_recycle_keeps_trash`'s
+/// function-level `an_invisible_soft_deleted_tenant_looks_exactly_like_a_live_one`.
+#[tokio::test]
+async fn denied_recycle_and_live_collision_answer_identically() {
+    let (app, dir) = spin_up().await;
+    let root_cookie = login(&app, "root", "hunter2").await;
+    assert_eq!(
+        create_tenant_json(&app, &root_cookie, "t-live", "Live").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        create_tenant_json(&app, &root_cookie, "t-dead", "Dead").await,
+        StatusCode::CREATED
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/admin/api/tenants/t-dead")
+                .header(header::COOKIE, &root_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let (_mallory_id, mallory_cookie) = insert_admin(&dir, "mallory@example.com", "member");
+    let (s_live, v_live) = create_tenant_json_body(&app, &mallory_cookie, "t-live").await;
+    let (s_dead, v_dead) = create_tenant_json_body(&app, &mallory_cookie, "t-dead").await;
+    assert_eq!(s_live, StatusCode::BAD_REQUEST, "{v_live}");
+    assert_eq!(s_live, s_dead);
+    assert_eq!(v_live["error_code"], "TENANT_ID_UNAVAILABLE");
+    assert_eq!(v_live["error_code"], v_dead["error_code"]);
+    assert_eq!(v_live["suggested_fix"], v_dead["suggested_fix"]);
+    assert_eq!(
+        v_live["message"]
+            .as_str()
+            .unwrap()
+            .replace("t-live", "<id>"),
+        v_dead["message"]
+            .as_str()
+            .unwrap()
+            .replace("t-dead", "<id>"),
+    );
+    // The denied recycle destroyed nothing.
+    assert_eq!(owner_of(&dir, "t-dead"), Some(1));
+}

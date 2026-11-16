@@ -293,6 +293,72 @@ mod tests {
     }
 
     #[test]
+    fn validate_entries_stores_canonical_ipv6_and_refuses_private_function_ipv6() {
+        let out = validate_entries(&[
+            raw("webhook", "https://[2606:4700:4700::1111]"),
+            raw("webhook", "https://[2606:4700:4700:0:0:0:0:1111]:443/x"),
+            raw("function", "https://[2001:4860:4860::8888]:8443"),
+        ])
+        .unwrap();
+        assert_eq!(out[0].uri, "https://[2606:4700:4700::1111]");
+        assert_eq!(out[1].uri, "https://[2606:4700:4700::1111]");
+        assert_eq!(out[2].uri, "https://[2001:4860:4860::8888]:8443");
+
+        // Private, loopback, link-local and ULA literals stay out of the
+        // function allowlist (before: refused as unparseable when portless).
+        for uri in [
+            "https://[::1]",
+            "https://[fd00::1]",
+            "https://[fe80::1]",
+            "https://[::ffff:10.0.0.1]",
+        ] {
+            assert_eq!(
+                validate_entries(&[raw("function", uri)])
+                    .unwrap_err()
+                    .code(),
+                "EGRESS_BAD_ORIGIN",
+                "{uri}"
+            );
+        }
+        // A stray ':' / bracket outside a literal is refused for every system.
+        for uri in ["http://::1", "https://a:b:443", "https://ex]ample.com"] {
+            assert_eq!(
+                validate_entries(&[raw("webhook", uri)]).unwrap_err().code(),
+                "EGRESS_BAD_ORIGIN",
+                "{uri}"
+            );
+        }
+    }
+
+    /// A private IPv4 written as an IPv6 address (NAT64, 6to4) is refused for
+    /// `function` exactly like the plain IPv4. The `:8443` form normalises
+    /// even without IPv6-literal support, so this pins the shared private
+    /// predicate, not the origin parser.
+    #[test]
+    fn validate_rejects_function_ipv6_embedding_private_ipv4() {
+        for uri in [
+            "https://[64:ff9b::a9fe:a9fe]:8443", // NAT64 169.254.169.254
+            "https://[2002:a9fe:a9fe::1]:8443",  // 6to4 169.254.169.254
+        ] {
+            assert_eq!(
+                validate_entries(&[raw("function", uri)])
+                    .unwrap_err()
+                    .code(),
+                "EGRESS_BAD_ORIGIN",
+                "function origin {uri} embeds a private IPv4 and must be rejected"
+            );
+            // Webhook keeps its own registration/dispatch gates; the
+            // function-scoped config gate does not apply to it.
+            assert!(
+                validate_entries(&[raw("webhook", uri)]).is_ok(),
+                "webhook {uri} is not rejected by the function-scoped config gate"
+            );
+        }
+        // The same spelling of a PUBLIC IPv4 still validates.
+        assert!(validate_entries(&[raw("function", "https://[64:ff9b::808:808]:8443")]).is_ok());
+    }
+
+    #[test]
     fn validate_enforces_count_cap() {
         let many: Vec<RawEgressEntry> = (0..(max_entries() + 1))
             .map(|i| raw("function", &format!("https://h{i}.example.com")))

@@ -86,3 +86,13 @@ fn lone_client_entry_never_becomes_key() {
     assert_eq!(ip, "127.0.0.1".parse::<IpAddr>().unwrap());
     assert_ne!(ip, "9.9.9.9".parse::<IpAddr>().unwrap());
 }
+
+#[test]
+fn default_trusted_proxies_is_two() {
+    // Every case above assumes the default N = 2 (the bare-metal chain). The
+    // global is first-write-wins and only `main` sets it, so NO member of the
+    // g_auth harness may call `drust::safety::ip::set_trusted_proxies` — it
+    // would silently re-key every XFF-driven test in this binary.
+    assert_eq!(drust::safety::ip::trusted_proxies(), 2);
+    assert_eq!(drust::safety::ip::DEFAULT_TRUSTED_PROXIES, 2);
+}

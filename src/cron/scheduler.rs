@@ -421,6 +421,8 @@ async fn dispatch_rpc(
                 ),
                 crate::storage::record_history::CaptureLimits::from_env(),
                 tier,
+                // trusted (service identity) — no deadline, see `exec_write::deadline_for`
+                None,
             )
             .await;
             match res {

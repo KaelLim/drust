@@ -468,6 +468,79 @@ fn flatten(
 mod tests {
     use super::*;
 
+    /// A bundle string placed in a quoted JavaScript literal inside a template
+    /// `<script>`, as in `'{{ t.s("key")|safe }}'`, is copied in as it is. A
+    /// quote of the same kind, a backslash or a newline in the value ends the
+    /// literal early, the whole inline script fails to parse, and the button
+    /// it wires up does nothing. No build gate and no handler test notices
+    /// (an apostrophe in `tenants_list.create.body` did exactly that to the
+    /// "New tenant" button). Without `|safe` the value is HTML-escaped
+    /// instead, and `' " < > &` reach the user as literal entities. The fix
+    /// is to reword the string, not to escape it by hand.
+    #[test]
+    fn js_literal_strings_cannot_end_their_literal() {
+        fn html_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    html_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "html") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        html_files(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mgmt/templates")),
+            &mut files,
+        );
+        let single =
+            regex_lite::Regex::new(r#"'\{\{\s*t\.s\("([^"]+)"\)\s*(\|\s*safe\s*)?\}\}'"#).unwrap();
+        let double =
+            regex_lite::Regex::new(r#""\{\{\s*t\.s\("([^"]+)"\)\s*(\|\s*safe\s*)?\}\}""#).unwrap();
+
+        let mut sites = 0;
+        let mut bad = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            let mut rest = text.as_str();
+            while let Some(open) = rest.find("<script") {
+                let after = &rest[open..];
+                let end = after.find("</script>").unwrap_or(after.len());
+                let script = &after[..end];
+                for (re, quote) in [(&single, '\''), (&double, '"')] {
+                    for cap in re.captures_iter(script) {
+                        sites += 1;
+                        let key = &cap[1];
+                        let raw = cap.get(2).is_some();
+                        for locale in [Locale::En, Locale::ZhTw] {
+                            let value = Translator::new(locale).s(key);
+                            let breaks_literal = value.contains(quote)
+                                || value.contains('\\')
+                                || value.contains('\n')
+                                || value.contains("</script");
+                            let shows_entities = !raw && value.contains(['\'', '"', '<', '>', '&']);
+                            if breaks_literal || shows_entities {
+                                bad.push(format!(
+                                    "{} [{}] {key} = {value:?}",
+                                    file.file_name().unwrap().to_string_lossy(),
+                                    locale.code()
+                                ));
+                            }
+                        }
+                    }
+                }
+                rest = &after[end..];
+            }
+        }
+        assert!(sites > 100, "the scan found only {sites} JS-literal sites");
+        assert!(
+            bad.is_empty(),
+            "reword these bundle strings:\n{}",
+            bad.join("\n")
+        );
+    }
+
     #[test]
     fn locale_from_tag_exact_matches() {
         assert_eq!(Locale::from_tag("en"), Some(Locale::En));

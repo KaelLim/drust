@@ -24,6 +24,10 @@ use thiserror::Error;
 /// the MCP `read` mirror, edge `enforce`) can arm the SAME guard on their own
 /// reader closures — the deadline is a parallel-enforcement concern and every
 /// anon-reachable reader must carry it, not just this executor's two entries.
+/// The same budget bounds the anon/user arm of write-mode stored RPCs
+/// (`rpc::exec_write::deadline_for`), which also hold the tenant writer while
+/// they run; service, cron and the admin playground run write RPCs unbounded
+/// by the trust-tier rule.
 pub(crate) fn query_deadline() -> Option<Duration> {
     use std::sync::OnceLock;
     static D: OnceLock<Option<Duration>> = OnceLock::new();
@@ -63,8 +67,18 @@ impl<'c> DeadlineGuard<'c> {
                 // Returning true from the handler interrupts the statement; the
                 // next `step()` then fails with SQLITE_INTERRUPT, which `classify`
                 // maps to ExecError::Timeout.
-                conn.progress_handler(VM_OPS_PER_CHECK, Some(move || Instant::now() >= deadline))
-                    .is_ok()
+                let ok = conn
+                    .progress_handler(VM_OPS_PER_CHECK, Some(move || Instant::now() >= deadline))
+                    .is_ok();
+                if !ok {
+                    // Fail-open on availability only: the statement then runs
+                    // without a bound. Say so rather than drop it silently.
+                    tracing::warn!(
+                        budget_ms = b.as_millis() as u64,
+                        "query deadline could not be armed; running without a bound"
+                    );
+                }
+                ok
             }
             None => false,
         };
@@ -115,6 +129,19 @@ pub enum ExecError {
     Timeout(u64),
     #[error("query error: {0}")]
     Sql(String),
+}
+
+impl ExecError {
+    /// The error code every face reports for this failure — REST's RPC handler
+    /// (`rpc/handler.rs`) and MCP `call_rpc` share this one table.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ExecError::TooLarge { .. } => "QUERY_TOO_LARGE",
+            ExecError::Forbidden(_) => "QUERY_FORBIDDEN",
+            ExecError::Timeout(_) => "QUERY_TIMEOUT",
+            ExecError::Sql(_) => "SQL_ERROR",
+        }
+    }
 }
 
 pub fn sql_hash(sql: &str) -> String {
@@ -419,6 +446,21 @@ fn classify(err: rusqlite::Error) -> ExecError {
         return ExecError::Forbidden(text);
     }
     ExecError::Sql(text)
+}
+
+#[cfg(test)]
+mod exec_error_code_tests {
+    use super::*;
+
+    /// The strings REST's RPC handler emitted before it switched to `code()`.
+    #[test]
+    fn exec_error_codes() {
+        let too_large = ExecError::TooLarge { bytes: 2, limit: 1 };
+        assert_eq!(too_large.code(), "QUERY_TOO_LARGE");
+        assert_eq!(ExecError::Forbidden("x".into()).code(), "QUERY_FORBIDDEN");
+        assert_eq!(ExecError::Timeout(5).code(), "QUERY_TIMEOUT");
+        assert_eq!(ExecError::Sql("x".into()).code(), "SQL_ERROR");
+    }
 }
 
 #[cfg(test)]

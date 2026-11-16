@@ -9,12 +9,14 @@
 //!   so the two surfaces share the same execution path — no behavior
 //!   drift, same audit/error shape.
 
+use crate::auth::middleware::AuthCtx;
 use crate::query::executor::QueryResult;
 use crate::rpc::params::BoundValue;
 use crate::storage::pool::SharedTenantPool;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::ffi::CString;
+use std::time::Duration;
 
 /// Result of a single statement inside an RPC body.
 #[derive(Debug, Default)]
@@ -66,6 +68,11 @@ pub struct RpcStatementError {
     /// written and there is nothing to roll back. Callers map it to HTTP 507
     /// `TENANT_QUOTA_EXCEEDED` (the disk-guard 507 family), never a 4xx/5xx.
     pub quota_exceeded: bool,
+    /// True when the body was interrupted by the caller's deadline
+    /// (`SQLITE_INTERRUPT`, see [`deadline_for`]). All effects were rolled
+    /// back, record history included, and `message` is the read arm's
+    /// `query timed out after <ms>ms`. Callers map it to `408 QUERY_TIMEOUT`.
+    pub timed_out: bool,
 }
 
 /// Split `sql` on `;` and validate each chunk with `sqlite3_complete`.
@@ -87,6 +94,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 authorizer_denied: false,
                 capture_limit_exceeded: false,
                 quota_exceeded: false,
+                timed_out: false,
             })?;
             // SAFETY: sqlite3_complete reads the NUL-terminated string we own.
             let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
@@ -115,6 +123,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
             authorizer_denied: false,
             capture_limit_exceeded: false,
             quota_exceeded: false,
+            timed_out: false,
         })?;
         let complete = unsafe { rusqlite::ffi::sqlite3_complete(cstr.as_ptr()) };
         if complete == 0 {
@@ -124,6 +133,7 @@ pub fn split_statements(sql: &str) -> Result<Vec<String>, RpcStatementError> {
                 authorizer_denied: false,
                 capture_limit_exceeded: false,
                 quota_exceeded: false,
+                timed_out: false,
             });
         }
         out.push(tail.to_string());
@@ -251,6 +261,17 @@ pub fn execute_one(
 }
 
 fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
+    // The caller's deadline (`run_write_rpc`'s `DeadlineGuard`) aborts the
+    // statement, so the next step fails with SQLITE_INTERRUPT. Decided on the
+    // structural error code BEFORE the authorizer substring test below — the
+    // same test `query::executor::classify` uses, never the message text. An
+    // interrupt is neither an authorizer denial nor a plain statement failure.
+    // `run_write_rpc` rewrites `message` to the read arm's timeout text once it
+    // knows the budget.
+    let timed_out = matches!(
+        &err,
+        rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::OperationInterrupted
+    );
     // `sqlite_error_without_sql`, NOT `to_string()` — the write-arm twin of
     // the read executor's classify. `RpcStatementError.message` is returned
     // verbatim to the caller by `rpc/handler.rs` ("statement N failed: …"),
@@ -263,14 +284,53 @@ fn classify(err: rusqlite::Error, statement_index: usize) -> RpcStatementError {
     // two distinct phrasings the codepath actually emits (drust's
     // authorizer "prohibited" + sqlite's "not authorized") and let
     // "authoriz" catch the rest.
-    let denied = lc.contains("authoriz") || lc.contains("prohibited");
+    let denied = !timed_out && (lc.contains("authoriz") || lc.contains("prohibited"));
     RpcStatementError {
         statement_index,
         message: msg,
         authorizer_denied: denied,
         capture_limit_exceeded: false,
         quota_exceeded: false,
+        timed_out,
     }
+}
+
+/// The deadline a write-mode RPC body runs under for this caller. Trust tiers:
+/// anon and user are bounded by the same `DRUST_QUERY_DEADLINE_MS` the read
+/// executor uses (`query::executor::query_deadline`); service — the tenant key
+/// and an admin PAT alike — is trusted and unbounded. The admin playground and
+/// cron have no `AuthCtx` and pass `None` to [`run_write_rpc`] themselves.
+pub(crate) fn deadline_for(ctx: &AuthCtx) -> Option<Duration> {
+    deadline_for_with(ctx, crate::query::executor::query_deadline())
+}
+
+/// Pure core of [`deadline_for`], split out so the trust-tier mapping is
+/// testable without the process-global env. Exhaustive match with no `_` arm,
+/// so a new `AuthCtx` variant has to decide.
+fn deadline_for_with(ctx: &AuthCtx, untrusted: Option<Duration>) -> Option<Duration> {
+    match ctx {
+        AuthCtx::Service { .. } => None,
+        AuthCtx::Anon | AuthCtx::User { .. } => untrusted,
+    }
+}
+
+/// Abandon `drust_rpc_v2` on a failure / `dry_run` path. When the body was
+/// INTERRUPTED inside a non-read-only statement, SQLite has already rolled back
+/// the whole transaction and closed every savepoint (the connection is back in
+/// autocommit), so `ROLLBACK TO` / `RELEASE` would fail with "no such
+/// savepoint" and misreport a COMPLETE rollback as `TX_COMMIT_FAILED`. That is
+/// only "the RPC's own work" because `run_write_rpc` opens the savepoint on an
+/// autocommit connection (asserted at STEP 2). Scoped to the timeout case on
+/// purpose: the other auto-rollback classes (SQLITE_FULL / IOERR / NOMEM) keep
+/// today's 500.
+fn abandon_savepoint(conn: &Connection, timed_out: bool) -> Result<(), TxCommitError> {
+    if timed_out && conn.is_autocommit() {
+        return Ok(());
+    }
+    let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
+    conn.execute("RELEASE drust_rpc_v2", [])
+        .map(|_| ())
+        .map_err(|e| TxCommitError(e.to_string()))
 }
 
 /// SAVEPOINT RELEASE failed after the authorizer was detached — the
@@ -297,9 +357,13 @@ pub struct TxCommitError(pub String);
 ///    (R2). The hook buffers bounded per-row old/new images
 ///    (`CaptureLimits` caps rows/bytes; BLOBs buffer as length only);
 ///    when installed it MUST be removed on every exit path below.
-/// 4. split + execute loop. On split or execute_one failure we record
-///    the error but DO NOT short-circuit step 5/6 — the savepoint must
-///    be resolved cleanly.
+/// 4. split + execute loop, under the caller's deadline (`deadline`:
+///    anon/user get `DRUST_QUERY_DEADLINE_MS` via [`deadline_for`];
+///    `None` = trusted, nothing armed). One budget for the whole body,
+///    armed ONLY around the statement loop, so nothing after it (hook
+///    removal, the flush, the STEP 5c quota gate) can be interrupted. On
+///    split or execute_one failure we record the error but DO NOT
+///    short-circuit step 5/6 — the savepoint must be resolved cleanly.
 ///    4b. remove the preupdate hook if installed (success AND error
 ///    paths) — a leaked hook would capture unrelated later writes on
 ///    this pooled connection.
@@ -318,7 +382,10 @@ pub struct TxCommitError(pub String);
 ///    simply dropped — and even if rows had been flushed, the
 ///    `ROLLBACK TO` in step 6 would discard them with the mutation
 ///    (same savepoint).
-/// 6. `ROLLBACK TO` (if error or `dry_run`) then `RELEASE`.
+/// 6. `ROLLBACK TO` (if error or `dry_run`) then `RELEASE` — autocommit-
+///    aware on a timeout ([`abandon_savepoint`]): an interrupted DML
+///    statement makes SQLite roll back the whole transaction and close the
+///    savepoint itself.
 /// 7. return outcome.
 ///
 /// Return shape:
@@ -326,8 +393,9 @@ pub struct TxCommitError(pub String);
 ///   the SAVEPOINT was rolled back but `outcome.dry_run == true`.
 /// - `Ok(Err(RpcStatementError))` — one statement failed (split or
 ///   execute_one), or the record-history capture limit was exceeded
-///   (`capture_limit_exceeded: true`, v1.46 R8). All effects were
-///   rolled back.
+///   (`capture_limit_exceeded: true`, v1.46 R8), or the body ran past
+///   the caller's deadline (`timed_out: true`). All effects were rolled
+///   back, record history included.
 /// - `Err(TxCommitError)` — `RELEASE drust_rpc_v2` itself failed; the
 ///   savepoint state is undefined and the operator needs to look.
 ///
@@ -348,6 +416,12 @@ pub async fn run_write_rpc(
     // probe below is what gates; a write-mode RPC can fan out many statements,
     // so at/over the cap we refuse it wholesale before the SAVEPOINT opens.
     tier: i64,
+    // The wall-clock budget for the statement loop: `deadline_for(&ctx)` on
+    // the REST arm (anon/user bounded, service `None`); a literal `None` from
+    // the admin playground and cron (trusted). A parameter, not read in here,
+    // because `query_deadline()` caches the env var process-wide — tests pass
+    // a small budget directly, the `CaptureLimits` precedent.
+    deadline: Option<Duration>,
 ) -> Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError> {
     let res: rusqlite::Result<Result<Result<WriteRpcOutcome, RpcStatementError>, TxCommitError>> =
         pool.with_writer(move |conn| {
@@ -380,6 +454,7 @@ pub async fn run_write_rpc(
                             authorizer_denied: false,
                             capture_limit_exceeded: false,
                             quota_exceeded: true,
+                            timed_out: false,
                         })));
                     }
                 }
@@ -430,6 +505,11 @@ pub async fn run_write_rpc(
             // ── STEP 2: SAVEPOINT (raw, no authorizer). If this
             //    fails we have nothing to roll back; surface as
             //    TxCommitError so the caller's 500 path is uniform.
+            //    `with_writer` never begins a transaction, so the savepoint
+            //    opens on an autocommit connection: "SQLite rolled back the
+            //    whole transaction" (an interrupted DML statement, STEP 6)
+            //    then means exactly "the RPC's own work".
+            debug_assert!(conn.is_autocommit());
             if let Err(e) = conn.execute("SAVEPOINT drust_rpc_v2", []) {
                 return Ok(Err(TxCommitError(e.to_string())));
             }
@@ -503,24 +583,44 @@ pub async fn run_write_rpc(
             // on all known SQL-error paths; this invariant is
             // asserted by the `execute_one_never_panics_on_bad_sql`
             // test below.
-            for (i, stmt) in stmts.iter().enumerate() {
-                statement_count += 1;
-                match execute_one(conn, stmt, &bound, i + 1) {
-                    Ok(o) => {
-                        if o.rows.is_some() {
-                            last_rows = o.rows;
+            //
+            // The caller's deadline (anon/user only; `None` = trusted,
+            // nothing armed) is scoped to THIS block: the guard is dropped —
+            // progress handler cleared — before STEP 4b, so hook removal, the
+            // history flush and the STEP 5c quota gate (drust-controlled and
+            // bounded) are never interrupted half-way. Do not "simplify" this
+            // to one guard armed at the top of the closure.
+            {
+                let dl = crate::query::executor::DeadlineGuard::arm(conn, deadline);
+                let c: &Connection = &dl;
+                for (i, stmt) in stmts.iter().enumerate() {
+                    statement_count += 1;
+                    match execute_one(c, stmt, &bound, i + 1) {
+                        Ok(o) => {
+                            if o.rows.is_some() {
+                                last_rows = o.rows;
+                            }
+                            combined_affected += o.affected_rows;
+                            if let Some(rid) = o.last_insert_rowid {
+                                last_insert_rowid = Some(rid);
+                            }
                         }
-                        combined_affected += o.affected_rows;
-                        if let Some(rid) = o.last_insert_rowid {
-                            last_insert_rowid = Some(rid);
+                        Err(e) => {
+                            exec_error = Some(e);
+                            break;
                         }
-                    }
-                    Err(e) => {
-                        exec_error = Some(e);
-                        break;
                     }
                 }
+            } // DeadlineGuard dropped → progress handler removed from the writer
+            // The interrupt surfaces as SQLite's bare "interrupted"; give the
+            // caller the read arm's text so both 408s are byte-identical.
+            if let Some(e) = exec_error.as_mut()
+                && e.timed_out
+            {
+                let ms = deadline.map(|d| d.as_millis() as u64).unwrap_or(0);
+                e.message = crate::query::executor::ExecError::Timeout(ms).to_string();
             }
+            let timed_out = exec_error.as_ref().is_some_and(|e| e.timed_out);
 
             // ── STEP 4b: remove the preupdate hook (when installed) —
             //    on EVERY path, BEFORE the flush and before savepoint
@@ -531,9 +631,8 @@ pub async fn run_write_rpc(
                 && let Err(e) = crate::storage::record_history::remove_preupdate_capture(conn)
             {
                 crate::query::authorizer::detach_authorizer(conn);
-                let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-                if let Err(rel) = conn.execute("RELEASE drust_rpc_v2", []) {
-                    return Ok(Err(TxCommitError(rel.to_string())));
+                if let Err(rel) = abandon_savepoint(conn, timed_out) {
+                    return Ok(Err(rel));
                 }
                 return Ok(Err(TxCommitError(format!(
                     "record-history hook removal failed: {e}"
@@ -580,6 +679,7 @@ pub async fn run_write_rpc(
                         authorizer_denied: false,
                         capture_limit_exceeded: true,
                         quota_exceeded: false,
+                        timed_out: false,
                     }))),
                     FlushError::Db(db) => Ok(Err(TxCommitError(format!(
                         "record-history flush failed: {db}"
@@ -620,6 +720,7 @@ pub async fn run_write_rpc(
                                 authorizer_denied: false,
                                 capture_limit_exceeded: false,
                                 quota_exceeded: true,
+                                timed_out: false,
                             })));
                         }
                     }
@@ -636,9 +737,10 @@ pub async fn run_write_rpc(
             // ── STEP 6: resolve savepoint.
             let should_rollback = exec_error.is_some() || dry_run;
             if should_rollback {
-                let _ = conn.execute("ROLLBACK TO drust_rpc_v2", []);
-            }
-            if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
+                if let Err(rel) = abandon_savepoint(conn, timed_out) {
+                    return Ok(Err(rel));
+                }
+            } else if let Err(e) = conn.execute("RELEASE drust_rpc_v2", []) {
                 return Ok(Err(TxCommitError(e.to_string())));
             }
 
@@ -797,6 +899,64 @@ mod tests {
             "DDL under the writable authorizer must stay INVALID_SQL_FOR_MODE: {}",
             e.message
         );
+    }
+
+    /// Trust tiers for the write-RPC deadline, against the env-independent
+    /// core: only anon and user are bounded; service — the tenant key AND an
+    /// admin PAT (`admin_id: Some`) — never is. Plus the env-reading wrapper,
+    /// which must agree with the read executor's `query_deadline()` whatever
+    /// CI sets `DRUST_QUERY_DEADLINE_MS` to.
+    #[test]
+    fn deadline_for_bounds_only_untrusted_callers() {
+        let five = Some(Duration::from_secs(5));
+        let user = AuthCtx::User {
+            user_id: "u1".into(),
+            token_hash: "h".into(),
+        };
+        assert_eq!(
+            deadline_for_with(&AuthCtx::Service { admin_id: None }, five),
+            None
+        );
+        assert_eq!(
+            deadline_for_with(&AuthCtx::Service { admin_id: Some(7) }, five),
+            None,
+            "an admin PAT is trusted: no deadline"
+        );
+        assert_eq!(deadline_for_with(&AuthCtx::Anon, five), five);
+        assert_eq!(deadline_for_with(&user, five), five);
+
+        assert_eq!(deadline_for(&AuthCtx::Service { admin_id: None }), None);
+        assert_eq!(
+            deadline_for(&AuthCtx::Anon),
+            crate::query::executor::query_deadline()
+        );
+        assert_eq!(
+            deadline_for(&user),
+            crate::query::executor::query_deadline()
+        );
+    }
+
+    /// The interrupt is classified on the structural `OperationInterrupted`
+    /// code, as a timeout and never as an authorizer denial; an ordinary
+    /// statement failure stays `timed_out: false`.
+    #[test]
+    fn classify_marks_an_interrupt_as_timed_out_not_denied() {
+        use crate::rpc::params::BoundValue;
+        use std::collections::BTreeMap;
+        let d = tempfile::tempdir().unwrap();
+        let mut conn = crate::storage::tenant_db::open_write(d.path(), "intr").unwrap();
+        conn.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let binds: BTreeMap<String, BoundValue> = BTreeMap::new();
+
+        conn.progress_handler(1, Some(|| true)).unwrap();
+        let e = execute_one(&conn, "SELECT count(*) FROM t", &binds, 1).unwrap_err();
+        assert!(e.timed_out, "an interrupt is a timeout: {e:?}");
+        assert!(!e.authorizer_denied, "an interrupt is not a denial: {e:?}");
+
+        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        let e = execute_one(&conn, "UPDATE t SET nope = 1", &binds, 1).unwrap_err();
+        assert!(!e.timed_out, "schema drift is not a timeout: {e:?}");
     }
 
     #[test]

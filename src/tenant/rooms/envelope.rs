@@ -70,6 +70,10 @@ pub enum ServerMessage {
 
 /// Error codes for `ServerMessage::Error.code`.
 pub mod codes {
+    /// Not emitted since v1.32.5, when the blanket "service-only publish"
+    /// refusal split into [`WS_PUBLISH_USER_DENIED`] /
+    /// [`WS_PUBLISH_ANON_DENIED`]. Retained only for clients that still
+    /// pattern-match it.
     pub const WS_PUBLISH_DENIED: &str = "WS_PUBLISH_DENIED";
     /// v1.32.5 — emitted when a user token tries `op:publish` on a tenant
     /// whose `allow_user_publish` flag is still off (default).
@@ -83,15 +87,24 @@ pub mod codes {
     pub const RATE_LIMITED: &str = "RATE_LIMITED";
     pub const ROOM_FULL: &str = "ROOM_FULL";
     pub const CLIENT_ROOM_MAX: &str = "CLIENT_ROOM_MAX";
-    pub const UNKNOWN_OP: &str = "UNKNOWN_OP";
+    /// Any text frame that does not deserialize into a [`super::ClientOp`] —
+    /// not JSON, a missing required field, or an `op` the server does not
+    /// know. No `ref` is echoed and the connection stays open.
     pub const MALFORMED_FRAME: &str = "MALFORMED_FRAME";
     pub const LAGGED: &str = "LAGGED";
+    /// Reserved; not emitted today. A per-room evict
+    /// (`RoomBus::evict_room`) drops that room's channel, the subscriber's
+    /// stream ends and the connection loop removes it with no frame at all;
+    /// the client recovers by re-subscribing. Kept because the v1.65.0
+    /// CHANGELOG published the name.
     pub const ROOM_EVICTED: &str = "ROOM_EVICTED";
     /// #955 — the connection's tenant epoch moved since it connected, i.e.
     /// something called `RoomBus::evict_tenant` (that function's doc
     /// enumerates the call sites — token reroll, user-session revoke, tenant
-    /// soft-delete, admin evict-all …). CONNECTION-level, unlike the room-level
-    /// [`ROOM_EVICTED`]: the server sends this and then closes the socket
+    /// soft-delete, admin evict-all …). CONNECTION-level (a per-room evict, by
+    /// contrast, ends that room's subscription silently — see
+    /// [`ROOM_EVICTED`], which is reserved and not emitted): the server sends
+    /// this and then closes the socket
     /// with 1008 Policy Violation, because the identity captured at connect
     /// is no longer trustworthy. Clients must reconnect and re-authenticate;
     /// a still-valid token reconnects normally.
@@ -136,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_op_fails_to_parse_so_handler_emits_unknown_op() {
+    fn unknown_op_fails_to_parse_so_handler_emits_malformed_frame() {
         let r: Result<ClientOp, _> = serde_json::from_str(r#"{"op":"wat","room":"chat"}"#);
         assert!(r.is_err());
     }

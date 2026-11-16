@@ -5,13 +5,18 @@
 #   deploy/smoke/run-all.sh 10 40      # only the checks whose name starts with 10- or 40-
 #
 # Exit status is non-zero when any check script failed. Each script's full
-# output is kept under deploy/smoke/.last-run/ for reading afterwards.
+# output is kept under deploy/smoke/.last-run/ for reading afterwards, with the
+# store that ran in store.txt. Set SMOKE_COMPOSE_PROJECT as for up.sh.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$here/.last-run"
 rm -rf "$out"
 mkdir -p "$out"
+
+# Which object store this run checked (up.sh records SMOKE_STORE in .env).
+store="$(sed -n 's/^SMOKE_STORE=//p' "$here/.env" 2>/dev/null | tail -n 1)"
+echo "store: ${store:-unknown}" | tee "$out/store.txt"
 
 failed=""
 total=0

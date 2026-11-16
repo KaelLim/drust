@@ -493,6 +493,90 @@ async fn unknown_op_returns_malformed_frame() {
     assert_eq!(err["code"], "MALFORMED_FRAME");
 }
 
+/// A text frame over `DRUST_BROADCAST_PAYLOAD_MAX_BYTES` is refused by the
+/// codec at header-parse time, before drust sees it. The client must get the
+/// typed `PAYLOAD_TOO_LARGE` error and then Close 1009 — not a bare TCP drop
+/// (1006) it cannot tell from a network failure.
+///
+/// This is the only lib-or-integration test that sees the REAL codec error
+/// type (axum's tungstenite, not the dev-only 0.24 line the lib tests build
+/// by hand), so re-run it after every axum bump: `inbound_error_is_too_large`
+/// matches that error's `Debug` text.
+///
+/// The frame is written raw, in two writes with a pause between them (header
+/// plus the first 16 KiB, then the rest), so the server parses the header
+/// while most of the payload has not arrived — the shape a chunked proxy
+/// relay produces. The unread remainder is what turns the server's close into
+/// an RST; the linger is what gets the two frames out ahead of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
+async fn oversize_frame_gets_payload_too_large_then_close_1009() {
+    use tokio::io::AsyncWriteExt;
+
+    let mut cfg = drust::tenant::rooms::RoomsConfig::test_defaults();
+    cfg.payload_max_bytes = 65_536;
+    let cap = cfg.payload_max_bytes;
+    let h = helpers::spin_up_tenant_rooms(TENANT, "anon", cfg).await;
+    let addr = serve(h.app.clone()).await;
+    let (mut ws, _) = connect_async(ws_url(addr, TENANT, &h.token)).await.unwrap();
+
+    // A client text frame: FIN + opcode 1, MASK bit + the 64-bit length form,
+    // an all-zero masking key (valid, and leaves the payload as written).
+    let len = cap + 1024;
+    let prefix = br#"{"op":"publish","room":"x","payload":""#;
+    let suffix = br#""}"#;
+    let mut payload = Vec::with_capacity(len);
+    payload.extend_from_slice(prefix);
+    payload.resize(len - suffix.len(), b'a');
+    payload.extend_from_slice(suffix);
+    assert_eq!(payload.len(), len);
+    let mut frame = vec![0x81u8, 0x80 | 127];
+    frame.extend_from_slice(&(len as u64).to_be_bytes());
+    frame.extend_from_slice(&[0, 0, 0, 0]);
+    frame.extend_from_slice(&payload);
+    let split = frame.len() - len + 16 * 1024;
+
+    {
+        let MaybeTlsStream::Plain(tcp) = ws.get_mut() else {
+            panic!("expected a plain TCP stream");
+        };
+        tcp.write_all(&frame[..split]).await.unwrap();
+        tcp.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The server may already have closed on the header; a write error on
+        // the remainder is expected then, and what matters is what we READ.
+        let _ = tcp.write_all(&frame[split..]).await;
+        let _ = tcp.flush().await;
+    }
+
+    let first = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .expect("timed out waiting for the PAYLOAD_TOO_LARGE frame")
+        .expect("stream ended without the PAYLOAD_TOO_LARGE frame (a bare TCP drop)")
+        .expect("ws error before the PAYLOAD_TOO_LARGE frame (a bare TCP drop)");
+    let TM::Text(t) = first else {
+        panic!("expected the typed error first, got {first:?}");
+    };
+    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+    assert_eq!(v["kind"], "error", "{v}");
+    assert_eq!(v["code"], "PAYLOAD_TOO_LARGE", "{v}");
+    assert!(v.get("ref").is_none(), "the frame was never parsed: {v}");
+
+    let nxt = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .expect("timed out waiting for the Close frame")
+        .expect("stream ended without a Close frame")
+        .expect("ws error while waiting for the Close frame");
+    match nxt {
+        TM::Close(Some(cf)) => assert_eq!(
+            u16::from(cf.code),
+            1009,
+            "an over-cap frame must be closed 1009 Message Too Big"
+        ),
+        other => panic!("expected Close(1009) right after PAYLOAD_TOO_LARGE, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tokio/2374 — per-test runtime starvation; run individually with --ignored"]
 async fn unsubscribe_is_idempotent_acked() {

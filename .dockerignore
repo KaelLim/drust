@@ -12,7 +12,9 @@ target/
 .env.*
 !.env.example
 deploy/smoke/.env
+deploy/smoke/.env.*
 deploy/smoke/.last-run/
+deploy/smoke/.generated/
 
 # Host-specific runtime data that must never land in an image
 /data/
@@ -33,3 +35,4 @@ docs/superpowers/
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.storage.yml

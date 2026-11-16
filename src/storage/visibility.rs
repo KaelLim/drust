@@ -100,7 +100,17 @@ pub async fn change_visibility(
     // longer downgrades a script-executing type; the object's Content-Type
     // rides along unchanged and the safety decision lives at serve time (see
     // `files::content_security_policy_for`).
-    let put_ct = meta.content_type.clone();
+    //
+    // The essence IS lowercased, exactly as every ingest station does
+    // (`files::normalize_content_type_case`): a row written before ingest
+    // normalization can carry `TEXT/HTML`, and publishing it in that casing
+    // would slip past the case-sensitive markup matcher of a `/public/*`
+    // proxy block, which then serves it without the sandbox CSP. Lowercasing
+    // changes no client's rendering (MIME essences are case-insensitive).
+    let put_ct = meta
+        .content_type
+        .as_deref()
+        .map(crate::storage::files::normalize_content_type_case);
 
     // 2. Copy: read bytes from the old bucket, put to the new bucket.
     let bytes = garage.get_object_bytes_in(old_bucket, &object_key).await?;

@@ -967,6 +967,83 @@ pub(crate) fn map_batch_error(e: anyhow::Error) -> Response {
     }
 }
 
+// In-transaction refusal sentinels for the single-record write handlers.
+//
+// Never use `rusqlite::Error::InvalidQuery` for this: its `Display` is the
+// fixed string "Query is not read-only", so a classifier that reads the message
+// can never see what was meant. These are `SqliteFailure`s whose message is a
+// drust-only prefix plus detail, classified by variant + prefix (structural),
+// never by a substring of `Display`.
+const FIELD_NOT_FOUND_SENTINEL: &str = "FIELD_NOT_FOUND: ";
+const COLLECTION_GONE_SENTINEL: &str = "COLLECTION_NOT_FOUND: ";
+
+/// Refusal for a body key that is not a field of the collection. The message
+/// carries the key verbatim, so `field_not_found_of` can recover it.
+fn field_not_found_sentinel(field: &str) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1),
+        Some(format!("{FIELD_NOT_FOUND_SENTINEL}{field}")),
+    )
+}
+
+/// The rejected key, if `e` is the sentinel above. A native SQLite message
+/// never starts with this prefix, and the remainder is the caller's key.
+fn field_not_found_of(e: &rusqlite::Error) -> Option<&str> {
+    match e {
+        rusqlite::Error::SqliteFailure(_, Some(m)) => m.strip_prefix(FIELD_NOT_FOUND_SENTINEL),
+        _ => None,
+    }
+}
+
+/// Refusal for a collection that vanished between the schema-cache lookup and
+/// the write transaction (TOCTOU vs `drop_collection`).
+fn collection_gone_sentinel(coll: &str) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(1),
+        Some(format!("{COLLECTION_GONE_SENTINEL}{coll}")),
+    )
+}
+
+fn is_collection_gone(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(_, Some(m)) if m.starts_with(COLLECTION_GONE_SENTINEL))
+}
+
+/// Cap a caller-supplied string reflected in an error body at `max` bytes,
+/// cutting on a char boundary.
+fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// The `400 FIELD_NOT_FOUND` answer for an unknown body key. `bad_full` comes
+/// from the sentinel, so it is right even when the field was dropped after the
+/// schema cache loaded (`known_fields` would still list it — it is filtered out
+/// of `existing` so the fix never names a field as both missing and present).
+fn field_not_found_response(bad_full: &str, coll: &str, known_fields: &[String]) -> Response {
+    let bad = truncate_on_char_boundary(bad_full, 128);
+    let existing: Vec<String> = known_fields
+        .iter()
+        .filter(|f| f.as_str() != bad_full)
+        .cloned()
+        .collect();
+    json_error_with_context(
+        StatusCode::BAD_REQUEST,
+        "FIELD_NOT_FOUND",
+        &format!("unknown field '{bad}' for collection '{coll}'"),
+        &crate::safety::error_fixes::ErrorContext::FieldNotFound {
+            field: bad,
+            collection: coll,
+            existing: &existing,
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // +Extension(quota_tier) keeps this at 8 params
 pub async fn create_handler(
     Extension(t): Extension<TenantRef>,
@@ -1124,10 +1201,9 @@ pub async fn create_handler(
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
-    // Capture submitted keys + schema field names BEFORE the closure
-    // moves `data` and `schema` — needed at the error point to identify
-    // which key was rejected as FIELD_NOT_FOUND.
-    let submitted_keys: Vec<String> = data.keys().cloned().collect();
+    // Schema field names, captured BEFORE the closure moves `schema` — the
+    // `existing` list of a FIELD_NOT_FOUND answer. The rejected key itself
+    // comes from the sentinel.
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<(i64, serde_json::Value)> {
@@ -1145,13 +1221,13 @@ pub async fn create_handler(
             // Validate against schema
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
-                None => return Err(rusqlite::Error::InvalidQuery),
+                None => return Err(collection_gone_sentinel(&coll_clone)),
             };
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data.keys() {
                 if !allowed.contains(k.as_str()) {
-                    return Err(rusqlite::Error::InvalidQuery);
+                    return Err(field_not_found_sentinel(k));
                 }
             }
             let cols: Vec<&str> = data.keys().map(|k| k.as_str()).collect();
@@ -1239,6 +1315,20 @@ pub async fn create_handler(
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
+        // The two structural sentinel arms go FIRST: the field sentinel carries
+        // a caller-chosen key, and the quota / policy arms below classify by a
+        // substring of `Display`, so a key named after either code would be
+        // answered 507 / 403 if they came first.
+        Err(ref e) if is_collection_gone(e) => json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        ),
+        Err(ref e) if field_not_found_of(e).is_some() => field_not_found_response(
+            field_not_found_of(e).unwrap_or_default(),
+            &coll,
+            &known_fields,
+        ),
         Err(ref e) if crate::error::is_quota_exceeded(e) => json_error(
             StatusCode::INSUFFICIENT_STORAGE,
             "TENANT_QUOTA_EXCEEDED",
@@ -1254,28 +1344,10 @@ pub async fn create_handler(
             "CHECK_CONSTRAINT_FAILED",
             &e.to_string(),
         ),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("InvalidQuery") {
-                let bad = submitted_keys
-                    .iter()
-                    .find(|k| !known_fields.iter().any(|f| f == *k))
-                    .cloned()
-                    .unwrap_or_default();
-                json_error_with_context(
-                    StatusCode::BAD_REQUEST,
-                    "FIELD_NOT_FOUND",
-                    "unknown field or missing collection",
-                    &crate::safety::error_fixes::ErrorContext::FieldNotFound {
-                        field: &bad,
-                        collection: &coll,
-                        existing: &known_fields,
-                    },
-                )
-            } else {
-                (StatusCode::BAD_REQUEST, msg).into_response()
-            }
-        }
+        // Other native refusals (UNIQUE / NOT NULL / STRICT type) stay
+        // `400 text/plain` with SQLite's message until one classifier covers
+        // REST single, records:batch and MCP together.
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
@@ -1401,10 +1473,8 @@ pub async fn update_handler(
     let pool = t.pool.clone();
     let coll_clone = coll.clone();
     let tenant_id = t.tenant_id.clone();
-    // Capture submitted keys + schema field names BEFORE the closure
-    // moves `data` and `schema` — needed at the error point to identify
-    // which key was rejected as FIELD_NOT_FOUND.
-    let submitted_keys: Vec<String> = data.keys().cloned().collect();
+    // Schema field names — the `existing` list of a FIELD_NOT_FOUND answer.
+    // The rejected key itself comes from the sentinel.
     let known_fields: Vec<String> = schema.fields.iter().map(|f| f.name.clone()).collect();
     let res = pool
         .with_writer_tx(move |tx| -> rusqlite::Result<serde_json::Value> {
@@ -1418,13 +1488,13 @@ pub async fn update_handler(
             let usage_before = crate::storage::quota::usage_on_conn(tx)?;
             let schema = match describe_collection(tx, &coll_clone)? {
                 Some(s) => s,
-                None => return Err(rusqlite::Error::InvalidQuery),
+                None => return Err(collection_gone_sentinel(&coll_clone)),
             };
             let allowed: std::collections::HashSet<&str> =
                 schema.fields.iter().map(|f| f.name.as_str()).collect();
             for k in data.keys() {
                 if !allowed.contains(k.as_str()) {
-                    return Err(rusqlite::Error::InvalidQuery);
+                    return Err(field_not_found_sentinel(k));
                 }
             }
             // Explicit-policy USING pre-flight: the target row must satisfy the
@@ -1595,6 +1665,19 @@ pub async fn update_handler(
             webhooks.dispatch(&tenant_id, &coll, ev);
             r
         }
+        // Structural sentinel arms FIRST — see create_handler: the field
+        // sentinel carries a caller-chosen key and the quota / policy arms are
+        // substring classifiers.
+        Err(ref e) if is_collection_gone(e) => json_error(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            &format!("no such collection: {coll}"),
+        ),
+        Err(ref e) if field_not_found_of(e).is_some() => field_not_found_response(
+            field_not_found_of(e).unwrap_or_default(),
+            &coll,
+            &known_fields,
+        ),
         Err(ref e) if crate::error::is_quota_exceeded(e) => json_error(
             StatusCode::INSUFFICIENT_STORAGE,
             "TENANT_QUOTA_EXCEEDED",
@@ -1613,28 +1696,8 @@ pub async fn update_handler(
             "CHECK_CONSTRAINT_FAILED",
             &e.to_string(),
         ),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("InvalidQuery") {
-                let bad = submitted_keys
-                    .iter()
-                    .find(|k| !known_fields.iter().any(|f| f == *k))
-                    .cloned()
-                    .unwrap_or_default();
-                json_error_with_context(
-                    StatusCode::BAD_REQUEST,
-                    "FIELD_NOT_FOUND",
-                    "unknown field",
-                    &crate::safety::error_fixes::ErrorContext::FieldNotFound {
-                        field: &bad,
-                        collection: &coll,
-                        existing: &known_fields,
-                    },
-                )
-            } else {
-                (StatusCode::BAD_REQUEST, msg).into_response()
-            }
-        }
+        // Other native refusals stay `400 text/plain` — see create_handler.
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
 }
 
@@ -2589,5 +2652,89 @@ mod readback_tests {
         let r = row("draft");
         assert_eq!(shape_readback(ReadBack::IdOnly, &r), json!({"id": 1}));
         assert_eq!(shape_readback(ReadBack::Full, &r), r);
+    }
+}
+
+#[cfg(test)]
+mod sentinel_tests {
+    //! The single-record write sentinels: round-trip, and that no other error
+    //! the same `match` sees can satisfy their (first-position) predicates.
+    use super::{
+        collection_gone_sentinel, field_not_found_of, field_not_found_sentinel, is_collection_gone,
+        truncate_on_char_boundary,
+    };
+
+    #[test]
+    fn field_not_found_sentinel_round_trips() {
+        let e = field_not_found_sentinel("a: b");
+        assert_eq!(field_not_found_of(&e), Some("a: b"));
+        assert_ne!(e.to_string(), "Query is not read-only");
+        assert!(!is_collection_gone(&e));
+        let g = collection_gone_sentinel("posts");
+        assert!(is_collection_gone(&g));
+        assert_eq!(field_not_found_of(&g), None);
+    }
+
+    #[test]
+    fn native_constraint_errors_are_not_sentinels() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE t (a TEXT NOT NULL, b TEXT UNIQUE, n INTEGER CHECK (n > 0)) STRICT;
+             INSERT INTO t (a, b, n) VALUES ('x', 'dup', 1);",
+        )
+        .unwrap();
+        let native = [
+            c.execute("INSERT INTO t (a, b, n) VALUES (NULL, 'y', 1)", [])
+                .unwrap_err(),
+            c.execute("INSERT INTO t (a, b, n) VALUES ('x', 'dup', 1)", [])
+                .unwrap_err(),
+            c.execute("INSERT INTO t (a, b, n) VALUES ('x', 'z', 0)", [])
+                .unwrap_err(),
+            c.execute("INSERT INTO t (a, b, n) VALUES ('x', 'w', 'nope')", [])
+                .unwrap_err(),
+        ];
+        let others = [
+            rusqlite::Error::InvalidQuery,
+            rusqlite::Error::QueryReturnedNoRows,
+            crate::query::policy::policy_check_sentinel(),
+            crate::error::quota_exceeded_error(
+                crate::storage::quota::check_tenant_quota(u64::MAX / 2, 1, 1).unwrap_err(),
+            ),
+        ];
+        for e in native.iter().chain(others.iter()) {
+            assert_eq!(field_not_found_of(e), None, "{e}");
+            assert!(!is_collection_gone(e), "{e}");
+        }
+    }
+
+    #[test]
+    fn code_named_keys_still_classify_as_field_not_found() {
+        for key in [
+            "TENANT_QUOTA_EXCEEDED",
+            "x_POLICY_CHECK_FAILED_y",
+            "COLLECTION_NOT_FOUND: x",
+        ] {
+            let e = field_not_found_sentinel(key);
+            assert_eq!(field_not_found_of(&e), Some(key));
+            assert!(!is_collection_gone(&e));
+        }
+        // The hazard the arm order exists for: the substring classifiers DO
+        // fire on these sentinels, so they must come after the field arm.
+        assert!(crate::error::is_quota_exceeded(&field_not_found_sentinel(
+            "TENANT_QUOTA_EXCEEDED"
+        )));
+        assert!(crate::query::policy::is_policy_check_failure(
+            &field_not_found_sentinel("x_POLICY_CHECK_FAILED_y")
+        ));
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_caps_multibyte_keys() {
+        let cjk = "欄".repeat(100); // 300 bytes
+        let t = truncate_on_char_boundary(&cjk, 128);
+        assert!(t.len() <= 128);
+        assert!(cjk.starts_with(t));
+        assert_eq!(t.len(), 126);
+        assert_eq!(truncate_on_char_boundary("short", 128), "short");
     }
 }

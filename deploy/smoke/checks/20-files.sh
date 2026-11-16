@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Files, Mode A, against the real Garage (object_store 0.14 is the upgrade under
-# test): multipart upload as service (Mode-A public default, explicit private),
-# byte round-trip by sha256 through drust and straight from Garage's website
-# endpoint, object attributes Garage stores, list / get_one / delete, the
+# Files, Mode A, against the real object store (RustFS or Garage, SMOKE_STORE):
+# multipart upload as service (Mode-A public default, explicit private),
+# byte round-trip by sha256 through drust and through the deployment's own
+# /public/* route (Caddy straight to the store), object attributes the store
+# keeps, the /public/* route's own hardening, list / get_one / delete, the
 # returned public URL and its origin, public <-> private bucket move
 # (copy + delete across the two host-wide buckets), drust HMAC signed URLs and
 # their redemption, the stored-XSS headers (invariant 14), the file-caps gate
@@ -16,9 +17,10 @@ REQ_TIMEOUT="${REQ_TIMEOUT:-60}"
 # The client-facing origin of this Compose stack (Caddy on SMOKE_HTTP_PORT; the
 # smoke override sets DRUST_PUBLIC_URL to it). File / sign / get_file_url URLs
 # are NOT built from DRUST_PUBLIC_URL but from DRUST_PUBLIC_BASE_URL
-# (src/config.rs, default the bare-metal http://localhost:8793), which the Helm
-# chart derives and Compose never sets — the origin checks below assert the
-# intended client-reachable origin and FAIL while that knob is unwired.
+# (src/config.rs, default the bare-metal http://localhost:8793). docker-compose.yml
+# sets it with ${DRUST_PUBLIC_BASE_URL:-http://localhost}; up.sh exports it so the
+# base file's own line is what is tested — the origin checks below FAIL if it is
+# unwired.
 PUBLIC_ORIGIN="http://localhost:${SMOKE_HTTP_PORT:-48080}"
 SANDBOX="sandbox allow-top-navigation-by-user-activation"   # storage::files::SANDBOX_CSP
 
@@ -77,7 +79,7 @@ upload() {
   [ "$STATUS" = 200 ] && track "$UP_KEY"
   return 0
 }
-garage_get() { req GET "$GARAGE_WEB/$1" -H "Host: public.web.local"; }
+public_get() { req GET "$PUBLIC/$1"; }   # what an anonymous client fetches
 meta_of() { svc GET "/files/$1"; }   # service get_one
 
 # ---- tenants --------------------------------------------------------------------
@@ -112,20 +114,55 @@ check_eq "bytes through drust round-trip by sha256" "$PLAIN_SHA" "$(body_sha)"
 check_eq "bytes responder sends nosniff" nosniff "$(header x-content-type-options)"
 check_eq "text/plain gets no sandbox CSP" "" "$(header content-security-policy)"
 
-garage_get "$TA/$K1"
-check_eq "public object is served by Garage's website endpoint at <tenant>/<key>" 200 "$STATUS"
-check_eq "Garage-served bytes match by sha256" "$PLAIN_SHA" "$(body_sha)"
-check_eq "Garage object carries the Content-Type drust put" "text/plain" "$(header content-type)"
-check_eq "Garage object carries the public Cache-Control" "public, max-age=86400" "$(header cache-control)"
-check_contains "Garage object carries the inline Content-Disposition with filename" 'inline; filename="plain.txt"' "$(header content-disposition)"
-garage_get "$K1"
+public_get "$TA/$K1"
+check_eq "public object is served by the public route at <tenant>/<key>" 200 "$STATUS"
+check_eq "bytes served by the public route match by sha256" "$PLAIN_SHA" "$(body_sha)"
+check_eq "public object carries the Content-Type drust put" "text/plain" "$(header content-type)"
+check_eq "public object carries the public Cache-Control" "public, max-age=86400" "$(header cache-control)"
+check_contains "public object carries the inline Content-Disposition with filename" 'inline; filename="plain.txt"' "$(header content-disposition)"
+public_get "$K1"
 check_eq "tenant objects are namespaced by <tenant>/ (bare key is absent from the bucket)" 404 "$STATUS"
-req GET "$GARAGE_WEB/$TA/$K1" -H "Host: public.web.local" -H "Range: bytes=0-4"
-check_eq "Garage serves a ranged GET of the stored object (206)" 206 "$STATUS"
+req GET "$PUBLIC/$TA/$K1" -H "Range: bytes=0-4"
+check_eq "the public route serves a ranged GET of the stored object (206)" 206 "$STATUS"
 check_eq "ranged GET returns the first five bytes" "hello" "$BODY"
 
 req GET "$BASE$(url_path "$U1")"
 check_eq "the returned public URL path is served through the Compose Caddy (/public/*)" 200 "$STATUS"
+
+# The /public/* route's own hardening (deploy/compose.Caddyfile). Every check
+# here holds on either store and reads only variables assigned above (lib.sh is
+# set -u: a later-assigned variable would abort the whole script).
+req GET "$PUBLIC/$TA/$K1?response-content-type=TEXT/HTML&response-content-disposition=attachment"
+check_eq "the public route drops the query: ?response-content-type=TEXT/HTML is ignored" "text/plain" "$(header content-type)"
+check_eq "... and adds no sandbox CSP to it" "" "$(header content-security-policy)"
+check_contains "... and ?response-content-disposition=attachment is ignored" 'inline; filename="plain.txt"' "$(header content-disposition)"
+req GET "$PUBLIC/$TA/$K1" -H "Authorization: Bearer $SA" -H "Cookie: x=y"
+check_eq "a public GET carrying a drust bearer and a cookie still answers 200 (the proxy forwards neither)" 200 "$STATUS"
+req PUT "$PUBLIC/$TA/$K1" --data x
+check_eq "PUT on the public route answers 405 (GET/HEAD only)" 405 "$STATUS"
+req DELETE "$PUBLIC/$TA/$K1"
+check_eq "DELETE on the public route answers 405 (GET/HEAD only)" 405 "$STATUS"
+req POST "$PUBLIC/$TA/$K1?delete" --data x
+check_eq "POST on the public route answers 405 (GET/HEAD only)" 405 "$STATUS"
+check_eq "HEAD on a public object answers 200 through the proxy" 200 \
+  "$(curl -sS -o /dev/null -I -w '%{http_code}' --max-time "${REQ_TIMEOUT:-30}" "$PUBLIC/$TA/$K1" 2>/dev/null || echo 000)"
+req GET "$PUBLIC/"
+check_ne "GET /public/ does not list the bucket (status)" 200 "$STATUS"
+check_not_contains "GET /public/ does not list the bucket (no ListBucketResult)" ListBucketResult "$BODY"
+# Bucket-level on purpose: /public/<tenant>/?list-type=2 names the object key
+# "<tenant>/" and is a GetObject whatever the proxy does with the query, so it
+# could never list. With the query strip in place this reaches the store as the
+# GET /public/ above and fails with it when the GetObject-only policy is lost;
+# it is kept as the request a client would send to list, strip or no strip.
+req GET "$PUBLIC/?list-type=2&prefix=$TA/"
+check_ne "a ListObjectsV2 request on /public/ does not list the bucket (status)" 200 "$STATUS"
+check_not_contains "a ListObjectsV2 request on /public/ returns no ListBucketResult" ListBucketResult "$BODY"
+# Caddy matches the CLEANED path (/public/...) but forwards the RAW one: only the
+# pinned block (handle_path + rewrite * /public{path}?) serves the public object
+# here; an unpinned `handle /public/*` hands the store bucket "private" (403).
+req GET "$BASE/private/../public/$TA/$K1" --path-as-is
+check_eq "the public route pins its bucket: /private/../public/<tenant>/<key> serves the public object" 200 "$STATUS"
+check_eq "... with the public object's bytes" "$PLAIN_SHA" "$(body_sha)"
 
 # ---- 2. streaming a multi-MiB object --------------------------------------------
 upload "$SA" "$TMP/blob.bin;type=application/octet-stream"
@@ -133,8 +170,8 @@ check_eq "service upload of a 2 MiB binary answers 200" 200 "$STATUS"
 KB="$UP_KEY"
 svc GET "/files/$KB/bytes"
 check_eq "2 MiB object streams back through drust intact (sha256)" "$BLOB_SHA" "$(body_sha)"
-garage_get "$TA/$KB"
-check_eq "2 MiB object straight from Garage is intact (sha256)" "$BLOB_SHA" "$(body_sha)"
+public_get "$TA/$KB"
+check_eq "2 MiB object through the public route is intact (sha256)" "$BLOB_SHA" "$(body_sha)"
 
 # ---- 3. explicit private upload (needs the host-wide 'private' bucket) ----------
 upload "$SA" "$TMP/plain.txt;type=text/plain" -F visibility=private
@@ -150,13 +187,13 @@ if [ "$PRIV_STATUS" = 200 ]; then
   svc GET "/files/$KP/bytes"
   check_eq "private bytes stream through drust intact" "$PLAIN_SHA" "$(body_sha)"
   check_eq "private bytes are served private, no-store" "private, no-store" "$(header cache-control)"
-  garage_get "$TA/$KP"
-  check_eq "a private object is NOT on Garage's public website" 404 "$STATUS"
+  public_get "$TA/$KP"
+  check_eq "a private object is NOT on the public route" 404 "$STATUS"
 else
-  note "private upload answered $PRIV_STATUS; Garage has no 'private' bucket — private-path checks below are recorded as failures"
+  note "private upload answered $PRIV_STATUS; the object store has no 'private' bucket — private-path checks below are recorded as failures"
   svc GET /files
   ghost="$(printf '%s' "$BODY" | python3 -c 'import json,sys; print(sum(1 for f in json.load(sys.stdin)["files"] if f["visibility"]=="private"))' 2>/dev/null || echo err)"
-  check_eq "a failed Garage PUT is compensated: no private _system_files row survives" 0 "$ghost"
+  check_eq "a failed object-store PUT is compensated: no private _system_files row survives" 0 "$ghost"
 fi
 
 # ---- 4. list / get_one ------------------------------------------------------------
@@ -176,12 +213,26 @@ svc GET "/files/$KH/bytes"
 check_eq "text/html bytes keep their declared type" "text/html" "$(header content-type)"
 check_eq "text/html bytes carry the exact sandbox CSP" "$SANDBOX" "$(header content-security-policy)"
 check_eq "text/html bytes carry nosniff" nosniff "$(header x-content-type-options)"
-garage_get "$TA/$KH"
-check_eq "the Garage object carries the lowercased type the Caddy matcher keys on" "text/html" "$(header content-type)"
+public_get "$TA/$KH"
+check_eq "the public object carries the lowercased type the Caddy matcher keys on" "text/html" "$(header content-type)"
+check_eq "public text/html served through the Compose Caddy carries the sandbox CSP" "$SANDBOX" "$(header content-security-policy)"
+check_eq "public text/html through the Compose Caddy keeps its body (copy_response)" "$(sha_file "$TMP/page.html")" "$(body_sha)"
+check_eq "/public responses through the Compose Caddy send nosniff" nosniff "$(header x-content-type-options)"
+public_get "$TA/$K1"
+check_eq "public text/plain through the Compose Caddy has no CSP" "" "$(header content-security-policy)"
+check_eq "public text/plain through the Compose Caddy sends nosniff" nosniff "$(header x-content-type-options)"
 upload "$SA" "$TMP/pic.svg;type=image/svg+xml"
 KS="$UP_KEY"
 svc GET "/files/$KS/bytes"
 check_eq "image/svg+xml bytes carry the sandbox CSP" "$SANDBOX" "$(header content-security-policy)"
+public_get "$TA/$KS"
+check_eq "public image/svg+xml through the Compose Caddy carries the sandbox CSP" "$SANDBOX" "$(header content-security-policy)"
+# Unquoted on purpose: curl keeps "; charset=utf-8" in the part's type, while a
+# quoted type="..." is sent with its quotes.
+upload "$SA" "$TMP/page.html;type=application/xhtml+xml; charset=utf-8"
+KXH="$UP_KEY"
+public_get "$TA/$KXH"
+check_eq "public application/xhtml+xml; charset=utf-8 through the Compose Caddy carries the sandbox CSP" "$SANDBOX" "$(header content-security-policy)"
 upload "$SA" "$TMP/feed.xml;type=application/rss+xml"
 KR="$UP_KEY"
 svc GET "/files/$KR/bytes"
@@ -201,20 +252,28 @@ svc GET "/files/$KC/bytes"
 check_eq "CJK-named file round-trips through drust" "$(sha_file "$TMP/cjk.txt")" "$(body_sha)"
 check_contains "Content-Disposition carries the RFC 5987 UTF-8 filename*" \
   "filename*=UTF-8''%E5%A0%B1%E5%91%8A%E6%9B%B8.txt" "$(header content-disposition)"
-garage_get "$TA/$KC"
-check_eq "CJK-named file with an ASCII extension is reachable on Garage's website" 200 "$STATUS"
+public_get "$TA/$KC"
+check_eq "CJK-named file with an ASCII extension is reachable on the public route" 200 "$STATUS"
 
 upload "$SA" "$TMP/cjk.txt;filename=報告書.檔案;type=text/plain"
 check_eq "upload whose extension is non-ASCII answers 200" 200 "$STATUS"
 KX="$UP_KEY"; UX="$UP_URL"
 svc GET "/files/$(urlenc "$KX")/bytes"
 check_eq "non-ASCII-extension file round-trips through drust" "$(sha_file "$TMP/cjk.txt")" "$(body_sha)"
-garage_get "$TA/$(urlenc "$KX")"
-check_eq "non-ASCII-extension public object is served at the key in its returned URL" 200 "$STATUS"
+# Both uploads get a <uuid>.bin key (files::derive_file_key), so nothing in the
+# key needs escaping. What is fetched is the URL drust RETURNED, as a client
+# would use it. A key that does need escaping can only come from a pre-v1.67
+# row or an edge put-file; that route (a %25-escaped path through /public/*)
+# was run by hand on both stores for this release and is recorded in the
+# CHANGELOG entry, not here.
+check_eq "a non-ASCII extension mints a .bin key" "${KX%.*}.bin" "$KX"
+req GET "$UX"
+check_eq "non-ASCII-extension public object is served at its returned URL" 200 "$STATUS"
 upload "$SA" "$TMP/cjk.txt;filename=notes.t~xt;type=text/plain"
-KT="$UP_KEY"
-garage_get "$TA/$(urlenc "$KT")"
-check_eq "a '~' in the extension still yields a public object at the returned key" 200 "$STATUS"
+KT="$UP_KEY"; UT="$UP_URL"
+check_eq "a '~' in the extension mints a .bin key" "${KT%.*}.bin" "$KT"
+req GET "$UT"
+check_eq "a '~' in the extension still yields a public object at its returned URL" 200 "$STATUS"
 
 upload "$SA" "$TMP/plain.txt" --form-string "path=a/../b.txt"
 check_eq "a '..' path segment is refused 400" 400 "$STATUS"
@@ -237,8 +296,8 @@ svc PATCH "/files/$K1" '{"visibility":"private"}'
 check_eq "PATCH public -> private answers 200 (bucket move)" 200 "$STATUS"
 if [ "$STATUS" = 200 ]; then
   check_eq "the move reports from=public to=private" "public private" "$(body from) $(body to)"
-  garage_get "$TA/$K1"
-  check_eq "after PATCH private the object is gone from Garage's public website" 404 "$STATUS"
+  public_get "$TA/$K1"
+  check_eq "after PATCH private the object is gone from the public route" 404 "$STATUS"
   meta_of "$K1"
   check_eq "after PATCH private the row says private" private "$(body visibility)"
   check_eq "after PATCH private cache_control resets to private, no-store" "private, no-store" "$(body cache_control)"
@@ -279,8 +338,8 @@ if [ "$STATUS" = 200 ]; then
   check_eq "admin-plane sign of a private file mints a /s/t/ URL" "/s/t/$TA/$K1" "$(url_path "$(body url 2>/dev/null || true)")"
   req POST "$BASE/admin/tenants/$TA/files/$K1/visibility" -H "Authorization: Bearer $ADMIN_PAT" --data visibility=public
   check_eq "admin-plane visibility form redirects back to the files page" "303 /admin/tenants/$TA/_files" "$STATUS $(header location)"
-  garage_get "$TA/$K1"
-  check_eq "after private -> public the object is back on Garage's website" 200 "$STATUS"
+  public_get "$TA/$K1"
+  check_eq "after private -> public the object is back on the public route" 200 "$STATUS"
   check_eq "the moved-back object is byte-identical" "$PLAIN_SHA" "$(body_sha)"
 else
   note "visibility move failed ($STATUS); signed-URL redemption and private->public checks not reachable"
@@ -372,8 +431,8 @@ anon DELETE "/files/$KHID"
 check_eq "anon delete of a hidden file answers 404" 404 "$STATUS"
 meta_of "$KHID"
 check_eq "a refused delete did not remove the row" 200 "$STATUS"
-garage_get "$TA/$KHID"
-check_eq "a refused delete did not remove the Garage object" 200 "$STATUS"
+public_get "$TA/$KHID"
+check_eq "a refused delete did not remove the public object" 200 "$STATUS"
 
 # ---- 12. publish decision for anon (invariant 19) ---------------------------------
 upload "$AA" "$TMP/plain.txt;type=text/plain" -F visibility=public
@@ -387,7 +446,7 @@ if [ "$STATUS" = 200 ]; then
   check_eq "anon upload is stamped uploader=anon" anon "$(body uploader)"
 else
   # The silent anon upload was routed to the private bucket (invariant 19) and
-  # the Garage PUT failed; the SQLite-first row must have been rolled back.
+  # the object-store PUT failed; the SQLite-first row must have been rolled back.
   svc GET /files
   aghost="$(printf '%s' "$BODY" | python3 -c 'import json,sys; print(sum(1 for f in json.load(sys.stdin)["files"] if f["uploader"]=="anon"))' 2>/dev/null || echo err)"
   check_eq "a failed anon upload is compensated: no uploader=anon row survives" 0 "$aghost"
@@ -399,8 +458,8 @@ check_eq "with the root grant, anon explicit public upload answers 200" 200 "$ST
 KAP="$UP_KEY"
 meta_of "$KAP"
 check_eq "granted anon publish lands public, uploader=anon" "public anon" "$(body visibility) $(body uploader)"
-garage_get "$TA/$KAP"
-check_eq "granted anon publish is on Garage's website" "$PLAIN_SHA" "$(body_sha)"
+public_get "$TA/$KAP"
+check_eq "granted anon publish is on the public route" "$PLAIN_SHA" "$(body_sha)"
 upload "$AA" "$TMP/plain.txt;type=text/plain" -F visibility=public --form-string "path=秘密/x.txt"
 check_eq "the root grant does not reach a longer prefix rule that grants nothing" "403 FILE_PUBLIC_UPLOAD_DENIED" "$STATUS $(code)"
 svc PUT /file-policies '{"prefix":"","public_read":true}'
@@ -409,8 +468,8 @@ upload "$AA" "$TMP/plain.txt;type=text/plain" -F visibility=public
 check_eq "omitting public_upload_roles on re-register revokes the grant" "403 FILE_PUBLIC_UPLOAD_DENIED" "$STATUS $(code)"
 anon DELETE "/files/$KAP"
 check_eq "anon deletes its readable public file with the delete cap (204)" 204 "$STATUS"
-garage_get "$TA/$KAP"
-check_eq "anon delete removed the object from Garage" 404 "$STATUS"
+public_get "$TA/$KAP"
+check_eq "anon delete removed the object from the public route" 404 "$STATUS"
 
 # ---- 13. user role: caps are independent of anon's --------------------------------
 svc POST /admin/users '{"email":"smoke-files-user@example.com","password":"Sm0ke-Files-Pass-42"}'
@@ -461,8 +520,8 @@ meta_of "$KB"
 check_eq "deleted file: get_one 404" 404 "$STATUS"
 svc GET "/files/$KB/bytes"
 check_eq "deleted file: bytes 404" 404 "$STATUS"
-garage_get "$TA/$KB"
-check_eq "deleted file: object gone from Garage" 404 "$STATUS"
+public_get "$TA/$KB"
+check_eq "deleted file: object gone from the public route" 404 "$STATUS"
 svc DELETE "/files/$KB"
 check_eq "deleting it again answers 404" 404 "$STATUS"
 
@@ -478,8 +537,8 @@ admin GET "/admin/tenants/$TA/_files"
 check_eq "admin tenant files page renders with the PAT" 200 "$STATUS"
 admin DELETE "/admin/tenants/$TA/files/$KAD"
 check_eq "admin-plane delete twin answers 204" 204 "$STATUS"
-garage_get "$TA/$KAD"
-check_eq "admin-plane delete removed the Garage object" 404 "$STATUS"
+public_get "$TA/$KAD"
+check_eq "admin-plane delete removed the public object" 404 "$STATUS"
 
 req GET "$T/files/$KC/bytes" -H "Authorization: Bearer $SB"
 check_eq "another tenant's service key gets 404 TENANT_NOT_FOUND on this tenant's file" "404 TENANT_NOT_FOUND" "$STATUS $(code)"

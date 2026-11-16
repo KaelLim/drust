@@ -400,8 +400,9 @@ ws_bg basic <<J
  {"id":"resub","op":"expect","c":"a","match":{"ref":"s2"}},
  {"id":"drain","op":"pending","c":"a"},
  {"op":"send_big","c":"s","room":"chat:lobby","size":70000,"ref":"b2"},
- {"id":"big_bad","op":"expect","c":"s","match":{"ref":"b2"},"timeout":8},
+ {"id":"big_bad","op":"expect","c":"s","match":{"kind":"error"},"timeout":8},
  {"id":"big_bad_close","op":"expect_close","c":"s","timeout":5},
+ {"id":"big_ack","op":"expect","c":"s","match":{"kind":"ack","ref":"b2"},"timeout":2},
  {"op":"touch","path":"$TMP/ws.basic.bigsent"},
  {"op":"wait_file","path":"$TMP/ws.basic.restpub","timeout":30},
  {"id":"sentinel","op":"expect","c":"a","match":{"kind":"message","room":"chat:lobby"}},
@@ -446,9 +447,14 @@ check_eq "re-subscribing the same room is acked" subscribe "$(wsr basic resub.ms
 
 # The oversized frame: wait for the client to send it, then publish a sentinel
 # over REST; the subscriber must see the sentinel and never the 70 KB payload.
-check_ne "an over-cap WS publish (70 KB > 64 KiB) is never acked" ack "$(wsr basic big_bad.msg.kind)"
+# big_ack looks through everything that socket received (the error step pops
+# only the error frame), so an ack for b2 that arrived at any point is found.
+check_eq "an over-cap WS publish (70 KB > 64 KiB) is never acked" false "$(wsr basic big_ack.ok)"
+check_eq "an over-cap WS publish is answered PAYLOAD_TOO_LARGE before the close" PAYLOAD_TOO_LARGE \
+  "$(wsr basic big_bad.msg.code)"
 check_eq "an over-cap WS publish ends that socket (frame-layer cap)" true "$(wsr basic big_bad_close.ok)"
-note "over-cap WS publish: close code $(wsr basic big_bad_close.code) (1006 = TCP drop, no close frame / no PAYLOAD_TOO_LARGE frame)"
+check_eq "an over-cap WS publish is closed 1009 Message Too Big (not a bare TCP drop)" 1009 \
+  "$(wsr basic big_bad_close.code)"
 check_eq "the subscriber's next message is the REST sentinel, not the over-cap payload" true \
   "$(wsr basic sentinel.msg.payload.sentinel)"
 
@@ -550,8 +556,8 @@ check_eq "PUT /collections/notes/realtime {enabled:true} answers 200" "200 true"
 anon PUT /collections/notes/realtime '{"enabled":true}'
 check_eq "anon cannot toggle realtime (403 WRITE_DENIED)" "403 WRITE_DENIED" "$STATUS $(body error_code)"
 
-# The documented path in CLAUDE.md's surface index is /collections/<c>/subscribe;
-# the route (router, OpenAPI, MCP tool text, admin UI) is /records/<c>/subscribe.
+# An older CLAUDE.md named /collections/<c>/subscribe; the route (router, OpenAPI,
+# MCP tool text, admin UI, CLAUDE.md) is /records/<c>/subscribe.
 # The live contract is what OpenAPI advertises, so that is what is asserted.
 svc GET /openapi.json
 OA_SUB="$(printf '%s' "$BODY" | python3 -c '
@@ -565,7 +571,7 @@ print(" ".join(sorted(k.split("/", 3)[3] for k in p if k.endswith("/subscribe"))
 check_eq "OpenAPI advertises the SSE stream at /records/<c>/subscribe (and nowhere else)" \
   "200 records/notes/subscribe" "$STATUS $OA_SUB"
 sse_open doc "$T/collections/notes/subscribe" "$SERVICE_KEY" 10
-note "the CLAUDE.md spelling /collections/<c>/subscribe answers $(sse_status doc) (not a stream)"
+note "the non-route /collections/<c>/subscribe answers $(sse_status doc) (not a stream)"
 sse_kill doc
 
 mcp_call_r set_anon_caps '{"collection":"notes","caps":[]}'

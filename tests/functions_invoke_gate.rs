@@ -225,3 +225,52 @@ async fn unknown_function_denies_identically_to_flag_off_for_anon() {
         "must not leak function existence to anon"
     );
 }
+
+#[tokio::test]
+async fn anon_invoke_rate_limit_keys_on_connect_info_peer() {
+    // The middleware site (`invoke_gate_layer`) keys on the real TCP peer when
+    // no proxy header is present: peer A's spent bucket must not throttle
+    // peer B. With the old literal `127.0.0.1:0` fallback both shared one
+    // bucket. A flag-off function is used on purpose: the limiter gates
+    // before the flag check (F2), so 403 vs 429 is the whole signal and no
+    // guest runs.
+    let (router, _service, anon, _user, _tmp) =
+        helpers::spin_up_tenant_with_fn_seed("t-fng-peer").await;
+    let from = |peer: &str| {
+        let mut req = invoke_req("t-fng-peer", &anon);
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            peer.parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        req
+    };
+    for i in 0..30 {
+        let resp = router
+            .clone()
+            .oneshot(from("203.0.113.31:50000"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "invoke {i} from peer A is inside the 30/60s budget"
+        );
+    }
+    let resp = router
+        .clone()
+        .oneshot(from("203.0.113.31:50000"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json_body(resp).await["error_code"], "RATE_LIMITED_IP");
+
+    let resp = router
+        .clone()
+        .oneshot(from("203.0.113.32:50000"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "peer B has its own bucket; it must not inherit peer A's 429"
+    );
+}

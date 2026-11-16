@@ -6,6 +6,7 @@ paths:
   - "Cargo.lock"
   - ".github/workflows/**"
   - "deploy/**"
+  - "docker-compose*.yml"
 ---
 
 # drust — build, test & deploy landmines
@@ -46,6 +47,8 @@ Never `cargo test --release` — LTO + `codegen-units = 1` takes 40+ minutes. So
 
 Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's first gate) and `cargo clippy --all-targets -- -D warnings`.
 
+`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh`, `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker), `deploy/tests/compose_public_route_test.sh` (the Compose `/public/*` block) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`.
+
 ## systemd
 
 > [!CAUTION]
@@ -54,16 +57,15 @@ Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's f
 ## Caddy
 
 > [!WARNING]
-> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`.
+> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. The bare-metal Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`. The Compose `/public/*` block talks to an S3 API path-style and keeps `Host {upstream_hostport}`. A vhost Host sent to RustFS with `RUSTFS_SERVER_DOMAINS` unset is parsed as path-style and 403s.
 
-The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of Garage) has two traps:
+The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of the object store) has three traps:
 
 - **`copy_response` is mandatory inside that `handle_response` block** — entering `handle_response` replaces the default passthrough, so a block with only a `header` directive silently discards the entire upstream body (caught live against a real 2.6 MB object before shipping: 200 OK with a 0-byte body). `caddy adapt` validates such a block happily.
 - Caddy 2.6.2's response-matcher allowlist has **no regex or case-insensitive option**, only a plain glob on `header`. The matcher's exact shape, and the fact that it must stay in lockstep with `storage::files::is_unsafe_inline_type`, are documented once in `.claude/rules/storage-files.md` — read that before editing the `@markup` matcher.
+- **An S3-API upstream needs the query string dropped** (`rewrite * /public{path}?`). RustFS honours `?response-content-type=` on anonymous GETs, and a case-variant type slips past the case-sensitive matcher. Garage's website endpoint is not an S3 API, but the strip costs nothing there.
 
-The authoritative snippet for this block lives in `../garage/deploy/Caddyfile`, not in `drust/deploy/` — `/public/*` is Garage's route. Verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space.
-
-That block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
+The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
 ## Three deployment targets
 
@@ -74,10 +76,11 @@ not render the chart, so divergence is invisible until a user hits it.
 | | Bare-metal (this host) | Docker Compose | k3s |
 |---|---|---|---|
 | Process supervision | `deploy/drust.service` | `docker-compose.yml` | `deploy/helm/drust/templates/drust-statefulset.yaml` |
-| Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` | chart Ingress |
-| Object store | host Garage | compose service | MinIO StatefulSet |
+| Reverse proxy | `/etc/caddy/Caddyfile` (+ `deploy/Caddyfile`, `../garage/deploy/Caddyfile`) | `deploy/compose.Caddyfile` (`/` → drust, `/public/*` → object store) | chart Ingress |
+| Object store | host Garage | RustFS via `docker-compose.storage.yml` + `rustfs-init` (off until `deploy/compose-storage-env.sh`) | MinIO StatefulSet (images no longer pullable; report) |
 | Scheduled work | `drust-backup.timer`, `drust-janitor.timer` | **nothing** | chart CronJobs **+ the `maintenance` sidecar** (default on, opt-out) |
 | Base path | `/drust` | `""` | `""` |
+| Trusted proxies (`DRUST_TRUSTED_PROXIES`) | 2 (default, nginx + Caddy) | 1 (`docker-compose.yml`; image default 0) | chart value (report: not yet set — the image's 0 applies) |
 
 > [!CAUTION]
 > **Anything scheduled outside the drust process is a per-target coin flip.** `deploy/drust-janitor.sh` and `deploy/drust-backup.sh` are systemd timers with **no Compose equivalent at all**; the chart re-implements *some* of that work in its `maintenance` sidecar, so k3s coverage depends on which half you look at. `deploy/drust-janitor.sh` does two jobs — `_trash` expiry and `drust_session_janitor` — and each was fixed in a different release, for the same reason, a release apart: v1.58 moved trash in-process, and only the follow-up caught that sessions were still swept nowhere on Compose. **Enumerate every job a timer performs, not the timer.** When adding recurring maintenance, put it in-process and treat both the timer and the sidecar as accelerators, not the mechanism. As of v1.59 (#935) the hardcoded `find … _trash … -mtime +7` was removed from `deploy/drust-janitor.sh` **and** the k3s `maintenance` sidecar — it capped any longer `DRUST_TRASH_RETENTION_DAYS` and defeated `0` (keep-forever), the exact v1.58.0 regression. `_trash` retention is now in-process only on all three targets; never re-add a time-based trash `find`. Guarded by `render_test.sh` (`assert_absent full.yaml "-mtime"`) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`.
@@ -85,12 +88,13 @@ not render the chart, so divergence is invisible until a user hits it.
 Per-release checklist — run it before tagging, not after:
 
 1. `deploy/helm/drust/Chart.yaml` — bump `appVersion` to the release version, and `version` if the chart's own templates changed. **`appVersion` is the image tag `helm install` pulls**: `values.yaml` ships `image.tag: ""` and both drust containers fall back to it. This item is now mechanized — `render_test.sh` asserts `appVersion == Cargo.toml version` and CI's `helm-chart` job runs it, so a skipped bump is a red build rather than a silent gap. It was not always: `appVersion` read `1.49.4` for nine releases while `image.tag` carried a second, equally stale hardcoded version, so default installs shipped a binary missing two intra-tenant fixes and the stored-XSS sandbox.
-2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three.
+2. New env knob this release? It must appear in all three: `deploy/drust.service` `Environment=`/`EnvironmentFile`, `docker-compose.yml` `environment:`, and the chart's `values.yaml` + ConfigMap. A knob with a default only in Rust works everywhere but is undiscoverable in two of the three. A Caddy-container variable or a variable of `docker-compose.storage.yml` counts too.
 3. New on-disk path, volume, or directory? Compose and the chart both need it mounted, and the chart needs it in the StatefulSet `volumeClaimTemplates` — a path drust creates at boot lands on ephemeral container storage otherwise.
 4. New recurring job? See the CAUTION above.
 5. New route or route prefix? Check the chart's Ingress and `deploy/compose.Caddyfile`, not just the host Caddyfile.
 6. Migration or first-boot behaviour change? It runs on every boot in all three, and containers restart far more often than this host does.
 7. `deploy/helm/drust/tests/render_test.sh` still passes (offline `helm template` + `kubeconform`). CI's `helm-chart` job runs it on every push to main, so this is a pre-push convenience rather than the only line of defence — but it needs `helm` + `kubeconform` on PATH locally.
+8. Storage or `/public/*` change? Run the smoke on both stores: `deploy/smoke/up.sh` (RustFS) and `SMOKE_STORE=garage deploy/smoke/up.sh` (the host's store).
 
 `deploy/helm/**` is engineer-owned: read it, report divergence, do not stage it in an automated commit.
 

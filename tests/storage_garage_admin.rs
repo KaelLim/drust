@@ -121,3 +121,246 @@ async fn bucket_deny_posts_key_and_bucket() {
     assert!(last.body.contains("bkt-1"));
     assert!(last.body.contains("GKkey"));
 }
+
+// ---- Garage admin API is optional (GARAGE_ADMIN_* unset or half-set) ----
+
+#[tokio::test]
+async fn admin_api_without_endpoint_errors_with_config_hint() {
+    // `from_store` leaves both admin fields empty: the "not configured" state
+    // an S3-trio-only deployment now boots into.
+    let store: std::sync::Arc<dyn object_store::ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let c = GarageClient::from_store(store, "public");
+    let err = c.lookup_bucket("x").await.unwrap_err().to_string();
+    assert!(
+        err.contains("GARAGE_ADMIN_ENDPOINT") && err.contains("not configured"),
+        "an unconfigured admin API must say which settings are missing, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn admin_api_with_token_but_no_endpoint_errors_with_config_hint() {
+    // The other half pair: a token alone must refuse up front naming the
+    // endpoint, not fall through to a request against a relative URL.
+    let c = GarageClient::from_mock_admin("", "tok");
+    let err = c.lookup_bucket("x").await.unwrap_err().to_string();
+    assert!(
+        err.contains("GARAGE_ADMIN_ENDPOINT") && err.contains("not configured"),
+        "a token without an endpoint must say the admin API is not configured, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn admin_api_with_endpoint_but_no_token_sends_no_request() {
+    // A half pair reads as "not configured" in config, and the client guards
+    // the same way: no request with an empty bearer ever leaves.
+    let srv = MockAdminServer::start().await;
+    let c = GarageClient::from_mock_admin(&srv.base_url(), "");
+    assert!(c.create_bucket("x").await.is_err());
+    assert!(c.lookup_bucket("x").await.is_err());
+    assert!(c.delete_bucket("bkt-1").await.is_err());
+    assert!(c.set_website("bkt-1", false).await.is_err());
+    assert!(
+        c.bucket_allow("bkt-1", "GK", true, true, true)
+            .await
+            .is_err()
+    );
+    assert!(c.bucket_deny("bkt-1", "GK").await.is_err());
+    assert!(
+        srv.requests().is_empty(),
+        "no admin request may be sent without a token, got {:?}",
+        srv.requests()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---- Boot probe: every bucket a write can land in is listed, concurrently ----
+
+/// A minimal path-style S3 endpoint for `ListObjectsV2`. object_store sends
+/// `GET /<bucket>?list-type=2…`; route on the path segment, ignore the query.
+mod s3_stub {
+    use axum::extract::{Path, State};
+    use axum::http::{StatusCode, header};
+    use axum::response::{IntoResponse, Response};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Barrier;
+
+    #[derive(Clone)]
+    struct St {
+        existing: Arc<Vec<String>>,
+        paths: Arc<Mutex<Vec<String>>>,
+        /// When set, a list of `public` or `private` waits here before it is
+        /// answered, so only concurrently issued lists can both complete.
+        barrier: Option<Arc<Barrier>>,
+    }
+
+    pub struct Stub {
+        pub endpoint: String,
+        paths: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Stub {
+        pub fn paths(&self) -> Vec<String> {
+            self.paths.lock().unwrap().clone()
+        }
+    }
+
+    pub async fn start(existing: &[&str], barrier: Option<Arc<Barrier>>) -> Stub {
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let st = St {
+            existing: Arc::new(existing.iter().map(|s| s.to_string()).collect()),
+            paths: paths.clone(),
+            barrier,
+        };
+        let app = axum::Router::new()
+            .route("/{bucket}", axum::routing::get(list))
+            .with_state(st);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Stub {
+            endpoint: format!("http://{addr}"),
+            paths,
+        }
+    }
+
+    async fn list(State(st): State<St>, Path(bucket): Path<String>) -> Response {
+        st.paths.lock().unwrap().push(format!("/{bucket}"));
+        if let Some(b) = &st.barrier
+            && (bucket == "public" || bucket == "private")
+        {
+            b.wait().await;
+        }
+        let xml = [(header::CONTENT_TYPE, "application/xml")];
+        if st.existing.contains(&bucket) {
+            (
+                StatusCode::OK,
+                xml,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                     <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+                     <Name>{bucket}</Name><Prefix></Prefix><KeyCount>0</KeyCount>\
+                     <MaxKeys>1</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>"
+                ),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::NOT_FOUND,
+                xml,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+                     <Error><Code>NoSuchBucket</Code>\
+                     <Message>The specified bucket does not exist</Message>\
+                     <BucketName>{bucket}</BucketName></Error>"
+                ),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// A real (S3) client pointed at the stub, built from config exactly as boot
+/// builds it. No admin API: the probe must not need one.
+fn s3_client(endpoint: &str, default_bucket: &str) -> GarageClient {
+    let cfg = drust::config::StorageConfig {
+        endpoint: endpoint.to_string(),
+        admin_endpoint: String::new(),
+        access_key: "GKtest".into(),
+        secret_key: "secret".into(),
+        admin_token: String::new(),
+        public_bucket: default_bucket.to_string(),
+        max_upload_bytes: 1 << 20,
+        disk_min_free_pct: 20,
+        large_upload_max_bytes: 1 << 20,
+        large_upload_chunk_max_bytes: 1 << 20,
+        large_upload_max_sessions_per_tenant: 1,
+        large_upload_session_ttl_secs: 60,
+    };
+    GarageClient::new(&cfg).unwrap()
+}
+
+#[tokio::test]
+async fn probe_required_buckets_reports_missing_private() {
+    let stub = s3_stub::start(&["public"], None).await;
+    let c = s3_client(&stub.endpoint, "public");
+    let res = c.probe_required_buckets("public").await;
+    let keys: Vec<&str> = res.iter().map(|(b, _)| b.as_str()).collect();
+    assert_eq!(keys, ["public", "private"]);
+    let failed: Vec<(&str, String)> = res
+        .iter()
+        .filter_map(|(b, r)| r.as_ref().err().map(|e| (b.as_str(), format!("{e:#}"))))
+        .collect();
+    assert_eq!(
+        failed.len(),
+        1,
+        "exactly the missing bucket must fail: {failed:?}"
+    );
+    assert_eq!(failed[0].0, "private");
+    assert!(
+        failed[0].1.contains("private"),
+        "the error must name the bucket: {}",
+        failed[0].1
+    );
+}
+
+#[tokio::test]
+async fn probe_required_buckets_ok_when_both_buckets_exist() {
+    let stub = s3_stub::start(&["public", "private"], None).await;
+    let c = s3_client(&stub.endpoint, "public");
+    let res = c.probe_required_buckets("public").await;
+    let keys: Vec<&str> = res.iter().map(|(b, _)| b.as_str()).collect();
+    assert_eq!(keys, ["public", "private"]);
+    for (b, r) in &res {
+        assert!(r.is_ok(), "bucket {b} exists and is empty: {r:?}");
+    }
+}
+
+#[tokio::test]
+async fn probe_required_buckets_probes_a_distinct_configured_default() {
+    let stub = s3_stub::start(&["public", "private", "legacy"], None).await;
+    let c = s3_client(&stub.endpoint, "legacy");
+    let res = c.probe_required_buckets("legacy").await;
+    assert!(res.iter().all(|(_, r)| r.is_ok()), "{res:?}");
+    let paths = stub.paths();
+    for want in ["/public", "/private", "/legacy"] {
+        assert!(
+            paths.iter().any(|p| p == want),
+            "{want} not probed: {paths:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn probe_required_buckets_runs_probes_concurrently() {
+    // Each of public / private is answered only once BOTH lists have arrived.
+    // Sequential probes would leave the first one waiting forever; the 5 s
+    // timeout is a hang guard, not a timing threshold.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let stub = s3_stub::start(&["public", "private"], Some(barrier)).await;
+    let c = s3_client(&stub.endpoint, "public");
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        c.probe_required_buckets("public"),
+    )
+    .await
+    .expect("the boot probe must list its buckets concurrently");
+    assert!(res.iter().all(|(_, r)| r.is_ok()), "{res:?}");
+}
+
+#[tokio::test]
+async fn ping_bucket_on_a_from_store_client_never_builds_an_s3_client() {
+    // The from_store test affordance (no S3 endpoint) must take the
+    // backing-store branch: building a per-bucket S3 client from an empty
+    // endpoint and listing through it would fail. An InMemory list cannot
+    // error, so this pins only that branch choice, not the prefix it lists.
+    let store: std::sync::Arc<dyn object_store::ObjectStore> =
+        std::sync::Arc::new(object_store::memory::InMemory::new());
+    let c = GarageClient::from_store(store, "public");
+    let res = c.probe_required_buckets("public").await;
+    assert!(res.iter().all(|(_, r)| r.is_ok()), "{res:?}");
+}

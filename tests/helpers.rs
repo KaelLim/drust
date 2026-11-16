@@ -765,6 +765,25 @@ pub async fn spin_up_tenant_with_role_cached(
     Arc<drust::tenant::auth_cache::AuthCache>,
     tempfile::TempDir,
 ) {
+    let (app, tok, cache, _tenants, dir) = spin_up_tenant_with_role_parts(tenant, role).await;
+    (app, tok, cache, dir)
+}
+
+/// Like `spin_up_tenant_with_role_cached`, but ALSO returns the stack's own
+/// `TenantRegistry`. `grab_pool` builds a SEPARATE registry, so its pool is a
+/// different `TenantPool` instance (own writer mutex, own semaphores) from the
+/// one the router serves; a test that must act on the router's pool — e.g.
+/// hold its untrusted write-RPC admission slot — takes it from this registry.
+pub async fn spin_up_tenant_with_role_parts(
+    tenant: &str,
+    role: &str,
+) -> (
+    Router,
+    String,
+    Arc<drust::tenant::auth_cache::AuthCache>,
+    Arc<TenantRegistry>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -795,7 +814,7 @@ pub async fn spin_up_tenant_with_role_cached(
         bus_rooms: bus_rooms.clone(),
         bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
         rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: test_mcp_http(tenants, bus, bus_rooms.clone()),
+        mcp: test_mcp_http(tenants.clone(), bus, bus_rooms.clone()),
         files: None,
         webhooks,
         functions,
@@ -805,7 +824,7 @@ pub async fn spin_up_tenant_with_role_cached(
         cors_origins: Vec::new(),
     };
     let app = build_tenant_router(stack);
-    (app, tok, cache, dir)
+    (app, tok, cache, tenants, dir)
 }
 
 /// #955 — everything a rooms WS test needs to drive BOTH the socket and the
@@ -1062,7 +1081,27 @@ pub async fn register_and_login_via_app(app: &Router, tid: &str, email: &str, pw
 pub async fn spin_up_dual_role_self_register(
     tenant: &str,
 ) -> (Router, String, String, String, tempfile::TempDir) {
-    let (app, svc_tok, dir) = spin_up_tenant_with_role(tenant, "service").await;
+    let (app, tid, svc_tok, anon_tok, _tenants, dir) =
+        spin_up_dual_role_self_register_with_registry(tenant).await;
+    (app, tid, svc_tok, anon_tok, dir)
+}
+
+/// [`spin_up_dual_role_self_register`] plus the router's own `TenantRegistry`
+/// (see [`spin_up_tenant_with_role_parts`] for why `grab_pool` is not it).
+///
+/// Returns `(app, tenant_id, service_token, anon_token, registry, dir)`.
+pub async fn spin_up_dual_role_self_register_with_registry(
+    tenant: &str,
+) -> (
+    Router,
+    String,
+    String,
+    String,
+    Arc<TenantRegistry>,
+    tempfile::TempDir,
+) {
+    let (app, svc_tok, _cache, tenants, dir) =
+        spin_up_tenant_with_role_parts(tenant, "service").await;
     // Enable self-registration on the tenant.
     let meta_path = dir.path().join("meta.sqlite");
     rusqlite::Connection::open(&meta_path)
@@ -1082,7 +1121,7 @@ pub async fn spin_up_dual_role_self_register(
             rusqlite::params![tenant, anon_hash],
         )
         .unwrap();
-    (app, tenant.to_string(), svc_tok, anon_tok, dir)
+    (app, tenant.to_string(), svc_tok, anon_tok, tenants, dir)
 }
 
 pub fn seed_tenant_fs(dir: &tempfile::TempDir, tenant: &str) {

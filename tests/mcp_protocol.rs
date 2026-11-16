@@ -507,3 +507,502 @@ async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
         "instructions on the wire: {s}"
     );
 }
+
+/// One `tools/call` on an open session; returns the JSON-RPC message (with
+/// either `result` or `error`).
+async fn call_tool(
+    app: &axum::Router,
+    tenant: &str,
+    tok: &str,
+    sid: &str,
+    name: &str,
+    args: Value,
+) -> Value {
+    let req = session_request(
+        tenant,
+        tok,
+        sid,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        }),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    parse_mcp_body(resp)
+        .await
+        .into_iter()
+        .find(|m| m.get("result").is_some() || m.get("error").is_some())
+        .expect("tools/call must answer a result or an error")
+}
+
+/// The isError body of a tools/call answer, parsed.
+fn tool_error_body(m: &Value) -> Value {
+    assert_eq!(m["result"]["isError"], Value::Bool(true), "{m}");
+    let text = m["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("isError without text content: {m}"));
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("isError text is not JSON ({e}): {text}"))
+}
+
+/// rmcp 1.8 answers a malformed argument with its own plain-text isError;
+/// drust reshapes it into its one isError body (`finish_tool_call`).
+#[tokio::test]
+async fn tools_call_missing_argument_is_invalid_params_tool_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg1").await;
+    let (sid, _) = open_session(&app, "mcparg1", &tok).await;
+    let m = call_tool(
+        &app,
+        "mcparg1",
+        &tok,
+        &sid,
+        "describe_collection",
+        json!({}),
+    )
+    .await;
+    let b = tool_error_body(&m);
+    assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing field `collection`"),
+        "{b}"
+    );
+    assert!(b["suggested_fix"].as_str().is_some(), "{b}");
+}
+
+#[tokio::test]
+async fn tools_call_wrongly_typed_argument_is_invalid_params_tool_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg2").await;
+    let (sid, _) = open_session(&app, "mcparg2", &tok).await;
+    let m = call_tool(
+        &app,
+        "mcparg2",
+        &tok,
+        &sid,
+        "delete_record",
+        json!({"collection": "x", "id": "abc"}),
+    )
+    .await;
+    let b = tool_error_body(&m);
+    assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
+    assert!(
+        b["message"].as_str().unwrap().contains("expected i64"),
+        "{b}"
+    );
+}
+
+#[tokio::test]
+async fn tools_call_unknown_tool_stays_protocol_error() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcparg3").await;
+    let (sid, _) = open_session(&app, "mcparg3", &tok).await;
+    let m = call_tool(&app, "mcparg3", &tok, &sid, "no_such_tool", json!({})).await;
+    assert_eq!(m["error"]["code"], -32602, "{m}");
+    assert_eq!(m["error"]["message"], "tool not found", "{m}");
+}
+
+async fn session_with_collection(
+    tenant: &str,
+) -> (axum::Router, String, String, tempfile::TempDir) {
+    let (app, tok, _anon, dir) = mcp_stack(tenant).await;
+    let (sid, _) = open_session(&app, tenant, &tok).await;
+    let m = call_tool(
+        &app,
+        tenant,
+        &tok,
+        &sid,
+        "create_collection",
+        json!({"name": "t", "fields": [{"name": "title", "sql_type": "text"}]}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    (app, tok, sid, dir)
+}
+
+/// `query`'s write refusal used to ship the prose before its first colon as
+/// `data.error_code`.
+#[tokio::test]
+async fn query_write_refusal_carries_query_forbidden() {
+    let (app, tok, sid, _dir) = session_with_collection("mcpqf").await;
+    let m = call_tool(
+        &app,
+        "mcpqf",
+        &tok,
+        &sid,
+        "query",
+        json!({"sql": "DELETE FROM t"}),
+    )
+    .await;
+    assert_eq!(m["error"]["code"], -32603, "{m}");
+    assert!(
+        m["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`query` is read-only"),
+        "{m}"
+    );
+    assert_eq!(m["error"]["data"]["error_code"], "QUERY_FORBIDDEN", "{m}");
+}
+
+/// The unknown-key refusal names the caller's key first; a key shaped like a
+/// code must not become the code.
+#[tokio::test]
+async fn insert_unknown_key_carries_field_not_found() {
+    let (app, tok, sid, _dir) = session_with_collection("mcpfnf").await;
+    let m = call_tool(
+        &app,
+        "mcpfnf",
+        &tok,
+        &sid,
+        "insert_record",
+        json!({"collection": "t", "data": {"A_B: x": 1}}),
+    )
+    .await;
+    let msg = m["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{m}"));
+    assert!(msg.starts_with("unknown field 'A_B: x'"), "{m}");
+    assert_eq!(m["error"]["data"]["error_code"], "FIELD_NOT_FOUND", "{m}");
+}
+
+fn rpc_error(m: &Value) -> (i64, String, String) {
+    let e = &m["error"];
+    assert!(e.is_object(), "expected a JSON-RPC error, got {m}");
+    (
+        e["code"].as_i64().unwrap(),
+        e["message"].as_str().unwrap().to_string(),
+        e["data"]["error_code"].as_str().unwrap_or("").to_string(),
+    )
+}
+
+/// `create_rpc` refusals used to be `-32603` with no `data` at all. Each stage
+/// now names its own code; the message and JSON-RPC code are unchanged.
+#[tokio::test]
+async fn create_rpc_refusals_carry_exact_codes() {
+    let (app, tok, sid, _dir) = session_with_collection("mcprpc1").await;
+    let t = "mcprpc1";
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "bad", "sql": "SELECT name FROM sqlite_master", "params": []}),
+    )
+    .await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("prepare-time validation"), "{m}");
+    assert_eq!(ec, "INVALID_SQL_FOR_MODE", "{m}");
+
+    let ok = json!({"name": "r", "sql": "SELECT title FROM t", "params": []});
+    let m = call_tool(&app, t, &tok, &sid, "create_rpc", ok.clone()).await;
+    assert!(m.get("result").is_some(), "{m}");
+    let m = call_tool(&app, t, &tok, &sid, "create_rpc", ok).await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("rpc already exists"), "{m}");
+    assert_eq!(ec, "RPC_EXISTS", "{m}");
+    assert!(
+        m["error"]["data"]["suggested_fix"].as_str().is_some(),
+        "{m}"
+    );
+
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q", "kind": "query", "query": {"collection": "_system_users"}, "params": []}),
+    )
+    .await;
+    assert_eq!(rpc_error(&m).2, "PROTECTED_COLLECTION", "{m}");
+
+    // A template rejection with no sentinel of its own: the stage knows it
+    // was the query arm (RPC_QUERY_TEMPLATE_INVALID, the admin form's code);
+    // the message alone would only classify as a generic prepare failure.
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q1", "kind": "query",
+               "query": {"collection": "t", "filter": {"title": {"$param": "x"}}},
+               "params": []}),
+    )
+    .await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("undeclared param"), "{m}");
+    assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
+
+    // The shape check runs before any DB work (`invalid_params`): the
+    // backstop finds the sentinel right after PrepareError's prefix.
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q2", "kind": "query", "params": []}),
+    )
+    .await;
+    let (code, _, ec) = rpc_error(&m);
+    assert_eq!(code, -32602, "{m}");
+    assert_eq!(ec, "RPC_KIND_INVALID", "{m}");
+}
+
+/// The RPC_ANON_OWNER_SCOPED guard family: create, the update flip, and the
+/// two config surfaces that wrap a PrepareError (set_owner_field, set_policy)
+/// all carry the sentinel, not PrepareError's prose prefix.
+#[tokio::test]
+async fn owner_field_guard_carries_rpc_anon_owner_scoped() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcprpc2").await;
+    let t = "mcprpc2";
+    let (sid, _) = open_session(&app, t, &tok).await;
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_collection",
+        json!({"name": "pub", "fields": [
+            {"name": "title", "sql_type": "text"},
+            {"name": "owner", "sql_type": "text", "foreign_key": "_system_users"}
+        ]}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "r_pub", "sql": "SELECT id, title FROM pub", "params": [], "anon_callable": true}),
+    )
+    .await;
+    assert!(m.get("result").is_some(), "{m}");
+
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "set_owner_field",
+        json!({"collection": "pub", "field": "owner"}),
+    )
+    .await;
+    let (_, msg, ec) = rpc_error(&m);
+    assert!(msg.contains("RPC_ANON_OWNER_SCOPED"), "{m}");
+    assert_eq!(ec, "RPC_ANON_OWNER_SCOPED", "{m}");
+
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "set_policy",
+        json!({"collection": "pub", "op": "select", "using": {"title": "x"}}),
+    )
+    .await;
+    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
+
+    // An owner-scoped collection: the create guard refuses an anon_callable
+    // RPC over it, and the update guard refuses flipping a service-only one.
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_collection",
+        json!({"name": "own", "fields": [
+            {"name": "title", "sql_type": "text"},
+            {"name": "owner", "sql_type": "text", "foreign_key": "_system_users"}
+        ]}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "set_owner_field",
+        json!({"collection": "own", "field": "owner"}),
+    )
+    .await;
+    assert!(m.get("result").is_some(), "{m}");
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "r_own", "sql": "SELECT id, title FROM own", "params": [], "anon_callable": true}),
+    )
+    .await;
+    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "r_own_svc", "sql": "SELECT id, title FROM own", "params": []}),
+    )
+    .await;
+    assert!(m.get("result").is_some(), "{m}");
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "update_rpc",
+        json!({"name": "r_own_svc", "anon_callable": true}),
+    )
+    .await;
+    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
+}
+
+#[tokio::test]
+async fn update_and_delete_rpc_missing_name_is_rpc_not_found() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcprpc3").await;
+    let t = "mcprpc3";
+    let (sid, _) = open_session(&app, t, &tok).await;
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "update_rpc",
+        json!({"name": "nope", "description": "x"}),
+    )
+    .await;
+    let (code, _, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
+
+    let m = call_tool(&app, t, &tok, &sid, "delete_rpc", json!({"name": "nope"})).await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32602, "{m}");
+    assert!(msg.contains("rpc not found"), "{m}");
+    assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
+}
+
+/// `update_rpc`'s template stage names its own code. Only the side channel
+/// can say RPC_QUERY_TEMPLATE_INVALID here: the message alone is a generic
+/// prepare failure, which the `call_tool` backstop would call
+/// INVALID_SQL_FOR_MODE.
+#[tokio::test]
+async fn update_rpc_template_rejection_is_rpc_query_template_invalid() {
+    let (app, tok, sid, _dir) = session_with_collection("mcprpc5").await;
+    let t = "mcprpc5";
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "q", "kind": "query",
+               "query": {"collection": "t", "filter": {"title": "a"}},
+               "params": []}),
+    )
+    .await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "update_rpc",
+        json!({"name": "q",
+               "query": {"collection": "t", "filter": {"title": {"$param": "x"}}}}),
+    )
+    .await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32603, "{m}");
+    assert!(msg.contains("undeclared param"), "{m}");
+    assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
+}
+
+/// `create_collection` has no existence pre-check, so a repeat forwards
+/// SQLite's `table "<name>" already exists`. A name containing "index" must
+/// still be COLLECTION_EXISTS, not INDEX_EXISTS.
+#[tokio::test]
+async fn create_collection_repeat_is_collection_exists_whatever_the_name() {
+    let (app, tok, _anon, _dir) = mcp_stack("mcpdup").await;
+    let t = "mcpdup";
+    let (sid, _) = open_session(&app, t, &tok).await;
+    let args = json!({"name": "index_log", "fields": [{"name": "title", "sql_type": "text"}]});
+    let m = call_tool(&app, t, &tok, &sid, "create_collection", args.clone()).await;
+    assert!(
+        m.get("result").is_some() && m["result"]["isError"] != true,
+        "{m}"
+    );
+    let m = call_tool(&app, t, &tok, &sid, "create_collection", args).await;
+    let (_, msg, ec) = rpc_error(&m);
+    assert!(msg.contains("already exists"), "{m}");
+    assert_eq!(ec, "COLLECTION_EXISTS", "{m}");
+    assert!(
+        m["error"]["data"]["suggested_fix"].as_str().is_some(),
+        "{m}"
+    );
+}
+
+/// `call_rpc` answers with the codes REST's RPC handler uses.
+#[tokio::test]
+async fn call_rpc_errors_carry_rest_param_codes() {
+    let (app, tok, sid, _dir) = session_with_collection("mcprpc4").await;
+    let t = "mcprpc4";
+    let m = call_tool(&app, t, &tok, &sid, "call_rpc", json!({"name": "nope"})).await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32602, "{m}");
+    assert!(msg.contains("no such rpc"), "{m}");
+    assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
+
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "create_rpc",
+        json!({"name": "by_id", "sql": "SELECT title FROM t WHERE id > :n",
+               "params": [{"name": "n", "type": "integer"}]}),
+    )
+    .await;
+    assert!(m.get("result").is_some(), "{m}");
+    let m = call_tool(&app, t, &tok, &sid, "call_rpc", json!({"name": "by_id"})).await;
+    let (code, msg, ec) = rpc_error(&m);
+    assert_eq!(code, -32602, "{m}");
+    assert!(msg.contains("missing required param"), "{m}");
+    assert_eq!(ec, "PARAM_MISSING", "{m}");
+
+    let m = call_tool(
+        &app,
+        t,
+        &tok,
+        &sid,
+        "call_rpc",
+        json!({"name": "by_id", "body": {"n": "abc"}}),
+    )
+    .await;
+    assert_eq!(rpc_error(&m).2, "PARAM_TYPE_MISMATCH", "{m}");
+}

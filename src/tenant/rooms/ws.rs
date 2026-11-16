@@ -62,6 +62,27 @@
 //! micro-race as spec §隔離與資安不變量 item 4; checking branch (b) would
 //! not remove it, only shorten it, at the cost of a load per delivered
 //! message on every healthy connection.
+//!
+//! An inbound frame over `DRUST_BROADCAST_PAYLOAD_MAX_BYTES` never reaches
+//! branch (a)'s `match`: the codec (`max_frame_size` / `max_message_size`)
+//! refuses it as soon as the frame HEADER is parsed, before any payload is
+//! read, and fuses the stream. Branch (a) records that error kind
+//! (`inbound_error_is_too_large`) and breaks; after the loop,
+//! `close_frame_too_large` sends `PAYLOAD_TOO_LARGE`, then Close 1009, then
+//! holds the socket for `OVERSIZE_CLOSE_LINGER` — the unread remainder of the
+//! frame is still in the kernel receive buffer, so dropping the socket at
+//! once turns the close into an RST that can beat both frames out. The whole
+//! tail is bounded by `OVERSIZE_CLOSE_GRACE`. Every other stream error still
+//! ends the connection silently. Precedence: an already-evicted socket (or
+//! one whose PAT deadline just passed) that sends an over-cap frame is closed
+//! 1009 rather than `CONN_EVICTED` / `CONN_EXPIRED` 1008, because the error
+//! arm breaks before checkpoint (a). That is not an eviction bypass: nothing
+//! is dispatched, the socket closes either way, and a reconnect goes back
+//! through `bearer_auth_layer`, where a revoked or expired credential gets
+//! 401. The classifier matches the codec error's `Debug` text, which no lib
+//! test can see change, so after an axum bump re-run the `--ignored`
+//! `tests/rooms_ws.rs::oversize_frame_gets_payload_too_large_then_close_1009`
+//! and smoke `60-realtime.sh`.
 
 use crate::auth::middleware::AuthCtx;
 use crate::tenant::rooms::audit::{write_publish_audit, write_publish_audit_failure};
@@ -133,10 +154,12 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     // v1.31.2 F10 — honor DRUST_BROADCAST_PAYLOAD_MAX_BYTES at the WS
-    // frame layer. Pre-fix this was hardcoded 128 KiB, silently capping
-    // below env config. The wire-level PAYLOAD_TOO_LARGE error in
-    // handle_text_frame::Publish stays — it gives clean errors below
-    // this hard ceiling.
+    // frame layer. The cap is enforced by the codec at the frame layer, at
+    // header-parse time: an over-cap frame never reaches
+    // `handle_text_frame`; the loop answers it with PAYLOAD_TOO_LARGE +
+    // Close 1009 + a short linger (`close_frame_too_large`). The in-band
+    // PAYLOAD_TOO_LARGE in `handle_text_frame::Publish` remains only for a
+    // payload whose re-serialization exceeds the cap (e.g. `1e2` → `100.0`).
     let cap = pc.cfg.payload_max_bytes;
     let policy = policy.map(|Extension(p)| p).unwrap_or_default();
 
@@ -246,8 +269,78 @@ fn keepalive_interval(cfg: &crate::tenant::rooms::state::RoomsConfig) -> tokio::
     interval(Duration::from_secs(cfg.keepalive_secs.max(1)))
 }
 
+/// True when an inbound-stream error is the WS codec refusing a frame or message
+/// over `max_frame_size` / `max_message_size` (= `payload_max_bytes`).
+///
+/// Matched on the `Debug` text, not by downcast: axum 0.8 wraps tungstenite 0.29,
+/// while drust's own (dev-only) tokio-tungstenite is 0.24, so a `downcast_ref`
+/// against any tungstenite type drust can name silently stops matching on the next
+/// axum bump. The variant name `MessageTooLong` has been stable across both lines.
+/// A miss here falls back to the silent drop, never to a wrong close.
+/// After an axum bump, run `tests/rooms_ws.rs::oversize_frame_gets_payload_too_large_then_close_1009`
+/// (`--ignored`) and smoke `60-realtime.sh`: those are the only guards that see the
+/// real codec type.
+fn inbound_error_is_too_large<E: std::fmt::Debug>(e: &E) -> bool {
+    format!("{e:?}").contains("MessageTooLong")
+}
+
+/// Bounds everything that happens after an over-cap frame: the two best-effort
+/// sends AND the linger. Without the frame refusal the loop would simply have
+/// broken, so an unbounded await here would add a hang that the silent drop
+/// never had (a peer that stopped reading leaves the send buffer full).
+/// `oversize_close_is_bounded_when_the_peer_stops_reading` pins it; it costs
+/// ~2 s of wall time per `make test-lib` because dev `tokio` has no `test-util`
+/// (no paused clock) — do not "speed the test up" by lowering this constant.
+const OVERSIZE_CLOSE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long the socket stays open after the Close frame is written, before it is
+/// dropped. The codec refuses the frame at HEADER-PARSE time
+/// (tungstenite `frame/mod.rs` "Enforce frame size limit early") and the stream is
+/// then fused, so the rest of the payload is normally still unread in the kernel
+/// receive buffer. Closing a TCP socket with unread data makes the kernel send RST
+/// instead of FIN and discard whatever of our own send queue has not yet gone out,
+/// so without this pause the error and Close frames race the reset and can be lost —
+/// most visibly behind a proxy that relays in 32 KiB chunks (Caddy). 250 ms is far
+/// above loopback / LAN RTT and far below the grace.
+const OVERSIZE_CLOSE_LINGER: Duration = Duration::from_millis(250);
+
+/// The over-cap frame's close path: the typed error first, then Close 1009,
+/// both best-effort (same shape as [`check_epoch_evicted`]), then the linger.
+/// Always called under `tokio::time::timeout(OVERSIZE_CLOSE_GRACE, …)`.
+///
+/// No `ref` and no `room` are echoed: the frame was never parsed. The code is
+/// 1009 Message Too Big rather than 1008, because RFC 6455 §7.4.1 keeps 1008
+/// for when no more suitable code exists — and an over-cap frame is not a
+/// revocation, so reconnecting with the same token is fine.
+async fn close_frame_too_large<S>(sink: &mut S)
+where
+    S: futures::Sink<Message> + Unpin,
+{
+    let _ = send_error(
+        sink,
+        None,
+        codes::PAYLOAD_TOO_LARGE,
+        "frame exceeds DRUST_BROADCAST_PAYLOAD_MAX_BYTES; this connection is closed — \
+         reconnect and send a smaller payload",
+        None,
+    )
+    .await;
+    let closed = sink
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: axum::extract::ws::close_code::SIZE, // 1009 Message Too Big
+            reason: Utf8Bytes::from_static("payload too large"),
+        })))
+        .await;
+    // Linger only when the Close actually reached the kernel; a failed send
+    // means the peer is already gone and there is nothing to protect.
+    if closed.is_ok() {
+        tokio::time::sleep(OVERSIZE_CLOSE_LINGER).await;
+    }
+}
+
 /// Per-connection event loop. Returns when the conn closes for any
-/// reason (client disconnect / LAGGED / send error).
+/// reason: client disconnect, stream error, eviction, credential expiry,
+/// or a failed send.
 ///
 /// Generic over the two socket halves rather than taking a `WebSocket`,
 /// for one reason: a `WebSocket` cannot be constructed without a real
@@ -322,6 +415,11 @@ async fn handle_socket<Si, St, E>(
     );
     tokio::pin!(expiry);
 
+    // Set by branch (a) when the codec refused an over-cap frame, and acted
+    // on AFTER the loop: branch (a)'s prologue may not await (structural pin),
+    // so the close cannot be sent from inside the error arm.
+    let mut frame_too_large = false;
+
     loop {
         tokio::select! {
             // codex #976 r2 — `biased;`: poll in declaration order, timers
@@ -387,6 +485,7 @@ async fn handle_socket<Si, St, E>(
                             token_hint = %token_hint,
                             "ws protocol error",
                         );
+                        frame_too_large = inbound_error_is_too_large(&e);
                         break;
                     }
                 };
@@ -450,6 +549,11 @@ async fn handle_socket<Si, St, E>(
                 }
             }
         }
+    }
+
+    // The over-cap frame's reason, sends plus linger, bounded as one unit.
+    if frame_too_large {
+        let _ = tokio::time::timeout(OVERSIZE_CLOSE_GRACE, close_frame_too_large(&mut sink)).await;
     }
 }
 
@@ -1911,5 +2015,331 @@ mod tests {
             );
             assert_typed_close(&frames, codes::CONN_EXPIRED);
         }
+    }
+
+    // ---- over-cap inbound frame: PAYLOAD_TOO_LARGE + Close 1009 ----
+    //
+    // The codec refuses an over-cap frame before drust sees it, so what reaches
+    // `handle_socket` is a stream `Err`. These tests hand the loop the REAL
+    // error value the codec produces — tungstenite's
+    // `Capacity(MessageTooLong { .. })`, via the dev-only 0.24 line, wrapped in
+    // `axum::Error` exactly as axum's `WebSocket` wraps the 0.29 one. They pin
+    // the loop's behaviour; whether axum's error still SAYS `MessageTooLong` is
+    // what the `--ignored` socket test and the smoke check see.
+
+    use tokio_tungstenite::tungstenite::Error as TgError;
+    use tokio_tungstenite::tungstenite::error::{CapacityError, ProtocolError};
+
+    fn too_long() -> axum::Error {
+        axum::Error::new(TgError::Capacity(CapacityError::MessageTooLong {
+            size: 70_077,
+            max_size: 65_536,
+        }))
+    }
+
+    fn reset_without_close() -> axum::Error {
+        axum::Error::new(TgError::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake,
+        ))
+    }
+
+    /// A sink that records each frame with the instant it was handed over,
+    /// so the linger after the Close can be measured from the loop's side.
+    #[derive(Clone, Default)]
+    struct Recording(Arc<std::sync::Mutex<Vec<(Message, Instant)>>>);
+
+    impl futures::Sink<Message> for Recording {
+        type Error = std::convert::Infallible;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.0.lock().unwrap().push((item, Instant::now()));
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A peer that stopped reading: `poll_ready` is never ready. Deliberately
+    /// NOT `futures::channel::mpsc::channel(0)`, which still accepts one item
+    /// per sender and would let the first send through — the bound test would
+    /// then pass without ever exercising the timeout.
+    struct NeverReady;
+
+    impl futures::Sink<Message> for NeverReady {
+        type Error = std::convert::Infallible;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// Drive the REAL conn loop with ONE inbound item — the given stream error —
+    /// into `sink`, and return how long `handle_socket` took. Keepalive stays at
+    /// the 30 s default and nothing is evicted, so the only thing that can write
+    /// a frame is the error path under test.
+    async fn drive_inbound_error<S>(err: axum::Error, sink: S) -> Duration
+    where
+        S: futures::Sink<Message> + Unpin,
+    {
+        const TENANT: &str = "t_oversize";
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+        let cfg = RoomsConfig::test_defaults();
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+        // The sender stays alive: an end-of-stream behind the error would be a
+        // second, different way out of the loop.
+        let (frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        frames_in.unbounded_send(Err(err)).unwrap();
+
+        let started = Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            handle_socket(
+                sink,
+                stream,
+                AuthCtx::Anon,
+                pc,
+                TENANT.to_string(),
+                TenantPublishPolicy::default(),
+                epoch,
+                epoch0,
+                None,
+            ),
+        )
+        .await
+        .expect("the conn loop must end after an inbound stream error");
+        let took = started.elapsed();
+        drop(frames_in);
+        took
+    }
+
+    /// T1 — the classifier closes 1009 on the codec's capacity refusal and on
+    /// nothing else. An over-broad match would answer an ordinary disconnect
+    /// (a reset, a protocol error) with "payload too large".
+    #[test]
+    fn inbound_error_is_too_large_matches_only_the_codec_capacity_error() {
+        assert!(inbound_error_is_too_large(&too_long()));
+        assert!(!inbound_error_is_too_large(&reset_without_close()));
+        assert!(!inbound_error_is_too_large(&axum::Error::new(TgError::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+        ))));
+        assert!(!inbound_error_is_too_large(&axum::Error::new(
+            TgError::Capacity(CapacityError::TooManyHeaders),
+        )));
+    }
+
+    /// T2 — the wire contract of the over-cap close: exactly the typed error
+    /// (no `ref`, the frame was never parsed) and then Close 1009.
+    #[tokio::test]
+    async fn oversize_inbound_frame_sends_payload_too_large_then_closes_1009() {
+        let rec = Recording::default();
+        drive_inbound_error(too_long(), rec.clone()).await;
+        let frames: Vec<Message> = rec.0.lock().unwrap().drain(..).map(|(m, _)| m).collect();
+
+        assert_eq!(
+            frames.len(),
+            2,
+            "an over-cap frame must get exactly the typed error and the close: {frames:?}"
+        );
+        let Message::Text(t) = &frames[0] else {
+            panic!(
+                "expected the PAYLOAD_TOO_LARGE error first, got {:?}",
+                frames[0]
+            );
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error", "{v}");
+        assert_eq!(v["code"], codes::PAYLOAD_TOO_LARGE, "{v}");
+        assert!(v.get("ref").is_none(), "the frame was never parsed: {v}");
+        assert!(v.get("room").is_none(), "the frame was never parsed: {v}");
+        assert!(
+            v["msg"].as_str().unwrap().contains("reconnect"),
+            "the message must tell the client what to do next: {v}"
+        );
+        match &frames[1] {
+            Message::Close(Some(cf)) => assert_eq!(
+                cf.code,
+                axum::extract::ws::close_code::SIZE,
+                "must close 1009 Message Too Big"
+            ),
+            other => panic!("expected Close(1009) after the error, got {other:?}"),
+        }
+    }
+
+    /// T3 — every OTHER inbound stream error still ends the connection with
+    /// nothing written and no linger: the change is scoped to the capacity
+    /// refusal.
+    #[tokio::test]
+    async fn other_inbound_stream_errors_still_end_the_conn_silently() {
+        for err in [
+            reset_without_close(),
+            axum::Error::new(TgError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionReset,
+            ))),
+            axum::Error::new(TgError::Capacity(CapacityError::TooManyHeaders)),
+        ] {
+            let what = format!("{err:?}");
+            let rec = Recording::default();
+            let took = drive_inbound_error(err, rec.clone()).await;
+            let frames = rec.0.lock().unwrap().len();
+            assert_eq!(frames, 0, "{what}: expected no frame at all");
+            assert!(
+                took < OVERSIZE_CLOSE_LINGER,
+                "{what}: a non-capacity error must not linger (took {took:?})"
+            );
+        }
+    }
+
+    /// T4 — the close tail is bounded even when the peer stopped reading.
+    ///
+    /// Costs about `OVERSIZE_CLOSE_GRACE` (2 s) of real time: dev `tokio` has
+    /// no `test-util`, so there is no paused clock. Do not lower the constant
+    /// to make this faster — the lower bound below is what proves the sink
+    /// really blocked, and the upper bound is the point of the test.
+    #[tokio::test]
+    async fn oversize_close_is_bounded_when_the_peer_stops_reading() {
+        let took = tokio::time::timeout(
+            Duration::from_secs(5),
+            drive_inbound_error(too_long(), NeverReady),
+        )
+        .await
+        .expect(
+            "the over-cap close hung on a peer that stopped reading — the sends and linger must \
+             run under OVERSIZE_CLOSE_GRACE",
+        );
+        assert!(
+            took >= OVERSIZE_CLOSE_GRACE - Duration::from_millis(100),
+            "the never-ready sink should have held the loop for the whole grace (took {took:?}); \
+             a shorter run means the sends were never attempted"
+        );
+    }
+
+    /// T4b — the linger is real: after the Close is handed to the sink, the
+    /// loop holds the socket for `OVERSIZE_CLOSE_LINGER` before returning, so
+    /// the two frames are not lost to the RST that the unread remainder of
+    /// the oversize frame causes.
+    #[tokio::test]
+    async fn oversize_close_lingers_after_the_close_frame_before_returning() {
+        let rec = Recording::default();
+        drive_inbound_error(too_long(), rec.clone()).await;
+        let returned = Instant::now();
+        let close_at = rec
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(m, _)| matches!(m, Message::Close(_)))
+            .map(|(_, at)| *at)
+            .expect("the Close frame must have been sent");
+        let gap = returned - close_at;
+        assert!(
+            gap >= Duration::from_millis(200),
+            "the socket must linger after the Close (gap {gap:?})"
+        );
+        assert!(
+            gap < OVERSIZE_CLOSE_GRACE,
+            "the linger must stay under the grace (gap {gap:?})"
+        );
+    }
+
+    /// T5 — the unknown-op wire contract, EXECUTED: an unrecognized `op` is
+    /// `MALFORMED_FRAME` with no `ref`, and the connection stays open (the
+    /// next op is answered). The socket-level twin in `tests/rooms_ws.rs` is
+    /// `#[ignore]`d.
+    #[tokio::test]
+    async fn unknown_op_gets_malformed_frame_and_the_conn_stays_open() {
+        const TENANT: &str = "t_unknown_op";
+        let bus = crate::tenant::rooms::bus::RoomBus::new();
+        let epoch = bus.tenant_epoch_handle(TENANT);
+        let epoch0 = epoch.load(SeqCst);
+        let cfg = RoomsConfig::test_defaults();
+        let pc = PublishCtx {
+            bus: bus.clone(),
+            bucket: cfg.bucket(),
+            cfg,
+        };
+        let (frames_in, stream) =
+            futures::channel::mpsc::unbounded::<Result<Message, axum::Error>>();
+        for f in [
+            r#"{"op":"frobnicate","ref":"u1"}"#,
+            r#"{"op":"ping","ref":"r2"}"#,
+        ] {
+            frames_in
+                .unbounded_send(Ok(Message::Text(Utf8Bytes::from_static(f))))
+                .unwrap();
+        }
+        drop(frames_in);
+
+        let (sink, out) = futures::channel::mpsc::unbounded::<Message>();
+        handle_socket(
+            sink,
+            stream,
+            AuthCtx::Anon,
+            pc,
+            TENANT.to_string(),
+            TenantPublishPolicy::default(),
+            epoch,
+            epoch0,
+            None,
+        )
+        .await;
+        let frames = out.collect::<Vec<_>>().await;
+        assert_eq!(frames.len(), 2, "{frames:?}");
+
+        let Message::Text(t) = &frames[0] else {
+            panic!(
+                "expected the MALFORMED_FRAME error first, got {:?}",
+                frames[0]
+            );
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "error", "{v}");
+        assert_eq!(v["code"], codes::MALFORMED_FRAME, "{v}");
+        assert!(v.get("ref").is_none(), "{v}");
+
+        let Message::Text(t) = &frames[1] else {
+            panic!("expected the pong next, got {:?}", frames[1]);
+        };
+        let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+        assert_eq!(v["kind"], "pong", "the connection must stay open: {v}");
+        assert_eq!(v["ref"], "r2", "{v}");
     }
 }

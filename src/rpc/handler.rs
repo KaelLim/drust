@@ -349,6 +349,40 @@ pub async fn call_rpc(
                     );
                 }
 
+                // 0e. Untrusted admission gate: anon and user write RPCs are
+                //     admitted one at a time per tenant, so they cannot pile
+                //     up in front of the writer ahead of trusted writers. A
+                //     caller waits up to one query deadline for the slot, then
+                //     gets the limiter's 429. Exhaustive match: service (the
+                //     tenant key or an admin PAT) never touches the gate. The
+                //     permit is held until `run_write_rpc` returns, and is
+                //     taken BEFORE the writer is requested — never inside a
+                //     `with_writer` closure, which would put the semaphore
+                //     under the mutex and invert the bound.
+                let _admit = match &ctx_for_lookup {
+                    AuthCtx::Service { .. } => None,
+                    AuthCtx::Anon | AuthCtx::User { .. } => {
+                        // One value for both the wait and the Retry-After.
+                        let wait = admit_wait();
+                        match admit_untrusted_write(&pool, wait).await {
+                            Some(p) => Some(p),
+                            None => {
+                                let mut resp = crate::tenant::router::rate_limited_response(
+                                    wait.as_secs().max(1),
+                                );
+                                // Same wire shape as the per-token limiter's
+                                // 429; the drust-constant `rpc_admission` tag
+                                // tells the two apart in the audit row only.
+                                resp.extensions_mut()
+                                    .insert(crate::safety::audit::AuditExtra(
+                                        json!({"rpc_mode": "write", "rpc_admission": "busy"}),
+                                    ));
+                                return resp;
+                            }
+                        }
+                    }
+                };
+
                 // v1.50 — resolve the tenant's quota tier (transitional
                 // `read_tier`; single meta lock on the low-frequency RPC path).
                 let tier = crate::storage::quota::read_tier(&meta, &t.tenant_id).await;
@@ -360,6 +394,9 @@ pub async fn call_rpc(
                     crate::storage::record_history::AuditActor::from_auth_ctx(&ctx_for_lookup),
                     crate::storage::record_history::CaptureLimits::from_env(),
                     tier,
+                    // anon/user run under DRUST_QUERY_DEADLINE_MS; service
+                    // (tenant key or admin PAT) is trusted → None.
+                    crate::rpc::exec_write::deadline_for(&ctx_for_lookup),
                 )
                 .await
                 {
@@ -384,6 +421,35 @@ pub async fn call_rpc(
     };
 
     outcome_to_response(outcome, &t, &name)
+}
+
+/// Take the tenant's untrusted write-RPC admission slot
+/// ([`crate::storage::pool::TenantPool::untrusted_write_rpc_gate`]), waiting at
+/// most `wait` for it. `None` on a timeout or a closed semaphore; the REST
+/// write arm maps that to `429 RATE_LIMITED`. Only the Anon/User branch of that
+/// arm calls this. `pub` (not `pub(crate)`) so an integration test can drive it
+/// with a short wait against a pool it holds.
+pub async fn admit_untrusted_write(
+    pool: &crate::storage::pool::SharedTenantPool,
+    wait: std::time::Duration,
+) -> Option<tokio::sync::SemaphorePermit<'_>> {
+    match tokio::time::timeout(wait, pool.untrusted_write_rpc_gate().acquire()).await {
+        Ok(Ok(permit)) => Some(permit),
+        Ok(Err(_)) | Err(_) => None,
+    }
+}
+
+/// How long an untrusted write RPC waits for the admission slot before the
+/// 429: one query deadline. A waiting call gets the slot as soon as the one
+/// ahead returns, so a burst of fast anon write RPCs is not refused while the
+/// writer is free. The slot is held while its holder WAITS for the writer,
+/// though, so a 429 means the slot was occupied for a whole deadline — by a
+/// slow untrusted RPC, or by a fast one queued behind a long trusted write
+/// (service or cron write RPC, the playground, an FTS rebuild, a large batch).
+/// With the deadline disabled (`DRUST_QUERY_DEADLINE_MS=0`) the wait is a
+/// fixed 5 s (design §2.6's formula).
+fn admit_wait() -> std::time::Duration {
+    crate::query::executor::query_deadline().unwrap_or(std::time::Duration::from_secs(5))
 }
 
 /// Translate a `RpcOutcome` into the final HTTP response. Factored out so
@@ -538,94 +604,28 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 ));
             resp
         }
-        RpcOutcome::Param(e) => match e {
-            ParamError::Missing(_) => {
-                json_error(StatusCode::BAD_REQUEST, "PARAM_MISSING", &e.to_string())
-            }
-            ParamError::TypeMismatch { .. } => json_error(
-                StatusCode::BAD_REQUEST,
-                "PARAM_TYPE_MISMATCH",
-                &e.to_string(),
-            ),
-            ParamError::Unknown(_) => {
-                json_error(StatusCode::BAD_REQUEST, "PARAM_UNKNOWN", &e.to_string())
-            }
-            ParamError::BadParamsJson(_) => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "PARAM_BAD_STORED",
-                &e.to_string(),
-            ),
-        },
-        RpcOutcome::Exec(e) => match &e {
-            ExecError::TooLarge { .. } => json_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "QUERY_TOO_LARGE",
-                &e.to_string(),
-            ),
-            ExecError::Forbidden(_) => {
-                json_error(StatusCode::FORBIDDEN, "QUERY_FORBIDDEN", &e.to_string())
-            }
-            ExecError::Timeout(_) => {
-                json_error(StatusCode::REQUEST_TIMEOUT, "QUERY_TIMEOUT", &e.to_string())
-            }
-            ExecError::Sql(_) => json_error(StatusCode::BAD_REQUEST, "SQL_ERROR", &e.to_string()),
-        },
-        RpcOutcome::StatementFailed(e) => {
-            // v1.46 R8: a record-history CaptureLimits cap hit is
-            // caller-remediable (batch the operation, raise the knob, or
-            // disable audit) and the savepoint WAS resolved cleanly —
-            // 409 (LARGE_TABLE precedent for config-remediable
-            // conflicts), never the 500 TX_COMMIT_FAILED class.
-            // v1.50 (Spec B §5.2): a quota refusal happened BEFORE the SAVEPOINT
-            // (nothing written) — surface it as the 507 TENANT_QUOTA_EXCEEDED
-            // disk-guard family, not a per-statement 4xx.
-            let code = if e.quota_exceeded {
-                "TENANT_QUOTA_EXCEEDED"
-            } else if e.capture_limit_exceeded {
-                "CAPTURE_LIMIT_EXCEEDED"
-            } else if e.authorizer_denied {
-                "INVALID_SQL_FOR_MODE"
-            } else {
-                "RPC_STATEMENT_FAILED"
+        // The code strings live on the error types (`ParamError::code`,
+        // `ExecError::code`), shared with MCP `call_rpc`; only the status is
+        // decided here.
+        RpcOutcome::Param(e) => {
+            let status = match e {
+                ParamError::Missing(_)
+                | ParamError::TypeMismatch { .. }
+                | ParamError::Unknown(_) => StatusCode::BAD_REQUEST,
+                ParamError::BadParamsJson(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            // The quota + capture-limit messages are standalone (no
-            // statement_index framing); only true per-statement failures carry
-            // the "statement N failed" prefix + index.
-            let standalone = e.quota_exceeded || e.capture_limit_exceeded;
-            let mut body = serde_json::Map::new();
-            body.insert("error_code".into(), json!(code));
-            body.insert(
-                "message".into(),
-                if standalone {
-                    json!(e.message)
-                } else {
-                    json!(format!(
-                        "statement {} failed: {}",
-                        e.statement_index, e.message
-                    ))
-                },
-            );
-            if !standalone {
-                body.insert("statement_index".into(), json!(e.statement_index));
-            }
-            if let Some(fix) = crate::safety::error_fixes::lookup(code) {
-                body.insert("suggested_fix".into(), json!(fix));
-            }
-            let mut resp = Json(serde_json::Value::Object(body)).into_response();
-            *resp.status_mut() = if e.quota_exceeded {
-                StatusCode::INSUFFICIENT_STORAGE
-            } else if e.capture_limit_exceeded {
-                StatusCode::CONFLICT
-            } else {
-                StatusCode::BAD_REQUEST
-            };
-            resp.extensions_mut()
-                .insert(crate::safety::audit::AuditExtra(json!({
-                    "rpc_mode": "write",
-                    "rpc_statement_index": e.statement_index,
-                })));
-            resp
+            json_error(status, e.code(), &e.to_string())
         }
+        RpcOutcome::Exec(e) => {
+            let status = match &e {
+                ExecError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+                ExecError::Forbidden(_) => StatusCode::FORBIDDEN,
+                ExecError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
+                ExecError::Sql(_) => StatusCode::BAD_REQUEST,
+            };
+            json_error(status, e.code(), &e.to_string())
+        }
+        RpcOutcome::StatementFailed(e) => statement_failed_response(e),
         RpcOutcome::TxCommitFailed(msg) => {
             // v1.30 C7: tag with rpc_mode:"write" for cross-arm audit uniformity.
             let mut resp = json_error(StatusCode::INTERNAL_SERVER_ERROR, "TX_COMMIT_FAILED", &msg);
@@ -661,5 +661,160 @@ fn outcome_to_response(outcome: RpcOutcome, t: &TenantRef, name: &str) -> Respon
                 json_error(StatusCode::BAD_REQUEST, "RPC_KIND_INVALID", &e.to_string())
             }
         },
+    }
+}
+
+/// The `RpcOutcome::StatementFailed` arm of [`outcome_to_response`], split out
+/// so the status / code ladder is unit-testable without a `TenantRef`.
+fn statement_failed_response(e: crate::rpc::exec_write::RpcStatementError) -> Response {
+    // v1.46 R8: a record-history CaptureLimits cap hit is
+    // caller-remediable (batch the operation, raise the knob, or
+    // disable audit) and the savepoint WAS resolved cleanly —
+    // 409 (LARGE_TABLE precedent for config-remediable
+    // conflicts), never the 500 TX_COMMIT_FAILED class.
+    // v1.50 (Spec B §5.2): a quota refusal happened BEFORE the SAVEPOINT
+    // (nothing written) — surface it as the 507 TENANT_QUOTA_EXCEEDED
+    // disk-guard family, not a per-statement 4xx.
+    let code = if e.quota_exceeded {
+        "TENANT_QUOTA_EXCEEDED"
+    } else if e.capture_limit_exceeded {
+        "CAPTURE_LIMIT_EXCEEDED"
+    } else if e.timed_out {
+        "QUERY_TIMEOUT"
+    } else if e.authorizer_denied {
+        "INVALID_SQL_FOR_MODE"
+    } else {
+        "RPC_STATEMENT_FAILED"
+    };
+    // The quota + capture-limit + timeout messages are standalone (no
+    // statement_index framing); only true per-statement failures carry
+    // the "statement N failed" prefix + index. A timeout's body is then
+    // exactly the read arm's `json_error` 408: `{error_code, message}`
+    // (`QUERY_TIMEOUT` has no `suggested_fix` catalog entry).
+    let standalone = e.quota_exceeded || e.capture_limit_exceeded || e.timed_out;
+    let mut body = serde_json::Map::new();
+    body.insert("error_code".into(), json!(code));
+    body.insert(
+        "message".into(),
+        if standalone {
+            json!(e.message)
+        } else {
+            json!(format!(
+                "statement {} failed: {}",
+                e.statement_index, e.message
+            ))
+        },
+    );
+    if !standalone {
+        body.insert("statement_index".into(), json!(e.statement_index));
+    }
+    if let Some(fix) = crate::safety::error_fixes::lookup(code) {
+        body.insert("suggested_fix".into(), json!(fix));
+    }
+    let mut resp = Json(serde_json::Value::Object(body)).into_response();
+    *resp.status_mut() = if e.quota_exceeded {
+        StatusCode::INSUFFICIENT_STORAGE
+    } else if e.capture_limit_exceeded {
+        StatusCode::CONFLICT
+    } else if e.timed_out {
+        StatusCode::REQUEST_TIMEOUT
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    resp.extensions_mut()
+        .insert(crate::safety::audit::AuditExtra(json!({
+            "rpc_mode": "write",
+            "rpc_statement_index": e.statement_index,
+        })));
+    resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc::exec_write::RpcStatementError;
+
+    fn stmt_err(index: usize, message: &str) -> RpcStatementError {
+        RpcStatementError {
+            statement_index: index,
+            message: message.to_string(),
+            authorizer_denied: false,
+            capture_limit_exceeded: false,
+            quota_exceeded: false,
+            timed_out: false,
+        }
+    }
+
+    async fn status_and_body(resp: Response) -> (StatusCode, serde_json::Value) {
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn keys(v: &serde_json::Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// A timed-out write RPC answers with the read arm's 408 shape: same
+    /// status, same code, same message text, same key set (no
+    /// `statement_index`, no "statement N failed" framing).
+    #[tokio::test]
+    async fn timed_out_write_rpc_maps_to_the_read_arms_408_shape() {
+        let msg = ExecError::Timeout(5000).to_string();
+        let mut e = stmt_err(2, &msg);
+        e.timed_out = true;
+        let (status, body) = status_and_body(statement_failed_response(e)).await;
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT, "{body}");
+        assert_eq!(body["error_code"], "QUERY_TIMEOUT", "{body}");
+        assert_eq!(body["message"], "query timed out after 5000ms", "{body}");
+
+        let (read_status, read_body) = status_and_body(json_error(
+            StatusCode::REQUEST_TIMEOUT,
+            "QUERY_TIMEOUT",
+            "query timed out after 5000ms",
+        ))
+        .await;
+        assert_eq!(status, read_status);
+        assert_eq!(keys(&body), keys(&read_body), "{body} vs {read_body}");
+        assert_eq!(body, read_body, "byte-identical to the read arm's 408");
+    }
+
+    /// `statement_failed_response` was extracted from `outcome_to_response`
+    /// in the same change that added the timeout branch: lock the branches
+    /// that existed before it.
+    #[tokio::test]
+    async fn statement_failed_response_keeps_the_existing_status_ladder() {
+        let mut q = stmt_err(0, "TENANT_QUOTA_EXCEEDED: over");
+        q.quota_exceeded = true;
+        let (status, body) = status_and_body(statement_failed_response(q)).await;
+        assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE, "{body}");
+        assert_eq!(body["error_code"], "TENANT_QUOTA_EXCEEDED");
+        assert!(body.get("statement_index").is_none(), "{body}");
+
+        let mut c = stmt_err(3, "capture cap");
+        c.capture_limit_exceeded = true;
+        let (status, body) = status_and_body(statement_failed_response(c)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error_code"], "CAPTURE_LIMIT_EXCEEDED");
+        assert_eq!(body["message"], "capture cap");
+        assert!(body.get("statement_index").is_none(), "{body}");
+
+        let mut a = stmt_err(1, "not authorized");
+        a.authorizer_denied = true;
+        let (status, body) = status_and_body(statement_failed_response(a)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error_code"], "INVALID_SQL_FOR_MODE");
+        assert_eq!(body["statement_index"], 1);
+
+        let (status, body) =
+            status_and_body(statement_failed_response(stmt_err(2, "no such column: x"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error_code"], "RPC_STATEMENT_FAILED");
+        assert_eq!(body["message"], "statement 2 failed: no such column: x");
+        assert_eq!(body["statement_index"], 2);
     }
 }

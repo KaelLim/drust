@@ -885,3 +885,282 @@ async fn removing_an_admin_takes_their_quota_requests_with_them() {
         "no queue row may be attributed to the new hire"
     );
 }
+
+// ─── tenant lifecycle host-audit rows (smoke fix, rest-errors-audit) ─────────
+//
+// Lives here because this is the one binary that owns the process-global audit
+// writer and asserts on row contents (build-deploy.md §Tests). Every tenant id
+// below is unique to its test: the audit DB is shared by the whole binary.
+
+/// Every row matching (tenant, op), oldest first, each as the concatenation of
+/// all its columns (`extra` included) — so "a key does not appear in the row"
+/// is checked against everything the row stores.
+async fn audit_rows_text(tenant: &str, op: &str) -> Vec<String> {
+    assert!(
+        wait_for_audit_op(tenant, op).await,
+        "no {op} audit row for {tenant}"
+    );
+    let r = open_audit_db_read(ensure_global_audit_writer()).unwrap();
+    let mut stmt = r
+        .prepare(
+            "SELECT ts || '|' || tenant || '|' || token_hint || '|' || op || '|' || status \
+             || '|' || COALESCE(error_code,'') || '|' || COALESCE(extra,'') \
+             || '|' || COALESCE(CAST(actor_admin_id AS TEXT),'') \
+             || '|' || COALESCE(actor_email_snapshot,'') \
+             FROM audit WHERE tenant = ?1 AND op = ?2 ORDER BY id",
+        )
+        .unwrap();
+    stmt.query_map(params![tenant, op], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn audit_actor(tenant: &str, op: &str) -> Option<i64> {
+    let r = open_audit_db_read(ensure_global_audit_writer()).unwrap();
+    r.query_row(
+        "SELECT actor_admin_id FROM audit WHERE tenant = ?1 AND op = ?2 ORDER BY id DESC LIMIT 1",
+        params![tenant, op],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn audit_count(tenant: &str, op: Option<&str>) -> i64 {
+    let r = open_audit_db_read(ensure_global_audit_writer()).unwrap();
+    let _ = r.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    match op {
+        Some(op) => r.query_row(
+            "SELECT COUNT(*) FROM audit WHERE tenant = ?1 AND op = ?2",
+            params![tenant, op],
+            |row| row.get(0),
+        ),
+        None => r.query_row(
+            "SELECT COUNT(*) FROM audit WHERE tenant = ?1",
+            params![tenant],
+            |row| row.get(0),
+        ),
+    }
+    .unwrap()
+}
+
+async fn post_form(app: &axum::Router, uri: &str, cookie: &str, body: &str) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn tenant_create_json_emits_admin_tenant_create_audit_without_keys() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/api/tenants",
+        &owner,
+        Some(serde_json::json!({"id": "t-aud-create", "name": "AuditCo"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let rows = audit_rows_text("t-aud-create", "admin.tenant.create").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert_eq!(audit_actor("t-aud-create", "admin.tenant.create"), Some(1));
+    assert!(row.contains("\"recycled\":false"), "{row}");
+    assert!(row.contains("AuditCo"), "{row}");
+    for key in [
+        body["initial_tokens"]["service"].as_str().unwrap(),
+        body["initial_tokens"]["anon"].as_str().unwrap(),
+    ] {
+        assert!(!row.contains(key), "a tenant key leaked into the audit row");
+        assert!(
+            !row.contains(&drust::auth::bearer::hash_token(key)),
+            "a tenant key hash leaked into the audit row"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tenant_create_form_emits_admin_tenant_create_audit() {
+    ensure_global_audit_writer();
+    let (app, dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    let st = post_form(&app, "/admin/tenants/new", &owner, "name=AuditFormCo").await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let id: String = {
+        let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+        conn.query_row(
+            "SELECT id FROM tenants WHERE name = 'AuditFormCo'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let rows = audit_rows_text(&id, "admin.tenant.create").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("\"recycled\":false"), "{}", rows[0]);
+    assert_eq!(audit_actor(&id, "admin.tenant.create"), Some(1));
+}
+
+#[tokio::test]
+async fn tenant_recycle_create_audit_marks_recycled() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    create_tenant_json(&app, &owner, "t-aud-recycle", "First").await;
+    let (st, _) = send(
+        &app,
+        "DELETE",
+        "/admin/api/tenants/t-aud-recycle",
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    create_tenant_json(&app, &owner, "t-aud-recycle", "Second").await;
+    // Wait for the delete row too: the writer is FIFO, so once it is in, the
+    // first create is; then poll until the second create lands.
+    audit_rows_text("t-aud-recycle", "admin.tenant.delete").await;
+    let mut rows = Vec::new();
+    for _ in 0..25 {
+        rows = audit_rows_text("t-aud-recycle", "admin.tenant.create").await;
+        if rows.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    }
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows[0].contains("\"recycled\":false"), "{}", rows[0]);
+    assert!(rows[1].contains("\"recycled\":true"), "{}", rows[1]);
+}
+
+#[tokio::test]
+async fn tenant_key_reroll_emits_audit_without_plaintext() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    create_tenant_json(&app, &owner, "t-aud-reroll", "RerollCo").await;
+    let (st, body) = send(
+        &app,
+        "POST",
+        "/admin/api/tenants/t-aud-reroll/tokens/service/reroll",
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let token = body["token"].as_str().unwrap();
+    let token_id = body["id"].as_i64().unwrap();
+    let rows = audit_rows_text("t-aud-reroll", "admin.tenant_key.reroll").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let row = &rows[0];
+    assert!(row.contains("\"role\":\"service\""), "{row}");
+    assert!(row.contains(&format!("\"token_id\":{token_id}")), "{row}");
+    assert!(row.contains("\"revoked_count\":1"), "{row}");
+    assert_eq!(
+        audit_actor("t-aud-reroll", "admin.tenant_key.reroll"),
+        Some(1)
+    );
+    assert!(
+        !row.contains(token),
+        "the new key leaked into the audit row"
+    );
+    assert!(
+        !row.contains(&drust::auth::bearer::hash_token(token)),
+        "the new key's hash leaked into the audit row"
+    );
+}
+
+#[tokio::test]
+async fn tenant_key_reroll_form_emits_audit() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    create_tenant_json(&app, &owner, "t-aud-reroll-form", "RerollFormCo").await;
+    let st = post_form(
+        &app,
+        "/admin/tenants/t-aud-reroll-form/tokens/anon/reroll",
+        &owner,
+        "",
+    )
+    .await;
+    assert!(st.is_redirection(), "form reroll answered {st}");
+    let rows = audit_rows_text("t-aud-reroll-form", "admin.tenant_key.reroll").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("\"role\":\"anon\""), "{}", rows[0]);
+}
+
+#[tokio::test]
+async fn tenant_soft_delete_json_and_form_emit_admin_tenant_delete_audit() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    create_tenant_json(&app, &owner, "t-aud-del-json", "DelJson").await;
+    create_tenant_json(&app, &owner, "t-aud-del-form", "DelForm").await;
+    let (st, _) = send(
+        &app,
+        "DELETE",
+        "/admin/api/tenants/t-aud-del-json",
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let st = post_form(&app, "/admin/tenants/t-aud-del-form/delete", &owner, "").await;
+    assert!(st.is_redirection(), "form delete answered {st}");
+    for tid in ["t-aud-del-json", "t-aud-del-form"] {
+        let rows = audit_rows_text(tid, "admin.tenant.delete").await;
+        assert_eq!(rows.len(), 1, "{tid}: {rows:?}");
+        assert!(rows[0].contains("\"trashed\":true"), "{}", rows[0]);
+        assert_eq!(audit_actor(tid, "admin.tenant.delete"), Some(1));
+    }
+}
+
+#[tokio::test]
+async fn refused_lifecycle_ops_emit_no_audit() {
+    ensure_global_audit_writer();
+    let (app, _dir) = spin_up().await;
+    let owner = login(&app, "root", "hunter2").await;
+    create_tenant_json(&app, &owner, "t-aud-refused", "Refused").await;
+    // Delete of an unknown id → 404; reroll of an unknown role → 400.
+    let (st, _) = send(
+        &app,
+        "DELETE",
+        "/admin/api/tenants/t-aud-nope",
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = send(
+        &app,
+        "POST",
+        "/admin/api/tenants/t-aud-refused/tokens/admin/reroll",
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    // A later successful op on another tenant: the writer is FIFO-batched, so
+    // once its row is in, any row the refused ops had sent would be too.
+    create_tenant_json(&app, &owner, "t-aud-refused-marker", "Marker").await;
+    audit_rows_text("t-aud-refused-marker", "admin.tenant.create").await;
+    assert_eq!(audit_count("t-aud-nope", None), 0);
+    assert_eq!(
+        audit_count("t-aud-refused", Some("admin.tenant_key.reroll")),
+        0
+    );
+    assert_eq!(audit_count("t-aud-refused", Some("admin.tenant.delete")), 0);
+}

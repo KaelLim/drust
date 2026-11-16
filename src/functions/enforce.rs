@@ -495,7 +495,19 @@ pub async fn get_file_bytes_raw(
         .get_object_bytes_in(bucket, &object_key)
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| format!("GARAGE_GET_FAILED: {e:#}"))
+        .map_err(|e| {
+            // The guest may relay this string to an anon/user invoker: the
+            // backend detail (internal endpoint, bucket, object path) is
+            // logged, the `CODE: message` the guest sees is fixed.
+            tracing::error!(
+                tenant = %inner.tenant_id,
+                object_key = %object_key,
+                bucket = %bucket,
+                error = format!("{e:#}"),
+                "edge get-file-bytes: garage get_object_bytes_in failed"
+            );
+            "GARAGE_GET_FAILED: object store read failed".to_string()
+        })
 }
 
 /// `put-file` raw path (no cap gate) — body lifted from the runtime host so
@@ -650,7 +662,14 @@ async fn put_file_as(
                 .map(|_| ())
             })
             .await;
-        return Err(format!("GARAGE_PUT_FAILED: {e:#}"));
+        tracing::error!(
+            tenant = %inner.tenant_id,
+            object_key = %object_key,
+            bucket = %bucket,
+            error = format!("{e:#}"),
+            "edge put-file: garage put_object_in failed — metadata row rolled back"
+        );
+        return Err("GARAGE_PUT_FAILED: object store write failed".into());
     }
     Ok(serde_json::json!({"key": key, "size_bytes": size}).to_string())
 }
@@ -876,6 +895,14 @@ mod tests {
     /// tenant pool — the enforcement core needs a real pool + schema cache.
     /// Pattern lifted from runtime.rs::build_store_with_garage.
     async fn mcp_with_garage(tenant_id: &str) -> (DrustMcp, tempfile::TempDir) {
+        mcp_with_store(tenant_id, Arc::new(object_store::memory::InMemory::new())).await
+    }
+
+    /// `mcp_with_garage` over an arbitrary backing store.
+    async fn mcp_with_store(
+        tenant_id: &str,
+        store: Arc<dyn object_store::ObjectStore>,
+    ) -> (DrustMcp, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
             tmp.path().to_path_buf(),
@@ -883,8 +910,7 @@ mod tests {
         ));
         let _pool = tenants.get_or_create(tenant_id).unwrap();
         let garage = Arc::new(crate::storage::garage::GarageClient::from_store(
-            Arc::new(object_store::memory::InMemory::new()),
-            "unused",
+            store, "unused",
         ));
         let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
         let bucket = rooms_cfg.bucket();
@@ -1516,5 +1542,107 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(v["record"]["secret"], "s3cr3t", "full row: {v}");
+    }
+
+    /// An object store whose every call fails with a sentinel shaped like a
+    /// real S3 error (internal endpoint, bucket, S3 code).
+    mod failing_store {
+        use async_trait::async_trait;
+        use futures::StreamExt;
+        use futures::stream::BoxStream;
+        use object_store::path::Path;
+        use object_store::{
+            CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+            ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
+        };
+
+        pub const SENTINEL: &str =
+            "http://storage-internal.invalid:3900/sentinel-bucket/t/k.bin NoSuchBucket";
+
+        fn err() -> object_store::Error {
+            object_store::Error::Generic {
+                store: "S3",
+                source: SENTINEL.into(),
+            }
+        }
+
+        #[derive(Debug)]
+        pub struct FailingStore;
+
+        impl std::fmt::Display for FailingStore {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "FailingStore")
+            }
+        }
+
+        #[async_trait]
+        impl ObjectStore for FailingStore {
+            async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
+                Err(err())
+            }
+            async fn put_multipart_opts(
+                &self,
+                _: &Path,
+                _: PutMultipartOptions,
+            ) -> Result<Box<dyn MultipartUpload>> {
+                Err(err())
+            }
+            async fn get_opts(&self, _: &Path, _: GetOptions) -> Result<GetResult> {
+                Err(err())
+            }
+            fn delete_stream(
+                &self,
+                locations: BoxStream<'static, Result<Path>>,
+            ) -> BoxStream<'static, Result<Path>> {
+                locations.map(|_| Err(err())).boxed()
+            }
+            fn list(&self, _: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+                futures::stream::once(async { Err(err()) }).boxed()
+            }
+            async fn list_with_delimiter(&self, _: Option<&Path>) -> Result<ListResult> {
+                Err(err())
+            }
+            async fn copy_opts(&self, _: &Path, _: &Path, _: CopyOptions) -> Result<()> {
+                Err(err())
+            }
+        }
+    }
+
+    /// Edge `put-file` / `get-file-bytes` are reachable by guests running for
+    /// anon/user invokers, and a guest may relay the error string. The
+    /// backend detail is logged; the guest sees a fixed `CODE: message`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn put_file_and_get_file_storage_failure_hide_backend_detail() {
+        let (mcp, _t) = mcp_with_store("t-fail", Arc::new(failing_store::FailingStore)).await;
+        let put = put_file_raw(
+            &mcp,
+            "f.bin",
+            b"hi".to_vec(),
+            "application/octet-stream",
+            "private",
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(put, "GARAGE_PUT_FAILED: object store write failed");
+        assert!(!put.contains(failing_store::SENTINEL));
+
+        // Seed a row directly so the read reaches the store.
+        mcp.inner()
+            .pool
+            .with_writer(|c| {
+                c.execute(
+                    "INSERT INTO _system_files (key, original_name, size_bytes, visibility, uploader)
+                     VALUES ('g.bin', 'g.bin', 2, 'private', 'function')",
+                    [],
+                )
+                .map(|_| ())
+            })
+            .await
+            .unwrap();
+        let get = get_file_bytes_raw(&mcp, "g.bin", 4 * 1024 * 1024)
+            .await
+            .unwrap_err();
+        assert_eq!(get, "GARAGE_GET_FAILED: object store read failed");
     }
 }

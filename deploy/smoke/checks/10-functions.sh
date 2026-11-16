@@ -129,7 +129,7 @@ PY
 fn_dir_has() {
   local cid out
   command -v docker >/dev/null 2>&1 || { echo skip; return; }
-  cid="$(docker compose -p drust-smoke ps -q drust 2>/dev/null | head -1)"
+  cid="$(docker compose -p "$SMOKE_COMPOSE_PROJECT" ps -q drust 2>/dev/null | head -1)"
   [ -n "$cid" ] || { echo skip; return; }
   out="$(docker exec "$cid" ls "/data/tenants/$1/_functions" 2>/dev/null || true)"
   case "$out" in *"$2.wasm"*) echo yes ;; *) echo no ;; esac

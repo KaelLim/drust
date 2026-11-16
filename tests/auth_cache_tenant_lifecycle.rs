@@ -50,7 +50,13 @@ async fn soft_delete_clears_tenant_scoped_entries() {
     );
 
     let (state, _dir) = helpers::tenants_state_with_cache("t1", cache.clone()).await;
-    let resp = drust::mgmt::tenants::soft_delete_tenant(State(state), Path("t1".to_string())).await;
+    let resp = drust::mgmt::tenants::soft_delete_tenant(
+        State(state),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
+        Path("t1".to_string()),
+    )
+    .await;
     assert!(resp.status().is_success() || resp.status().is_redirection());
 
     assert_eq!(cache.len(), 1, "t1 entries cleared, t2 survives");
@@ -75,9 +81,13 @@ async fn create_recycling_id_clears_stale_entries() {
     );
     let (state, _dir) = helpers::tenants_state_with_cache("recy", cache.clone()).await;
     // Soft-delete then recreate the same id.
-    let _ =
-        drust::mgmt::tenants::soft_delete_tenant(State(state.clone()), Path("recy".to_string()))
-            .await;
+    let _ = drust::mgmt::tenants::soft_delete_tenant(
+        State(state.clone()),
+        axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
+        Path("recy".to_string()),
+    )
+    .await;
     // Re-seed a stale entry as if a request raced in after soft-delete.
     cache.insert(
         "stale2".to_string(),
@@ -108,6 +118,7 @@ async fn create_recycling_id_clears_stale_entries() {
     let resp = drust::mgmt::tenants::create_tenant_json(
         State(state),
         axum::Extension(drust::auth::middleware::AdminId(1)),
+        axum::Extension(drust::mgmt::admin_profile::AdminProfileExt::placeholder()),
         axum::Json(body),
     )
     .await;

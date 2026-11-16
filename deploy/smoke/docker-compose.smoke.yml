@@ -1,12 +1,18 @@
 # Local smoke stack — an OVERRIDE layered on the real docker-compose.yml, so what
 # runs is the Compose deployment target itself (same image, env, healthcheck,
-# ulimits, stop_grace_period) plus a real Garage for the file features.
+# ulimits, stop_grace_period) plus an object store: RustFS from the repo's own
+# docker-compose.storage.yml (default) or Garage (SMOKE_STORE=garage,
+# docker-compose.smoke-garage.yml). This file is store-neutral.
 #
 # Do not run this file directly; use deploy/smoke/up.sh, which generates the
-# secrets in deploy/smoke/.env and bootstraps Garage before drust starts.
+# secrets in deploy/smoke/.env and picks the store's files (compose-files.sh).
 #
 # Everything binds to host loopback on ports that do not collide with a drust
 # or Garage already running on the host (47826, 47830-47832).
+#
+# DRUST_PUBLIC_BASE_URL and PUBLIC_OBJECTS_UPSTREAM are deliberately NOT set
+# here: up.sh exports them, so the base file's own ${VAR:-default} lines are
+# what runs. An override value would replace those lines and hide a regression.
 
 name: drust-smoke
 
@@ -25,30 +31,3 @@ services:
       # needs it: it is the only honest proof of which build is answering.
       DRUST_HIDE_VERSION: !reset null
       DRUST_PUBLIC_URL: http://localhost:${SMOKE_HTTP_PORT:-48080}
-      GARAGE_S3_ENDPOINT: http://garage:3900
-      GARAGE_ADMIN_ENDPOINT: http://garage:3903
-      GARAGE_S3_ACCESS_KEY: ${SMOKE_S3_ACCESS_KEY:?run deploy/smoke/up.sh}
-      GARAGE_S3_SECRET_KEY: ${SMOKE_S3_SECRET_KEY:?run deploy/smoke/up.sh}
-      GARAGE_ADMIN_TOKEN: ${SMOKE_GARAGE_ADMIN_TOKEN:?run deploy/smoke/up.sh}
-    depends_on:
-      - garage
-
-  # Same Garage line the bare-metal host runs. Single node, replication 1.
-  garage:
-    image: dxflrs/garage:v1.0.1
-    restart: unless-stopped
-    environment:
-      GARAGE_RPC_SECRET: ${SMOKE_GARAGE_RPC_SECRET:?run deploy/smoke/up.sh}
-      GARAGE_ADMIN_TOKEN: ${SMOKE_GARAGE_ADMIN_TOKEN:?run deploy/smoke/up.sh}
-    volumes:
-      - ./deploy/smoke/garage.toml:/etc/garage.toml:ro
-      - garage-meta:/var/lib/garage/meta
-      - garage-data:/var/lib/garage/data
-    ports:
-      - "127.0.0.1:${SMOKE_GARAGE_S3_PORT:-48900}:3900"    # S3 API
-      - "127.0.0.1:${SMOKE_GARAGE_WEB_PORT:-48902}:3902"   # website (public bucket)
-      - "127.0.0.1:${SMOKE_GARAGE_ADMIN_PORT:-48903}:3903" # admin API
-
-volumes:
-  garage-meta:
-  garage-data:

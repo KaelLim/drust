@@ -51,6 +51,17 @@ pub struct EgressEntry {
 /// default port (80 for http, 443 for https), and strip any path / query /
 /// fragment / trailing slash. Anything that is not a well-formed http(s)
 /// origin is rejected with an `Err` describing why.
+///
+/// An IPv6 literal is written in brackets (`https://[2001:db8::1]:8443`). It is
+/// parsed with `std::net::Ipv6Addr` and re-emitted in that type's canonical
+/// text (RFC 5952 compression, lowercase hex; an IPv4-mapped address prints in
+/// mixed notation, `[::ffff:127.0.0.1]`), so two spellings of the same address
+/// normalise to one string — the only equalities this adds. Zone ids, IPv4
+/// inside brackets and anything after `]` other than `:<port>` are refused.
+/// Outside brackets, a host containing `:`, `[` or `]` is refused: it is never a
+/// valid reg-name or IPv4, so it could never match anything the dial parser
+/// produces. DNS names and IPv4 hosts are compared as text, as before — no
+/// alternate-IPv4 equivalence (`127.1` vs `127.0.0.1`) is introduced.
 pub fn normalize_origin(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     let (scheme, rest) = raw
@@ -70,23 +81,42 @@ pub fn normalize_origin(raw: &str) -> Result<String, String> {
     if authority.contains('@') {
         return Err(format!("userinfo not allowed in {authority:?}"));
     }
-    // Split an optional numeric port off the end. A colon followed by
-    // anything non-numeric (or an empty port) is a malformed authority.
-    let (host, port): (&str, Option<u16>) = match authority.rsplit_once(':') {
-        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
-            let pn = p
-                .parse::<u16>()
-                .map_err(|_| format!("invalid port in {authority:?}"))?;
-            (h, Some(pn))
+    let (host_canon, port): (String, Option<u16>) = if let Some(after) = authority.strip_prefix('[')
+    {
+        // RFC 3986 IP-literal. Parsed with std so the stored form is canonical.
+        let (literal, tail) = after
+            .split_once(']')
+            .ok_or_else(|| format!("unterminated IPv6 literal in {authority:?}"))?;
+        let addr: std::net::Ipv6Addr = literal
+            .parse()
+            .map_err(|_| format!("invalid IPv6 literal in {authority:?}"))?;
+        let port = match tail {
+            "" => None,
+            t => Some(parse_port(
+                t.strip_prefix(':')
+                    .ok_or_else(|| format!("invalid authority {authority:?}"))?,
+                authority,
+            )?),
+        };
+        (format!("[{addr}]"), port)
+    } else {
+        // Split an optional numeric port off the end. A colon followed by
+        // anything non-numeric (or an empty port) is a malformed authority.
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(parse_port(p, authority)?)),
+            None => (authority, None),
+        };
+        if host.is_empty() {
+            return Err("empty host".into());
         }
-        Some(_) => return Err(format!("invalid authority {authority:?}")),
-        None => (authority, None),
+        // A bare ':' / '[' / ']' left in the host is never a valid reg-name
+        // or IPv4 (`http://::1`, `https://a:b:443`, `https://ex]ample.com`).
+        if host.contains([':', '[', ']']) {
+            return Err(format!("invalid authority {authority:?}"));
+        }
+        (host.to_ascii_lowercase(), port)
     };
-    if host.is_empty() {
-        return Err("empty host".into());
-    }
-    let host_lc = host.to_ascii_lowercase();
-    let mut origin = format!("{scheme}://{host_lc}");
+    let mut origin = format!("{scheme}://{host_canon}");
     if let Some(p) = port {
         let is_default = (scheme == "http" && p == 80) || (scheme == "https" && p == 443);
         if !is_default {
@@ -95,6 +125,16 @@ pub fn normalize_origin(raw: &str) -> Result<String, String> {
         }
     }
     Ok(origin)
+}
+
+/// The port rule `normalize_origin` applies: non-empty, ASCII digits only,
+/// fits a `u16`.
+fn parse_port(p: &str, authority: &str) -> Result<u16, String> {
+    if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("invalid authority {authority:?}"));
+    }
+    p.parse::<u16>()
+        .map_err(|_| format!("invalid port in {authority:?}"))
 }
 
 /// True iff `origin`'s host is an IP LITERAL in a private/loopback/link-local/
@@ -243,6 +283,10 @@ mod tests {
             "http://172.16.0.1",
             "http://100.64.0.1",
             "http://[::1]",
+            "https://[fd00::1]",
+            "https://[fe80::1]",
+            "https://[::ffff:127.0.0.1]",
+            "https://[::ffff:10.0.0.1]",
             // alternate IPv4 encodings the `url` crate canonicalizes to a private
             // IP but std::net::IpAddr::parse REJECTS — the parser-differential the
             // fix must close (F2 BROKEN → fixed).
@@ -263,9 +307,166 @@ mod tests {
             "https://93.184.216.34",
             "https://example.com",
             "https://api.github.com:443",
+            "https://[2606:4700:4700::1111]",
         ] {
             assert!(!origin_host_is_private_ip(o), "should NOT flag {o}");
         }
+        // The normalised form of each private IPv6 literal is still flagged.
+        for raw in [
+            "http://[::1]",
+            "https://[FD00::1]:8443",
+            "https://[::FFFF:7F00:1]",
+        ] {
+            let o = normalize_origin(raw).unwrap();
+            assert!(origin_host_is_private_ip(&o), "should flag normalised {o}");
+        }
+    }
+
+    #[test]
+    fn normalize_accepts_bracketed_ipv6_without_port() {
+        assert_eq!(
+            normalize_origin("https://[2606:4700:4700::1111]").unwrap(),
+            "https://[2606:4700:4700::1111]"
+        );
+        assert_eq!(
+            normalize_origin("http://[2001:4860:4860::8888]/x?y").unwrap(),
+            "http://[2001:4860:4860::8888]"
+        );
+    }
+
+    #[test]
+    fn normalize_ipv6_drops_default_port_keeps_others() {
+        let a = "2606:4700:4700::1111";
+        assert_eq!(
+            normalize_origin(&format!("https://[{a}]:443")).unwrap(),
+            format!("https://[{a}]")
+        );
+        assert_eq!(
+            normalize_origin(&format!("http://[{a}]:80")).unwrap(),
+            format!("http://[{a}]")
+        );
+        assert_eq!(
+            normalize_origin(&format!("https://[{a}]:8443")).unwrap(),
+            format!("https://[{a}]:8443")
+        );
+        assert_eq!(
+            normalize_origin(&format!("https://[{a}]:0443")).unwrap(),
+            format!("https://[{a}]")
+        );
+        // A non-default port on the other scheme is kept.
+        assert_eq!(
+            normalize_origin(&format!("http://[{a}]:443")).unwrap(),
+            format!("http://[{a}]:443")
+        );
+    }
+
+    #[test]
+    fn normalize_ipv6_canonicalizes_spelling() {
+        for spelling in [
+            "https://[2606:4700:4700:0:0:0:0:1111]",
+            "https://[2606:4700:4700:0000:0000:0000:0000:1111]",
+            "https://[2606:4700:4700::1111]",
+            "HTTPS://[2606:4700:4700::1111]:443/",
+        ] {
+            assert_eq!(
+                normalize_origin(spelling).unwrap(),
+                "https://[2606:4700:4700::1111]",
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            normalize_origin("https://[2001:DB8::ABCD]:8443").unwrap(),
+            "https://[2001:db8::abcd]:8443"
+        );
+        assert_eq!(
+            normalize_origin("https://[::FFFF:7F00:1]").unwrap(),
+            "https://[::ffff:127.0.0.1]"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_malformed_ipv6_and_stray_colons() {
+        for bad in [
+            "https://[fe80::1%25eth0]",
+            "https://[fe80::1%eth0]",
+            "https://[1.2.3.4]",
+            "https://[]",
+            "https://[::1",
+            "https://[::1]x",
+            "https://[::1]:",
+            "https://[::1]]",
+            "https://[::1]:99999",
+            "https://[zz::1]",
+            "http://::1",
+            "https://a:b:443",
+            "https://ex]ample.com",
+            "https://ex[ample.com",
+            "https://a.com:",
+            "https://:443",
+        ] {
+            assert!(normalize_origin(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    /// The hand-written normaliser must never be LOOSER than the URL parser
+    /// that dials: for every IPv6 origin it accepts, `reqwest::Url` accepts
+    /// both the input and the normalised form, they name the same address
+    /// (compared as `Ipv6Addr`, not as text), and the effective port agrees.
+    #[test]
+    fn normalize_ipv6_never_looser_than_the_dial_parser() {
+        fn dial_target(u: &str) -> (std::net::Ipv6Addr, Option<u16>) {
+            let url = reqwest::Url::parse(u).unwrap_or_else(|e| panic!("{u}: {e}"));
+            let host = url.host_str().expect("host");
+            let inner = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or_else(|| panic!("{u}: host {host} is not a bracketed literal"));
+            (inner.parse().unwrap(), url.port_or_known_default())
+        }
+        for input in [
+            "https://[2606:4700:4700::1111]",
+            "https://[2606:4700:4700:0:0:0:0:1111]:443",
+            "http://[2001:4860:4860::8888]:8080/x",
+            "https://[2001:DB8::ABCD]:8443",
+            "https://[::FFFF:7F00:1]",
+            "https://[::ffff:127.0.0.1]",
+            "https://[64:ff9b::808:808]:8443",
+            "https://[::1]",
+            "http://[fe80::1]:0443",
+        ] {
+            let normalized = normalize_origin(input).unwrap();
+            assert_eq!(
+                dial_target(input),
+                dial_target(&normalized),
+                "{input} -> {normalized} names a different socket"
+            );
+            // Idempotent on its own output — what http_fetch's re-derive relies on.
+            assert_eq!(normalize_origin(&normalized).unwrap(), normalized);
+        }
+    }
+
+    #[test]
+    fn check_egress_matches_ipv6_across_default_port_and_spelling() {
+        let list = r#"[{"system":"webhook","uri":"https://[2606:4700:4700::1111]:443"}]"#;
+        for ok in [
+            "https://[2606:4700:4700::1111]/h",
+            "https://[2606:4700:4700::1111]",
+            "https://[2606:4700:4700:0:0:0:0:1111]/h",
+        ] {
+            assert!(check_egress(list, EgressSystem::Webhook, ok), "{ok}");
+        }
+        for no in [
+            "https://[2606:4700:4700::1111]:8443/h",
+            "http://[2606:4700:4700::1111]/h",
+            "https://[2606:4700:4700::1112]/h",
+        ] {
+            assert!(!check_egress(list, EgressSystem::Webhook, no), "{no}");
+        }
+        assert!(!check_egress(
+            list,
+            EgressSystem::Function,
+            "https://[2606:4700:4700::1111]"
+        ));
     }
 
     #[test]

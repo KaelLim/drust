@@ -1,3 +1,4 @@
+use crate::safety::ip::ClientIp;
 use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -6,7 +7,6 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 use crate::auth::middleware::AuthCtx;
 use crate::auth::user::hash_password;
@@ -29,18 +29,13 @@ pub struct RegisterBody {
 pub async fn register_handler(
     State(state): State<TenantAuthState>,
     Path(params): Path<HashMap<String, String>>,
-    headers: axum::http::HeaderMap,
+    ClientIp(ip): ClientIp,
     Json(body): Json<RegisterBody>,
 ) -> Response {
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    // ConnectInfo is unavailable with oneshot (no make_service_with_connect_info).
-    // In production, client IP always comes from X-Forwarded-For (S3 spec).
-    // Fall back to loopback when XFF is absent (tests, direct loopback calls).
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.register_rl.check(ip) {
         return json_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -174,16 +169,13 @@ pub struct LoginBody {
 pub async fn login_handler(
     State(state): State<TenantAuthState>,
     Path(params): Path<HashMap<String, String>>,
-    headers: axum::http::HeaderMap,
+    ClientIp(ip): ClientIp,
     Json(body): Json<LoginBody>,
 ) -> Response {
     let tenant_id = match params.get("tenant") {
         Some(t) => t.clone(),
         None => return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "missing tenant"),
     };
-    // ConnectInfo unavailable with oneshot — use XFF header, fall back to loopback.
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr);
     if !state.login_rl.check(ip) {
         return json_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -566,7 +558,7 @@ pub async fn me_password_handler(
     State(state): State<TenantAuthState>,
     Path(params): Path<HashMap<String, String>>,
     Extension(ctx): Extension<AuthCtx>,
-    headers: axum::http::HeaderMap,
+    ClientIp(caller_ip): ClientIp,
     Json(body): Json<ChangePasswordBody>,
 ) -> Response {
     let user_id = match &ctx {
@@ -637,8 +629,7 @@ pub async fn me_password_handler(
         Ok(h) => h,
         Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "HASH_FAILED", ""),
     };
-    let fallback_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let ip = crate::safety::ip::client_ip(&headers, fallback_addr).to_string();
+    let ip = caller_ip.to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let uid_for_tx = user_id.clone();
     // Atomic: update hash, revoke all sessions, issue new session

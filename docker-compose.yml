@@ -1,18 +1,25 @@
 # drust — single-command self-host.
 #
-#   docker compose up -d            # drust only (SQLite BaaS, no object storage)
-#   docker compose --profile storage up -d   # drust + MinIO (S3 file storage)
+#   docker compose up -d        # drust + Caddy (SQLite BaaS, no file storage)
+#
+# File storage (S3; the bundled store is RustFS) is one extra step, once:
+#   deploy/compose-storage-env.sh && docker compose up -d
+# The script writes .env next to this file (COMPOSE_FILE + generated keys), so
+# `docker compose` also loads docker-compose.storage.yml. MinIO, Garage or any
+# other S3 store: README, "Object storage on Docker Compose".
 #
 # First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
-# http://localhost/drust/login  (the bundled Caddy proxy fronts drust at
-# /drust/*). drust + Caddy speak plain HTTP — terminate TLS at your edge proxy
-# in production.
+# http://localhost/login (the bundled Caddy proxies the root path to drust; the
+# image runs at the root, DRUST_BASE_PATH=""). drust + Caddy speak plain HTTP —
+# terminate TLS at your edge proxy in production.
 
 services:
-  # Reverse proxy. drust is built to live behind a proxy mounted at /drust/*
-  # (it hardcodes that prefix in its browser-facing URLs — forms, redirects,
-  # cookie paths), so the admin UI is only usable THROUGH here, at
-  # http://localhost/drust/login — not on drust's port directly.
+  # Reverse proxy. The image serves at the ROOT path (DRUST_BASE_PATH=""). Use
+  # the admin UI through here so the rate limiter sees Caddy's normalized client
+  # address; drust's own port is bound to loopback for debugging only. To mount
+  # drust under a sub-path instead, set DRUST_BASE_PATH=/drust and switch the
+  # Caddyfile to `handle_path /drust/*`. Caddy also serves /public/* straight
+  # from the object store (deploy/compose.Caddyfile).
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -20,6 +27,10 @@ services:
       - "80:80"
     volumes:
       - ./deploy/compose.Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      # Which object store serves /public/* (see deploy/compose.Caddyfile).
+      # rustfs:9000 = the bundled RustFS (docker-compose.storage.yml).
+      PUBLIC_OBJECTS_UPSTREAM: ${PUBLIC_OBJECTS_UPSTREAM:-rustfs:9000}
     depends_on:
       - drust
 
@@ -34,7 +45,11 @@ services:
       # this is purely for host-side debugging. Exposing it on all interfaces let
       # an attacker hit drust directly, bypassing Caddy's X-Forwarded-For
       # normalization and defeating the per-IP login/register rate-limit via XFF
-      # rotation. Loopback-binding closes that direct-port reach.
+      # rotation. Loopback-binding closes that direct-port reach. Keep it
+      # host-local: with DRUST_TRUSTED_PROXIES=1 a caller reaching this port
+      # directly picks its own rate-limit bucket with a one-entry header (older
+      # Linux Docker Engines also exposed loopback-published ports to L2
+      # neighbours — update Docker, or drop this line if you do not need it).
       - "127.0.0.1:47826:47826"
     volumes:
       - drust-data:/data      # meta.sqlite + meta_logs.sqlite + tenants/ + backups/
@@ -47,14 +62,33 @@ services:
       # distributed image so an unauthenticated client cannot fingerprint the
       # exact build for version-specific CVE targeting. (The in-app default
       # leaves it ON for deploy/live-smoke version checks; this opts the public
-      # image out.) Set to empty/unset if you rely on the header.
+      # image out.) Any value — even an empty string — hides it (the variable's
+      # presence is the switch). To get the header back, delete this line, or
+      # `!reset null` it in an override file as
+      # deploy/smoke/docker-compose.smoke.yml does.
       DRUST_HIDE_VERSION: "1"
+      # --- client IP for the per-IP rate limits ---
+      # One appending proxy: the bundled Caddy, which rebuilds X-Forwarded-For
+      # from its TCP peer. Add one per proxy you put in front of it AND
+      # configure Caddy to trust (global `servers { trusted_proxies … }`) — never count a proxy that
+      # passes a client's header through untouched. (The image alone defaults
+      # to 0 = key on the TCP peer.)
+      DRUST_TRUSTED_PROXIES: "1"
       # --- public URL (required for OAuth redirect/callback links) ---
       # DRUST_PUBLIC_URL: https://drust.example.com
+      # --- client-facing origin for file / signed / MCP-advertised URLs ---
+      # The origin clients reach the bundled Caddy at, with NO path (the image runs
+      # at the root, DRUST_BASE_PATH=""). drust appends /public/<tenant>/<key>,
+      # /s/t/... and /t/<id>/... itself. Change it when you change Caddy's port or
+      # put a TLS edge in front (e.g. https://drust.example.com). Unset, drust
+      # falls back to the bare-metal default http://localhost:8793, which nothing
+      # in this stack serves.
+      DRUST_PUBLIC_BASE_URL: ${DRUST_PUBLIC_BASE_URL:-http://localhost}
       # --- CORS allow-list for browser SPAs (exact origins or one '*' segment) ---
       # DRUST_CORS_ORIGINS: https://app.example.com,http://localhost:*
       # --- caller-controlled query deadline (ms); default 5000, 0 disables ---
-      # Bounds raw /query, stored RPC, and the legacy raw-filter path so one
+      # Bounds raw /query, every read stored RPC, anon/user write stored RPCs
+      # (which also hold the tenant writer), and the legacy raw-filter path, so one
       # expensive recursive CTE cannot monopolise a runtime worker. Lower it on a
       # small-core host; raise it only if legitimate report queries are timing out.
       # DRUST_QUERY_DEADLINE_MS: "5000"
@@ -70,13 +104,16 @@ services:
       # MAX_CONCURRENCY so one tenant's fan-out can't occupy the whole pool and
       # starve other tenants' webhooks (cross-tenant head-of-line blocking).
       # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
-      # --- optional S3 object storage (uncomment with the `storage` profile) ---
-      # GARAGE_S3_ENDPOINT:   http://minio:9000
-      # GARAGE_S3_ACCESS_KEY: drustkey
-      # GARAGE_S3_SECRET_KEY: drustsecret
-      # NOTE: per-tenant bucket AUTO-provisioning needs Garage's admin API
-      # (GARAGE_ADMIN_ENDPOINT + GARAGE_ADMIN_TOKEN). With MinIO/R2/S3, the
-      # data path still works but you pre-create the buckets yourself.
+      # --- object storage (file features) ---
+      # Not set here. docker-compose.storage.yml adds GARAGE_S3_ENDPOINT and
+      # drust's own bucket-scoped key when storage is on (deploy/compose-storage-env.sh).
+      # For a store you run yourself (Garage, MinIO, ...) set the three
+      # GARAGE_S3_* variables in a docker-compose.override.yml instead (README).
+      # The GARAGE_ names are historical; they configure any S3-compatible store.
+      # drust never creates buckets: "public" (anonymous GetObject only, never a
+      # policy that also lists) and "private" (no anonymous access) must exist;
+      # drust logs a warning at boot for each one it cannot list.
+      # GARAGE_ADMIN_ENDPOINT / GARAGE_ADMIN_TOKEN are optional and Garage-only.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:47826/health"]
       interval: 30s
@@ -95,28 +132,15 @@ services:
         soft: 65536
         hard: 65536
 
-  # Optional S3-compatible object store for file features. Enable with:
-  #   docker compose --profile storage up -d
-  minio:
-    image: minio/minio:latest
-    profiles: ["storage"]
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
-    environment:
-      MINIO_ROOT_USER: drustkey
-      MINIO_ROOT_PASSWORD: drustsecret
-    volumes:
-      - minio-data:/data
-
 # BACKUP / DR: this compose file ships NO scheduled backup. For disaster
-# recovery you must back up BOTH named volumes — `drust-data` (SQLite DBs +
-# in-app snapshots under /data/backups) AND `minio-data` (uploaded objects).
+# recovery back up BOTH the `drust-data` volume (SQLite DBs + in-app snapshots
+# under /data/backups) AND the object store: with docker-compose.storage.yml
+# that is the `rustfs-data` volume (stop `rustfs` for a consistent copy) or
+# both buckets copied out with an S3 client. A MinIO setup from before v1.67
+# keeps its objects in `minio-data`, which this file no longer declares and
+# nothing deletes (README, "Upgrading from the bundled MinIO").
 # The in-app admin snapshot is DB-only and is NOT a complete DR unit; it also
 # contains plaintext credentials — store it encrypted, off-host.
 volumes:
   drust-data:
   drust-logs:
-  minio-data:

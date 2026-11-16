@@ -13,7 +13,7 @@
 use std::io::{self, Read};
 
 fn print_usage() {
-    eprintln!("usage: drust_set_admin_password --username <name> [--email <addr>]");
+    eprintln!("usage: set_admin_password --username <name> [--email <addr>]");
     eprintln!("       password is read from stdin");
 }
 

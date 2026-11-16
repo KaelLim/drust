@@ -47,6 +47,20 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(v) = std::env::var("DRUST_BASE_PATH") {
         drust::base_path::set(&v);
     }
+    // DRUST_TRUSTED_PROXIES: how many appending proxies sit in front of drust
+    // (bare-metal 2, Compose 1, the image alone 0). Process-global, set once
+    // before any router is built. The boot line logs the READ-BACK of the
+    // global, not `cfg`, so a missing or misplaced set call shows up as the
+    // default here instead of hiding behind the configured value.
+    drust::safety::ip::set_trusted_proxies(cfg.trusted_proxies);
+    {
+        let n = drust::safety::ip::trusted_proxies();
+        tracing::info!(
+            trusted_proxies = n,
+            keyed_on = if n == 0 { "tcp-peer" } else { "xff" },
+            "client-IP derivation configured"
+        );
+    }
     std::fs::create_dir_all(&cfg.data_dir)?;
     std::fs::create_dir_all(&cfg.log_dir)?;
     // Point the disk guards + admin disk panel at the real data filesystem
@@ -248,16 +262,29 @@ async fn main() -> anyhow::Result<()> {
 
     let garage = match &cfg.storage {
         Some(sc) => match drust::storage::garage::GarageClient::new(sc) {
-            Ok(client) => match client.ping().await {
-                Ok(()) => {
-                    tracing::info!(bucket = %sc.public_bucket, "Garage reachable");
-                    Some(Arc::new(client))
+            Ok(client) => {
+                // Lists every bucket a write can land in, concurrently. Logs
+                // only: drust never creates a bucket and never refuses boot
+                // over one — a store that is down at restart must not take
+                // the data plane with it.
+                let probes = client.probe_required_buckets(&sc.public_bucket).await;
+                let names: Vec<&str> = probes.iter().map(|(b, _)| b.as_str()).collect();
+                let mut all_ok = true;
+                for (bucket, res) in &probes {
+                    if let Err(e) = res {
+                        all_ok = false;
+                        tracing::warn!(
+                            bucket = %bucket,
+                            error = %format!("{e:#}"),
+                            "object store bucket check failed — storage features degraded: the bucket is missing, the store is unreachable, or these credentials cannot list it. drust never creates buckets; create it on the object store. Writes to it fail until it exists"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Garage ping failed — storage features degraded");
-                    Some(Arc::new(client))
+                if all_ok {
+                    tracing::info!(buckets = ?names, "Garage reachable");
                 }
-            },
+                Some(Arc::new(client))
+            }
             Err(e) => {
                 tracing::error!(error = %e, "failed to construct Garage client — storage disabled");
                 None
@@ -711,7 +738,13 @@ async fn main() -> anyhow::Result<()> {
         let _ = sig_tx.send(true);
     });
     let drain_grace = shutdown_grace();
-    let server = axum::serve(listener, app).with_graceful_shutdown({
+    // Connect-info: the per-IP limiters' fallback key is the real TCP peer
+    // (`safety::ip::peer_addr`), not a literal loopback address.
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown({
         let mut rx = sig_rx.clone();
         async move {
             let _ = rx.wait_for(|fired| *fired).await;

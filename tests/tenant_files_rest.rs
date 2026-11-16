@@ -837,3 +837,468 @@ async fn list_returns_rows_when_files_exist() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0]["key"], file_key);
 }
+
+// ─── object-store failures never reach the body (smoke-fixes egress-files-leak) ──
+//
+// The backend's error text carries the internal storage endpoint, bucket and
+// object path. Every face below is reachable by anon/user (with the matching
+// file cap) or by a credential-less signed URL, so the detail goes to the log
+// and the body says only what failed. `FailingStore` fails every call with a
+// sentinel shaped like that detail; each test asserts the sentinel is absent.
+
+mod failing_store {
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use futures::stream::BoxStream;
+    use object_store::path::Path;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
+    };
+
+    /// Shaped like a real S3 failure: an internal endpoint URL, a bucket and
+    /// the S3 error code. Never a real host.
+    pub const SENTINEL: &str =
+        "http://storage-internal.invalid:3900/sentinel-bucket/t/k.bin NoSuchBucket";
+
+    fn err() -> object_store::Error {
+        object_store::Error::Generic {
+            store: "S3",
+            source: SENTINEL.into(),
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct FailingStore;
+
+    impl std::fmt::Display for FailingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FailingStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for FailingStore {
+        async fn put_opts(&self, _: &Path, _: PutPayload, _: PutOptions) -> Result<PutResult> {
+            Err(err())
+        }
+        async fn put_multipart_opts(
+            &self,
+            _: &Path,
+            _: PutMultipartOptions,
+        ) -> Result<Box<dyn MultipartUpload>> {
+            Err(err())
+        }
+        async fn get_opts(&self, _: &Path, _: GetOptions) -> Result<GetResult> {
+            Err(err())
+        }
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, Result<Path>>,
+        ) -> BoxStream<'static, Result<Path>> {
+            locations.map(|_| Err(err())).boxed()
+        }
+        fn list(&self, _: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+            futures::stream::once(async { Err(err()) }).boxed()
+        }
+        async fn list_with_delimiter(&self, _: Option<&Path>) -> Result<ListResult> {
+            Err(err())
+        }
+        async fn copy_opts(&self, _: &Path, _: &Path, _: CopyOptions) -> Result<()> {
+            Err(err())
+        }
+    }
+}
+
+/// A tenant whose `_system_files` row `key` exists (public), served by a
+/// `GarageClient` over `FailingStore`.
+fn failing_state(
+    dir: &tempfile::TempDir,
+    tenant_id: &str,
+    seed_key: Option<&str>,
+) -> drust::mgmt::tenant_files::TenantFilesState {
+    use drust::storage::garage::GarageClient;
+    use std::sync::Arc;
+    drust::storage::tenant_db::open_write(dir.path(), tenant_id).unwrap();
+    if let Some(k) = seed_key {
+        let conn = rusqlite::Connection::open(
+            dir.path()
+                .join("tenants")
+                .join(tenant_id)
+                .join("data.sqlite"),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO _system_files (key, original_name, size_bytes, visibility, uploader)
+             VALUES (?1, 'doc.pdf', 3, 'public', 'service')",
+            rusqlite::params![k],
+        )
+        .unwrap();
+    }
+    let garage = Arc::new(GarageClient::from_store(
+        Arc::new(failing_store::FailingStore),
+        "public",
+    ));
+    let registry = Arc::new(drust::storage::pool::TenantRegistry::new(
+        dir.path().to_path_buf(),
+        2,
+    ));
+    let mut state = drust::mgmt::tenant_files::TenantFilesState::test_default(
+        Some(garage),
+        dir.path().to_path_buf(),
+        registry,
+    );
+    state.disk_min_free_pct = 0;
+    state
+}
+
+fn files_row_count(dir: &tempfile::TempDir, tenant_id: &str) -> i64 {
+    let conn = rusqlite::Connection::open(
+        dir.path()
+            .join("tenants")
+            .join(tenant_id)
+            .join("data.sqlite"),
+    )
+    .unwrap();
+    conn.query_row("SELECT COUNT(*) FROM _system_files", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn upload_storage_failure_hides_backend_detail() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use drust::mgmt::tenant_files::upload;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-fail-upload";
+    let state = failing_state(&dir, tid, None);
+    let app = axum::Router::new()
+        .route("/t/{tenant}/files", axum::routing::post(upload))
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
+        .with_state(state);
+
+    let boundary = "failbound";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"doc.pdf\"\r\n\
+         Content-Type: application/pdf\r\n\r\nabc\r\n--{boundary}--\r\n"
+    );
+    let resp = tower::ServiceExt::oneshot(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/t/{tid}/files"))
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains("storage-internal") && !text.contains("NoSuchBucket"),
+        "backend detail leaked into the upload body: {text}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error_code"], "GARAGE_PUT_FAILED");
+    assert_eq!(files_row_count(&dir, tid), 0, "metadata row rolled back");
+}
+
+#[tokio::test]
+async fn stream_bytes_storage_failure_hides_backend_detail() {
+    use axum::extract::{Path, State};
+    use drust::mgmt::tenant_files::stream_bytes;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-fail-bytes";
+    let key = "aaaaaaaa-0000-0000-0000-00000000000f.pdf";
+    let state = failing_state(&dir, tid, Some(key));
+    let result = stream_bytes(
+        State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
+        Path((tid.to_string(), key.to_string())),
+    )
+    .await;
+    let (status, msg) = result.expect_err("a failing store must not stream");
+    assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(msg, "object store read failed");
+    assert!(!msg.contains("storage-internal"));
+}
+
+#[tokio::test]
+async fn delete_storage_failure_hides_backend_detail() {
+    use axum::extract::{Path, State};
+    use axum::response::IntoResponse;
+    use drust::mgmt::tenant_files::delete_one;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-fail-delete";
+    let key = "aaaaaaaa-0000-0000-0000-00000000001f.pdf";
+    let state = failing_state(&dir, tid, Some(key));
+    let resp = delete_one(
+        State(state),
+        drust::mgmt::tenant_files::RequiredAuthCtx(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }),
+        Path((tid.to_string(), key.to_string())),
+    )
+    .await
+    .into_response();
+    assert_eq!(resp.status(), axum::http::StatusCode::BAD_GATEWAY);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert_eq!(
+        text,
+        "object store delete failed; the file was not deleted — retry"
+    );
+    assert_eq!(
+        files_row_count(&dir, tid),
+        1,
+        "the row survives a failed delete"
+    );
+}
+
+#[tokio::test]
+async fn tenant_signed_bytes_storage_failure_hides_backend_detail() {
+    use axum::extract::{Path, Query, State};
+    use drust::mgmt::signed_bytes::{SigQs, SignedBytesState, tenant_signed_bytes};
+    use drust::storage::signed_url::{Owner as SignOwner, mint};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-fail-signed";
+    let key = "aaaaaaaa-0000-0000-0000-00000000002f.pdf";
+    let files_state = failing_state(&dir, tid, Some(key));
+    let secret = [7u8; 32];
+    let state = SignedBytesState {
+        meta: Arc::new(tokio::sync::Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )),
+        data_root: dir.path().to_path_buf(),
+        garage: files_state.garage.clone(),
+        url_sign_secret: Arc::new(secret),
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    let token = mint(
+        &secret,
+        &SignOwner::Tenant(tid.to_string()),
+        key,
+        expires,
+        false,
+    );
+    let result = tenant_signed_bytes(
+        State(state),
+        Path((tid.to_string(), key.to_string())),
+        Query(SigQs {
+            e: expires,
+            t: token,
+            d: None,
+        }),
+    )
+    .await;
+    let (status, msg) = result.expect_err("a failing store must not stream");
+    assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(msg, "object store read failed");
+}
+
+/// A valid signed URL for a tenant whose database is gone (soft-deleted: the
+/// directory moved to `_trash`) answers like an absent file. The open error
+/// names the absolute path it looked for, and a signed URL is redeemed with
+/// no caller identity, so that text must not be the body.
+#[tokio::test]
+async fn tenant_signed_bytes_missing_tenant_db_hides_the_data_path() {
+    use axum::extract::{Path, Query, State};
+    use drust::mgmt::signed_bytes::{SigQs, SignedBytesState, tenant_signed_bytes};
+    use drust::storage::signed_url::{Owner as SignOwner, mint};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    // Only for a configured store; this tenant's directory is never created.
+    let files_state = failing_state(&dir, "t-other-signed", None);
+    let tid = "t-gone-signed";
+    let key = "aaaaaaaa-0000-0000-0000-00000000004f.pdf";
+    let secret = [5u8; 32];
+    let state = SignedBytesState {
+        meta: Arc::new(tokio::sync::Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        )),
+        data_root: dir.path().to_path_buf(),
+        garage: files_state.garage.clone(),
+        url_sign_secret: Arc::new(secret),
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    let token = mint(
+        &secret,
+        &SignOwner::Tenant(tid.to_string()),
+        key,
+        expires,
+        false,
+    );
+    let result = tenant_signed_bytes(
+        State(state),
+        Path((tid.to_string(), key.to_string())),
+        Query(SigQs {
+            e: expires,
+            t: token,
+            d: None,
+        }),
+    )
+    .await;
+    let (status, msg) = result.expect_err("no tenant database, nothing to stream");
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(msg, "not found");
+    assert!(
+        !msg.contains(dir.path().to_string_lossy().as_ref()),
+        "the data directory must not reach the body: {msg}"
+    );
+}
+
+/// The admin arm of signed-URL redemption shares the tenant arm's fixed
+/// message: a signed URL is redeemed with no caller at all.
+#[tokio::test]
+async fn admin_signed_bytes_storage_failure_hides_backend_detail() {
+    use axum::extract::{Path, Query, State};
+    use drust::mgmt::signed_bytes::{SigQs, SignedBytesState, admin_signed_bytes};
+    use drust::storage::garage::GarageClient;
+    use drust::storage::signed_url::{Owner as SignOwner, mint};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = "aaaaaaaa-0000-0000-0000-00000000003f.pdf";
+    let meta = drust::storage::meta::open_meta(&dir.path().join("meta.sqlite")).unwrap();
+    meta.execute(
+        "INSERT INTO _system_files (key, original_name, size_bytes, visibility, uploader)
+         VALUES (?1, 'doc.pdf', 3, 'private', 'admin')",
+        rusqlite::params![key],
+    )
+    .unwrap();
+    let secret = [9u8; 32];
+    let state = SignedBytesState {
+        meta: Arc::new(tokio::sync::Mutex::new(meta)),
+        data_root: dir.path().to_path_buf(),
+        garage: Some(Arc::new(GarageClient::from_store(
+            Arc::new(failing_store::FailingStore),
+            "public",
+        ))),
+        url_sign_secret: Arc::new(secret),
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    let token = mint(&secret, &SignOwner::Admin, key, expires, false);
+    let result = admin_signed_bytes(
+        State(state),
+        Path(key.to_string()),
+        Query(SigQs {
+            e: expires,
+            t: token,
+            d: None,
+        }),
+    )
+    .await;
+    let (status, msg) = result.expect_err("a failing store must not stream");
+    assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(msg, "object store read failed");
+}
+
+// ─── key minting: the extension never needs object-store encoding ───────────
+
+/// A Mode-A upload whose extension object_store would percent-encode (non-ASCII,
+/// `~`) gets a `<uuid>.bin` key, so the object-store key, the DB key and the
+/// public URL are one string. The original filename is kept verbatim.
+#[tokio::test]
+async fn upload_non_ascii_extension_mints_bin_key() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use drust::mgmt::tenant_files::{TenantFilesState, upload};
+    use drust::storage::garage::GarageClient;
+    use object_store::ObjectStoreExt;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tid = "t-key-mint";
+    drust::storage::tenant_db::open_write(dir.path(), tid).unwrap();
+    let store = Arc::new(object_store::memory::InMemory::new());
+    let garage = Arc::new(GarageClient::from_store(store.clone(), "public"));
+    let registry = Arc::new(drust::storage::pool::TenantRegistry::new(
+        dir.path().to_path_buf(),
+        2,
+    ));
+    let mut state =
+        TenantFilesState::test_default(Some(garage), dir.path().to_path_buf(), registry);
+    state.disk_min_free_pct = 0;
+    let app = axum::Router::new()
+        .route("/t/{tenant}/files", axum::routing::post(upload))
+        .layer(axum::Extension(drust::auth::middleware::AuthCtx::Service {
+            admin_id: None,
+        }))
+        .with_state(state);
+
+    for filename in ["報告書.檔案", "notes.t~xt"] {
+        let boundary = "mintbound";
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(b"Content-Type: application/octet-stream\r\n\r\nabc\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let resp = tower::ServiceExt::oneshot(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri(format!("/t/{tid}/files"))
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{filename}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let key = json["key"].as_str().unwrap().to_string();
+        assert!(key.ends_with(".bin"), "{filename} minted {key}");
+
+        // The row keeps the client's filename verbatim.
+        let conn =
+            rusqlite::Connection::open(dir.path().join("tenants").join(tid).join("data.sqlite"))
+                .unwrap();
+        let original: String = conn
+            .query_row(
+                "SELECT original_name FROM _system_files WHERE key = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(original, filename);
+
+        // The object sits at exactly the key the row names (the from_store
+        // client folds the bucket into the path: `public/<tenant>/<key>`).
+        let at = object_store::path::Path::from(format!("public/{tid}/{key}"));
+        assert_eq!(
+            at.as_ref(),
+            format!("public/{tid}/{key}"),
+            "no encoding needed"
+        );
+        store
+            .head(&at)
+            .await
+            .expect("object stored under the row's key");
+
+        // And the public URL names that key unencoded.
+        let url = json["url"].as_str().unwrap();
+        assert!(url.ends_with(&format!("/{tid}/{key}")), "{url}");
+    }
+}

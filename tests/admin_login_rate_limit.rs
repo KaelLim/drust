@@ -55,6 +55,16 @@ async fn build_login_router(rl_capacity: u32) -> Router {
 }
 
 async fn post_login(app: &Router, xff: Option<&str>) -> StatusCode {
+    post_login_from(app, xff, None).await
+}
+
+/// `peer` = the `ConnectInfo` `main` attaches via
+/// `into_make_service_with_connect_info`; `oneshot` attaches none.
+async fn post_login_from(
+    app: &Router,
+    xff: Option<&str>,
+    peer: Option<std::net::SocketAddr>,
+) -> StatusCode {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/login")
@@ -62,9 +72,13 @@ async fn post_login(app: &Router, xff: Option<&str>) -> StatusCode {
     if let Some(xff) = xff {
         builder = builder.header("x-forwarded-for", xff);
     }
-    let req = builder
+    let mut req = builder
         .body(Body::from("username=admin&password=wrong"))
         .unwrap();
+    if let Some(peer) = peer {
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+    }
     let resp = app.clone().oneshot(req).await.unwrap();
     resp.status()
 }
@@ -91,6 +105,37 @@ async fn admin_login_rate_limit_isolated_per_ip() {
     assert_eq!(post_login(&app, xff_a).await, StatusCode::UNAUTHORIZED);
     assert_eq!(post_login(&app, xff_a).await, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(post_login(&app, xff_b).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_login_rate_limit_keys_on_connect_info_peer_without_xff() {
+    // No proxy header: the key is the real TCP peer, so two peers get two
+    // buckets. With the old literal `127.0.0.1:0` fallback the third request
+    // shared peer A's spent bucket and answered 429.
+    let app = build_login_router(1).await;
+    let a = Some("203.0.113.21:40001".parse().unwrap());
+    let b = Some("203.0.113.22:40002".parse().unwrap());
+    assert_eq!(
+        post_login_from(&app, None, a).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post_login_from(&app, None, a).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        post_login_from(&app, None, b).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn admin_login_rate_limit_without_connect_info_still_shares_loopback() {
+    // A server built without connect-info (here `oneshot`) keys every caller
+    // without a usable header on 127.0.0.1 — today's behaviour, pinned.
+    let app = build_login_router(1).await;
+    assert_eq!(post_login(&app, None).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(post_login(&app, None).await, StatusCode::TOO_MANY_REQUESTS);
 }
 
 /// POST a bad login under `locale` and return the rendered page.

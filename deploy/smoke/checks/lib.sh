@@ -30,7 +30,12 @@ set +a
 # DIRECT bypasses Caddy; use it only to compare against BASE.
 BASE="http://127.0.0.1:${SMOKE_HTTP_PORT:-48080}"
 DIRECT="http://127.0.0.1:${SMOKE_DRUST_PORT:-48826}"
-GARAGE_WEB="http://127.0.0.1:${SMOKE_GARAGE_WEB_PORT:-48902}"
+# PUBLIC is this deployment's own /public/* route through Caddy, i.e. what a client
+# fetches. It is the same URL on either store, so every public-object assertion
+# means the same thing on RustFS and Garage.
+PUBLIC="$BASE/public"
+SMOKE_STORE="${SMOKE_STORE:-rustfs}"
+SMOKE_COMPOSE_PROJECT="${SMOKE_COMPOSE_PROJECT:-drust-smoke}"
 ADMIN_PAT="${SMOKE_ADMIN_PAT:?deploy/smoke/.env has no SMOKE_ADMIN_PAT — re-run deploy/smoke/up.sh}"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/drust-smoke.XXXXXX")"

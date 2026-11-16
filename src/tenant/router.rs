@@ -192,6 +192,25 @@ pub struct TenantRef {
 #[derive(Clone, Copy, Debug)]
 pub struct TenantQuotaTier(pub i64);
 
+/// The per-token limiter's `429 RATE_LIMITED` with `Retry-After: <secs>`.
+/// Body `{error_code, message}` only — deliberately NOT `json_error`, which
+/// would add the `suggested_fix` catalog line and change this wire shape. Also
+/// the refusal of the untrusted write-RPC admission gate
+/// (`rpc::handler::call_rpc`), so both 429s stay byte-identical.
+pub(crate) fn rate_limited_response(secs: u64) -> Response {
+    let body = serde_json::json!({
+        "error_code": "RATE_LIMITED",
+        "message": format!("rate limit exceeded; retry after {secs}s"),
+    });
+    let mut r = axum::Json(body).into_response();
+    *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+    r.headers_mut().insert(
+        header::RETRY_AFTER,
+        axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
+    );
+    r
+}
+
 pub async fn bearer_auth_layer(
     State(state): State<TenantAuthState>,
     Path(params): Path<std::collections::HashMap<String, String>>,
@@ -220,7 +239,12 @@ pub async fn bearer_auth_layer(
     let resp = async {
         let tenant_id = match params.get("tenant") {
             Some(t) => t.clone(),
-            None => return (StatusCode::BAD_REQUEST, "missing tenant in path").into_response(),
+            // Every route on the layered tenant sub-routers declares
+            // `{tenant}`, so only the fallback gets here: `Router::layer` also
+            // wraps a router's fallback, and once the routers are merged an
+            // unmatched path runs this layer with an empty `Path` map. That is
+            // "no such route", not a malformed tenant request.
+            None => return json_error(StatusCode::NOT_FOUND, "NOT_FOUND", "no such route"),
         };
         let bearer = match extract_bearer(&req) {
             Some(t) => t,
@@ -243,17 +267,7 @@ pub async fn bearer_auth_layer(
         // client cannot keep us churning on meta.sqlite.
         if let Err(e) = state.limiter.try_acquire(&hash) {
             let secs = e.0.as_secs().max(1);
-            let body = serde_json::json!({
-                "error_code": "RATE_LIMITED",
-                "message": format!("rate limit exceeded; retry after {secs}s"),
-            });
-            let mut r = axum::Json(body).into_response();
-            *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-            r.headers_mut().insert(
-                header::RETRY_AFTER,
-                axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
-            );
-            return r;
+            return rate_limited_response(secs);
         }
         // v1.35 — auth cache consult. Runs AFTER the rate-limit probe (so a
         // hit can never bypass rate limiting) and BEFORE the meta CTE. On a
@@ -1007,6 +1021,23 @@ fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The limiter's 429 was extracted into `rate_limited_response` so the
+    /// write-RPC admission gate can reuse it: the wire shape must be the one
+    /// the bearer layer always sent.
+    #[tokio::test]
+    async fn rate_limited_response_is_the_limiters_existing_429() {
+        let r = rate_limited_response(5);
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(r.headers().get(header::RETRY_AFTER).unwrap(), "5");
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["error_code", "message"], "{v}");
+        assert_eq!(v["error_code"], "RATE_LIMITED");
+        assert_eq!(v["message"], "rate limit exceeded; retry after 5s");
+    }
 
     #[test]
     fn revoke_user_realtime_evicts_in_flight_rooms() {

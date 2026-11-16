@@ -1,16 +1,30 @@
 ## v1.67.0 — 2026-11-15
 
-Fixes from the access-gate convergence review (E track). No new environment variable, no
-schema change. New error code: `SYSTEM_FIELD_READONLY`, returned only to anon and user tokens.
+Fixes from the access-gate convergence review (E track). One new environment variable,
+`DRUST_TRUSTED_PROXIES` (default `2`, unchanged behaviour on an existing host); the Docker
+image ships `0` and `docker-compose.yml` sets `1`. No schema change. New error codes:
+`SYSTEM_FIELD_READONLY`, returned only to anon and user tokens, and `TENANT_ID_UNAVAILABLE`
+on the admin plane. MCP gains error codes for conditions that had none (listed under
+*MCP (M1)*).
 Two caller-visible response narrowings on the data plane, anon and user only: describing a
 `_system_*` / `sqlite_*` table answers `404 NOT_FOUND` (E8), and a `PATCH` response may carry
-only the row's `id` (E9). The other caller-visible changes are described in their entries:
+only the row's `id` (E9). Other caller-visible changes are described in their entries:
 SSE streams opened with an admin PAT end when that admin's access is revoked (E2′),
 `drop_collection` closes the collection's SSE subscriptions and may return `warnings` (E4),
 `drop_field` may return `warnings` (E6′), a data-plane request that has to open a tenant
 whose `data.sqlite` is missing gets that endpoint's existing refusal instead of rebuilding
-it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), and the per-tenant
-MCP endpoint's model-facing surface changes as described under *MCP (M1)* below.
+it (E3), recycling a tenant id ends the old tenant's MCP sessions (E5), an anon or user
+call to a write-mode stored RPC that runs past `DRUST_QUERY_DEADLINE_MS` now answers
+`408 QUERY_TIMEOUT` and is rolled back (and one that waits a whole deadline behind another
+such call on the same tenant answers `429 RATE_LIMITED`), and the per-tenant MCP
+endpoint's model-facing surface changes as described under *MCP (M1)* below. Several
+entries under *Fixed* also change an error response (an unknown field on a REST write, a
+path no route matches, a failed object-store call, an IPv6 egress origin, an over-size
+WebSocket frame) or the key minted for an upload whose extension is not 1 to 12 ASCII
+letters or digits; each entry says who is affected and whether anything needs doing.
+
+It also closes the Compose deployment target's gaps the new smoke stack found, and makes
+RustFS the bundled object store for Docker Compose: see *Deploy (Compose)* below.
 
 This release also carries three cross-major dependency upgrades (D1–D3 under *Build*).
 Together with the compatible refresh they clear every advisory that kept CI's `cargo audit`
@@ -177,6 +191,273 @@ update its toolchain first.
   `run_write_rpc` pairs are deliberately untouched: their detach must precede `RELEASE`.
   No API, env, schema or wire change.
 
+- **Per-IP rate limits work behind the bundled Compose Caddy, and with no proxy at all.**
+  `client_ip` hardcoded the bare-metal chain (browser → nginx → Caddy → drust): it trusted
+  only the second-from-right `X-Forwarded-For` entry, and fell back to a literal `127.0.0.1`
+  whenever the header was shorter — drust was never served with connect-info, so the
+  "socket peer" fallback its comment promised did not exist. Compose has one proxy, so every
+  request took the fallback, and the admin login (5/min), every tenant's end-user login
+  (5/min) and register (3/min), CLI device start and poll, the OAuth callbacks, and anon file
+  upload/delete and function invoke each shared one bucket for the whole host: a handful of
+  wrong passwords a minute kept everyone's admin password login at 429. It also logged a
+  warning carrying the raw header on every such request (485 in 30 minutes on the smoke
+  stack). The image run with no proxy had the opposite problem: a caller that sent its own
+  two-entry `X-Forwarded-For` got its own bucket.
+  `DRUST_TRUSTED_PROXIES` (default `2`, range `0`–`8`, an out-of-range or non-numeric value
+  refuses to boot) now says how many proxies append to `X-Forwarded-For`; the client is the
+  entry that many from the right, and entries a client adds on the left still cannot move it.
+  The chain is every `X-Forwarded-For` header line in order, not just the first, so a proxy
+  that appends its entry as a separate header line (HAProxy `option forwardfor`) is counted
+  correctly instead of leaving the client's own line to be indexed.
+  `0` ignores the header and keys on the TCP peer, which drust now actually has. The
+  bare-metal chain keeps the default and is unchanged; `docker-compose.yml` sets `1`; the image
+  defaults to `0`, so `docker run -p 47826:47826` is keyed per client. **If you run the image
+  behind your own proxy, set `DRUST_TRUSTED_PROXIES` to the number of proxies that append to
+  the header** — left at `0`, every client shares your proxy's bucket. Never count a proxy
+  that passes a client-supplied header through untouched. The fallback warning is now emitted
+  at most once every five minutes, with the header's length and a count of what it
+  suppressed; no log line at any level carries the header's value any more. Boot logs the
+  effective setting (`client-IP derivation configured`). On Compose, sessions and the login
+  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The Helm
+  chart does not set the variable yet, so k3s keeps today's single bucket until it does (see
+  the chart notes).
+
+- **The CHANGELOG viewer works in the container image.** `/admin/_docs/changelog` read
+  `CHANGELOG.md` from the process's working directory. The image runs in `/data` and ships
+  only the binaries, so the page answered `404 doc not readable` on Docker Compose and k3s.
+  The file is now embedded in the binary at build time, so on every target the viewer shows
+  the changelog of the build that is answering. On a bare-metal host that runs from its
+  checkout, the page no longer picks up `CHANGELOG.md` edits before the next build. No action
+  needed.
+
+- **A missing `private` bucket is reported at boot.** drust writes to two fixed buckets,
+  `public` and `private`, and never creates either. The boot check listed only the
+  `GARAGE_PUBLIC_BUCKET` bucket, so a missing `private` bucket first showed up as a 502 on
+  the first private write (`GARAGE_PUT_FAILED` from a tus finalize, an edge `put-file` or —
+  since the entry on object-store error text below — a multipart upload;
+  `visibility change: …` from a visibility move). Boot now lists both (and
+  `GARAGE_PUBLIC_BUCKET` too if it names a third bucket) at the same time, and logs one
+  warning per bucket it cannot list — missing, unreachable, or not listable with the
+  configured key. drust still boots either way, and boot takes no longer than before when the
+  object store is down. When every bucket answers, the existing `Garage reachable` line now
+  carries a `buckets` field instead of `bucket`. If the warning names a bucket, create it on
+  the object store; drust picks it up without a restart.
+- **An unknown field on a REST insert or update answers `400 FIELD_NOT_FOUND` instead of
+  a plain-text `Query is not read-only`.** `POST /t/<id>/records/<c>` and
+  `PATCH /t/<id>/records/<c>/<id>` reject a body key that is not a field of the
+  collection, and they always did. The refusal used `rusqlite::Error::InvalidQuery` as its
+  marker, whose message is fixed to `Query is not read-only`, and the handler looked for
+  the word `InvalidQuery` in that message, so the typed branch never ran. Callers got a
+  `text/plain` 400 that reads like a permission problem. The response is now the JSON
+  error the code always meant to send, with a `suggested_fix` that names the rejected key
+  and lists the collection's remaining fields (a key longer than 128 bytes is shortened in
+  the response). The unknown-field check is matched before the quota and policy checks,
+  so a key whose name happens to contain one of their error codes is still answered
+  `400 FIELD_NOT_FOUND`. A collection dropped between the request's schema lookup and its
+  write now answers `404 NOT_FOUND`, the same as a collection that was never there. For an
+  unknown field the status stays 400 for every role, and the MCP and edge-function write
+  paths are unaffected: they already reported the field by name. Other native SQLite
+  refusals on these two endpoints (UNIQUE, NOT NULL, STRICT type) are still
+  `400 text/plain` with SQLite's message. No action needed.
+- **Creating a tenant whose id is already taken answers `400 TENANT_ID_UNAVAILABLE`
+  instead of a 500.** `POST /admin/api/tenants` with the id of a live tenant, or of a
+  soft-deleted tenant the caller may not recycle, fell through the error mapping into its
+  500 arm, so the CLI and automation saw a caller mistake as a server fault. Both cases
+  now answer the same 400 with the same message, `tenant '<id>' already exists`, and a
+  `suggested_fix`. A caller who cannot see that tenant still learns nothing about which
+  case it hit (CLAUDE.md invariant 7). The other refusals on this route now use the same
+  JSON error shape: an invalid id is `400 INVALID_TENANT_ID` (it was `400 text/plain`),
+  and an unexpected failure is `500 INTERNAL`. The tenant-cap refusal
+  (`403 TENANT_CAP_EXCEEDED`) and every successful create are unchanged. The UUID-minting
+  form (`POST /admin/tenants/new`) keeps its plain-text answers. No action needed, unless a
+  script matched the old 500.
+- **Tenant create, tenant key reroll and tenant soft-delete now write a host audit row.**
+  Every other admin mutation records an `admin.<area>.<verb>` entry. These three, the most
+  consequential ones, recorded nothing, so a rotated service key, a deleted tenant or a
+  recycled id (which hard-deletes the old row and its keys) left no trace in
+  `meta_logs.sqlite`. They now emit `admin.tenant.create` (with the display `name` and
+  `recycled`), `admin.tenant_key.reroll` (with `role`, the new key's row `token_id` and
+  `revoked_count`) and `admin.tenant.delete` (with `trashed`), all carrying the tenant id
+  and the acting admin. The rows appear in host audit (`/admin/audit`, owner-only) and on
+  that tenant's `_logs` page while it exists. Both the JSON API and the admin UI forms
+  emit them. No row contains a key, a key hash or a key hint. Refused attempts are not
+  recorded, the same as for the other admin entries. No action needed. Code that calls
+  `soft_delete_tenant`, `soft_delete_tenant_form`, `reroll_token_json`,
+  `reroll_token_form`, `create_tenant_json` or `create_tenant_form` directly, outside the
+  router, must now also pass the `AdminProfileExt` extension (and `AdminId` for the
+  delete and reroll handlers).
+- **A request for a route that does not exist answers `404 NOT_FOUND` instead of
+  `400 missing tenant in path`.** The tenant routers attach their bearer-auth layer with
+  `Router::layer`, which also wraps the router's fallback, so once the routers were merged
+  every unmatched path ran that layer, found no tenant in it and answered a plain-text
+  400 that sent operators looking for a tenant problem. It now answers a JSON
+  `404 NOT_FOUND` (`no such route`). This applies on all three targets — on the
+  bare-metal host to any `/drust/<path>` that matches nothing. On Compose it is the answer
+  to a mistyped `/drust/login` (the image serves at the root). Public file URLs, which used
+  to reach drust there too, are now served by the Compose proxy (see *Deploy (Compose)*).
+  Requests to real routes, and their status codes, are unchanged; the access-log row for an
+  unmatched path now records `HTTP_404` instead of `HTTP_400`. No action needed.
+- **Object-store failures no longer return the storage backend's own error text.** A failed
+  upload, download, delete or signed-URL fetch answered `502` with the object store's raw
+  error — the internal storage endpoint, bucket and object path — to any caller who reached
+  it, anon and user tokens and signed-URL holders included. The detail is now logged; the
+  response says only what failed. A multipart upload (`POST /t/<id>/files`) answers
+  `502 GARAGE_PUT_FAILED` as a JSON error (`{error_code, message}`, the code tus finalize
+  already used) instead of plain text; downloads, deletes and signed-URL fetches keep their
+  plain-text `502` with a fixed message; edge-function `get-file-bytes` / `put-file` keep
+  their `GARAGE_GET_FAILED:` / `GARAGE_PUT_FAILED:` prefix with a fixed message. Status codes
+  are unchanged. The host files page (`/admin/files`) keeps its detailed errors; the tenant
+  files admin page shares the data-plane upload, download and delete handlers, so it now
+  shows the same fixed message (an upload there answers the `GARAGE_PUT_FAILED` JSON error),
+  as does an admin signed-URL fetch. Redeeming a signed URL also no longer returns the tenant
+  database's path or SQLite's own error text: when the tenant's database is gone (a
+  soft-deleted tenant) it answers `404 not found`, like an absent file, and a failed row
+  lookup answers `500 internal error`. To see what failed, read drust's log. No action
+  needed.
+- **A private IPv4 address written as an IPv6 address is now refused on every outbound
+  path.** The private-address check recognised a private IPv4 inside an IPv6 address only in
+  the `::ffff:a.b.c.d` form. The IPv4-compatible (`::a.b.c.d`), IPv4-translated
+  (`::ffff:0:a.b.c.d`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) forms were treated as
+  public, so on a network that routes those prefixes to IPv4 (a NAT64 or SIIT translator, a
+  6to4 relay) an edge function's `http-fetch` to an
+  allowlisted literal such as `https://[64:ff9b::…]:8443`, or a webhook or `http-fetch` to a
+  name resolving to such an address, could reach a private address. All of those forms are
+  now checked against the same private ranges as plain IPv4, for literals and DNS answers
+  alike, when the egress allowlist is saved (`system=function`), when a webhook is
+  registered, and at every delivery or fetch attempt. The NAT64 local-use prefix
+  `64:ff9b:1::/48`, where the operator chooses how the IPv4 is embedded, is treated as
+  private as a whole. Public addresses in those forms (`64:ff9b::808:808`) are unaffected.
+  Teredo (`2001::/32`) and NAT64 prefixes an operator picks from ordinary global address
+  space are not decoded.
+  A target that is, or resolves to, such a private mapping now fails the way a plain private
+  address always has (`EGRESS_BAD_ORIGIN` on save, `INVALID_URL` on webhook registration, a
+  terminal delivery failure, an `http-fetch` error). No action needed.
+- **An IPv6-literal origin can be allowlisted for egress, and matches.** The egress
+  allowlist split an origin's port off at its last `:`, so `https://[2606:4700:4700::1111]`
+  was refused `400 EGRESS_BAD_ORIGIN`, and the same origin written with `:443` was stored
+  but never matched a webhook or `http-fetch` target. Bracketed IPv6 literals are now parsed
+  as addresses and stored in canonical form (`https://[2606:4700:4700::1111]`; an IPv4-mapped
+  address is stored as `https://[::ffff:a.b.c.d]`), so spelling and default-port
+  differences no longer break a match; different addresses still never match. Webhook
+  delivery to an IPv6-literal target also looked the bracketed host up as a DNS name and
+  failed every attempt; it now checks the literal address directly. Private, loopback,
+  link-local and ULA literals stay refused exactly where their IPv4 counterparts are. An
+  origin with a stray `:`, `[` or `]` outside a bracketed literal (`http://::1`,
+  `https://a:b:443`), which used to be stored as an entry that could never match anything,
+  is now refused `EGRESS_BAD_ORIGIN`. Stored entries are not rewritten: an allowlist that
+  still holds such an entry keeps working for its other entries, but its next whole-list
+  save (REST `PUT`, MCP `set_egress_allowlist` or the admin settings form) is refused until
+  that entry is dropped. DNS-name and IPv4 origins are stored and matched exactly as before.
+- **Public files whose name has a non-ASCII or reserved-character extension get a working
+  URL.** Mode-A (`POST /t/<id>/files`) and host-admin uploads took the key's extension
+  straight from the filename, and the object store percent-encodes non-ASCII bytes and
+  characters such as `~` in the key it writes, so `報告書.檔案` was stored under a different
+  key than the public URL named and the URL answered 404. All three upload stations now share
+  tus's rule: the key keeps the extension only if it is 1 to 12 ASCII letters or digits, and
+  uses `bin` otherwise. So on Mode-A and host-admin uploads an extension containing `-` or
+  `_`, or longer than 12 characters, now also gives a `.bin` key (`a.tar-gz` →
+  `<uuid>.bin`), as it already did on tus; a filename ending in a bare `.` now gives `.bin`
+  on all three. Files uploaded before this release keep their keys. The stored filename,
+  `Content-Disposition` and content type are unchanged — the content type comes from the
+  filename or the part's declared type, never from the key. Public URLs are now built from
+  the key exactly as the object store holds it, so files uploaded before this release with
+  such an extension — and edge-function `put-file` keys containing such characters, which
+  the guest chooses — get a URL that resolves (wherever the proxy in front of the object
+  store forwards an escaped `%25` path unchanged; the Compose `/public/*` route does, checked
+  by hand on RustFS and on Garage); the URL of every key made only of ASCII
+  letters, digits, `.`, `_` and `-` is unchanged. The host files reconcile page no longer
+  lists such a file as both a dangling row and an orphan object (so for such a file "delete
+  dangling rows" can no longer remove the live row of an existing object), and deleting a genuine orphan
+  whose key the object store had encoded now actually deletes it. No action needed, unless
+  a client inferred a file's type from its key's extension.
+- **The host files reconcile page no longer offers private host files as dangling rows.**
+  The page compares drust's rows with a listing of the `public` bucket only, but it compared
+  every host file row, and a private host file's object is in the `private` bucket. Each
+  private host file was therefore listed under "dangling rows", and applying the selection
+  deleted the row of a file whose object still existed, with no way back from that page. The
+  page now judges public rows only, and the apply step refuses to delete a private row even
+  when a stale or hand-built form names one. An object that any host row names is still
+  never offered as an orphan. Deleting a private host file from `/admin/files` had the
+  mirror-image fault: it deleted from the public store, where the object was not, and then
+  removed the row, so the object stayed in `private`. It now deletes from the bucket the
+  file is in. Owner-only pages; no action needed. If you deleted a private host file, from
+  the list or as a dangling row, before this release, its object is still in the `private`
+  bucket without a row.
+- **The English delete-tenant confirmation showed `&#x27;` in place of an apostrophe.** The
+  sentence is reworded. A new test checks, in both locales, every bundle string that a
+  template's script uses as a whole quoted literal (`'{{ t.s("…") }}'`) for a character that
+  would end the literal or show up as an HTML entity. A string spliced into a longer literal
+  is not covered.
+- **Write-mode stored RPCs called by anon or user tokens now stop at the query deadline.**
+  Since v1.58 every caller-controlled *read* has run under `DRUST_QUERY_DEADLINE_MS`
+  (default 5000), but a write-mode RPC (`mode='write'`) had no deadline at all. It runs
+  inside the tenant's writer lock, synchronously on a runtime worker, so an
+  `anon_callable` write RPC whose cost grows with a caller-supplied parameter let an
+  unauthenticated caller hold that tenant's writer — and so delay every other write to it
+  — and pin a worker for as long as the body took. The Docker smoke run measured one at
+  7.3 s answering `200`, while a read RPC on the same tenant was cut off at 5.0 s.
+  Now, for anon and user callers of `POST /t/<id>/rpc/<name>`, the body runs under the
+  same deadline the read RPCs use. It is one budget for the whole body, not one per
+  statement. When it expires the call answers **`408 QUERY_TIMEOUT`** with the read arm's
+  message (`query timed out after 5000ms`) and body shape, every statement is rolled back
+  together with its record-history rows, and the writer is released at once.
+  `DRUST_QUERY_DEADLINE_MS=0` still disables the deadline. **Service tokens, admin PATs,
+  the admin RPC playground and cron are unchanged** and still run write RPCs without a
+  deadline. The deadline starts when the RPC gets the writer, so time spent queued behind
+  another writer does not count against it. The deadline bounds how long **one** call
+  holds the tenant's writer; the admission slot below bounds how many untrusted calls can
+  be waiting for it. As with reads, the deadline caps how long a call holds a worker, not
+  the fact that it holds one.
+  Anon and user write RPCs are now also admitted **one at a time per tenant**: while one
+  holds that slot, the next waits up to one query deadline and is then refused with the
+  existing `429 RATE_LIMITED` (with `Retry-After`). The per-token rate limiter only caps
+  how fast requests arrive (about 6/s per token), not how many queue, so without the slot a
+  sustained stream of slow anon calls could keep a tenant's writer busy with every other
+  writer queued behind it; now, while the deadline is enabled, a service, cron or MCP write
+  waits at most about one deadline behind them. Trusted callers — service tokens, admin
+  PATs, the admin playground and cron — never take the slot. A waiting call gets the slot
+  as soon as the one ahead returns, so a burst of fast RPCs is not refused while the writer
+  is free. The slot is held while its holder waits for the writer, though: a 429 means the
+  slot was occupied for a whole deadline, either by a slow anon/user RPC or by a fast one
+  queued behind a long trusted write (a service or cron write RPC, the admin playground, an
+  FTS rebuild, a large batch), so a second anon/user write RPC behind a writer busy for a
+  whole deadline gets 429 even when both are fast. **A tenant that runs several slow anon
+  or user write RPCs at once can now see 429s it did not see before.** The gate's 429 has
+  the limiter's exact body and `Retry-After`; its audit row carries
+  `"rpc_admission":"busy"` to tell it apart. With `DRUST_QUERY_DEADLINE_MS=0` the wait for
+  the slot is a fixed 5 s and neither bound applies to the slot holder: one never-ending
+  anon/user write RPC then holds the writer, and the slot, for as long as it runs. No
+  action needed, unless an app calls an anon-callable write RPC that legitimately runs
+  longer than the deadline or runs several slow ones concurrently: move those calls behind
+  a service key, or raise `DRUST_QUERY_DEADLINE_MS`.
+- **A WebSocket rooms frame over `DRUST_BROADCAST_PAYLOAD_MAX_BYTES` is now closed with a
+  reason.** The cap is enforced by the WebSocket codec (`max_message_size` /
+  `max_frame_size`), which refuses the frame as soon as its header is read, before drust sees
+  it, and the connection loop answered that by dropping the TCP connection with no frame at
+  all: the client saw 1006 and could not tell "payload too large" from a network failure. The
+  code comment claimed the opposite, and so did the v1.31.2 entry ("rejected at the frame
+  layer with a generic close") — no close frame was ever sent. The server now sends
+  `{"kind":"error","code":"PAYLOAD_TOO_LARGE"}` (no `ref` — the frame was never parsed), closes
+  **1009 Message Too Big**, and holds the socket for 250 ms before dropping it, so the two
+  frames are not lost to the TCP reset that the unread remainder of the oversize frame causes
+  (most visible behind a proxy that relays in chunks). All of it is best-effort and bounded at
+  2 s. The frame is still refused and nothing is published or audited; every other inbound
+  stream error ends the connection exactly as before, and the in-band `PAYLOAD_TOO_LARGE` for
+  a payload that only grows on re-serialization is unchanged. Same for every token kind. A
+  socket that was evicted, or whose admin PAT had just expired, and that sends an over-cap
+  frame now gets this close instead of `CONN_EVICTED` / `CONN_EXPIRED` 1008; nothing is
+  dispatched either way, and reconnecting with a revoked or expired credential still gets
+  401. No new environment variable, no schema change, no action needed.
+- **Publishing a file keeps its content type in the canonical casing.** Every upload station
+  has lowercased the content-type essence since v1.56.3, so the case-sensitive markup matcher
+  of a `/public/*` proxy block only has to match one casing. The visibility move (`PATCH`
+  set-visibility, MCP `set_file_visibility`, the admin toggle) re-uploaded the row's stored
+  type verbatim instead, so a file stored before v1.56.3 with a type such as `TEXT/HTML`
+  could be published in that casing and served from `/public/*` without the sandbox CSP.
+  The move now lowercases the essence (parameters untouched) on the object and the row. No
+  client renders the file differently. Service key and admin only, as before; no action
+  needed.
+
 ### Changed
 
 - **An anon or user `PATCH /t/<id>/records/<c>/<id>` — and an edge function's
@@ -218,6 +499,76 @@ update its toolchain first.
   subscriber is evicted. The key is absent when there is nothing to report, so an
   unreferenced drop answers exactly as before.
 
+- **`GARAGE_ADMIN_ENDPOINT` and `GARAGE_ADMIN_TOKEN` are optional.** Nothing on the data
+  path uses Garage's admin API, yet a store configured with just `GARAGE_S3_ENDPOINT`, `GARAGE_S3_ACCESS_KEY` and
+  `GARAGE_S3_SECRET_KEY` (any S3-compatible store) failed at startup with
+  `missing env var: GARAGE_ADMIN_ENDPOINT`. Both are now optional. If only one of the two is
+  set, or one is empty or whitespace only, drust logs one warning at boot naming the missing variable and
+  treats the admin API as not configured; it never refuses to start over them. The admin API
+  is used only by the owner-only reconcile page to clean up buckets left from the retired
+  per-tenant layout; without it, that cleanup logs `Garage admin API not configured`, sends
+  no request, and keeps the row for a later retry. A fresh install has no such rows. Hosts
+  that set both see no change; no action needed.
+
+### Deploy (Compose)
+
+- **File URLs point at the Compose stack.** `docker-compose.yml` now sets
+  `DRUST_PUBLIC_BASE_URL` (default `http://localhost`, the bundled Caddy). Before, public,
+  signed and MCP-advertised file URLs and the `write_edge_function` prompt pointed at the
+  bare-metal default `http://localhost:8793`, which nothing in the stack serves. Set it to
+  your real origin when you change Caddy's port or put TLS in front. The k3s chart already
+  set it; bare-metal is unchanged.
+- **`/public/*` is served on Compose.** `deploy/compose.Caddyfile` had no route for the
+  public bucket, so a `/public/…` request to the stack reached drust and answered a
+  plain-text `400 missing tenant in path` (and the URL drust returned pointed at port 8793,
+  as above). Caddy now serves `/public/*`
+  straight from the object store's `public` bucket, never through drust. It allows GET and
+  HEAD only (anything else answers 405). It drops the query string, because an S3 API
+  honours `?response-content-type=` on anonymous requests. It forwards neither
+  `Authorization` nor cookies, and drops any `Set-Cookie` the store answers with (this is the
+  admin UI's origin). It sends `nosniff` on every object it serves, and the same sandbox
+  `Content-Security-Policy` as drust's own file responses for script-capable types.
+  `PUBLIC_OBJECTS_UPSTREAM` (a Caddy-container variable, default `rustfs:9000`) selects the
+  store. A Garage website endpoint also needs the two lines marked `STORE-SHAPE` in the file
+  swapped for the forms in their comments. A MinIO (path-style S3 API) is selected with the
+  variable alone; that is untested in this release. Without file storage, `/public/*`
+  answers 502 from Caddy.
+- **The bundled object store is RustFS, and turning it on is one step.** Run
+  `deploy/compose-storage-env.sh` once, then `docker compose up -d`. The script writes `.env`
+  next to the compose file, with `COMPOSE_FILE` (which adds the new
+  `docker-compose.storage.yml`) and freshly generated keys. That file runs RustFS 1.0.5
+  (pinned by digest) with no host ports and the web console off, plus a one-shot
+  `rustfs-init`. `rustfs-init` creates `public` and `private`, lets anyone read objects in
+  `public` and nothing else (no listing), and gives drust its own key, which can use only
+  those two buckets. Without that step, `docker compose up -d` starts drust without file
+  storage, as before. The keys live in `.env`; to change one, edit it and run
+  `docker compose up -d` again. The script never prints a value (a refusal names the
+  variable only), reads `export KEY=…` lines as present, and stops without writing anything
+  for a key when `openssl` fails.
+- **Action needed if you ran the bundled MinIO (`--profile storage`).** The `minio` service
+  and the `storage` profile are gone: the `minio/minio` image can no longer be pulled from
+  Docker Hub. Your objects are still in the `minio-data` volume. This compose file no longer
+  declares it, so nothing deletes it. **The old `minio` container keeps running** after the
+  upgrade, with ports 9000 and 9001 open on every interface and the published
+  `drustkey` / `drustsecret` credentials: a plain `docker compose up -d` only warns about
+  it. Then either:
+  - keep MinIO: add the `docker-compose.override.yml` from the README ("Upgrading from
+    the bundled MinIO"; untested in this release). It re-declares `minio` with the console on
+    `127.0.0.1` only and no S3 port, so the next `docker compose up -d` recreates the
+    container without the exposure. Rotate away from `drustkey` / `drustsecret`. `/public/*`
+    then serves that bucket from the admin UI's origin, and the proxy's markup matcher is
+    case-sensitive: a public file stored before v1.56.3 with a markup type in another casing
+    (`TEXT/HTML`) would be served without the sandbox CSP. Set such a tenant file private and
+    public again (the move lowercases its type); a host file (`/admin/files`) has no such
+    move, so upload it again; or
+  - stop using it: run `docker compose up -d --remove-orphans` (or
+    `docker rm -f <project>-minio-1`). The objects stay in `minio-data`. Moving them to
+    RustFS is not documented in this release.
+- **Compose comments corrected.** The admin UI is at `http://localhost/login`, not
+  `/drust/login` (the image serves at the root). `DRUST_HIDE_VERSION` hides the version
+  header whenever it is set, even to an empty string; to get the header back, remove the
+  line.
+
 ### MCP (M1) — model-facing text, tool annotations, error results
 
 No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.
@@ -256,12 +607,45 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   visibility) used to return a *successful* result whose text was `{"error_code": …}`.
   They now return `isError: true` with the JSON text
   `{"error_code", "message", "suggested_fix"?}` — the same error codes as before.
-  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors are
-  unchanged (JSON-RPC errors with `data.error_code`), and so are `delete_record`'s
-  `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The descriptions of
-  `describe_collection`, `delete_file`, `get_file_url` and `set_file_visibility` now say
-  how they fail, and `recent_writes`' description says it returns no rows yet, so an
-  empty result is not proof that nothing was written.
+  `delete_record`'s body no longer carries `"ok": false`. Other tools' errors stay
+  JSON-RPC errors, now always with a `data.error_code` (see below), and so are
+  `delete_record`'s `dry_run` miss and `get_file_url`'s out-of-range `expires_in`. The
+  descriptions of `describe_collection`, `delete_file`, `get_file_url` and
+  `set_file_visibility` now say how they fail, and `recent_writes`' description says it
+  returns no rows yet, so an empty result is not proof that nothing was written.
+- **A malformed tool argument is an error result with `INVALID_PARAMS`, and every
+  JSON-RPC tool error carries an `error_code`.** rmcp 1.8, pulled in by the compatible
+  refresh under *Build*, turned a missing or wrongly typed argument from JSON-RPC
+  `-32602` into an `isError: true` result whose text was rmcp's own sentence
+  ("failed to deserialize parameters: missing field …"). drust now returns its one isError
+  body instead, `{"error_code": "INVALID_PARAMS", "message", "suggested_fix"}`, with
+  rmcp's sentence as the `message`, so the field at fault is still named. A call to an
+  unknown tool is still JSON-RPC `-32602` "tool not found". Separately, `data.error_code`
+  on a JSON-RPC tool error is now always an `UPPER_SNAKE` code chosen by drust. A message
+  without a `CODE:` prefix used to put the words before its first colon there — `query`'s
+  write refusal, an unknown key on `insert_record` / `update_record` / `upsert_records`, and
+  the `RPC_ANON_OWNER_SCOPED` refusals of `set_owner_field` and `set_policy` all sent prose —
+  and `create_rpc`, `update_rpc`, `delete_rpc`, `call_rpc` (its lookup and its `kind=sql`
+  arm; the `kind=query` arm already forwarded REST's code), `set_description` and the
+  meta-backed tools sent no `data` at all. A `DB: …` storage failure now reports
+  `DB_ERROR`, REST's code for it, where it used to report `DB`. Messages and JSON-RPC error
+  codes are unchanged.
+  The codes match REST where REST has one: `FIELD_NOT_FOUND` for an unknown key,
+  `TYPE_MISMATCH` for a `data` that is not a non-empty object, `QUERY_FORBIDDEN`,
+  `QUERY_TOO_LARGE`, `QUERY_TIMEOUT` and `SQL_ERROR` on `query`, the admin form's
+  `INVALID_SQL_FOR_MODE`, `RPC_KIND_INVALID` and `RPC_QUERY_TEMPLATE_INVALID` on RPC saves,
+  and `RPC_NOT_FOUND` and the `PARAM_*` codes on `call_rpc`, and `VECTOR_DIM_MISMATCH`,
+  `VECTOR_NON_FINITE` and `VECTOR_TYPE_ERROR` for a bad query vector on
+  `search_collection`. A repeated `create_collection` reports `COLLECTION_EXISTS` and a
+  repeated `add_field` name `INVALID_PARAMS`. A failed native constraint
+  reports `UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
+  `CHECK_CONSTRAINT_FAILED` or `TYPE_MISMATCH`. An error with nothing to classify reports
+  `INTERNAL`. New codes, on MCP only for now: `RPC_EXISTS`, `COLLECTION_EXISTS`,
+  `FK_VIOLATION` and `NOT_NULL_VIOLATION`, each with a `suggested_fix`. The tools that need
+  the host metadata connection now report `META_UNAVAILABLE` where there is none, as
+  `whoami` already did (no `suggested_fix`). REST responses are
+  unchanged. A client that matched the old prose in `data.error_code` should match the
+  code, or the `message`, instead.
 - **`list_files` refuses a misspelt `visibility`.** As documented, it treats anything other
   than `public` / `private` as "no filter" — so a typo such as `"Public"` or `"pub"`
   silently returned every file, private ones included. A value that is a case or
@@ -278,6 +662,10 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   The `files-guide.md` resource now says when to switch to tus (above
   `limits.max_upload_bytes`) and that `OPTIONS …/uploads` reports `Tus-Max-Size`.
 
+- **`list_files` no longer names Garage.** Its description said files are "stored by this
+  tenant in Garage"; it now says "in the object store", since Docker Compose bundles RustFS
+  from this release. Model-facing text only; the tool's behaviour and result are unchanged.
+
 ### Build
 
 - **Builds clean under Rust 1.100's clippy.** CI installs the latest stable toolchain, and
@@ -291,7 +679,8 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   v1.66.1. This refresh clears the ones a compatible update can reach — `cap-primitives`
   (RUSTSEC-2026-0482), `h2`, `pulldown-cmark`, `quinn-proto` / `quinn-udp`, `rustls`,
   `rustls-webpki`, `webpki-roots`, `zstd`, and the two `wasmtime` advisories fixed in
-  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0, `rusqlite` 0.40.0 → 0.40.2 and `tokio`
+  46.0.3 — and also moves `rmcp` 1.7.0 → 1.8.0 (whose one caller-visible effect, on
+  tool-argument errors, is described under *MCP (M1)*), `rusqlite` 0.40.0 → 0.40.2 and `tokio`
   1.52 → 1.54. The advisories a compatible update cannot reach — the remaining
   `wasmtime` / `wasmtime-wasi` ones, `libsqlite3-sys` and `rmcp` — are handled by the
   three cross-major upgrades D1–D3 below.
@@ -335,14 +724,51 @@ No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only
   rmcp >= 3.9. No operator action is needed.
 - **A local smoke stack, `deploy/smoke/`.** Developer tooling, not part of the image or of
   any deployment. `up.sh` builds the shipping `Dockerfile`, runs the repo's
-  `docker-compose.yml` unmodified next to a real Garage on loopback-only ports, and mints
-  an admin token. `run-all.sh` then drives nine check scripts (about 1,380 assertions)
+  `docker-compose.yml` unmodified next to a real object store on loopback-only ports —
+  RustFS from the repo's own `docker-compose.storage.yml` by default, Garage (what the
+  bare-metal host runs) with `SMOKE_STORE=garage` — and mints an admin token. `run-all.sh` then drives nine check scripts (about 1,420 assertions)
   against it over HTTP, and `test-linux.sh` runs `make test-shell` plus the full
   `cargo test` in a Linux container, which covers what a macOS workstation cannot run.
   It checks what `cargo test` does not reach: the built image, edge functions under the
   deployed process, and file features against a real S3 endpoint. The D1–D3 upgrades
-  showed no regression under it. 22 assertions fail at this commit, each on a defect that
-  predates this release; `deploy/smoke/README.md` lists them.
+  showed no regression under it. Its first run failed 22 assertions, each on a confirmed
+  defect. Those are the Compose and error-response entries under *Fixed*, *Deploy (Compose)*
+  and *MCP (M1)* above; at this commit every assertion passes, on RustFS and on Garage.
+
+### Docs
+
+- `CLAUDE.md`'s surface index named the SSE route `/t/<id>/collections/<c>/subscribe`; the
+  route is, and always was, `/t/<id>/records/<c>/subscribe`. The row's gate is restated
+  from `subscribe_handler`: service (tenant key or admin PAT) and anon while
+  `realtime_enabled` is on; anon also needs `anon_caps[select]` and a collection with no
+  `owner_field` (`ANON_FORBIDDEN_OWNER_SCOPED`, whatever `read_scope`). A select policy was
+  never a precondition for connecting — it filters anon's events. The same sentence is
+  corrected in `.claude/rules/background-jobs.md`, in the admin collection page's realtime
+  card and SSE quickstart note (both locales; the service line now says "while enabled",
+  since service is refused `REALTIME_DISABLED` too), and in the MCP `set_realtime` tool
+  description, all of which left out the `owner_field` refusal.
+- The `inject_tus_capabilities` comment said `OPTIONS /t/<id>/uploads` never reaches its
+  handler. That holds only with a `DRUST_CORS_ORIGINS` allow-list; without one (the
+  default) the request goes through bearer auth like any verb — service gets the handler's
+  204, anon/user 403 `WRITE_DENIED`, no bearer 401, each carrying the tus headers. Comment
+  only; behaviour unchanged.
+- The login error for an OAuth admin with no email (`oauth_admin_email_missing`, both
+  locales) named a `drust_set_admin_password` binary that no target ships; it now names
+  `set_admin_password --username <name> --email <addr>`. The binary's own usage line had the
+  same wrong name.
+- Rooms error codes: `UNKNOWN_OP` was defined but never emitted — an unrecognized `op` is,
+  and remains, `MALFORMED_FRAME` (no `ref`, the connection stays open) — and is removed.
+  `ROOM_EVICTED`, which the v1.65.0 entry calls "the existing room-level" code, is likewise
+  not emitted: a per-room evict ends that room's subscription without a frame and the
+  client re-subscribes. It is kept and documented as reserved. `WS_PUBLISH_DENIED` has not
+  been emitted since v1.32.5 and is kept for clients that still match it. No wire change.
+- The admin UI's file and reconcile pages, the tenant files page and the tenant list (both
+  locales) described the storage layout as Garage with a bucket pair per tenant. Since the
+  per-tenant buckets were retired, files live in the shared `public` and `private` buckets
+  under each tenant's id prefix, on whatever S3-compatible store is configured; the texts
+  now say so, the reconcile rows that concern legacy per-tenant buckets say "legacy" and
+  name the Garage admin API, and the "not configured" panel points at the README instead of
+  a design document a fresh clone does not have. Text only.
 
 ## v1.66.1 — 2026-08-17
 

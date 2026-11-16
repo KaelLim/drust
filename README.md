@@ -84,9 +84,10 @@ open http://localhost:47826/login       # admin UI (root mode); log in with the 
 ```bash
 git clone https://github.com/KaelLim/drust.git && cd drust
 
-docker compose up -d                 # drust on http://localhost:47826
-# ...or with S3 file storage (drust + MinIO):
-docker compose --profile storage up -d
+docker compose up -d                 # drust on http://localhost:47826 (no file storage)
+# ...or with S3 file storage (drust + RustFS), once:
+deploy/compose-storage-env.sh        # writes .env: COMPOSE_FILE + generated keys
+docker compose up -d
 ```
 
 ```bash
@@ -148,11 +149,134 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_BIND` | optional (`127.0.0.1:47826`) | Listen address — set `0.0.0.0:47826` in a container |
 | `DRUST_PUBLIC_URL` | optional | Public base URL — required for OAuth redirect/callback links |
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list; supports `https://*.example.com`, `http://localhost:*` |
+| `DRUST_TRUSTED_PROXIES` | optional (2; image 0; `docker-compose.yml` 1) | Reverse proxies in front of drust that append to `X-Forwarded-For`; the per-IP rate limits key on that entry (`0` = the TCP peer). Range 0–8. Set it when you put the image behind your own proxy |
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
-| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables S3 storage features |
-| `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage-only: auto-provision buckets |
+| `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables file storage on an S3-compatible store (verified: RustFS, Garage; constraints below). The `GARAGE_` names are historical. Compose's storage file sets them for you |
+| `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage only — used solely by the reconcile page to clean up buckets from the retired per-tenant layout. Set both; one alone is ignored with a boot warning |
+| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the chart derives it from the ingress host |
 
-The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible service works (Garage, MinIO, R2, AWS S3, B2). Auto-bucket provisioning is Garage-specific; for other backends, pre-create the buckets.
+The S3 data path uses `object_store::aws::AmazonS3` (path-style, SigV4). It is verified against RustFS (the Compose default) and Garage (the bare-metal reference host). Two things are fixed and not configurable: the bucket names `public` and `private`, and the SigV4 region string `garage`. A store has to accept both. A hosted provider whose bucket names are global, or which checks the signing region (AWS S3, B2), cannot be used as it stands; MinIO and R2 are untested in this release.
+
+drust never creates buckets. Before the first upload, create `public` and `private`:
+- `public`: anonymous **GetObject only**, never a canned "download" policy, which also allows listing.
+- `private`: no anonymous access.
+
+drust logs a warning at boot for each one it cannot list. Public files are served by your reverse proxy straight from `public`, never through drust: copy the `/public/*` block of `deploy/compose.Caddyfile` (sandbox CSP, nosniff, GET/HEAD only, query dropped). The Compose storage file and Caddy do all of this for you.
+
+</details>
+
+<details>
+<summary><b>Object storage on Docker Compose</b></summary>
+
+**Enable.** Once, from the repo root:
+
+```bash
+deploy/compose-storage-env.sh        # writes .env: COMPOSE_FILE + generated keys
+docker compose up -d
+```
+
+The script writes `.env` next to `docker-compose.yml` (mode 600) with
+`COMPOSE_FILE=docker-compose.yml:docker-compose.storage.yml`, so every plain `docker compose`
+command also loads the storage file, plus freshly generated keys: RustFS's root key and
+drust's own key. It adds only what is missing, never changes or prints an existing value, and
+refuses a `.env` that already points `GARAGE_S3_ENDPOINT` at another store. On Windows, write
+the same five lines by hand with `;` in `COMPOSE_FILE`. If you also keep a
+`docker-compose.override.yml`, add it to `COMPOSE_FILE` yourself: a set `COMPOSE_FILE` turns
+off Compose's automatic loading of the override file.
+
+`docker-compose.storage.yml` runs RustFS 1.0.5 (pinned by digest) with no host ports and the
+web console off, plus a one-shot `rustfs-init` that creates `public` and `private`, lets
+anyone GET objects from `public` and nothing else (no listing), and gives drust its own key,
+limited to those two buckets. drust never holds the RustFS root key.
+
+- **Changing a key**: edit `.env`, then `docker compose up -d` again. `rustfs-init` re-applies
+  drust's key from `.env` on every run, and RustFS keeps its users and policies across a
+  root-key change (observed on 1.0.5). Changing drust's *access* key leaves the old RustFS
+  user behind; remove it with `rc admin user remove` if that matters.
+- **Store logs**: `docker compose logs rustfs`.
+- **Console**: off. To use it, set `RUSTFS_CONSOLE_ENABLE: "true"` and publish
+  `127.0.0.1:9001:9001` on `rustfs` in an override file.
+
+**Use MinIO, Garage or another store.** Do not run the script. Put the three
+`GARAGE_S3_*` variables on `drust` in a `docker-compose.override.yml`, create the two buckets
+as described under *Configuration*, and point Caddy's `/public/*` at the store with
+`PUBLIC_OBJECTS_UPSTREAM` (a variable of the `caddy` service, default `rustfs:9000`):
+
+- Garage: set `PUBLIC_OBJECTS_UPSTREAM` to its `s3_web` endpoint (e.g. `garage:3902`) and
+  replace the two lines marked `STORE-SHAPE` in `deploy/compose.Caddyfile` with the Garage
+  forms in their comments.
+- MinIO (path-style S3 API): set `PUBLIC_OBJECTS_UPSTREAM`; untested in this release.
+- Any other store, or a public endpoint of its own: carry the `/public/*` block across with
+  `@markup`, the query strip, the method limit and the header removals unchanged. See
+  *Configuration* for the two things a store must accept (fixed bucket names, fixed region).
+
+Without storage, `/public/*` answers 502 from Caddy (the upstream does not resolve); there are
+no public files to serve, and the rest of the stack is unaffected.
+
+**Upgrading from the bundled MinIO.** Up to this release `docker compose --profile storage
+up -d` ran a bundled MinIO. That service and the `storage` profile are gone, because the
+`minio/minio` image can no longer be pulled from Docker Hub. Your objects are still in the
+`minio-data` volume; this compose file no longer declares it, so nothing deletes it. **The old
+`minio` container keeps running after the upgrade, with ports 9000/9001 on every interface and
+the published `drustkey`/`drustsecret`; `docker compose up -d` only warns about it.** Choose
+one:
+
+- **Keep MinIO** (untested in this release). Do not run `deploy/compose-storage-env.sh`. Copy
+  this `docker-compose.override.yml` next to `docker-compose.yml` and set `MINIO_ROOT_USER` /
+  `MINIO_ROOT_PASSWORD` in `.env`:
+
+  ```yaml
+  # docker-compose.override.yml — keep running your own MinIO.
+  services:
+    minio:
+      image: <the MinIO image you already have locally>  # minio/minio is no longer on Docker Hub
+      restart: unless-stopped
+      command: server /data --console-address ":9001"
+      ports:
+        - "127.0.0.1:9001:9001"      # console, host-local; the S3 port needs no host binding
+      environment:
+        MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+        MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+      volumes:
+        - minio-data:/data
+    drust:
+      environment:
+        GARAGE_S3_ENDPOINT: http://minio:9000
+        GARAGE_S3_ACCESS_KEY: ${MINIO_ROOT_USER:?set in .env}
+        GARAGE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+    caddy:
+      environment:
+        PUBLIC_OBJECTS_UPSTREAM: minio:9000
+  volumes:
+    minio-data:    # same name: the existing <project>_minio-data volume is reused
+  ```
+
+  It re-declares `minio` with the console on `127.0.0.1` only and no S3 port, so the next
+  `docker compose up -d` recreates the old container without the exposure. Then:
+  - rotate away from `drustkey` / `drustsecret` — they were published, and their S3 port was
+    on every interface;
+  - replace a canned `download` policy on `public` with the GetObject-only
+    `deploy/compose-rustfs/public-read.json` (the canned policy also lists the bucket), e.g.
+    with the `amazon/aws-cli` image on the compose network:
+    `--endpoint-url http://minio:9000 s3api put-bucket-policy --bucket public --policy file:///p.json`;
+  - create `public` and `private` if they never existed;
+  - `/public/*` now serves that bucket from the admin UI's origin, and the proxy's markup
+    matcher is case-sensitive. A public file stored before v1.56.3 with a markup type in
+    another casing (`TEXT/HTML`) would be served without the sandbox CSP: set a tenant file
+    private and public again (the move lowercases its type); a host file (`/admin/files`)
+    has no such move, so upload it again. Such a row's `content_type` in `_system_files`
+    differs from its lowercase form;
+  - the override runs drust on the MinIO root key, which can also change bucket policy. For
+    a least-privilege key, create a separate MinIO user, attach
+    `deploy/compose-rustfs/drust-objects.json` to it (object read/write/delete and listing on
+    `public` and `private` only, no policy changes — the same policy `rustfs-init` gives
+    drust), and point `GARAGE_S3_ACCESS_KEY` / `GARAGE_S3_SECRET_KEY` at that user instead.
+- **Stop using it**: `docker compose up -d --remove-orphans` (or
+  `docker rm -f <project>-minio-1`). The container goes away with its open ports and published
+  credentials; the objects stay in `minio-data`.
+
+**Moving the objects from MinIO to RustFS.** Not documented yet (untested). Keep MinIO with
+the override above until it is; your objects stay in `minio-data`.
 
 </details>
 
@@ -162,7 +286,8 @@ The S3 data path uses `object_store::aws::AmazonS3`, so any S3-compatible servic
 > objects. For a restorable disaster-recovery unit, pair every DB backup with an
 > object-store backup: bare-metal `garage-backup.timer`, k3s `objectMirror`
 > (Litestream backs up databases only, not objects), docker-compose the
-> `minio-data` volume. Snapshots
+> `rustfs-data` volume (stop `rustfs` for a consistent copy) or both buckets copied out with
+> an S3 client. Snapshots
 > also contain plaintext credentials — never store them off-host unencrypted. A tenant DB
 > that carries a **trigram** FTS index needs host `sqlite3` ≥ 3.34 to `VACUUM`/restore it
 > (the trigram tokenizer floor) — the bundled engine is newer, but the host tools may not be.

@@ -361,7 +361,7 @@ pub fn make_tenant_inner(
     };
     if let Some((deleted_at, existing_owner)) = existing {
         if deleted_at.is_none() {
-            anyhow::bail!("tenant '{id}' already exists");
+            anyhow::bail!("TENANT_ID_UNAVAILABLE: tenant '{id}' already exists");
         }
         // v1.58 — CLAUDE.md invariant #7: the branch below hard-DELETEs the
         // soft-deleted tenant's row and tokens and wipes any live remnant, so
@@ -384,7 +384,7 @@ pub fn make_tenant_inner(
             existing_owner,
         ) == crate::mgmt::tenant_authz::TenantAccess::Deny
         {
-            anyhow::bail!("tenant '{id}' already exists");
+            anyhow::bail!("TENANT_ID_UNAVAILABLE: tenant '{id}' already exists");
         }
         tracing::info!(tenant_id = %id, "recycling id from soft-deleted tenant");
         // E5 — the caller must run `evict_tenant_everywhere` once the meta lock
@@ -496,14 +496,33 @@ pub fn make_tenant_inner(
     })
 }
 
-/// Roll back everything `make_tenant_inner` did for `id`: delete token rows,
-/// the tenant row, and the on-disk directory. Used when Garage provisioning
-/// fails after local state has already been written.
+/// Host audit row for a tenant-lifecycle admin act (`admin.tenant.create`,
+/// `admin.tenant.delete`, `admin.tenant_key.reroll`), in the
+/// `admin.<area>.<verb>` convention (v1.31.3 F15). The tenant id goes in the
+/// `tenant` column, so the row shows in host audit and on that tenant's
+/// `_logs` page. The caller builds `extra`, and this fn takes no token
+/// argument, so a key, a key hash or a hint derived from either cannot reach a
+/// row through it. Emit AFTER every eviction: `try_send` is synchronous and
+/// lossy under backpressure, and a no-op when no global writer is installed.
+pub(crate) fn emit_tenant_admin_audit(
+    op: &'static str,
+    tenant_id: &str,
+    actor_admin_id: i64,
+    actor_email: Option<String>,
+    extra: serde_json::Value,
+) {
+    let mut e = crate::safety::audit::AuditEntry::success(tenant_id, "-", op, 0);
+    e.actor_admin_id = Some(actor_admin_id);
+    e.actor_email_snapshot = actor_email;
+    crate::safety::audit_db::try_send(&e.with_extra(extra));
+}
+
 pub async fn create_tenant_json(
     State(state): State<TenantsState>,
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Json(form): Json<CreateTenantJson>,
 ) -> Response {
     let mb = form.quota_db_mb.unwrap_or(500);
@@ -526,12 +545,24 @@ pub async fn create_tenant_json(
         Ok(made) => made,
         Err(e) => {
             let msg = e.to_string();
-            return if msg.contains("TENANT_CAP_EXCEEDED") {
+            // A live id and a soft-deleted id the caller may not recycle are ONE
+            // arm with a handler-built message (invariant 7: the create route
+            // must not be an ownership oracle). The `UNIQUE` text maps to the
+            // same answer so a future race cannot make a third, distinguishable
+            // response; today the existence SELECT and the INSERT share one
+            // meta lock, so it is unreachable.
+            return if msg.starts_with("TENANT_CAP_EXCEEDED") {
                 crate::error::json_error(StatusCode::FORBIDDEN, "TENANT_CAP_EXCEEDED", &msg)
-            } else if msg.contains("invalid tenant id") || msg.contains("UNIQUE") {
-                (StatusCode::BAD_REQUEST, msg).into_response()
+            } else if msg.starts_with("TENANT_ID_UNAVAILABLE") || msg.contains("UNIQUE") {
+                crate::error::json_error(
+                    StatusCode::BAD_REQUEST,
+                    "TENANT_ID_UNAVAILABLE",
+                    &format!("tenant '{id}' already exists"),
+                )
+            } else if msg.starts_with("invalid tenant id") {
+                crate::error::json_error(StatusCode::BAD_REQUEST, "INVALID_TENANT_ID", &msg)
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+                crate::error::json_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL", &msg)
             };
         }
     };
@@ -553,6 +584,14 @@ pub async fn create_tenant_json(
     // numbers on the next dashboard load, without waiting for a sampler tick.
     crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
 
+    emit_tenant_admin_audit(
+        "admin.tenant.create",
+        &id,
+        caller_id,
+        admin.email.clone(),
+        json!({"name": form.name, "recycled": made.recycled}),
+    );
+
     // Storage is fully shared (two buckets host-wide: `public` + `private`);
     // per-tenant bucket provisioning is no longer needed. The new tenant's
     // files will live under `<tenant-id>/<key>` inside those buckets.
@@ -564,6 +603,7 @@ pub async fn create_tenant_form(
     axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
         crate::auth::middleware::AdminId,
     >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Form(form): Form<CreateTenantForm>,
 ) -> Response {
     // UUID v4 — user never types a slug. Display name is the human label.
@@ -589,10 +629,27 @@ pub async fn create_tenant_form(
             }
             // v1.15.0 immediate sample so the new row renders with stats next load.
             crate::mgmt::stats::sample_one(&state.session.meta, &state.tenants, &id).await;
+            emit_tenant_admin_audit(
+                "admin.tenant.create",
+                &id,
+                caller_id,
+                admin.email.clone(),
+                json!({"name": form.name, "recycled": made.recycled}),
+            );
             Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
         }
         Err(e) => {
             let msg = e.to_string();
+            if msg.starts_with("TENANT_ID_UNAVAILABLE") {
+                // Keep the form's plain text free of the code prefix (and
+                // byte-identical to before for this practically unreachable
+                // case — the id is a fresh UUID v4).
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("tenant '{id}' already exists"),
+                )
+                    .into_response();
+            }
             let code = if msg.contains("TENANT_CAP_EXCEEDED") {
                 StatusCode::FORBIDDEN
             } else {
@@ -704,7 +761,23 @@ pub(crate) async fn evict_tenant_everywhere(state: &TenantsState, id: &str) {
 
 pub async fn soft_delete_tenant(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(id): Path<String>,
+) -> Response {
+    soft_delete_tenant_inner(&state, id, caller_id, admin.email).await
+}
+
+/// Shared body of `soft_delete_tenant` (JSON, 204) and
+/// `soft_delete_tenant_form` (redirect), so both faces evict and audit the
+/// same way.
+async fn soft_delete_tenant_inner(
+    state: &TenantsState,
+    id: String,
+    actor_admin_id: i64,
+    actor_email: Option<String>,
 ) -> Response {
     // Delete the tenant's objects from shared Garage buckets first (outside
     // the meta lock). Iterate _system_files and DELETE each object. Admin
@@ -743,7 +816,7 @@ pub async fn soft_delete_tenant(
     }
 
     // Now the synchronous SQLite + fs work — hold lock only over sync ops.
-    {
+    let trashed = {
         let conn = state.session.meta.lock().await;
         let affected = conn
             .execute(
@@ -755,17 +828,29 @@ pub async fn soft_delete_tenant(
             return (StatusCode::NOT_FOUND, "no such tenant").into_response();
         }
         let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        move_tenant_to_trash(&state.data_dir, &id, &ts);
-    }
-    evict_tenant_everywhere(&state, &id).await;
+        move_tenant_to_trash(&state.data_dir, &id, &ts).is_some()
+    };
+    evict_tenant_everywhere(state, &id).await;
+    // After every eviction (invariants 4 and 5), and only on the 1-row path.
+    emit_tenant_admin_audit(
+        "admin.tenant.delete",
+        &id,
+        actor_admin_id,
+        actor_email,
+        json!({"trashed": trashed}),
+    );
     StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn soft_delete_tenant_form(
     State(state): State<TenantsState>,
+    axum::Extension(crate::auth::middleware::AdminId(caller_id)): axum::Extension<
+        crate::auth::middleware::AdminId,
+    >,
+    axum::Extension(admin): axum::Extension<crate::mgmt::admin_profile::AdminProfileExt>,
     Path(id): Path<String>,
 ) -> Response {
-    let _ = soft_delete_tenant(State(state), Path(id)).await;
+    let _ = soft_delete_tenant_inner(&state, id, caller_id, admin.email).await;
     Redirect::to(&crate::base_path::base("/admin/tenants")).into_response()
 }
 

@@ -592,12 +592,8 @@ pub async fn upload_submit(
     // lives (serve time + the Caddy `/public/*` response-header matcher).
     let bucket = bucket_for_upload(&Owner::Admin, visibility);
 
-    // Step 6: generate key.
-    let ext = std::path::Path::new(&original_name)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
-    let key = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+    // Step 6: generate key — the shared station rule (`derive_file_key`).
+    let key = crate::storage::files::derive_file_key(&original_name);
 
     // Step 7: SQLite-first insert. Push to Garage next. Compensate on failure.
     {
@@ -662,21 +658,30 @@ pub async fn delete_submit(State(state): State<PublicFilesState>, Path(id): Path
         return (StatusCode::SERVICE_UNAVAILABLE, "storage not configured").into_response();
     };
 
-    let key: Option<String> = {
+    let found: Option<(String, String)> = {
         let conn = state.meta.lock().await;
         conn.query_row(
-            "SELECT key FROM _system_files WHERE id = ?1",
+            "SELECT key, visibility FROM _system_files WHERE id = ?1",
             rusqlite::params![id],
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
         .ok()
     };
-    let Some(key) = key else {
+    let Some((key, visibility)) = found else {
         // Already gone — idempotent.
         return Redirect::to(&crate::base_path::base("/admin/files")).into_response();
     };
 
-    if let Err(e) = garage.delete_object(&key).await {
+    // The bucket the upload put it in (`upload_submit`), not the client's
+    // default store: a private host file's object is in `private`, and
+    // deleting it from the public store removed nothing while the row went.
+    let visibility = if visibility == "public" {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    };
+    let bucket = bucket_for_upload(&Owner::Admin, visibility);
+    if let Err(e) = garage.delete_object_in(&bucket, &key).await {
         return internal(format!("garage delete: {e}"));
     }
     {
@@ -715,9 +720,102 @@ fn is_admin_level_key(key: &str) -> bool {
         && key != ".."
 }
 
+/// A DB key as the object-store listing reports it. `list_objects` returns
+/// keys in object_store's encoded form (the S3 listing parses without
+/// decoding), so a row `x.檔案` is listed as `x.%E6%AA%94%E6%A1%88`; the diff
+/// must compare that form in both directions, or such a row reads as dangling
+/// AND its object as an orphan — and "delete dangling rows" would delete the
+/// live row of an existing object.
+fn listed_form(db_key: &str) -> String {
+    object_store::path::Path::from(db_key).to_string()
+}
+
+/// The admin DB keys in their listed form ([`listed_form`]), the set
+/// [`classify_orphans`] diffs the bucket listing against.
+fn admin_db_listed_keys(db_rows: &[(i64, String, String)]) -> HashSet<String> {
+    db_rows.iter().map(|(_, k, _)| listed_form(k)).collect()
+}
+
+/// One admin `_system_files` row as the reconcile page reads it:
+/// `(id, key, original_name, visibility)`.
+type ReconcileRow = (i64, String, String, String);
+
+/// The rows the DANGLING direction may judge: `visibility = 'public'` only.
+/// The page lists the public bucket and nothing else, and a private host
+/// file's object lives in the `private` bucket (`files::bucket_for_upload`),
+/// so a private row is never in that listing. Judged here it would read as
+/// dangling, and "delete dangling rows" would delete the live row of an
+/// existing object. The ORPHAN direction keeps every row's key instead
+/// ([`admin_db_listed_keys`]), so an object some admin row still names is
+/// never offered for deletion, whatever that row's visibility says.
+fn public_rows(rows: &[ReconcileRow]) -> Vec<(i64, String, String)> {
+    rows.iter()
+        .filter(|(_, _, _, vis)| vis == "public")
+        .map(|(id, key, name, _)| (*id, key.clone(), name.clone()))
+        .collect()
+}
+
+/// Delete one dangling admin row. `visibility = 'public'` repeats
+/// [`public_rows`] on the apply side: the form is caller-supplied and can be
+/// stale, and this page never looked at the bucket a private row's object is
+/// in.
+fn delete_dangling_row(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM _system_files WHERE id = ?1 AND visibility = 'public'",
+        rusqlite::params![id],
+    )
+}
+
+/// Delete the dangling rows a reconcile form named ([`delete_dangling_row`]
+/// for each); returns how many rows went.
+fn delete_dangling_rows(conn: &Connection, ids: &[i64]) -> usize {
+    ids.iter()
+        .filter(|id| matches!(delete_dangling_row(conn, **id), Ok(1)))
+        .count()
+}
+
+/// The host half of the reconcile page: `(orphan objects, dangling rows)`
+/// from every host row and the public bucket's listing. The handler calls
+/// only this, so the two rules cannot be applied apart:
+/// - an object is an orphan only when NO host row names its key, whatever
+///   that row's visibility ([`admin_db_listed_keys`] over every row);
+/// - a row is dangling only when it is a PUBLIC row whose object is absent
+///   ([`public_rows`]): the listing is the public bucket, and a private row's
+///   object is never in it.
+fn reconcile_diff(
+    all_rows: Vec<ReconcileRow>,
+    listing: &[(String, u64)],
+) -> (Vec<(String, String)>, Vec<(i64, String, String)>) {
+    let listed_keys: HashSet<String> = listing.iter().map(|(key, _)| key.clone()).collect();
+    let public_db_rows = public_rows(&all_rows);
+    let db_rows: Vec<(i64, String, String)> = all_rows
+        .into_iter()
+        .map(|(id, key, name, _)| (id, key, name))
+        .collect();
+    let orphans = classify_orphans(listing, &admin_db_listed_keys(&db_rows));
+    // Asymmetric on purpose — see `dangling_rows`.
+    let dangling = dangling_rows(public_db_rows, &listed_keys);
+    (orphans, dangling)
+}
+
+/// Admin rows whose object is absent from the listing. `db_rows` is the
+/// admin PUBLIC rows ([`public_rows`]; meta.sqlite `_system_files`, keys with
+/// no slash) and `listed_keys` is the whole public bucket, so no key-shape
+/// filter is needed on this direction.
+fn dangling_rows(
+    db_rows: Vec<(i64, String, String)>,
+    listed_keys: &HashSet<String>,
+) -> Vec<(i64, String, String)> {
+    db_rows
+        .into_iter()
+        .filter(|(_, k, _)| !listed_keys.contains(&listed_form(k)))
+        .collect()
+}
+
 /// Objects present in the bucket but absent from the ADMIN inventory
 /// (meta.sqlite `_system_files`). Tenant-namespaced keys are filtered out
-/// first — see [`is_admin_level_key`].
+/// first — see [`is_admin_level_key`]. `admin_db_keys` holds the DB keys in
+/// their listed form ([`listed_form`]).
 fn classify_orphans(
     bucket_keys: &[(String, u64)],
     admin_db_keys: &HashSet<String>,
@@ -743,28 +841,27 @@ pub async fn reconcile_page(
         Ok(v) => v,
         Err(e) => return internal(format!("garage list: {e}")),
     };
-    let garage_keys: HashSet<String> = garage_list.iter().map(|o| o.key.clone()).collect();
 
-    let db_rows: Vec<(i64, String, String)> = {
+    let all_rows: Vec<ReconcileRow> = {
         let conn = state.meta.lock().await;
-        let mut stmt =
-            match conn.prepare("SELECT id, key, original_name FROM _system_files ORDER BY id") {
-                Ok(s) => s,
-                Err(e) => return internal(format!("db prepare: {e}")),
-            };
+        let mut stmt = match conn
+            .prepare("SELECT id, key, original_name, visibility FROM _system_files ORDER BY id")
+        {
+            Ok(s) => s,
+            Err(e) => return internal(format!("db prepare: {e}")),
+        };
         match stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         }) {
             Ok(it) => it.filter_map(|r| r.ok()).collect(),
             Err(e) => return internal(format!("db query: {e}")),
         }
     };
-    let db_keys: HashSet<String> = db_rows.iter().map(|(_, k, _)| k.clone()).collect();
-
     // `garage.list_objects()` lists the WHOLE shared bucket (no prefix), so it
     // also returns every tenant's `<tenant-id>/<file-id>` object. Only the
     // admin-level (slash-free) keys may be diffed against meta.sqlite — see
@@ -773,16 +870,8 @@ pub async fn reconcile_page(
         .iter()
         .map(|o| (o.key.clone(), o.size))
         .collect();
-    let orphan_objects: Vec<(String, String)> = classify_orphans(&bucket_keys, &db_keys);
-
-    // Asymmetric on purpose: `db_rows` is already admin-only (meta.sqlite
-    // `_system_files`, keys with no slash) and `garage_keys` is the whole
-    // bucket, so a row with no matching object really is an admin-level row
-    // whose object is gone. No key-shape filter is needed on this direction.
-    let dangling_rows: Vec<(i64, String, String)> = db_rows
-        .into_iter()
-        .filter(|(_, k, _)| !garage_keys.contains(k))
-        .collect();
+    // Dangling: public rows only. Orphans: every row's key. See `reconcile_diff`.
+    let (orphan_objects, dangling_rows) = reconcile_diff(all_rows, &bucket_keys);
 
     let pending_revokes: Vec<PendingRevokeRow> = {
         let conn = state.meta.lock().await;
@@ -922,18 +1011,15 @@ pub async fn reconcile_apply(
             tracing::warn!(key = %key, "reconcile: refused non-admin orphan key");
             continue;
         }
-        if let Err(e) = garage.delete_object(&key).await {
+        // The key came from the listing, so it is already in object_store's
+        // encoded form: `delete_object` would encode it again and miss.
+        if let Err(e) = garage.delete_listed_object(&key).await {
             tracing::warn!(key = %key, error = %e, "reconcile: orphan delete failed");
         }
     }
     {
         let conn = state.meta.lock().await;
-        for id in form.delete_dangling_ids {
-            let _ = conn.execute(
-                "DELETE FROM _system_files WHERE id = ?1",
-                rusqlite::params![id],
-            );
-        }
+        delete_dangling_rows(&conn, &form.delete_dangling_ids);
     }
     for tenant_id in form.retry_pending_revokes {
         if let Err(e) = retry_one_pending_revoke(
@@ -1053,14 +1139,22 @@ async fn load_files(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let base = state.base_url.trim_end_matches('/');
     let files = rows
         .into_iter()
         .map(
             |(id, key, original_name, content_type, size_bytes, uploaded_at, visibility)| {
                 PublicFileRow {
                     id,
-                    public_url: format!("{base}/public/{key}"),
+                    // `Visibility::Public` regardless of the row: this column has
+                    // always shown the `/public/` link. Built by the shared
+                    // builder so the key segment matches what the object store
+                    // holds.
+                    public_url: crate::storage::files::build_public_url(
+                        &state.base_url,
+                        &Owner::Admin,
+                        Visibility::Public,
+                        &key,
+                    ),
                     key,
                     original_name,
                     content_type,
@@ -1242,8 +1336,126 @@ pub async fn admin_sign_url(
 
 #[cfg(test)]
 mod reconcile_key_tests {
-    use super::{classify_orphans, is_admin_level_key};
+    use super::{
+        admin_db_listed_keys, classify_orphans, dangling_rows, delete_dangling_rows,
+        is_admin_level_key, reconcile_diff,
+    };
     use std::collections::HashSet;
+
+    /// A legacy admin row whose key object_store encoded (`x.檔案`, listed as
+    /// `x.%E6%AA%94%E6%A1%88`) is neither dangling nor an orphan; a genuine
+    /// orphan and a genuine dangling row still surface.
+    #[test]
+    fn reconcile_diff_matches_encoded_listing() {
+        let db_rows = vec![
+            (1_i64, "x.檔案".to_string(), "x.檔案".to_string()),
+            (2, "gone.pdf".to_string(), "gone.pdf".to_string()),
+        ];
+        let listed: Vec<(String, u64)> = vec![
+            ("x.%E6%AA%94%E6%A1%88".to_string(), 1),
+            ("orphan.png".to_string(), 2),
+            ("tenant-id/a.png".to_string(), 3),
+        ];
+        let listed_keys: HashSet<String> = listed.iter().map(|(k, _)| k.clone()).collect();
+        let db_keys = admin_db_listed_keys(&db_rows);
+
+        let orphans = classify_orphans(&listed, &db_keys);
+        assert_eq!(
+            orphans.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["orphan.png"]
+        );
+        let dangling = dangling_rows(db_rows, &listed_keys);
+        assert_eq!(
+            dangling.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    /// A private host file lives in the `private` bucket, which the page never
+    /// lists. It must not be judged against the public listing: it would read
+    /// as dangling and the apply step would delete the row of a live object.
+    #[test]
+    fn private_host_row_is_never_dangling_and_never_deleted_by_apply() {
+        let row =
+            |id: i64, key: &str, vis: &str| (id, key.to_string(), key.to_string(), vis.to_string());
+        let rows = vec![
+            row(1, "pub.png", "public"),
+            // Its object is in the `private` bucket: absent from the listing.
+            row(2, "priv.pdf", "private"),
+            row(3, "gone.png", "public"),
+            // Private too, with a stale copy still in the public bucket (an
+            // interrupted move).
+            row(4, "moved.pdf", "private"),
+        ];
+        let listing = vec![
+            ("pub.png".to_string(), 1_u64),
+            ("stray.bin".to_string(), 2),
+            ("moved.pdf".to_string(), 3),
+        ];
+        // `reconcile_diff` is the function the page calls.
+        let (orphans, dangling) = reconcile_diff(rows, &listing);
+        assert_eq!(
+            dangling.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+            vec![3],
+            "only the PUBLIC row whose object is gone; private row 2 is not judged"
+        );
+        // The orphan direction still knows every row's key, so an object a
+        // private row names is never offered for deletion.
+        assert_eq!(
+            orphans.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["stray.bin"]
+        );
+
+        // Apply side: a stale or hand-built form naming the private row
+        // deletes nothing; the dangling public row is deleted.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _system_files (id INTEGER PRIMARY KEY, key TEXT, visibility TEXT);
+             INSERT INTO _system_files VALUES (2, 'priv.pdf', 'private'), (3, 'gone.png', 'public');",
+        )
+        .unwrap();
+        // `delete_dangling_rows` is the function the apply handler calls.
+        assert_eq!(delete_dangling_rows(&conn, &[2, 3, 99]), 1);
+        let left: Vec<i64> = conn
+            .prepare("SELECT id FROM _system_files ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(left, vec![2]);
+    }
+
+    /// The list page's link for a row whose key the object store encoded (a
+    /// host upload from before the key rule, `x.檔案`) is the stored form
+    /// escaped once more: the URL that resolves. Driven through `load_files`,
+    /// the function the page renders from, so a hand-built URL there fails.
+    #[tokio::test]
+    async fn list_page_links_a_legacy_key_in_its_stored_form() {
+        use crate::storage::meta::open_meta;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = open_meta(&dir.path().join("session.sqlite")).unwrap();
+        let meta = open_meta(&dir.path().join("meta.sqlite")).unwrap();
+        meta.execute(
+            "INSERT INTO _system_files (key, original_name, size_bytes, visibility, uploader)
+             VALUES ('x.檔案', 'x.檔案', 3, 'public', 'admin')",
+            [],
+        )
+        .unwrap();
+        let state = super::PublicFilesState::test_default(
+            Arc::new(Mutex::new(session)),
+            Arc::new(Mutex::new(meta)),
+        );
+        let (files, ..) = super::load_files(&state, 1, 50, "all").await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].public_url,
+            "http://localhost/public/x.%25E6%25AA%2594%25E6%25A1%2588"
+        );
+    }
 
     fn keys(v: &[&str]) -> HashSet<String> {
         v.iter().map(|s| s.to_string()).collect()

@@ -666,16 +666,16 @@ eyebrow = "Admin · storage"
 pill_files_unit = "files"
 pill_not_configured = "not configured"
 title = "Host files"
-sub_configured = "Host-level Garage bucket — anonymous read at <code>/public/&lt;key&gt;</code>. Per-tenant buckets live inside each tenant's Files page."
-sub_unconfigured = "Garage S3 not configured. Set <code>GARAGE_S3_ENDPOINT</code> in <code>.env</code> and restart drust."
+sub_configured = "Host-level files: public ones in the shared <code>public</code> bucket (anonymous read at <code>/public/&lt;key&gt;</code>), private ones in the shared <code>private</code> bucket. Tenant files live inside each tenant's Files page."
+sub_unconfigured = "Object storage not configured. Set <code>GARAGE_S3_ENDPOINT</code> and its key pair in <code>.env</code> and restart drust."
 
 [files.list]
 card_title = "Files"
 reconcile_btn = "sync audit ⋯"
-reconcile_hint = "Compare Garage bucket contents with drust's metadata — find orphan objects (in Garage, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits."
+reconcile_hint = "Compare the public bucket's contents with drust's metadata — find orphan objects (in the store, not tracked) and dangling rows (tracked but missing). Usually empty; run after network glitches or manual S3 edits."
 
 [files.page]
-meta_description = "drust admin — host-level file storage. Upload, browse, and manage public and private files backed by Garage S3."
+meta_description = "drust admin — host-level file storage. Upload, browse, and manage public and private files in S3 object storage."
 title = "drust admin — files"
 [files.row]
 delete_btn = "delete"
@@ -703,28 +703,28 @@ original_name = "original name"
 reason = "reason"
 
 [files_reconcile.dangling_rows]
-subtitle = "in drust, object missing from Garage — delete the row"
+subtitle = "public file in drust, object missing from the public bucket — delete the row"
 title = "Dangling rows"
 
 [files_reconcile.header]
 eyebrow = "Admin · storage maintenance"
-sub = "Compare Garage bucket contents to drust's metadata. Select what to clean up, then apply. Usually empty — runs after network glitches or manual S3 edits."
+sub = "Compare the public bucket's contents to drust's metadata for public host files. Private host files live in the private bucket and are not compared here. Select what to clean up, then apply. Usually empty — runs after network glitches or manual S3 edits."
 title = "Reconcile"
 
 [files_reconcile.orphan_buckets]
-subtitle = "Garage bucket delete failed during hard-delete — retry to remove"
+subtitle = "Legacy per-tenant bucket delete failed during hard-delete (Garage admin API) — retry to remove"
 title = "Orphan buckets"
 
 [files_reconcile.orphan_objects]
-subtitle = "in Garage, not tracked by drust — delete from Garage"
+subtitle = "in the store, not tracked by drust — delete from the store"
 title = "Orphan objects"
 
 [files_reconcile.page]
-meta_description = "drust admin — reconcile Garage public bucket objects with drust's _system_public_files metadata. Finds orphans and dangling rows."
+meta_description = "drust admin — reconcile the public bucket's objects with drust's _system_public_files metadata. Finds orphans and dangling rows."
 title = "drust admin — public bucket · sync audit"
 
 [files_reconcile.pending_revokes]
-subtitle = "Garage revoke failed during soft-delete — retry to deny bucket access"
+subtitle = "Legacy per-tenant bucket revoke failed during soft-delete (Garage admin API) — retry to deny bucket access"
 title = "Pending revokes"
 
 [login.brand]
@@ -739,7 +739,7 @@ or_continue = "or continue with"
 
 [login.error]
 invalid_credentials = "Wrong username or password."
-oauth_admin_email_missing = "Your admin record has no email — run drust_set_admin_password --email."
+oauth_admin_email_missing = "Your admin record has no email — ask the operator to run set_admin_password --username <name> --email <addr>."
 oauth_email_unverified = "Your provider email is not verified."
 oauth_generic = "Login failed."
 oauth_misconfigured = "OAuth is not configured."
@@ -874,7 +874,7 @@ eyebrow = "Admin · documentation"
 source_label = "Source:"
 
 [tenant_docs.page]
-meta_description = "drust admin — on-disk doc viewer ({active})."
+meta_description = "drust admin — built-in doc viewer ({active})."
 title = "drust admin — _docs / {active}"
 
 [tenant_docs.toc]
@@ -896,7 +896,7 @@ title = "No files yet"
 
 [tenant_files_admin.head]
 title = "Storage"
-intro = "Two Garage buckets per tenant — <code>tenant-{tenant_id}-pub</code> served at <code>/public/&lt;key&gt;</code>, <code>tenant-{tenant_id}-prv</code> requires signed URLs."
+intro = "Files live in the shared <code>public</code> and <code>private</code> buckets under this tenant's <code>{tenant_id}/</code> prefix — public ones are served at <code>/public/{tenant_id}/&lt;key&gt;</code>, private ones only through drust or a signed URL."
 
 [tenant_files_admin.page]
 title = "drust admin — files"
@@ -1439,12 +1439,12 @@ banner_body = "Uploads pause below 20% free space on the database disk. Free up 
 banner_title = "Disk at {pct}% free — uploads paused"
 total_meta = "of {gb} GB total"
 [tenants_list.delete]
-body = "This permanently removes the tenant's database, tokens, and any stored files. Type the name to confirm."
+body = "This permanently removes the database, tokens, and any stored files of this tenant. Type the name to confirm."
 confirm = "Delete"
 
 [tenants_list.head]
 eyebrow = "Admin · platform"
-subtitle = "Each tenant gets its own SQLite database, S3 bucket pair, OAuth registrations, anon & service keys, and MCP endpoint. Click a row to enter the tenant studio."
+subtitle = "Each tenant gets its own SQLite database, a prefix in the shared file buckets, OAuth registrations, anon & service keys, and MCP endpoint. Click a row to enter the tenant studio."
 title = "All tenants"
 
 [tenants_list.page]
@@ -1741,11 +1741,11 @@ private = "Private ({n})"
 public = "Public ({n})"
 
 [files.unconfigured]
-body = "Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See <code>docs/superpowers/specs/2026-04-21-garage-object-store-integration.md</code>."
+body = "Set <code>GARAGE_S3_ENDPOINT</code> (and the full key set) in drust's <code>.env</code> and restart. See the README, Configuration."
 title = "Storage not configured"
 
 [tenants_list.create]
-body = "Provisions data.sqlite + per-tenant S3 buckets + anon/service tokens. Choose a display name."
+body = "Creates data.sqlite and the anon/service tokens. Files go under a per-tenant prefix in the shared public and private buckets. Choose a display name."
 ok = "Create"
 placeholder = "Event Registration"
 title = "Create a tenant"
@@ -1786,11 +1786,11 @@ fetch_failed = "list fetch failed"
 
 [collection_page.realtime]
 quickstart_browser_note = "native <code>EventSource</code> can't send <code>Authorization</code> — proxy through a BFF, or use <code>fetch</code> + <code>ReadableStream</code>"
-quickstart_curl_note = "works with anon (needs <code>select</code> cap) or service token"
+quickstart_curl_note = "works with anon (needs <code>select</code> cap and no <code>owner_field</code>) or service token"
 quickstart_node_note = "native <code>EventSource</code> can't send headers — use the <code>eventsource</code> npm package"
 quickstart_summary = "SSE quickstart (curl / Node / Browser)"
-role_anon = "anon ✓ needs <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap"
-role_service = "service ✓ always allowed"
+role_anon = "anon ✓ needs <code style=\"background:transparent;border:0;padding:0;color:inherit;\">select</code> cap and no <code style=\"background:transparent;border:0;padding:0;color:inherit;\">owner_field</code>"
+role_service = "service ✓ always allowed while enabled"
 role_user = "user ✕ always 403 SSE_USER_DENIED"
 toggle_label = "SSE broadcast"
 
