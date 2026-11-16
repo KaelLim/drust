@@ -58,7 +58,11 @@ markup_resp="$(printf '%s\n' "$public_block" | awk '
     depth += n - m
     if (depth == 0) exit
   }')"
-has() { printf '%s\n' "$public_block" | grep -qF -- "$1"; }
+# A here-string, not `printf | grep -q`: under pipefail a `grep -q` that exits at its first
+# match can kill a writer that has not finished (SIGPIPE), and the pipeline then reads as
+# "absent". The `sh -c` checks below are not affected: a child sh does not inherit pipefail
+# (only an exported SHELLOPTS would hand it down, and nothing here exports it).
+has() { grep -qF -- "$1" <<<"$public_block"; }
 count_in_block() { printf '%s\n' "$public_block" | grep -cE -- "$1"; }
 
 check "the /public block exists" test -n "$public_block"

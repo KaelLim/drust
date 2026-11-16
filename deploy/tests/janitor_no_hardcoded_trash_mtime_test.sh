@@ -15,8 +15,11 @@ fi
 # the only mechanism, and drust-janitor.sh has no legitimate use of -mtime).
 # Check every NON-COMMENT line for -mtime, so a reintroduced sweep is caught no
 # matter how it is split across lines (e.g. TRASH=… on one line, find … -mtime
-# on the next).
-if grep -v '^[[:space:]]*#' "$SH" | grep -qE -- '-mtime'; then
+# on the next). The match is collected, not tested with `| grep -q`: under
+# pipefail a `grep -q` that exits at its first match can kill the first grep
+# mid-write (SIGPIPE), the pipeline then reads as "no match", and this guard
+# would print ok on the very line it exists to refuse.
+if [ -n "$(grep -v '^[[:space:]]*#' "$SH" | grep -E -- '-mtime')" ]; then
   echo "FAIL: drust-janitor.sh uses a hardcoded time-based find (-mtime) — remove it;"
   echo "  the in-process janitor honors DRUST_TRASH_RETENTION_DAYS on every target."
   grep -nE -- '-mtime' "$SH"

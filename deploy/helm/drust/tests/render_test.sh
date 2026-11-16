@@ -17,11 +17,28 @@ _prerender() {
   done
 }
 _render() { cat "$RENDER_DIR/$1"; }
+# `grep -q` for the reading end of a pipe. This script runs under `set -o pipefail`, and a bare
+# `grep -q` exits at its first match: a producer still writing then dies of SIGPIPE (141) and the
+# pipeline reads as "no match". Which producer loses that race depends on the machine, so a needle
+# that IS there failed an assertion on one runner, and an assert_absent could pass on one. _has
+# reads its whole input first. Every awk below that reads a pipe follows the same rule: none of
+# them `exit`s before the end of its input, they set `done` and skip the rest (an awk that still
+# exits early reads a named file, where there is no writer to kill).
+# A _has that cannot buffer its input stops the whole run, like a fixture that fails to render:
+# returning "no match" would let an assert_absent pass on input nobody looked at. `kill $$` because
+# _has runs in the pipeline's subshell, where `exit` would end only the subshell.
+_has() {
+  local _in rc
+  if ! _in="$(mktemp "$RENDER_DIR/has.XXXXXX")" || ! cat >"$_in"; then
+    echo "== ABORT: _has could not buffer its input ==" >&2; kill "$$"; return 2
+  fi
+  grep -q "$@" "$_in"; rc=$?; rm -f "$_in"; return "$rc"
+}
 
 assert_contains() { # <fixture> <needle> <label>
-  if _render "$1" | grep -qF -- "$2"; then echo "ok: $3"; else echo "FAIL: $3 — '$2' absent in $1"; FAILS=$((FAILS+1)); fi; }
+  if _render "$1" | _has -F -- "$2"; then echo "ok: $3"; else echo "FAIL: $3 — '$2' absent in $1"; FAILS=$((FAILS+1)); fi; }
 assert_absent() {
-  if _render "$1" | grep -qF -- "$2"; then echo "FAIL: $3 — '$2' present in $1 (should be absent)"; FAILS=$((FAILS+1)); else echo "ok: $3"; fi; }
+  if _render "$1" | _has -F -- "$2"; then echo "FAIL: $3 — '$2' present in $1 (should be absent)"; FAILS=$((FAILS+1)); else echo "ok: $3"; fi; }
 # One NetworkPolicy record by name (testrel-<name>), and its ingress section.
 _np() { _render "$1" | awk -v n="name: testrel-$2" 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && index($0, n "\n"){print}'; }
 _np_ingress() { _np "$1" "$2" | awk '/^  ingress:/{on=1} /^  egress:/{on=0} on'; }
@@ -29,7 +46,7 @@ _np_ingress() { _np "$1" "$2" | awk '/^  ingress:/{on=1} /^  egress:/{on=0} on';
 _rec() { _render "$1" | awk -v k="kind: $2" -v n="  name: $3" 'BEGIN{RS="---\n"} index($0, k "\n") && index($0, "\n" n "\n"){print}'; }
 assert_kubeconform() { # <fixture>
   local out; out=$(_render "$1" | kubeconform -strict -summary -ignore-missing-schemas 2>&1)
-  if echo "$out" | grep -q "Invalid: 0" && echo "$out" | grep -q "Errors: 0"; then echo "ok: kubeconform $1"; else echo "FAIL: kubeconform $1"; echo "$out"; FAILS=$((FAILS+1)); fi; }
+  if echo "$out" | _has "Invalid: 0" && echo "$out" | _has "Errors: 0"; then echo "ok: kubeconform $1"; else echo "FAIL: kubeconform $1"; echo "$out"; FAILS=$((FAILS+1)); fi; }
 
 echo "== lint =="; helm lint "$CHART" || FAILS=$((FAILS+1))
 _prerender minimal.yaml full.yaml nginx.yaml storage-noPublic.yaml no-sidecar.yaml notls.yaml litestream.yaml backup-mirror.yaml placement.yaml hostnetwork-ingress.yaml existing-secret.yaml
@@ -94,23 +111,23 @@ assert_absent   minimal.yaml "rustfs"               "no rustfs when storage off"
 assert_contains full.yaml "name: rustfs-init"                            "rustfs-init job rendered"
 # post-rollback too: RustFS holds drust's secret as rustfs-init last set it, so a rollback that
 # restores an older storage.secretKey must re-run it. Exact line, so a dropped event fails.
-if _rec full.yaml Job rustfs-init | grep -qx '    helm.sh/hook: post-install,post-upgrade,post-rollback'; then
+if _rec full.yaml Job rustfs-init | _has -x '    helm.sh/hook: post-install,post-upgrade,post-rollback'; then
   echo "ok: rustfs-init is a post-install/post-upgrade/post-rollback hook"; else echo "FAIL: rustfs-init hook events are not exactly post-install,post-upgrade,post-rollback"; FAILS=$((FAILS+1)); fi
 # Without before-hook-creation the next upgrade fails on "Job already exists".
-if _rec full.yaml Job rustfs-init | grep -qx '    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded'; then
+if _rec full.yaml Job rustfs-init | _has -x '    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded'; then
   echo "ok: rustfs-init hook is deleted before re-creation and after success"; else echo "FAIL: rustfs-init hook-delete-policy is not before-hook-creation,hook-succeeded"; FAILS=$((FAILS+1)); fi
 # Never keeps each failed attempt's pod, so its log outlives the Job giving up; with OnFailure
 # the Job controller deletes the one pod at backoffLimit.
-if _rec full.yaml Job rustfs-init | grep -qx '      restartPolicy: Never'; then
+if _rec full.yaml Job rustfs-init | _has -x '      restartPolicy: Never'; then
   echo "ok: rustfs-init keeps its failed pods (restartPolicy: Never)"; else echo "FAIL: rustfs-init restartPolicy is not Never"; FAILS=$((FAILS+1)); fi
 assert_contains full.yaml "exec /bin/sh /init/init.sh"                   "rustfs-init runs the shared Compose init.sh"
 assert_absent   minimal.yaml "name: rustfs-init"                         "no init job when storage off"
 _cm() { _render "$1" | awk -v n="name: testrel-$2" 'BEGIN{RS="---\n"} /kind: ConfigMap\n/ && index($0, n "\n"){print}'; }
-if _cm full.yaml rustfs-init | grep -q '^  public-read.json:'; then
+if _cm full.yaml rustfs-init | _has '^  public-read.json:'; then
   echo "ok: rustfs-init ConfigMap carries public-read.json with publicFiles on"; else echo "FAIL: rustfs-init ConfigMap lacks public-read.json"; FAILS=$((FAILS+1)); fi
-if _cm storage-noPublic.yaml rustfs-init | grep -q 'public-read.json:'; then
+if _cm storage-noPublic.yaml rustfs-init | _has 'public-read.json:'; then
   echo "FAIL: rustfs-init ConfigMap carries public-read.json with publicFiles off"; FAILS=$((FAILS+1)); else echo "ok: no public-read.json with publicFiles off (init.sh removes the anonymous policy)"; fi
-if _cm storage-noPublic.yaml rustfs-init | grep -q '^  init.sh:'; then
+if _cm storage-noPublic.yaml rustfs-init | _has '^  init.sh:'; then
   echo "ok: storage-noPublic still renders the rustfs-init ConfigMap"; else echo "FAIL: storage-noPublic has no rustfs-init ConfigMap"; FAILS=$((FAILS+1)); fi
 
 # --- Task 6 assertions ---
@@ -121,7 +138,7 @@ assert_contains full.yaml    "cert-manager.io/cluster-issuer: letsencrypt" "cert
 assert_contains full.yaml    "path: /public"                          "public path when publicFiles on"
 # /public goes to the public-proxy Caddy, never to an S3 port: the store itself serves markup
 # with no CSP and honours ?response-content-type= (stored XSS on the admin origin).
-if _render full.yaml | awk 'BEGIN{RS="---\n"} /kind: Ingress\n/{print}' | awk '/- path: \/public$/{p=1} p&&/name: public-proxy$/{n=1} p&&n&&/number: 8080/{ok=1} p&&/- path: \/$/{exit} END{exit ok?0:1}'; then
+if _render full.yaml | awk 'BEGIN{RS="---\n"} /kind: Ingress\n/{print}' | awk 'done{next} /- path: \/public$/{p=1} p&&/name: public-proxy$/{n=1} p&&n&&/number: 8080/{ok=1} p&&/- path: \/$/{done=1} END{exit ok?0:1}'; then
   echo "ok: /public Ingress backend is public-proxy:8080"; else echo "FAIL: /public Ingress backend is not public-proxy:8080"; FAILS=$((FAILS+1)); fi
 assert_absent   full.yaml    "number: 9000"                           "no Ingress backend on an S3 port"
 assert_absent   minimal.yaml "path: /public"                          "no public path when publicFiles off"
@@ -151,7 +168,7 @@ assert_absent   minimal.yaml "kind: CronJob"                    "no backup cronj
 
 # --- Review-fix regression guards ---
 # HIGH: backup RoleBinding subject must carry a namespace (else RBAC never matches the SA)
-if _render full.yaml | awk '/kind: RoleBinding/{r=1} r&&/kind: ServiceAccount/{s=1} r&&s&&/^[[:space:]]*namespace:/{print "OK"; exit}' | grep -q OK; then
+if _render full.yaml | awk 'done{next} /kind: RoleBinding/{r=1} r&&/kind: ServiceAccount/{s=1} r&&s&&/^[[:space:]]*namespace:/{print "OK"; done=1}' | _has OK; then
   echo "ok: backup RoleBinding subject has namespace"; else echo "FAIL: backup RoleBinding subject missing namespace"; FAILS=$((FAILS+1)); fi
 # #935 — sidecar no longer hardcodes _trash retention; the in-process janitor
 # (DRUST_TRASH_RETENTION_DAYS) is the sole sweeper on every target.
@@ -184,12 +201,12 @@ done
 assert_contains full.yaml         "app.kubernetes.io/name: rustfs-init"  "rustfs-init pod carries dedicated labels"
 # The rustfs NP must admit the EXACT init label — scoped to that NP record, not a whole-file grep
 # (a podSelector typo like rustfs-init-x would otherwise still pass on the Job's own label).
-if _np_ingress full.yaml rustfs | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: rustfs-init$'; then
+if _np_ingress full.yaml rustfs | _has -E '^[[:space:]]+app\.kubernetes\.io/name: rustfs-init$'; then
   echo "ok: rustfs NetworkPolicy admits the exact rustfs-init label to port 9000"; else echo "FAIL: rustfs NP ingress does not admit the exact rustfs-init podSelector"; FAILS=$((FAILS+1)); fi
 # the init pods are themselves NP-governed (dedicated egress-only policy), not left unrestricted.
 assert_contains full.yaml         "testrel-rustfs-init" "rustfs-init pod has its own NetworkPolicy (scoped egress)"
 if _np full.yaml rustfs-init | awk '/^  egress:/{on=1} on' | awk '/app\.kubernetes\.io\/name: rustfs$/{r=1} r&&/port: 9000/{ok=1} END{exit ok?0:1}' &&
-   ! _np full.yaml rustfs-init | grep -q '^  ingress:'; then
+   ! _np full.yaml rustfs-init | _has '^  ingress:'; then
   echo "ok: rustfs-init NP: egress DNS + rustfs:9000, no ingress rule"; else echo "FAIL: rustfs-init NP shape wrong"; FAILS=$((FAILS+1)); fi
 
 # --- Issue #3: file URLs + non-TLS admin login must actually work on k8s ---
@@ -219,7 +236,7 @@ if helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns --se
 if out=$(helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns \
            --set-json 'extraEnv=[{"name":"DRUST_TRUSTED_PROXIES","value":"2"}]' 2>&1); then
   echo "FAIL: extraEnv naming DRUST_TRUSTED_PROXIES was accepted"; FAILS=$((FAILS+1))
-elif printf '%s' "$out" | grep -qF 'move the value there'; then echo "ok: extraEnv naming DRUST_TRUSTED_PROXIES is refused"
+elif printf '%s' "$out" | _has -F 'move the value there'; then echo "ok: extraEnv naming DRUST_TRUSTED_PROXIES is refused"
 else echo "FAIL: extraEnv DRUST_TRUSTED_PROXIES refused without the expected message"; FAILS=$((FAILS+1)); fi
 
 # --- B1: Litestream sidecar + restore init (opt-in; default OFF) ---
@@ -255,17 +272,17 @@ if _render litestream.yaml | awk '/^[[:space:]]*- name: litestream-enumerate$/{s
 if _render litestream.yaml | awk '/^[[:space:]]*- name: litestream$/{s=1;next} s&&/^[[:space:]]*- name: [a-z]/{s=0} s&&/readOnlyRootFilesystem: true/{f=1} END{exit f?0:1}'; then
   echo "ok: litestream SIDECAR container has readOnlyRootFilesystem"; else echo "FAIL: litestream sidecar container missing readOnlyRootFilesystem"; FAILS=$((FAILS+1)); fi
 # creds must NOT leak into the ConfigMap — scope to the ConfigMap doc
-if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: ConfigMap/{print}' | grep -q "LSAK"; then
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: ConfigMap/{print}' | _has "LSAK"; then
   echo "FAIL: backup creds leaked into litestream ConfigMap"; FAILS=$((FAILS+1)); else echo "ok: no creds in litestream ConfigMap"; fi
 # NP egress present EVEN WITH allowInternetEgress:false (decoupling) — scope to drust NP doc. With
 # egress OFF the fixture sets destinationCIDRs, so the rule must be SCOPED to that CIDR and must NOT
 # punch a 0.0.0.0/0 hole on the drust pod (which shares netns with the sidecar / WASM / webhooks).
 assert_contains litestream.yaml "external backup S3"                            "litestream egress rule present"
-if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "port: 443"; then
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | _has "port: 443"; then
   echo "ok: litestream egress opens 443 with internet egress OFF"; else echo "FAIL: litestream egress missing 443"; FAILS=$((FAILS+1)); fi
-if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "203.0.113.0/24"; then
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | _has "203.0.113.0/24"; then
   echo "ok: litestream egress SCOPED to destinationCIDRs when egress off"; else echo "FAIL: litestream egress not scoped to destinationCIDRs"; FAILS=$((FAILS+1)); fi
-if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | grep -q "cidr: 0.0.0.0/0"; then
+if _render litestream.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-drust\n/{print}' | _has "cidr: 0.0.0.0/0"; then
   echo "FAIL: drust NP punches 0.0.0.0/0 egress with allowInternetEgress:false (SSRF surface reopened)"; FAILS=$((FAILS+1)); else echo "ok: no 0.0.0.0/0 egress hole on drust pod when egress off"; fi
 # fail-closed POSITIVE tests: these insecure configs MUST refuse to render (helm template must fail).
 if helm template testrel "$CHART" -f "$FIX/litestream.yaml" --set-json 'backup.external.destinationCIDRs=[]' --namespace testns >/dev/null 2>&1; then
@@ -286,7 +303,7 @@ assert_contains backup-mirror.yaml 'name: RCLONE_S3_NO_CHECK_BUCKET, value: "tru
 assert_contains backup-mirror.yaml 'until rclone lsf "$dst/" --max-depth 1'      "mirror probes its backup prefix, not the bucket list"
 assert_contains backup-mirror.yaml "rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5" "mirror image is rclone, pinned tag+digest"
 # no mc in the mirror CronJob record
-if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: CronJob/ && /name: testrel-backup-mirror\n/{print}' | grep -qE 'MC_HOST|mc alias|mc ls|mc mirror'; then
+if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: CronJob/ && /name: testrel-backup-mirror\n/{print}' | _has -E 'MC_HOST|mc alias|mc ls|mc mirror'; then
   echo "FAIL: mc still used by the backup-mirror CronJob"; FAILS=$((FAILS+1)); else echo "ok: no mc in the backup-mirror CronJob"; fi
 assert_contains backup-mirror.yaml 'schedule: "0 * * * *"'                     "hourly mirror schedule"
 assert_contains backup-mirror.yaml "until rclone lsf src:public"               "first-connect retry loop (CNI NP lag)"
@@ -297,16 +314,16 @@ assert_contains backup-mirror.yaml "automountServiceAccountToken: false"       "
 if _render backup-mirror.yaml | awk 'BEGIN{RS="---\n"} /kind: NetworkPolicy/ && /name: testrel-backup-mirror\n/{f=1} END{exit f?0:1}'; then
   echo "ok: dedicated backup-mirror NetworkPolicy rendered"; else echo "FAIL: no backup-mirror NetworkPolicy"; FAILS=$((FAILS+1)); fi
 # the rustfs NP admits the EXACT backup-mirror label (scoped to that NP record)
-if _np_ingress backup-mirror.yaml rustfs | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: backup-mirror$'; then
+if _np_ingress backup-mirror.yaml rustfs | _has -E '^[[:space:]]+app\.kubernetes\.io/name: backup-mirror$'; then
   echo "ok: rustfs NP admits backup-mirror label to 9000"; else echo "FAIL: rustfs NP does not admit backup-mirror"; FAILS=$((FAILS+1)); fi
-if _np backup-mirror.yaml backup-mirror | awk '/^  egress:/{on=1} on' | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: rustfs$'; then
+if _np backup-mirror.yaml backup-mirror | awk '/^  egress:/{on=1} on' | _has -E '^[[:space:]]+app\.kubernetes\.io/name: rustfs$'; then
   echo "ok: backup-mirror NP egress selects rustfs"; else echo "FAIL: backup-mirror NP egress does not select rustfs"; FAILS=$((FAILS+1)); fi
 # source = the bundled RustFS, read with drust's own key (s3-access-key), never a root key
 _mirror() { _rec "$1" CronJob testrel-backup-mirror; }
-if _mirror backup-mirror.yaml | grep -q 'name: RCLONE_CONFIG_SRC_PROVIDER, value: Other }' &&
-   _mirror backup-mirror.yaml | grep -q 'name: RCLONE_CONFIG_SRC_ENDPOINT, value: "http://rustfs:9000" }'; then
+if _mirror backup-mirror.yaml | _has 'name: RCLONE_CONFIG_SRC_PROVIDER, value: Other }' &&
+   _mirror backup-mirror.yaml | _has 'name: RCLONE_CONFIG_SRC_ENDPOINT, value: "http://rustfs:9000" }'; then
   echo "ok: mirror source is rustfs:9000 (provider Other)"; else echo "FAIL: mirror source is not rustfs:9000 (provider Other)"; FAILS=$((FAILS+1)); fi
-if _mirror backup-mirror.yaml | grep -q 'key: s3-access-key' && ! _mirror backup-mirror.yaml | grep -qE 'key: [a-z-]*root'; then
+if _mirror backup-mirror.yaml | _has 'key: s3-access-key' && ! _mirror backup-mirror.yaml | _has -E 'key: [a-z-]*root'; then
   echo "ok: mirror reads the store with s3-access-key and no root key"; else echo "FAIL: mirror store key wrong (missing s3-access-key, or a root key)"; FAILS=$((FAILS+1)); fi
 assert_absent litestream.yaml "kind: CronJob"          "objectMirror absent when storage off"
 assert_absent minimal.yaml    "backup-mirror"          "no objectMirror by default"
@@ -337,12 +354,12 @@ if _render placement.yaml | awk 'BEGIN{RS="---\n"} /kind: StatefulSet/{
 for spec in "Deployment|public-proxy|disktype: edge" "Deployment|public-proxy|value: edge" \
             "Job|rustfs-init|disktype: ssd" "Job|rustfs-init|value: store"; do
   IFS='|' read -r kind name needle <<<"$spec"
-  if _rec placement.yaml "$kind" "$name" | grep -qF -- "$needle"; then echo "ok: $kind/$name is placed by its scheduling values ('$needle')"
+  if _rec placement.yaml "$kind" "$name" | _has -F -- "$needle"; then echo "ok: $kind/$name is placed by its scheduling values ('$needle')"
   else echo "FAIL: $kind/$name lacks '$needle' from its scheduling values"; FAILS=$((FAILS+1)); fi
 done
 for rn in "Deployment|public-proxy" "Job|rustfs-init"; do
   IFS='|' read -r kind name <<<"$rn"
-  if _rec full.yaml "$kind" "$name" | grep -qE '^      (nodeSelector|tolerations|affinity|topologySpreadConstraints):'; then
+  if _rec full.yaml "$kind" "$name" | _has -E '^      (nodeSelector|tolerations|affinity|topologySpreadConstraints):'; then
     echo "FAIL: $kind/$name renders a scheduling field by default"; FAILS=$((FAILS+1)); else echo "ok: $kind/$name has no scheduling field by default"; fi
 done
 assert_absent minimal.yaml "nodeSelector"               "no nodeSelector by default (empty {} => omitted)"
@@ -357,43 +374,43 @@ assert_absent   minimal.yaml "public-proxy"                       "no public-pro
 # publicFiles on with storage off: no proxy and no /public path (there is no store behind them).
 NOSTORE_PUB=$(helm template testrel "$CHART" -f "$FIX/minimal.yaml" --namespace testns --set storage.enabled=false --set publicFiles.enabled=true 2>&1) ||
   { echo "FAIL: storage off + publicFiles on did not render"; FAILS=$((FAILS+1)); }
-if printf '%s' "$NOSTORE_PUB" | grep -qE 'public-proxy|path: /public'; then
+if printf '%s' "$NOSTORE_PUB" | _has -E 'public-proxy|path: /public'; then
   echo "FAIL: public-proxy or /public rendered with storage off + publicFiles on"; FAILS=$((FAILS+1))
 else echo "ok: no public-proxy and no /public path with storage off + publicFiles on"; fi
 # The rollout trigger must follow the file, not merely exist.
 if command -v sha256sum >/dev/null; then CADDY_SHA=$(sha256sum "$CHART/files/public-proxy.Caddyfile"); else CADDY_SHA=$(shasum -a 256 "$CHART/files/public-proxy.Caddyfile"); fi
 CADDY_SHA=${CADDY_SHA%% *}
-if _rec full.yaml Deployment public-proxy | grep -qx "        checksum/caddyfile: $CADDY_SHA"; then
+if _rec full.yaml Deployment public-proxy | _has -x "        checksum/caddyfile: $CADDY_SHA"; then
   echo "ok: checksum/caddyfile is the sha256 of files/public-proxy.Caddyfile"; else echo "FAIL: checksum/caddyfile is not the sha256 of files/public-proxy.Caddyfile"; FAILS=$((FAILS+1)); fi
 _pp_dep() { _render "$1" | awk 'BEGIN{RS="---\n"} /kind: Deployment\n/ && /\n  name: public-proxy\n/{print}'; }
-if _pp_dep full.yaml | grep -q "kind: Deployment"; then
+if _pp_dep full.yaml | _has "kind: Deployment"; then
   echo "ok: public-proxy is a Deployment"; else echo "FAIL: no public-proxy Deployment in full.yaml"; FAILS=$((FAILS+1)); fi
-if _pp_dep full.yaml | grep -qF 'name: PUBLIC_OBJECTS_UPSTREAM, value: "rustfs:9000" }'; then
+if _pp_dep full.yaml | _has -F 'name: PUBLIC_OBJECTS_UPSTREAM, value: "rustfs:9000" }'; then
   echo "ok: public-proxy upstream is rustfs:9000"; else echo "FAIL: public-proxy upstream is not \"rustfs:9000\""; FAILS=$((FAILS+1)); fi
 # The proxy is the anonymous surface: no credential of any kind in its pod.
-if _pp_dep full.yaml | grep -q "secretKeyRef"; then
+if _pp_dep full.yaml | _has "secretKeyRef"; then
   echo "FAIL: public-proxy Deployment references a Secret"; FAILS=$((FAILS+1)); else echo "ok: public-proxy holds no secretKeyRef"; fi
 # Its pod template must not wear rustfs's or drust's selector label (it would join that Service).
-if _pp_dep full.yaml | awk '/^  template:$/{t=1;next} t&&/^    spec:$/{exit} t&&/app\.kubernetes\.io\/name: (drust|rustfs)$/{bad=1} END{exit bad?1:0}' &&
-   _pp_dep full.yaml | awk '/^  template:$/{t=1;next} t&&/^    spec:$/{exit} t&&/app\.kubernetes\.io\/name: public-proxy$/{ok=1} END{exit ok?0:1}'; then
+if _pp_dep full.yaml | awk 'done{next} /^  template:$/{t=1;next} t&&/^    spec:$/{done=1;next} t&&/app\.kubernetes\.io\/name: (drust|rustfs)$/{bad=1} END{exit bad?1:0}' &&
+   _pp_dep full.yaml | awk 'done{next} /^  template:$/{t=1;next} t&&/^    spec:$/{done=1;next} t&&/app\.kubernetes\.io\/name: public-proxy$/{ok=1} END{exit ok?0:1}'; then
   echo "ok: public-proxy pod template wears only its own label"; else echo "FAIL: public-proxy pod template labels wrong (rustfs/drust label, or its own missing)"; FAILS=$((FAILS+1)); fi
 # The rustfs policy admits the proxy pod on 9000, and its INGRESS keeps no namespaceSelector and no
 # ipBlock peer: the controller reaches only the proxy's 8080, never 9000.
 for fs in full.yaml:rustfs hostnetwork-ingress.yaml:rustfs; do
   f=${fs%%:*}; st=${fs##*:}
-  if ! _np "$f" "$st" | grep -q '^  ingress:'; then
+  if ! _np "$f" "$st" | _has '^  ingress:'; then
     echo "FAIL: no testrel-$st NetworkPolicy ingress in $f"; FAILS=$((FAILS+1))
-  elif _np_ingress "$f" "$st" | grep -qE '^[[:space:]]*-?[[:space:]]*(namespaceSelector|ipBlock):'; then
+  elif _np_ingress "$f" "$st" | _has -E '^[[:space:]]*-?[[:space:]]*(namespaceSelector|ipBlock):'; then
     echo "FAIL: $st NP ingress admits a namespace or ipBlock peer ($f)"; FAILS=$((FAILS+1)); else echo "ok: $st NP ingress has no namespaceSelector/ipBlock ($f)"; fi
 done
-if _np_ingress full.yaml rustfs | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: public-proxy$'; then
+if _np_ingress full.yaml rustfs | _has -E '^[[:space:]]+app\.kubernetes\.io/name: public-proxy$'; then
   echo "ok: rustfs NP admits public-proxy"; else echo "FAIL: rustfs NP does not admit public-proxy"; FAILS=$((FAILS+1)); fi
-if _np_ingress storage-noPublic.yaml rustfs | grep -q 'public-proxy'; then
+if _np_ingress storage-noPublic.yaml rustfs | _has 'public-proxy'; then
   echo "FAIL: rustfs NP admits public-proxy with publicFiles off"; FAILS=$((FAILS+1)); else echo "ok: rustfs NP has no public-proxy peer with publicFiles off"; fi
-if _np_ingress full.yaml public-proxy | grep -q 'kubernetes.io/metadata.name: kube-system' &&
-   _np_ingress full.yaml public-proxy | grep -q 'port: 8080' &&
-   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | grep -qE '^[[:space:]]+app\.kubernetes\.io/name: rustfs$' &&
-   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | grep -q 'port: 9000'; then
+if _np_ingress full.yaml public-proxy | _has 'kubernetes.io/metadata.name: kube-system' &&
+   _np_ingress full.yaml public-proxy | _has 'port: 8080' &&
+   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | _has -E '^[[:space:]]+app\.kubernetes\.io/name: rustfs$' &&
+   _np full.yaml public-proxy | awk '/^  egress:/{on=1} on' | _has 'port: 9000'; then
   echo "ok: public-proxy NP: controller namespace on 8080 in, rustfs:9000 out"; else echo "FAIL: public-proxy NP ingress/egress wrong"; FAILS=$((FAILS+1)); fi
 
 # --- lockstep with Compose: rustfs-init runs the Compose files, byte for byte ---
@@ -445,15 +462,15 @@ for needle in "runAsUser: 10001" "fsGroup: 10001" "fsGroupChangePolicy: OnRootMi
               'name: RUSTFS_CONSOLE_ENABLE, value: "false" }' 'name: RUSTFS_OBS_LOG_DIRECTORY, value: "" }' \
               "path: /health/ready" "path: /health/live" "name: rustfs-data" "replicas: 1" "automountServiceAccountToken: false" \
               "runAsNonRoot: true" "allowPrivilegeEscalation: false" 'capabilities: { drop: ["ALL"] }' "enableServiceLinks: false"; do
-  if _rustfs_sts full.yaml | grep -qF -- "$needle"; then echo "ok: rustfs STS has '$needle'"; else echo "FAIL: rustfs STS lacks '$needle'"; FAILS=$((FAILS+1)); fi
+  if _rustfs_sts full.yaml | _has -F -- "$needle"; then echo "ok: rustfs STS has '$needle'"; else echo "FAIL: rustfs STS lacks '$needle'"; FAILS=$((FAILS+1)); fi
 done
 # rustfs-init holds the root key: the same hardening, asserted on its own record.
 for needle in "runAsNonRoot: true" "runAsUser: 10001" "readOnlyRootFilesystem: true" "allowPrivilegeEscalation: false" \
               'capabilities: { drop: ["ALL"] }' "automountServiceAccountToken: false" "enableServiceLinks: false"; do
-  if _rec full.yaml Job rustfs-init | grep -qF -- "$needle"; then echo "ok: rustfs-init Job has '$needle'"; else echo "FAIL: rustfs-init Job lacks '$needle'"; FAILS=$((FAILS+1)); fi
+  if _rec full.yaml Job rustfs-init | _has -F -- "$needle"; then echo "ok: rustfs-init Job has '$needle'"; else echo "FAIL: rustfs-init Job lacks '$needle'"; FAILS=$((FAILS+1)); fi
 done
 # Each credential env var reads the right Secret key (a swapped pair renders fine and 403s live).
-_envkey() { awk -v n="name: $1" 'index($0, n) && $0 ~ (n "$") {getline; sub(/.*key: /,""); sub(/ }.*/,""); print; exit}'; }
+_envkey() { awk -v n="name: $1" '!done && index($0, n) && $0 ~ (n "$") {getline; sub(/.*key: /,""); sub(/ }.*/,""); print; done=1}'; }
 for spec in "StatefulSet drust GARAGE_S3_ACCESS_KEY s3-access-key" "StatefulSet drust GARAGE_S3_SECRET_KEY s3-secret-key" \
             "StatefulSet rustfs RUSTFS_ACCESS_KEY rustfs-root-access-key" "StatefulSet rustfs RUSTFS_SECRET_KEY rustfs-root-secret-key" \
             "Job rustfs-init RUSTFS_ACCESS_KEY rustfs-root-access-key" "Job rustfs-init RUSTFS_SECRET_KEY rustfs-root-secret-key" \
@@ -473,7 +490,7 @@ done
 assert_absent full.yaml "RUSTFS_SERVER_DOMAINS" "path-style only: RUSTFS_SERVER_DOMAINS unset"
 assert_absent full.yaml "9001"                  "no RustFS console port anywhere"
 # drust talks to the bundled RustFS
-if _render full.yaml | grep -qF 'name: GARAGE_S3_ENDPOINT, value: "http://rustfs.testns.svc:9000" }'; then
+if _render full.yaml | _has -F 'name: GARAGE_S3_ENDPOINT, value: "http://rustfs.testns.svc:9000" }'; then
   echo "ok: GARAGE_S3_ENDPOINT is http://rustfs.testns.svc:9000"; else echo "FAIL: GARAGE_S3_ENDPOINT is not http://rustfs.testns.svc:9000"; FAILS=$((FAILS+1)); fi
 # Root-key reach (D3): the RustFS root key is read only by the rustfs StatefulSet, the rustfs-init
 # Job and the Secret that holds it — never by the drust pod, the proxy or the mirror.
@@ -486,17 +503,17 @@ for f in full.yaml existing-secret.yaml backup-mirror.yaml; do
   if out=$(_rootkey_reach_ok "$f"); then echo "ok: rustfs-root-* only in the rustfs STS, rustfs-init and the Secret ($f)"
   else echo "FAIL: rustfs-root-* reaches another workload ($f):"; echo "$out"; FAILS=$((FAILS+1)); fi
 done
-if _rustfs_sts full.yaml | grep -q 'key: rustfs-root-access-key' && _rec full.yaml Job rustfs-init | grep -q 'key: rustfs-root-access-key'; then
+if _rustfs_sts full.yaml | _has 'key: rustfs-root-access-key' && _rec full.yaml Job rustfs-init | _has 'key: rustfs-root-access-key'; then
   echo "ok: rustfs STS and rustfs-init read the root key"; else echo "FAIL: rustfs STS / rustfs-init do not read rustfs-root-access-key"; FAILS=$((FAILS+1)); fi
 # The Secret is rendered as data: (base64), never stringData: — see the comment in secret.yaml.
 _b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
-if _rec full.yaml Secret testrel-secret | grep -q '^stringData:'; then
+if _rec full.yaml Secret testrel-secret | _has '^stringData:'; then
   echo "FAIL: the chart Secret uses stringData (a key dropped later would never leave the live Secret)"; FAILS=$((FAILS+1))
 else echo "ok: the chart Secret uses data:, not stringData:"; fi
-if _rec full.yaml Secret testrel-secret | grep -qx "  s3-access-key: \"$(_b64 fullak)\"" && _rec full.yaml Secret testrel-secret | grep -qx "  rustfs-root-access-key: \"$(_b64 fullrootak)\""; then
+if _rec full.yaml Secret testrel-secret | _has -x "  s3-access-key: \"$(_b64 fullak)\"" && _rec full.yaml Secret testrel-secret | _has -x "  rustfs-root-access-key: \"$(_b64 fullrootak)\""; then
   echo "ok: Secret s3-access-key is drust's key, rustfs-root-access-key the root key"; else echo "FAIL: Secret key layout wrong"; FAILS=$((FAILS+1)); fi
 # Checksums (M2): a key change through Helm restarts the pod that holds the key.
-_ck() { awk -v k="$1" 'index($0, k){sub(/.*: /,""); print; exit}'; }
+_ck() { awk -v k="$1" '!done && index($0, k){sub(/.*: /,""); print; done=1}'; }
 S3K=$(_rec full.yaml StatefulSet drust | _ck "checksum/s3-key:")
 ROOTK=$(_rustfs_sts full.yaml | _ck "checksum/root-key:")
 S3K2=$(helm template testrel "$CHART" -f "$FIX/full.yaml" --namespace testns --set storage.secretKey=other 2>/dev/null | _ck "checksum/s3-key:")
@@ -524,18 +541,18 @@ else echo "FAIL: a trailing newline in a --set-file key reaches the Secret or a 
 assert_absent existing-secret.yaml "checksum/s3-key"  "no checksum/s3-key with existingSecret (Helm cannot see the values)"
 assert_absent existing-secret.yaml "checksum/root-key" "no checksum/root-key with existingSecret (Helm cannot see the values)"
 # existingSecret: no Secret rendered, every secretKeyRef names the operator's Secret.
-if _rec existing-secret.yaml StatefulSet rustfs | grep -q 'key: rustfs-root-access-key'; then
+if _rec existing-secret.yaml StatefulSet rustfs | _has 'key: rustfs-root-access-key'; then
   echo "ok: rustfs reads its root key from the existingSecret"; else echo "FAIL: rustfs does not read rustfs-root-access-key with existingSecret"; FAILS=$((FAILS+1)); fi
 assert_absent existing-secret.yaml "kind: Secret" "no Secret rendered with secrets.create=false"
-if _render existing-secret.yaml | grep 'secretKeyRef' | grep -v 'name: s,' | grep -q .; then
+if _render existing-secret.yaml | grep 'secretKeyRef' | grep -v 'name: s,' | _has .; then
   echo "FAIL: a secretKeyRef in existing-secret.yaml does not name Secret s"; FAILS=$((FAILS+1))
-elif _render existing-secret.yaml | grep -q 'secretKeyRef'; then echo "ok: every secretKeyRef names the existingSecret"
+elif _render existing-secret.yaml | _has 'secretKeyRef'; then echo "ok: every secretKeyRef names the existingSecret"
 else echo "FAIL: no secretKeyRef at all in existing-secret.yaml"; FAILS=$((FAILS+1)); fi
 # No mc anywhere: the mc client images can no longer be pulled.
 for f in $ALL_FIXTURES; do
   bad=""
   for needle in "MC_HOST" "mc alias" "mc ls" "mc mirror"; do
-    _render "$f.yaml" | grep -qF -- "$needle" && bad="$bad '$needle'"
+    _render "$f.yaml" | _has -F -- "$needle" && bad="$bad '$needle'"
   done
   if [ -z "$bad" ]; then echo "ok: no mc in $f.yaml"; else echo "FAIL: mc left in $f.yaml:$bad"; FAILS=$((FAILS+1)); fi
 done
@@ -544,7 +561,7 @@ _must_fail() { # <label> <expect-substring or ""> <helm args...>
   local label="$1" want="$2"; shift 2; local out
   if out=$(helm template testrel "$CHART" --namespace testns "$@" 2>&1); then
     echo "FAIL: render accepted: $label"; FAILS=$((FAILS+1))
-  elif [ -n "$want" ] && ! printf '%s' "$out" | grep -qF -- "$want"; then
+  elif [ -n "$want" ] && ! printf '%s' "$out" | _has -F -- "$want"; then
     echo "FAIL: render refused but without '$want': $label"; FAILS=$((FAILS+1))
   else echo "ok: render refused: $label"; fi; }
 # The root key is never drust's key: rustfs-init would hand drust a key that can create buckets
@@ -566,7 +583,7 @@ if grep -rnE '\blookup\b' "$CHART/templates" >/dev/null; then
 else echo "ok: no template calls lookup"; fi
 # RustFS is the only bundled store: nothing of MinIO renders, in any fixture, in any letter case.
 for f in $ALL_FIXTURES; do
-  if _render "$f.yaml" | grep -qi 'minio'; then
+  if _render "$f.yaml" | _has -i 'minio'; then
     echo "FAIL: minio rendered in $f.yaml:"; _render "$f.yaml" | grep -ni 'minio' | head -5; FAILS=$((FAILS+1))
   else echo "ok: no minio in $f.yaml"; fi
 done
