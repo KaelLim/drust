@@ -1,236 +1,210 @@
 ## Unreleased
 
-One admin-plane change: a browser-declared cross-site `POST /login` is refused with
-`403 LOGIN_CROSS_SITE` (MA0-1, below); every other login — the drust login form, scripts,
-the eval harness — is unchanged.
+This release adds the OAuth 2.1 authorization server that a later account-level MCP endpoint
+will use, and one always-on change to the admin password login. The authorization server is
+**off by default** and stays off unless an operator sets `DRUST_MCP=on`: with `DRUST_MCP`
+unset, `auto` or `off`, no new route is mounted and no page changes. Three things still
+differ with MCP off: the cross-site login refusal below, the release notes the admin UI
+shows, and one new field in the `admin.team.remove` audit row. Five new, empty tables in
+`meta.sqlite` and five new optional environment variables; no deploy file needs a change.
+**Nothing accepts an MCP access token yet**: do not set `DRUST_MCP=on` outside development.
 
-The MCP OAuth foundation (MA0-2, below) adds five empty `meta.sqlite` tables and five
-optional environment variables; none of them changes any HTTP response in this release.
+### Changed (always on)
 
-From MA0-4 (below), an explicit `DRUST_MCP=on` with a valid `DRUST_PUBLIC_URL` mounts the
-OAuth AS routes; with `DRUST_MCP` unset, `auto` or `off`, every response stays unchanged.
+- **`POST /login` refuses a browser-declared cross-site submission.** The admin password
+  login had no CSRF token, and the session cookie's `SameSite=Lax` does not stop a
+  cross-site top-level POST from *setting* that cookie. A third-party page could therefore
+  sign a visitor's browser in to drust as an account whose credentials the page's author
+  holds (any admin or member on the same host). `login_submit` now answers
+  `403 {"error_code":"LOGIN_CROSS_SITE","message":"cross-site login refused"}` when the
+  request carries `Sec-Fetch-Site: cross-site` (case-insensitive, in any of repeated
+  headers). It answers before the per-IP login limiter, the meta lock and the password
+  check, so a refused attempt sets no cookie, creates no session and does not spend the
+  5-per-minute login budget of the IP it came from. Each refusal writes one failure audit
+  row (`error_code = LOGIN_CROSS_SITE`) that carries no form field. **Unchanged:** the drust
+  login form (same-origin), `same-site`, `none`, unknown values, and every client that sends
+  no Fetch Metadata (scripts, the eval harness, the test suite). The Google and GitHub admin
+  login callback is deliberately not checked: it is a cross-site navigation by construction,
+  and its state and PKCE cookies already bind it. Not covered: browsers that send no Fetch
+  Metadata, and plain-HTTP deployments on a non-localhost host that set
+  `DRUST_DEV_NO_SECURE_COOKIES` (browsers send Fetch Metadata only to HTTPS or localhost).
 
-### Fixed
+### New: MCP OAuth authorization server (only with `DRUST_MCP=on`)
 
-- **`POST /login` refuses a browser-declared cross-site submission (MA0-1).** The admin
-  password login had no CSRF token, and the session cookie's `SameSite=Lax` does not stop a
-  cross-site top-level POST from *setting* that cookie, so a third-party page could sign a
-  visitor's browser in to drust as an account whose credentials the page author holds (any
-  admin or member on the same host). `login_submit` now answers
-  `403 {"error_code":"LOGIN_CROSS_SITE","message":"cross-site login refused"}`
-  when the request carries `Sec-Fetch-Site: cross-site` (case-insensitive), before the
-  per-IP login limiter, the meta lock and the password check — so a refused attempt sets no
-  cookie, creates no session and does not spend the 5/min login budget of the IP it came
-  from. One failure audit row (`error_code = LOGIN_CROSS_SITE`) is written per refusal.
-  **Unchanged:** the drust login form (same-origin), `same-site` and `none`, and every client
-  that sends no Fetch Metadata — scripts, the eval harness, the test suite. The Google /
-  GitHub admin login callback is deliberately not checked: it is a cross-site navigation by
-  construction and is bound by its state and PKCE cookies. Residual: browsers that send no
-  Fetch Metadata, and plain-HTTP non-localhost deployments that set
-  `DRUST_DEV_NO_SECURE_COOKIES` (browsers send Fetch Metadata only to HTTPS or localhost;
-  without that variable the session cookie is `Secure` and a plain-HTTP login yields no
-  usable session anyway). No new environment variable, no schema change; not gated on
-  `DRUST_MCP`.
+Everything in this section is mounted only when `DRUST_MCP=on` and `DRUST_PUBLIC_URL` is a
+usable origin. Paths below are relative to `DRUST_BASE_PATH` (`/drust` on the bare-metal
+host, the root in the Docker image).
 
-### MCP OAuth authorization server — foundation (MA0-2)
+- **Metadata.** `GET /.well-known/oauth-authorization-server` serves RFC 8414 metadata.
+  `issuer` is `DRUST_PUBLIC_URL` plus `DRUST_BASE_PATH`. Only the `none` client
+  authentication, the `code` response type, PKCE `S256` and the `mcp` / `offline_access`
+  scopes are advertised, as are the Client ID Metadata Document and `iss` response flags.
+  There is no registration endpoint. The response carries
+  `Cache-Control: public, max-age=300` and is built from configuration only, never from
+  request headers.
+- **Authorize.** `GET /oauth/authorize` accepts exactly one client, Claude Code, from a copy
+  of its Client ID Metadata Document pinned on 2026-11-14 (never fetched at runtime).
+  `redirect_uri` must be `http://localhost[:port]/callback` or
+  `http://127.0.0.1[:port]/callback`, at most 64 bytes, compared as a raw string with no URL
+  normalisation. An unknown client or a rejected `redirect_uri` gets an HTML error page and
+  is never redirected. Every later error returns to the client with `error`, `state` (when
+  sent and at most 512 bytes; a longer one is refused and never echoed) and `iss`. PKCE
+  `S256` is required; `scope` may hold `mcp` and `offline_access`, and anything else is
+  `invalid_scope`; `resource` is optional and, when sent, must be this server's MCP URL.
+  `prompt` and unknown parameters are ignored, as OAuth 2.1 requires. A valid request sets a
+  10-minute `drust_mcp_oauth_resume` cookie and goes to the consent page. The endpoint writes
+  nothing and is not rate-limited.
+- **Consent.** `/oauth/consent` (with `/approve` and `/deny`) accepts only a signed-in
+  browser session. An admin PAT gets `403 MCP_CONSENT_COOKIE_REQUIRED`, so a short-lived CLI
+  PAT can never be traded for a long-lived MCP grant. The page must be opened by the browser
+  that started the authorization. Approve and deny carry a double-submit CSRF token bound to
+  the admin and to the request, and every step re-checks the pinned client and redirect. The
+  page shows the client and the return address from the signed request only. It also says
+  what an authorization covers (every tenant the account can see, with the current count),
+  what revoking does and does not stop, the lifetimes, and the signed-in account next to the
+  buttons. Approve creates one grant and one single-use authorization code (valid 300
+  seconds); deny returns `access_denied` to the client. Consent is asked every time and
+  never remembered. Signing in (password, Google or GitHub) while an authorization is in
+  progress returns to the consent page; with no authorization in progress, sign-in lands
+  exactly as before.
+- **Token.** `POST /oauth/token` supports two grant types:
+  - `authorization_code`: the code is single-use and bound to the client, the exact redirect
+    URI, the resource and the PKCE challenge. A request that fails any check gets
+    `invalid_grant` and **does not consume the code**. A second request that passes every
+    check is refused and **revokes the whole grant**.
+  - `refresh_token`: every refresh rotates, and the grant's idle deadline slides, never past
+    its absolute one. A token presented again within `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` of
+    its rotation gets a sibling pair instead of tripping reuse detection, because several
+    Claude Code processes on one machine share one credential. The first sibling used wins.
+    Presenting a losing sibling revokes that sibling's branch only. A rotated token presented
+    after the grace revokes the whole grant.
 
-Groundwork only: no route, page or response changes. Nothing reads the new state yet.
+  Success answers `{"access_token":"drust_mcpat_…","token_type":"Bearer","expires_in":…,
+  "refresh_token":"drust_mcprt_…","scope":"mcp"}` with `Cache-Control: no-store`. `scope` is
+  always `mcp`: a grant's scope is `mcp`, `offline_access` is accepted, and a refresh token is
+  always issued. Failures answer `invalid_grant` (the MCP SDK re-authorizes only on that
+  code), except malformed requests (`invalid_request`), an unknown `client_id` on a code
+  exchange or an `Authorization` header (`invalid_client`), an unknown scope item (`invalid_scope`), any other grant type
+  (`unsupported_grant_type`) and rate limiting (429 `temporarily_unavailable`).
+- **Revoke.** `POST /oauth/revoke` implements RFC 7009 and always revokes the whole grant,
+  even when the token presented is expired or already rotated. Unknown tokens answer 200.
+  It is not rate-limited.
+- **Admin UI.** Settings gains an "MCP connections" card listing the connections you
+  authorized: client, callback host, when authorized and last used (UTC), an "expired" flag,
+  and a "duplicate refresh" flag with the time a superseded refresh was last presented. It
+  has a per-row Revoke and a Revoke all, which act on your own connections only, whatever
+  your role: another account's connection, an unknown id and an already-revoked one all
+  answer `404 MCP_GRANT_NOT_FOUND`. If the list cannot be read, the card says so and still
+  offers Revoke all. The team page gains "Revoke MCP" on the rows where "Remove" appears
+  (`DELETE /admin/team/{id}/mcp-grants`, answering `200 {"revoked": n}`). It uses the same
+  authority as removing that admin: a member gets `403 NOT_A_MANAGER`, an `admin`-role
+  account acting on an owner or admin row (its own included) gets
+  `403 PRIVILEGED_ROLE_REQUIRED`, an owner may act on any row, and an unknown id gets
+  `404 ADMIN_NOT_FOUND`. The count covers every unrevoked grant under that admin id,
+  including expired ones and any left by a previous holder of a recycled id. The account,
+  its sessions and its PATs are untouched. Both pages accept the session cookie or a
+  `drust_pat_*` bearer. With MCP off, neither page changes and these routes are not mounted.
+- **Removing an admin** (`DELETE /admin/team/{id}`) now deletes that admin's MCP grants in
+  the same transaction. The `admin.team.remove` audit row gains `revoked_mcp_grants`, the
+  number of grants still live at removal. It reads 0 on a host that never enabled MCP, and
+  this field is the one audit change visible with MCP off.
+- **Hourly cleanup.** The existing hourly device-code reaper also deletes expired codes,
+  tokens and upload tickets. It deletes grants 30 days after they were revoked or expired,
+  approvals whose code expired unused, and grants whose admin no longer exists. It runs
+  whether or not `DRUST_MCP` is on; its first run is one hour after boot, never at boot.
+- **Audit.** New ops: `mcp_oauth.grant.create`, `mcp_oauth.consent.deny`,
+  `mcp_oauth.token.code`, `mcp_oauth.refresh.sibling_rejected`, `mcp_oauth.grant.revoke`
+  (with `reason` `oauth_revoke`, `code_replay`, `refresh_reuse`, `user` or `user_all`) and
+  `admin.mcp_grant.revoke` (a team-page revoke, which stores `team_admin` on the grant). Rows
+  written from the admin UI carry `auth_method` `admin_cookie` or `admin_pat`; the OAuth
+  endpoints and the consent page write `mcp_oauth`. A row never carries a token, a code or
+  its hash. A successful refresh writes no row, and neither does a failed code exchange or
+  an unknown token.
 
-- **Five new, empty tables in `meta.sqlite`** — `_mcp_oauth_grants`, `_mcp_oauth_codes`,
-  `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets` — created by both the
-  fresh-install path and the boot migration (`CREATE … IF NOT EXISTS` only; nothing is minted,
-  revoked or deleted on boot). They will hold token **hashes only**, never plaintext.
-- **New optional environment variables**: `DRUST_MCP` (`auto` | `on` | `off`, default
-  `auto`), `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` (3600, clamped 900–86400),
-  `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` (60, 0–300), `DRUST_MCP_OAUTH_IDLE_DAYS` (30,
-  1–MAX_DAYS), `DRUST_MCP_OAUTH_MAX_DAYS` (90, 1–365). **In this release `auto` means off**;
-  do not set `on` outside development. An unrecognised `DRUST_MCP` value, or an unusable
-  `DRUST_PUBLIC_URL` with `on`, leaves MCP off and logs an error — boot continues.
-- **Access-token lifetime vs. refresh grace** (takes effect once the token endpoint ships):
-  a refresh presented again within `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` of its rotation is
-  treated as a client retry and gets a sibling token pair instead of revoking the grant; the
-  access tokens those siblings already received stay valid until their own expiry, which is
-  `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` (up to 24 h if raised). For the strictest reuse
-  detection set the grace to `0`. Revoking a grant from the admin UI is immediate either way.
-- **Per-IP budget for failed token lookups** (takes effect once the token endpoint ships):
-  it keys on the same client address as the other per-IP limiters (`DRUST_TRUSTED_PROXIES`
-  and the TCP peer). If that proxy count is wrong for a deployment, every client shares one
-  budget. Valid credentials never touch it; a client presenting a stale token may then
-  briefly get `429` with `Retry-After` instead of `invalid_grant`.
-- One new boot log line reports the MCP OAuth state (and never prints `DRUST_PUBLIC_URL`
-  when it is rejected).
-- **Deploy**: `deploy/drust.service`, `docker-compose.yml` and `.env.example` list the new
-  variables, commented out; no target needs to set any of them.
-- **Rollback**: reverting leaves the five empty tables in place; older binaries ignore them.
-  Their shape is fixed from the first boot on any host.
+### Configuration
 
-### MCP OAuth authorization server — revocation and cleanup (MA0-3)
+All five variables are optional and listed, commented out, in `deploy/drust.service`,
+`docker-compose.yml` and `.env.example`. `DRUST_MCP` governs only the account-level OAuth
+authorization server, never the per-tenant `/t/<id>/mcp` endpoint.
 
-No new route, page or environment variable; no response changes.
+| Variable | Default | Range | Meaning |
+|---|---|---|---|
+| `DRUST_MCP` | `auto` | `auto` \| `on` \| `off` | `auto` means off in this release |
+| `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` | 3600 | 900–86400 | access-token lifetime |
+| `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` | 60 | 0–300 | refresh retry grace; `0` gives the strictest reuse detection |
+| `DRUST_MCP_OAUTH_IDLE_DAYS` | 30 | 1–MAX_DAYS | a grant ends after this long unused |
+| `DRUST_MCP_OAUTH_MAX_DAYS` | 90 | 1–365 | a grant ends this long after approval, used or not |
 
-- **Removing an admin deletes their MCP OAuth grants in the same transaction.**
-  `DELETE /admin/team/{id}` now explicitly deletes the removed admin's
-  `_mcp_oauth_grants` rows (their codes, refresh and access tokens and upload tickets
-  go with them through the foreign key) before deleting the `admins` row. The response
-  is unchanged; the `admin.team.remove` audit entry gains `revoked_mcp_grants` — the
-  number of that admin's grants that were still live (unrevoked, inside both deadlines)
-  at removal, not the number of rows deleted (0 on a host that never enabled `DRUST_MCP`).
-- **Hourly MCP OAuth cleanup.** The hourly device-code reaper also deletes expired
-  authorization codes, access and refresh tokens and upload tickets, grants whose
-  revocation or expiry is more than 30 days old, grants that can never be redeemed any
-  more (an approval whose code expired unused), and grants whose admin no longer exists.
-  It runs whether or not `DRUST_MCP` is on, does nothing on empty tables, and needs no
-  deploy change on systemd or Docker.
-- Operations note: restoring a backup brings back any MCP grant revoked after the
-  snapshot was taken, exactly like admin PATs. After a restore, revoke MCP
-  connections again from the settings page (available from MA0-9).
-- Operations note: turning `DRUST_MCP` off **pauses** MCP OAuth; it revokes nothing.
-  Grants still inside their idle and absolute limits work again when it is turned back
-  on. To cut connections, revoke them (settings page or team page, from MA0-9) or
-  remove the admin.
+An out-of-range value is clamped and a value that is not a whole number falls back to the
+default, each with a boot warning. With `DRUST_MCP=on`, `DRUST_PUBLIC_URL` must be a bare
+`https://` origin (a loopback `http://` origin is accepted for development, with a warning)
+and `DRUST_BASE_PATH` must be a clean path. An unrecognised `DRUST_MCP` value, or with `on`
+an unusable `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH`, leaves MCP off and logs one `error`
+line; boot always continues. To check whether it is enabled: every boot logs one line
+beginning `MCP OAuth AS enabled` or `MCP OAuth AS disabled` (it never prints a rejected
+`DRUST_PUBLIC_URL`), and `GET <DRUST_PUBLIC_URL><DRUST_BASE_PATH>/.well-known/oauth-authorization-server`
+answers 200 only when it is enabled.
 
-### MCP OAuth authorization server — metadata, token skeleton, revoke (MA0-4)
+### Security properties
 
-- **OAuth AS routes, mounted only with `DRUST_MCP=on` (MA0-4).** `GET
-  /.well-known/oauth-authorization-server` serves the final RFC 8414 metadata (`issuer` =
-  `DRUST_PUBLIC_URL` + base path, `none` client auth, S256, CIMD and `iss` flags, no
-  registration endpoint; `Cache-Control: public, max-age=300`). `POST /oauth/revoke`
-  implements RFC 7009 and always revokes the whole grant. `POST /oauth/token` only validates
-  and dispatches for now: both grant types answer `unsupported_grant_type` until MA0-7/MA0-8,
-  so do not set `on` on a host anyone relies on. Every non-2xx on these two endpoints is an
-  OAuth JSON error with `Cache-Control: no-store`. Revoking an expired or rotated token of a
-  live grant still revokes the grant. With `DRUST_MCP` unset, `auto` or `off`, nothing is
-  mounted and every response is byte-identical to before; `auto` starts mounting with MA1d.
-  No new environment variable, no schema change.
-- On the bare-metal host the metadata is reachable at
-  `https://<host>/drust/.well-known/oauth-authorization-server` through the existing
-  `/drust/*` proxy block; the RFC 8414 root location
-  (`/.well-known/oauth-authorization-server/drust`) needs a root proxy rule that ships later
-  (MA1c). Docker serves the routes at the root. No deploy file changes.
+- Codes, access tokens and refresh tokens are stored only as domain-separated SHA-256
+  hashes. The plaintext leaves drust once, in the response that issues it. The
+  authorization code appears only in the consent page's redirect `Location`, never in a log
+  or an audit row.
+- PKCE is `S256` only, and the redirect rule is exact: the loopback `redirect_uri` is
+  compared byte for byte, at authorize, at consent and at the token endpoint.
+- The credential comes from the form body only, never a cookie or the query string. A
+  request to `/oauth/token` or `/oauth/revoke` that carries an `Authorization` header is
+  refused, so a front proxy that adds HTTP authentication must not forward it to `/oauth/*`.
+  Every non-2xx from these two endpoints is an OAuth JSON error with `Cache-Control: no-store`.
+- The unit of revocation is the grant. Revoking from the settings page, the team page or
+  `/oauth/revoke`, a replayed code and a refresh token reused past the grace all end the
+  grant with its tokens in one transaction, and the next refresh answers `invalid_grant`.
+- Rate limits: an unknown code or refresh token counts against a per-IP budget (30 per
+  60 s); a failed check on a known code counts against a per-code budget (10 per 300 s), and
+  a valid exchange reads neither, so the right verifier still succeeds after that budget is
+  spent; a known refresh token counts against its grant's budget (10 per 60 s), except when
+  it trips reuse detection or is a losing sibling, which no budget can stop. An exhausted
+  budget answers `429 temporarily_unavailable` with `Retry-After`. The per-IP key follows
+  `DRUST_TRUSTED_PROXIES`: set too low, every client shares one miss budget; set too high, a
+  client can choose its own key.
+- The resume and CSRF keys live only in memory, so a restart invalidates authorizations in
+  progress; the user simply runs the client's login again.
+- **Turning `DRUST_MCP` off pauses MCP; it revokes nothing.** Grants still inside their
+  limits work again when it is turned back on. To cut a connection off, revoke it before
+  turning MCP off or right after turning it back on, or remove the admin.
 
-### MCP OAuth authorization server — authorize (MA0-5)
+### Not included yet
 
-- **`GET /oauth/authorize` (MA0-5; mounted only when `DRUST_MCP=on`).** Accepts exactly one
-  client, Claude Code, from a copy of its Client ID Metadata Document pinned on 2026-11-14;
-  the document is not fetched at runtime. `redirect_uri` must be
-  `http://localhost[:port]/callback` or `http://127.0.0.1[:port]/callback`, compared on the
-  raw string (no URL normalisation), at most 64 bytes. An unknown client or a rejected
-  redirect shows an HTML error page and never redirects; every later error returns to the
-  client with `error`, `state` (only when sent) and `iss`. PKCE `S256` only; `scope` may be
-  `mcp` and/or `offline_access`; `resource` is optional and must be this server's MCP URL.
-  `prompt` and unknown parameters are ignored, as OAuth requires. A successful request sets
-  a 10-minute `drust_mcp_oauth_resume` cookie (HMAC envelope, per-process key) and goes to
-  the consent page, which ships in MA0-6 (until then it answers 404, so do not set `on` on a
-  host anyone relies on). The endpoint writes nothing to the database and is not
-  rate-limited. With `DRUST_MCP` unset, `off` or `auto`, nothing changes. No new environment
-  variable, no schema change, no deploy file change: both active targets already forward
-  `/oauth/*` to drust.
+- The account-level MCP endpoint itself. No endpoint accepts a `drust_mcpat_` token, and
+  `DRUST_MCP=auto` mounts nothing.
+- The RFC 8414 root location for a path-mounted issuer
+  (`/.well-known/oauth-authorization-server/drust` on the bare-metal host). Today the
+  metadata is reachable only under the base path, and the root proxy rule ships with the
+  endpoint.
+- Any client other than Claude Code, dynamic client registration, and a live fetch of
+  client metadata documents.
+- Anything that writes the new `_mcp_upload_tickets` table.
 
-### MCP OAuth authorization server — consent (MA0-6)
+### Upgrading
 
-- **Consent page** at `/oauth/consent` (approve / deny; mounted only when `DRUST_MCP=on`).
-  Accepts only a signed-in browser session: an admin PAT gets
-  `403 MCP_CONSENT_COOKIE_REQUIRED`, so a short-lived CLI PAT can never be traded for a
-  90-day MCP grant. Approve and deny carry double-submit CSRF bound to the admin and to the
-  request, and must come from the browser that started the authorization (the resume
-  cookie must match the request). Every step re-checks the pinned client and its redirect,
-  and the page shows the client and the return address only from the signed request. It
-  states what the authorization covers (every tenant the account can see, with the current
-  count), the permissions, what revoking does and does not stop, the lifetimes, and the
-  signed-in identity next to the buttons. Approve creates one grant and one single-use
-  authorization code (stored hashed, valid 300 seconds) and audits
-  `mcp_oauth.grant.create`; deny audits `mcp_oauth.consent.deny`. Each authorization asks
-  again; consent is never remembered. The code cannot be exchanged yet: the token endpoint
-  still answers `unsupported_grant_type` until MA0-7.
-- **Sign-in resumes the authorization.** After signing in (password, Google or GitHub) with
-  an authorization in progress, the browser returns to the consent page instead of the
-  tenant list; an expired or invalid resume cookie is cleared and sign-in lands as usual.
-  **Without `DRUST_MCP=on`, or with no authorization in progress, sign-in redirects exactly
-  as before.** No new environment variable, no schema change, no deploy file change.
-
-### MCP OAuth authorization server — code exchange (MA0-7)
-
-- **`POST /oauth/token` now redeems authorization codes** (only when `DRUST_MCP=on`;
-  nothing changes otherwise). A code is single-use, expires 5 minutes after consent, and is
-  bound to the client id, the exact redirect URI (port included, no case or percent-decoding
-  normalisation), the resource and the PKCE S256 challenge. Success answers
-  `{"access_token":"drust_mcpat_…","token_type":"Bearer","expires_in":<DRUST_MCP_OAUTH_ACCESS_TTL_SECS>,"refresh_token":"drust_mcprt_…","scope":"mcp"}`
-  with `Cache-Control: no-store`. A request that fails ANY check is refused with
-  `invalid_grant` **without consuming the code**, so a wrong `code_verifier` cannot burn a
-  code for the real client; a second request that passes every check is refused and
-  **revokes the whole grant** (`revoke_reason='code_replay'`, OAuth 2.1 §7.5.3 / §4.1.3), and
-  is logged as a `warn` plus an audit row attributed to the admin. A missing `redirect_uri`
-  or `code_verifier` is `invalid_grant` too (one answer for every mismatch). Tokens and codes
-  are stored only as domain-separated hashes. Audit: `mcp_oauth.token.code` on success,
-  `mcp_oauth.grant.revoke` (`code_replay`) on replay, both with the grant owner as the actor;
-  failed attempts write no audit row.
-- **Rate limits never read a valid request.** Unknown codes count against a per-IP budget
-  (30 per 60 s), failed attempts on a known code against a per-code budget (10 per 300 s);
-  exhausting either turns further failures into `429 temporarily_unavailable` with
-  `Retry-After`. The right verifier still succeeds after the per-code budget is spent, so
-  whoever holds a code without its verifier cannot lock the real client out.
-- The refresh grant still answers `unsupported_grant_type` until MA0-8, so keep `on` off
-  hosts anyone relies on. No new environment variable, no schema change, no deploy file
-  change.
-
-### MCP OAuth authorization server — refresh rotation (MA0-8)
-
-- **`POST /oauth/token` now accepts `grant_type=refresh_token`** (only when `DRUST_MCP=on`;
-  nothing changes otherwise). Every refresh rotates: the presented token is marked rotated
-  and a new access + refresh pair is issued; the grant's idle deadline slides, never past
-  its absolute deadline. A token presented again within `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS`
-  (default 60) of its rotation gets a *sibling* pair and nothing is invalidated; the first
-  sibling to be used wins and the others are marked superseded. Presenting a superseded
-  sibling answers `invalid_grant` and revokes **that branch only** (its refresh and the
-  access issued with it) — the grant and the winning branch stay live, and the grant
-  records `sibling_rejected_at`. Presenting the parent again after one of its children was
-  used answers `invalid_grant` and revokes nothing. Presenting a rotated token after the
-  grace revokes the whole grant (`refresh_reuse`). This is a deliberate deviation from the
-  strict reading of OAuth 2.1 §4.3.1 (accepted design §9 #8): several Claude Code processes
-  on one machine share one credential and can race a refresh.
-- Every refresh failure answers `invalid_grant` — the MCP SDK re-authorizes only on that
-  code — except a missing `refresh_token` (`invalid_request`), a `scope` item other than
-  `mcp` / `offline_access` (`invalid_scope`, the same rule as authorize) and rate limiting
-  (429 `temporarily_unavailable` with `Retry-After`). A `resource` that is not this server's
-  is `invalid_grant` too, not RFC 8707's `invalid_target`. `client_id` is optional; when
-  sent it must be the grant's.
-- **Per-grant limit: 10 refreshes per 60 s.** Any request whose refresh token exists (live
-  or not) spends its grant's budget; only an unknown token spends the per-IP miss budget
-  (30 per 60 s), and a wrong prefix or length spends nothing.
-- Audit: `mcp_oauth.refresh.sibling_rejected` (`branch_revoked` true for a superseded
-  sibling, false for a re-presented parent) and, for reuse, `mcp_oauth.grant.revoke` with
-  `reason=refresh_reuse` and `rotated_secs_ago` — how long after the rotation the old token
-  came back, so a laptop that slept past the grace can be told apart from a theft. Both put
-  the grant owner in `extra.admin_id` with no top-level actor (the presenter is unknown). A
-  successful refresh writes no audit row.
-- No new environment variable, no schema change, no deploy file change.
-
-### MCP OAuth authorization server — settings card and team revoke (MA0-9)
-
-- **Settings → "MCP connections" and a team-page revoke (only when `DRUST_MCP=on`).** The
-  settings page lists the MCP OAuth connections you authorized (client, callback host, when
-  authorized and last used in UTC, an "expired" flag, and a "duplicate refresh" flag with
-  the time a superseded refresh token of that connection was last presented), with a
-  per-row Revoke and a Revoke all. Revoking acts only on your own connections, whatever
-  your role: another admin's connection id answers `404 MCP_GRANT_NOT_FOUND`, exactly like
-  an unknown or already-revoked id. If the list cannot be read, the card says so and still
-  offers Revoke all. The team page gains "Revoke MCP" on the rows where "Remove" already
-  appears (`DELETE /admin/team/{id}/mcp-grants`, `200 {"revoked": n}`, same authority as
-  removing that admin: a member gets `403 NOT_A_MANAGER`, an admin acting on an owner or
-  admin row — including their own — gets `403 PRIVILEGED_ROLE_REQUIRED`, an unknown id
-  `404 ADMIN_NOT_FOUND`); the account, its sessions and its PATs are untouched. Both faces
-  accept the session cookie and a `drust_pat_*` bearer, like the rest of `/admin/*`; an MCP
-  access token is refused there. A revoked connection's refresh token answers
-  `invalid_grant` at `/oauth/token`, so Claude Code re-authorizes.
-- **With MCP off, neither page changes by a single byte and the three routes are not
-  mounted.** Turning `DRUST_MCP` off pauses MCP connections; it does not revoke them — they
-  come back when it is turned on again, within their idle and absolute limits. To cut a
-  connection off, revoke it here before turning MCP off, or right after turning it back on.
-- Audit: `mcp_oauth.grant.revoke` (`reason=user` with `grant_id`, or one row
-  `reason=user_all` with `revoked`) and `admin.mcp_grant.revoke` (`target_admin_id`,
-  `revoked`), with the acting admin as the top-level actor and `auth_method` `admin_cookie`
-  or `admin_pat`.
-- No new environment variable, no schema change, no deploy file change.
+- **Both targets.** The first boot creates the five tables (`_mcp_oauth_grants`,
+  `_mcp_oauth_codes`, `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets`) in
+  `meta.sqlite`, whether or not `DRUST_MCP` is on. It only creates them: nothing is minted,
+  revoked or deleted at boot. No environment variable needs to be set and no deploy file
+  needs to change. Rolling back leaves the empty tables in place, and older binaries ignore
+  them. Backups include the tables; they hold hashes only.
+- **After restoring a backup, revoke all MCP connections.** A restore brings back every
+  grant revoked after the snapshot, like admin PATs, and re-arms every refresh token rotated
+  after it.
+- **Bare metal (systemd + Caddy).** Nothing to do. If you enable MCP for development, the
+  routes live under `/drust/` through the existing `/drust/*` proxy block, and `issuer` ends
+  in `/drust`. Keep the proxy from logging the `Location` of `/oauth/consent/approve`
+  responses (it carries the one-time code; Caddy's default access log does not record
+  response headers).
+- **Docker / Compose.** Nothing to do. The image serves the routes at the root, and the
+  Compose Caddy's catch-all block already forwards `/oauth/*` and `/.well-known/*`. Enabling
+  MCP for development also requires `DRUST_PUBLIC_URL` in `docker-compose.yml`.
 
 ## v1.67.0 — 2026-11-15
 
