@@ -43,12 +43,15 @@ spec:
       http:
         paths:
           {{- if and .Values.storage.enabled .Values.publicFiles.enabled }}
+          # /public -> the public-proxy Caddy (templates/public-proxy.yaml), never the store's
+          # S3 port: served directly, the store returns markup with no CSP and honours
+          # ?response-content-type= on anonymous GETs (stored XSS on this origin).
           - path: /public
             pathType: Prefix
             backend:
               service:
-                name: {{ include "minio.svcName" . }}
-                port: { number: 9000 }
+                name: public-proxy
+                port: { number: 8080 }
           {{- end }}
           - path: /
             pathType: Prefix

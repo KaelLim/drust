@@ -1,0 +1,85 @@
+{{- if .Values.storage.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+  annotations:
+    # post-rollback too: drust's RustFS secret is set by this Job, not read by RustFS from the
+    # Secret, so a rollback that restores an older storage.secretKey (or publicFiles) needs
+    # this run to put RustFS back in step with it.
+    helm.sh/hook: post-install,post-upgrade,post-rollback
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        # Dedicated labels — NEVER drust.selectorLabels: this probeless pod would join the
+        # drust Service's endpoints. The rustfs NetworkPolicy admits exactly these.
+        {{- include "rustfsInit.selectorLabels" . | nindent 8 }}
+    spec:
+      # Never, not OnFailure: each failed attempt then stays as its own pod, so
+      # `kubectl logs job/rustfs-init` still answers after the Job has given up. With
+      # OnFailure the Job controller deletes the one pod at backoffLimit, logs included.
+      restartPolicy: Never
+      # Where the store may run, this Job may run: on tainted or dedicated nodes a pod with
+      # no toleration stays Pending and every install and upgrade fails at the hook timeout.
+      {{- with .Values.scheduling.rustfs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.rustfs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false   # no RUSTFS_PORT etc. from the rustfs Service (see rustfs STS)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: init
+          # Its bundled `rc` is the only client that manages RustFS users and policies.
+          image: {{ .Values.storage.rustfs.image | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # First connect: the store may still be starting, and a new pod IP takes a
+              # few seconds to enter the NetworkPolicy allow-set.
+              i=0
+              until curl -fsS http://rustfs:9000/health/ready >/dev/null 2>&1; do
+                i=$((i+1)); [ "$i" -ge 90 ] && { echo "rustfs-init: store not ready"; exit 1; }
+                sleep 2
+              done
+              exec /bin/sh /init/init.sh
+          env:
+            - { name: RC_CONFIG_DIR, value: /tmp/rc }          # init.sh also exports it
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: rustfs-root-access-key } }
+            - name: RUSTFS_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: rustfs-root-secret-key } }
+            - name: GARAGE_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
+            - name: GARAGE_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
+          volumeMounts:
+            - { name: init, mountPath: /init, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: init
+          configMap:
+            name: {{ .Release.Name }}-rustfs-init
+            defaultMode: 0444
+        - name: tmp
+          emptyDir: {}
+{{- end }}

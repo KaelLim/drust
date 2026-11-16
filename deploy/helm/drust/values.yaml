@@ -22,6 +22,17 @@ ingress:
   # rmcp DNS-rebinding guard: upstream Host MUST be loopback form. Do NOT change.
   hostRewrite: "127.0.0.1:47826"
   className: ""                  # optional ingressClassName (nginx); empty = default
+  # DRUST_TRUSTED_PROXIES: how many reverse proxies in front of drust APPEND to
+  # X-Forwarded-For. The ingress controller alone (Traefik / ingress-nginx defaults) = 1.
+  # Add one per extra proxy the controller is configured to trust (cloud LB, CDN).
+  # Never configure the controller to pass a client-supplied X-Forwarded-For through
+  # untrusted (Traefik forwardedHeaders.insecure; nginx use-forwarded-headers without
+  # compute-full-forwarded-for): drust would then key its rate limits on a value the
+  # client chose. Keeping networkPolicy.enabled=true is part of that guarantee. If you
+  # set DRUST_TRUSTED_PROXIES in extraEnv before, move it here: the render refuses it in
+  # extraEnv (a duplicate env name fails a server-side apply). drust refuses to boot on
+  # a value outside 0..8. See the README for the k3s ServiceLB caveat.
+  trustedProxies: 1
   tls:
     enabled: true
     issuer: letsencrypt          # cert-manager ClusterIssuer name (annotation)
@@ -43,29 +54,59 @@ webhook:
   maxPerTenantConcurrency: 8     # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY (deliveries in flight, per tenant)
 
 publicFiles:
-  enabled: false                 # true => extra ingress path /public/* -> MinIO public bucket (anon read)
+  # true => /public/* on ingress.host is served by the public-proxy Caddy straight from
+  # the store's "public" bucket (anonymous GET/HEAD of single objects only; no listing).
+  enabled: false
+
+# Image of the S3 client used by the litestream-enumerate init container and the
+# backup-mirror CronJob (rclone). Pinned by digest: it holds the backup-S3 key and
+# drust's key.
+s3ClientImage: "docker.io/rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5"
+
+publicProxy:
+  # Caddy that serves /public/* (rendered only with storage.enabled AND publicFiles.enabled).
+  # Its /public block is a byte-for-byte copy of deploy/compose.Caddyfile's (render_test.sh
+  # checks). Pinned by tag and digest; Compose floats caddy:2 instead. This container
+  # IS the anonymous internet-facing surface: bumping this pin to the current Caddy 2.x
+  # release is part of routine chart maintenance, not optional.
+  image: "docker.io/library/caddy:2.11.9@sha256:4e2425f6009577e7c651010f16679c28f7d12df3e7b1914f941a7a3370746b3c"
 
 storage:
   enabled: true
-  minio:
-    image: "minio/minio:RELEASE.2024-10-13T13-34-11Z"
-    mcImage: "minio/mc:RELEASE.2024-10-08T09-37-26Z"
-    rootUser: drustkey
-    rootPassword: ""             # set per-group (or via secrets.existingSecret)
+  # drust's OWN key (GARAGE_S3_ACCESS_KEY / GARAGE_S3_SECRET_KEY) on the bundled RustFS.
+  # rustfs-init creates it and limits it to the "public" and "private" buckets: it cannot
+  # create buckets or change who may read "public". Required, no default; must differ from
+  # storage.rustfs.rootAccessKey. Generate with: openssl rand -hex 10 / openssl rand -hex 20,
+  # and pass with --set-file or -f (not --set: shell history); the file's trailing newline
+  # is trimmed. Random keys only: the checksum annotations publish a SHA-256 of them.
+  # Rotate by changing secretKey (drust restarts by itself); a changed accessKey leaves the
+  # old RustFS user working until you remove it (README).
+  accessKey: ""
+  secretKey: ""
+  rustfs:
+    image: "docker.io/rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74"
+    # Root key of the bundled RustFS. Used only by the rustfs StatefulSet and the
+    # rustfs-init hook Job; never handed to drust. Required, no default. RustFS's
+    # published default (rustfsadmin) is refused, at render and by rustfs-init. init.sh puts
+    # it in an http://key:secret@host URL: letters and digits only (openssl rand -hex; the
+    # render refuses anything else). Changing it restarts rustfs-0, which keeps its users
+    # and buckets.
+    rootAccessKey: ""
+    rootSecretKey: ""
     pvcSize: 20Gi
     # NOTE: bucket names are NOT configurable — drust's write path hardcodes
-    # "public"/"private" (src/storage/files.rs). minio-init always creates exactly those.
-  # Placeholders satisfy the mandatory GARAGE_ADMIN_* config (MinIO has no admin API; never dialed).
-  adminEndpointPlaceholder: "http://127.0.0.1:1"
-  adminTokenPlaceholder: "unused"
+    # "public"/"private" (src/storage/files.rs). rustfs-init always creates exactly those.
 
 resources:
   drust:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: "1", memory: 256Mi }
-  minio:
+  rustfs:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }
+  publicProxy:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
 
 persistence:
   storageClassName: ""           # empty => cluster default
@@ -81,7 +122,9 @@ backup:
   volumeSnapshotClassName: ""
   schedule: "0 3 * * *"          # UTC
   retain: 7                      # keep newest N snapshots (janitor in the same CronJob)
-  kubectlImage: "bitnami/kubectl:1.30"
+  # Needs a shell; bitnami/kubectl is gone. Pinned by digest: a community image whose pod
+  # holds a ServiceAccount token that may delete VolumeSnapshots (i.e. the backups).
+  kubectlImage: "docker.io/alpine/kubectl:1.36.4@sha256:a2cd8ee034cbe04d651e565b3373299b31921de5c2af86490559e21b3e197808"
 
   # ── B1/B2 shared external offsite backup destination (single S3) ──
   # The CSI VolumeSnapshot keys above and these sub-trees are all opt-in / default-off.
@@ -100,16 +143,17 @@ backup:
     endpoint: ""                 # required when a backup feature is on, e.g. https://s3.us-west-2.amazonaws.com
     region: "us-east-1"
     bucket: ""                   # required when a backup feature is on
-    forcePathStyle: true         # MinIO / most S3-compatible = true; AWS vhost = false
-    port: 443                    # NP egress port to the backup S3; offsite MinIO usually 9000
+    forcePathStyle: true         # most self-hosted S3-compatible stores = true; AWS vhost = false
+    port: 443                    # NP egress port to the backup S3 (a self-hosted store often listens on 9000)
     pathPrefix: ""               # per-group replica prefix; empty => .Release.Namespace (isolation key)
     destinationCIDRs: []         # optional NP tightening; empty => 0.0.0.0/0 except clusterCIDRs
 
   # ── B1: Litestream continuous DB replication (opt-in; independent of the CSI snapshot) ──
   litestream:
     enabled: false
-    image: "litestream/litestream:0.5.15"   # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3
-    mcImage: ""                  # enumerate init image; empty => storage.minio.mcImage
+    # floor >=0.5.13 (meta-dir); dir-mode + watch since 0.5.3. Pinned by tag and digest: this
+    # container shares /data (plaintext tokens in meta.sqlite) and holds the backup key.
+    image: "litestream/litestream:0.5.15@sha256:f45ca298a567bef6edd23d43429b5f80721473a9a9719e467f11d7888999403e"
     watch: true                  # native watcher enrolls post-boot tenants without a restart — DO NOT disable
     tenantPattern: "*.sqlite"        # basename glob under /data/tenants (recursive:true walks <id>/ subdirs).
                                      # VERIFIED against the real litestream 0.5.15 binary: a slash-form like
@@ -124,7 +168,7 @@ backup:
     restore:
       enabled: true              # enumerate + restore initContainers rebuild an empty /data from S3
 
-  # ── B2: hourly mc-mirror of this group's MinIO objects -> external backup S3 ──
+  # ── B2: hourly copy (rclone, never deletes) of this group's object store -> external backup S3 ──
   # DR completeness (#933): enable objectMirror (or provide an external object
   # backup) for a RESTORABLE unit — the DB VolumeSnapshot/Litestream alone does
   # NOT capture uploaded objects, so a cold restore to an empty object store
@@ -132,7 +176,6 @@ backup:
   objectMirror:
     enabled: false               # also needs storage.enabled
     schedule: "0 * * * *"        # hourly UTC
-    image: ""                    # empty => storage.minio.mcImage
     connectRetries: 30           # first-connect retries (CNI NP allow-set propagation lag)
     connectRetrySleep: 2
     backoffLimit: 3
@@ -182,6 +225,8 @@ secrets:
   adminPassword: ""              # DRUST_INIT_ADMIN_PASSWORD (first boot only)
 
 extraEnv: []                     # arbitrary DRUST_*/GARAGE_* overrides: [{name, value}]
+                                 # e.g. DRUST_QUERY_DEADLINE_MS (default 5000, 0 disables):
+                                 # caller-SQL deadline for read RPCs/raw query and anon+user write RPCs
 
 # ── B3: scheduling passthrough (empty => zero behavior change) ──
 #
@@ -217,7 +262,14 @@ scheduling:
     tolerations: []
     affinity: {}
     topologySpreadConstraints: []
-  minio:
+  # rustfs-init (the hook Job) takes rustfs's nodeSelector and tolerations, nothing else.
+  rustfs:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  # The /public Caddy. One replica: the tolerationSeconds note above applies to it too.
+  publicProxy:
     nodeSelector: {}
     tolerations: []
     affinity: {}

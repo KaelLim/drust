@@ -24,7 +24,8 @@ WebSocket frame) or the key minted for an upload whose extension is not 1 to 12 
 letters or digits; each entry says who is affected and whether anything needs doing.
 
 It also closes the Compose deployment target's gaps the new smoke stack found, and makes
-RustFS the bundled object store for Docker Compose: see *Deploy (Compose)* below.
+RustFS the bundled object store for Docker Compose and the k3s chart: see *Deploy (Compose)*
+and *Deploy (k3s chart 0.2.0)* below.
 
 This release also carries three cross-major dependency upgrades (D1–D3 under *Build*).
 Together with the compatible refresh they clear every advisory that kept CI's `cargo audit`
@@ -218,9 +219,8 @@ update its toolchain first.
   at most once every five minutes, with the header's length and a count of what it
   suppressed; no log line at any level carries the header's value any more. Boot logs the
   effective setting (`client-IP derivation configured`). On Compose, sessions and the login
-  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The Helm
-  chart does not set the variable yet, so k3s keeps today's single bucket until it does (see
-  the chart notes).
+  audit entry now record the client's address (`ip_at_login`) instead of `127.0.0.1`. The k3s
+  chart 0.2.0 sets `1` (`ingress.trustedProxies`).
 
 - **The CHANGELOG viewer works in the container image.** `/admin/_docs/changelog` read
   `CHANGELOG.md` from the process's working directory. The image runs in `/data` and ships
@@ -541,7 +541,10 @@ update its toolchain first.
   `rustfs-init`. `rustfs-init` creates `public` and `private`, lets anyone read objects in
   `public` and nothing else (no listing), and gives drust its own key, which can use only
   those two buckets. Without that step, `docker compose up -d` starts drust without file
-  storage, as before. The keys live in `.env`; to change one, edit it and run
+  storage, as before. `rustfs-init` reads its two JSON files from its own directory, and
+  without `public-read.json` there it removes any anonymous policy from `public` instead of
+  failing; Compose always mounts the file, so nothing changes there (the k3s chart, which
+  shares the script, leaves it out while `publicFiles.enabled` is false). The keys live in `.env`; to change one, edit it and run
   `docker compose up -d` again. The script never prints a value (a refusal names the
   variable only), reads `export KEY=…` lines as present, and stops without writing anything
   for a key when `openssl` fails.
@@ -568,6 +571,50 @@ update its toolchain first.
   `/drust/login` (the image serves at the root). `DRUST_HIDE_VERSION` hides the version
   header whenever it is set, even to an empty string; to get the header back, remove the
   line.
+
+### Deploy (k3s chart 0.2.0)
+
+- **Breaking: RustFS replaces the bundled MinIO.** The `minio/minio` image can no longer be
+  pulled, so a fresh install of chart 0.1.8 could not start its store. RustFS is now the
+  only bundled store: a `rustfs` StatefulSet and a `rustfs-init` hook Job running the
+  Compose `init.sh`. drust gets its own key limited to the `public` and `private` buckets;
+  the RustFS root key never reaches the drust pod. There is no MinIO mode and no data move.
+  Upgrading a 0.1.x release:
+  - `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
+    `storage.rustfs.rootSecretKey` are now required, so with `secrets.create` an upgrade
+    with the old values file stops at render with a `required` message. Pass them with `-f`
+    or `--set-file`. With `secrets.existingSecret` nothing is checked at render: add the
+    two `rustfs-root-*` keys to that Secret before upgrading.
+  - Helm removes the MinIO StatefulSet and Service. The PVC `minio-data-minio-0` is left
+    in place, and nothing reads it.
+  - Files uploaded before the upgrade are not in RustFS, and the chart does not copy them:
+    their `/public` URL answers 404, while drust still lists them and their download
+    answers 502. Whoever needs them copies them with an S3 client that
+    keeps object metadata (Content-Type, Content-Disposition, Cache-Control) before
+    deleting that PVC. The chart README's "Upgrading from 0.1.x" says the same.
+  Changing drust's key or the root key through Helm restarts the pod that holds it.
+- **`/public` no longer serves stored markup unsandboxed.** The Ingress sent `/public/*`
+  straight to the store's S3 port: `text/html` and `*+xml` objects came back with no CSP,
+  and `?response-content-type=text/html` on an anonymous GET turned any public object into
+  HTML on the admin UI's origin. `/public/*` now goes through a small Caddy Deployment,
+  `public-proxy`, whose `/public` block is a byte copy of the Compose one (GET/HEAD only,
+  query dropped, credentials stripped, `nosniff`, the sandbox CSP on markup). The ingress
+  controller reaches only the proxy's port, never the store's.
+- **Anonymous listing of `public` is gone**: 0.1.x gave `public` a policy that let anyone
+  list every tenant's public keys; `rustfs-init` grants GetObject on single objects only,
+  and turning `publicFiles` off removes the grant.
+- **Pullable images.** `minio/mc` and `bitnami/kubectl` can no longer be pulled: the
+  Litestream restore and the object mirror run rclone (`s3ClientImage`, pinned by digest,
+  copying with metadata), and the snapshot CronJob runs `alpine/kubectl` (pinned by
+  digest). Removed values: `storage.minio.*`, `resources.minio`, `scheduling.minio`,
+  `backup.litestream.mcImage`, `backup.objectMirror.image`.
+- **`DRUST_TRUSTED_PROXIES` is set to `1`** (`ingress.trustedProxies`): before, chart pods
+  inherited the image's `0` and all clients of a group shared one rate-limit bucket.
+- The never-dialed `GARAGE_ADMIN_*` placeholders are gone from the env and from a newly
+  rendered Secret; an upgraded release keeps the two unused Secret keys
+  (`kubectl edit secret` removes them).
+
+The chart's own `deploy/helm/drust/CHANGELOG.md` lists every changed value.
 
 ### MCP (M1) — model-facing text, tool annotations, error results
 

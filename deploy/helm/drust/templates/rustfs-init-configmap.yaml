@@ -1,0 +1,20 @@
+{{- if .Values.storage.enabled }}
+{{- /* The Compose rustfs-init files, byte copies (render_test.sh compares them with
+       deploy/compose-rustfs/): edit both together. An ordinary resource, so it exists
+       before the post-* hook Job that mounts it. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-rustfs-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+data:
+  init.sh: {{ .Files.Get "files/rustfs-init/init.sh" | quote }}
+  drust-objects.json: {{ .Files.Get "files/rustfs-init/drust-objects.json" | quote }}
+  {{- if .Values.publicFiles.enabled }}
+  # Present => init.sh grants anonymous GetObject on public/*; absent => it removes any
+  # anonymous policy from "public" (publicFiles turned off later).
+  public-read.json: {{ .Files.Get "files/rustfs-init/public-read.json" | quote }}
+  {{- end }}
+{{- end }}

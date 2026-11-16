@@ -8,7 +8,7 @@ metadata:
   annotations:
     # Deletion-protected on purpose. A release-owned Namespace is otherwise deleted by
     # `helm uninstall`, and namespace termination reaps EVERY PVC in it — all tenant
-    # SQLite DBs + MinIO objects (permanent on a reclaimPolicy: Delete StorageClass).
+    # SQLite DBs + stored objects (permanent on a reclaimPolicy: Delete StorageClass).
     # NOTE: this only protects a namespace on which the annotation is ALREADY persisted.
     # A namespace created by an OLDER chart (0.1.0, createNamespace default true, no
     # annotation) is NOT retroactively protected — if an upgrade drops this resource it

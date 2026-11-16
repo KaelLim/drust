@@ -15,6 +15,14 @@ spec:
     metadata:
       labels:
         {{- include "drust.selectorLabels" . | nindent 8 }}
+      {{- if and .Values.secrets.create .Values.storage.enabled }}
+      annotations:
+        # rustfs-init replaces drust's secret on RustFS on every run (`rc admin user add` on an
+        # existing user). Without this, `helm upgrade --set-file storage.secretKey=…` would
+        # leave drust on the old value: every upload/download/delete 403, helm "success".
+        # existingSecret: `kubectl rollout restart sts/drust` (README).
+        checksum/s3-key: {{ printf "%s\n%s" (include "drust.key" .Values.storage.accessKey) (include "drust.key" .Values.storage.secretKey) | sha256sum }}
+      {{- end }}
     spec:
       {{- with .Values.scheduling.drust.nodeSelector }}
       nodeSelector:
@@ -42,22 +50,19 @@ spec:
       {{- if and .Values.backup.litestream.enabled .Values.backup.litestream.restore.enabled }}
       initContainers:
         - name: litestream-enumerate
-          image: {{ .Values.backup.litestream.mcImage | default .Values.storage.minio.mcImage | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ .Values.s3ClientImage | quote }}
+          # No imagePullPolicy: image.pullPolicy is drust's own (Never for a locally
+          # imported drust image would strand this third-party image).
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           env:
             - { name: HOME, value: /tmp }
-            - { name: MC_CONFIG_DIR, value: /tmp/.mc }
-            - { name: DEST_ENDPOINT, value: {{ .Values.backup.external.endpoint | quote }} }
+            - { name: RCLONE_CONFIG, value: /dev/null }      # remotes come only from env below
             - { name: DEST_BUCKET, value: {{ .Values.backup.external.bucket | quote }} }
             - { name: REPLICA_PREFIX, value: {{ include "backup.prefix" . | quote }} }
-            - name: AK
-              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-access-key } }
-            - name: SK
-              valueFrom: { secretKeyRef: { name: {{ include "drust.backupSecretName" . }}, key: backup-s3-secret-key } }
+            {{- include "drust.rcloneBackupRemote" . | nindent 12 }}
           command: ["/bin/sh", "/etc/litestream/enumerate.sh"]
           volumeMounts:
             - { name: data, mountPath: /data, readOnly: true }
@@ -104,6 +109,7 @@ spec:
             - { name: DRUST_LOG_DIR, value: /logs }
             - { name: DRUST_BIND, value: "0.0.0.0:47826" }
             - { name: DRUST_BASE_PATH, value: "" }
+            - { name: DRUST_TRUSTED_PROXIES, value: {{ .Values.ingress.trustedProxies | quote }} }
             - name: DRUST_INIT_ADMIN_USERNAME
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-username } }
             - name: DRUST_INIT_ADMIN_PASSWORD
@@ -113,10 +119,6 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-access-key } }
             - name: GARAGE_S3_SECRET_KEY
               valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: s3-secret-key } }
-            - name: GARAGE_ADMIN_ENDPOINT
-              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-endpoint } }
-            - name: GARAGE_ADMIN_TOKEN
-              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: admin-token } }
             {{- end }}
             {{- if .Values.hideVersion }}
             - { name: DRUST_HIDE_VERSION, value: "1" }
@@ -143,9 +145,14 @@ spec:
             - { name: DRUST_DEV_NO_SECURE_COOKIES, value: "1" }
             {{- end }}
             {{- if .Values.storage.enabled }}
-            - { name: GARAGE_S3_ENDPOINT, value: {{ include "minio.endpoint" . | quote }} }
+            - { name: GARAGE_S3_ENDPOINT, value: {{ include "drust.storeEndpoint" . | quote }} }
             # FIXED literal: drust's write path hardcodes bucket "public" (files.rs).
             - { name: GARAGE_PUBLIC_BUCKET, value: "public" }
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            {{- if eq (toString .name) "DRUST_TRUSTED_PROXIES" }}
+            {{- fail "extraEnv sets DRUST_TRUSTED_PROXIES, which the chart now sets from ingress.trustedProxies: move the value there (a duplicate env name fails a server-side apply)" }}
+            {{- end }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

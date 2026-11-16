@@ -1,0 +1,101 @@
+{{- if .Values.storage.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rustfs.svcName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "rustfs.svcName" . }}
+  replicas: 1                       # single-writer store — NEVER > 1
+  selector:
+    matchLabels:
+      {{- include "rustfs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        # NEVER drust.labels: its name label is drust's, which would put this pod into the
+        # drust Service's endpoints.
+        {{- include "rustfs.selectorLabels" . | nindent 8 }}
+      {{- if .Values.secrets.create }}
+      annotations:
+        # A changed root key restarts RustFS, which then takes the new key from env and keeps
+        # its users and buckets; rustfs-init then logs in with the new key.
+        # existingSecret: Helm cannot see the values — `kubectl rollout restart sts/rustfs`.
+        checksum/root-key: {{ printf "%s\n%s" (include "drust.key" .Values.storage.rustfs.rootAccessKey) (include "drust.key" .Values.storage.rustfs.rootSecretKey) | sha256sum }}
+      {{- end }}
+    spec:
+      {{- with .Values.scheduling.rustfs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.rustfs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.rustfs.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.rustfs.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      # The rustfs Service would inject RUSTFS_SERVICE_HOST, RUSTFS_PORT=tcp://… and friends,
+      # and RustFS reads its configuration from RUSTFS_* variables.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001            # the image's own rustfs user
+        runAsGroup: 10001
+        fsGroup: 10001              # makes the PVC writable (observed on local-path)
+        # Without it every start chowns the whole PVC recursively (default Always): slow with
+        # many objects, against a 10 s liveness delay.
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: rustfs
+          image: {{ .Values.storage.rustfs.image | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true   # observed: RustFS writes only under /data
+            capabilities: { drop: ["ALL"] }
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: rustfs-root-access-key } }
+            - name: RUSTFS_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "drust.secretName" . }}, key: rustfs-root-secret-key } }
+            # The web console is an admin surface with CORS "*". Off; not exposed.
+            - { name: RUSTFS_CONSOLE_ENABLE, value: "false" }
+            # Log to stdout (the image default writes files under /logs, read-only here).
+            - { name: RUSTFS_OBS_LOG_DIRECTORY, value: "" }
+            # RustFS's server-domains variable stays UNSET: path-style only. drust and the
+            # proxy both send a Host with a port, which is never read as a bucket name.
+          ports:
+            - { name: s3, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 9000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: 9000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources.rustfs | nindent 12 }}
+          volumeMounts:
+            - { name: rustfs-data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata:
+        name: rustfs-data           # PVC rustfs-data-rustfs-0
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.rustfs.pvcSize }}
+{{- end }}

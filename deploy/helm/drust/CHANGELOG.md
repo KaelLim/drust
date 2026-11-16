@@ -1,6 +1,111 @@
 # drust Helm chart — changelog
 
-## [Unreleased] — Deploy
+## [0.2.0] — unreleased
+
+### Breaking
+- **RustFS replaces the bundled MinIO.** MinIO upstream is archived and the pinned
+  `minio/minio`, `minio/mc` and `bitnami/kubectl` images can no longer be pulled, so a
+  fresh 0.1.x install could not start its store. RustFS is now the only bundled store;
+  there is no MinIO mode, no upgrade check and no data move. Upgrading a 0.1.x release:
+  - `storage.accessKey`, `storage.secretKey`, `storage.rustfs.rootAccessKey` and
+    `storage.rustfs.rootSecretKey` are required when `storage.enabled`, so with
+    `secrets.create` an upgrade with an old values file stops at render with a `required`
+    message. With `secrets.existingSecret` nothing is checked at render: add
+    `rustfs-root-access-key` and `rustfs-root-secret-key` to that Secret first, or
+    `rustfs-0` and the hook cannot start and the upgrade fails at the hook timeout.
+  - Helm removes the MinIO StatefulSet, Service and NetworkPolicies. The `minio-init`
+    hook Job was deleted when it succeeded; a failed one stays until you delete it. The
+    PVC `minio-data-minio-0` is left in place, and nothing reads it.
+  - Files uploaded before the upgrade are not in RustFS, and the chart does not copy them:
+    their `/public` URL answers 404, while drust still lists them and their download
+    answers 502. Whoever needs them copies them with an S3 client that
+    keeps object metadata (Content-Type, Content-Disposition, Cache-Control) before
+    deleting that PVC. README: "Upgrading from 0.1.x".
+  - Removed values: `storage.minio.*`, `resources.minio`, `scheduling.minio`.
+
+### Added
+- **RustFS, the bundled object store.** A `rustfs` StatefulSet (`storage.rustfs.image`,
+  RustFS 1.0.5 pinned tag+digest; PVC `rustfs-data-rustfs-0`, `storage.rustfs.pvcSize`;
+  `resources.rustfs`; `scheduling.rustfs`), its Service, and a `rustfs-init`
+  post-install/post-upgrade/post-rollback hook Job that runs the Compose `init.sh`,
+  `public-read.json` and `drust-objects.json` (copies under `files/rustfs-init/`,
+  byte-checked against `deploy/compose-rustfs/` by `render_test.sh`). drust gets its own key
+  limited to the `public` and `private` buckets (`storage.accessKey` / `storage.secretKey`);
+  the root key (`storage.rustfs.rootAccessKey` / `rootSecretKey`, no default) reaches only
+  the StatefulSet and the hook. With `secrets.create`, the render fails when drust's access
+  key equals the root one, or a root key is `rustfsadmin` or holds anything but letters and
+  digits. The four keys are trimmed, so a `--set-file` key file's trailing newline (which
+  `openssl rand -hex 20 > f` writes) does not reach RustFS. A rollback re-runs the hook,
+  which sets drust's secret on RustFS. Changing drust's key or the root key through Helm
+  restarts the pod that holds it (`checksum/s3-key`, `checksum/root-key`); with
+  `secrets.existingSecret`, `kubectl rollout restart` (README). The RustFS pod runs as uid
+  10001 on a read-only root with no ServiceAccount token and no Service links (`RUSTFS_*`
+  variables are its configuration), console off, logs to stdout. NetworkPolicy: RustFS
+  admits drust, `rustfs-init`, `backup-mirror` and `public-proxy` on 9000 and nothing else;
+  `rustfs-init` may reach only DNS and RustFS. The hook Job takes
+  `scheduling.rustfs.nodeSelector` and `.tolerations` (on tainted nodes a hook pod with no
+  toleration stays Pending and the install fails at the hook timeout), and runs with
+  `restartPolicy: Never`: each failed attempt stays as its own pod, so
+  `kubectl logs job/rustfs-init` still answers after the Job has given up.
+
+### Security
+- **`/public` served stored markup with no sandbox.** The Ingress sent `/public/*`
+  straight to the store's port 9000: a `text/html` (or any `*+xml`) object came back with
+  no CSP, and `?response-content-type=text/html` on an anonymous GET turned any public
+  object into HTML — script running on the admin UI's origin. `/public/*` now goes to a
+  new `public-proxy` Caddy Deployment (`publicProxy.image`, pinned tag+digest;
+  `resources.publicProxy`; `scheduling.publicProxy`)
+  whose `/public` block is a byte copy of the Compose one (`files/public-proxy.Caddyfile`,
+  pinned by `render_test.sh`): GET/HEAD only, query string dropped, `Authorization` /
+  `Cookie` stripped, `Set-Cookie` dropped, `nosniff` everywhere and the sandbox CSP on
+  markup. The ingress controller is admitted to the proxy's 8080 only; the store's
+  NetworkPolicy admits no namespace or `hostNetworkIngressCIDRs` peer on 9000 (those
+  CIDRs apply to the proxy's policy). Upper-case markup types stored before drust v1.56.3
+  still get no CSP (case-sensitive matcher); set such a file private and public again.
+- **No anonymous listing of `public`.** 0.1.x gave `public` MinIO's `download` policy,
+  which also grants `s3:ListBucket`: `GET /public/` listed every tenant's public keys.
+  `rustfs-init` applies the GetObject-only `public-read.json`, and with
+  `publicFiles.enabled: false` it removes any anonymous policy.
+
+### Changed
+- **`DRUST_TRUSTED_PROXIES` is set, from `ingress.trustedProxies` (default `1`).** Before,
+  the chart did not set it and drust pods inherited the image's `0`: every request was
+  keyed on the ingress controller pod's address, so all clients of a group shared one
+  rate-limit bucket. `1` counts the controller, the one proxy that appends to
+  `X-Forwarded-For`. If you set `DRUST_TRUSTED_PROXIES` in `extraEnv`, move it to
+  `ingress.trustedProxies`: the render refuses it in `extraEnv`, since a duplicate env name
+  fails a server-side apply. The README's known caveats cover the k3s ServiceLB SNAT, the
+  controller's forwarded-header settings and the NetworkPolicy.
+- **The `GARAGE_ADMIN_*` placeholders are gone.** They existed because drust required
+  both variables whenever `GARAGE_S3_ENDPOINT` was set; since v1.67.0 it boots on the S3
+  settings alone, and it read the two never-dialed values as "Garage admin API
+  configured". Removed: the `GARAGE_ADMIN_ENDPOINT` / `GARAGE_ADMIN_TOKEN` env entries, the
+  `admin-endpoint` / `admin-token` Secret keys, and the values
+  `storage.adminEndpointPlaceholder` / `storage.adminTokenPlaceholder`. An
+  `existingSecret` that still carries the two keys keeps working (nothing reads them).
+- **Pullable backup tooling.** The `minio/mc` and `bitnami/kubectl` images can no longer be
+  pulled, so the Litestream restore (`litestream-enumerate`), the object mirror and the
+  VolumeSnapshot CronJob could not start on a node that did not already hold them.
+  - The enumerate init container and the `backup-mirror` CronJob run rclone, from the new
+    `s3ClientImage` (`rclone/rclone:1.75.2`, pinned tag+digest: it holds the backup-S3
+    key and drust's key). Remotes come only from env; keys arrive by `secretKeyRef`. The
+    mirror reads RustFS with drust's key, copies with `-M` (without it
+    `Content-Disposition`, `Cache-Control` and `x-amz-meta-*` were dropped) and
+    `RCLONE_S3_NO_CHECK_BUCKET=true` (without it a bucket-scoped key fails every upload
+    with 403), and now probes its backup prefix instead of the bucket list, which a
+    prefix-scoped key cannot list. Still a copy, never a sync.
+  - `backup.kubectlImage` defaults to `alpine/kubectl:1.36.4`, pinned tag+digest (its
+    pod holds a token that may delete VolumeSnapshots). The CronJob itself is unchanged.
+  - `backup.litestream.image` is pinned by digest as well as tag (the same 0.5.15 image):
+    the sidecar shares `/data` and holds the backup key.
+  - Removed values: `backup.litestream.mcImage`, `backup.objectMirror.image` (both now
+    `s3ClientImage`).
+- **`<release>-secret` is written as `data:` (base64), not `stringData:`.** The API server
+  stores a `stringData` key as `data`, and neither Helm's client-side three-way patch nor a
+  server-side apply removes it when the chart stops rendering it, so such a key stayed in
+  the live Secret forever. Keys that 0.1.x
+  wrote this way and 0.2.0 no longer renders (`admin-endpoint`, `admin-token`) still stay
+  after the upgrade; nothing reads them, and `kubectl edit secret` can remove them.
 
 ## [0.1.4] — 2026-08-04
 

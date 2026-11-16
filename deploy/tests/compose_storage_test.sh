@@ -115,8 +115,8 @@ assert "s3:PutObject" in acts and "s3:ListBucket" in acts, acts
 ' "$INIT_DIR/drust-objects.json"
 
 # ---- 4. init.sh -----------------------------------------------------------------
-check "init.sh sets the public policy from the GetObject-only JSON (set-json)" \
-  grep -q 'rc bucket anonymous set-json /init/public-read.json s3/public' "$INIT_DIR/init.sh"
+check "init.sh sets the public policy from the GetObject-only JSON next to it (set-json)" \
+  grep -qF 'rc bucket anonymous set-json "$here/public-read.json" s3/public' "$INIT_DIR/init.sh"
 check "init.sh never uses the canned download policy (it also lists)" \
   sh -c '! grep -v "^[[:space:]]*#" "$1" | grep -q "anonymous set download"' _ "$INIT_DIR/init.sh"
 check "init.sh always re-adds drust's user (no 'admin user info' guard)" \
@@ -137,7 +137,7 @@ run_init() { # RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY GARAGE_S3_ACCESS_KEY GARAGE_S
   env -i PATH="$WORK/bin:/usr/bin:/bin" RC_STUB_LOG="$WORK/rc.log" \
     RUSTFS_ACCESS_KEY="$1" RUSTFS_SECRET_KEY="$2" \
     GARAGE_S3_ACCESS_KEY="$3" GARAGE_S3_SECRET_KEY="$4" \
-    sh "$INIT_DIR/init.sh" > "$WORK/init.out" 2>&1
+    sh "${INIT_SH:-$INIT_DIR/init.sh}" > "$WORK/init.out" 2>&1
 }
 expect_refused() { # NAME ARGS...
   local name="$1"; shift
@@ -171,6 +171,27 @@ check "init.sh prints no key (stdout and stderr)" test "$leak" = no
 check "init.sh's buckets are exactly public and private" \
   sh -c 'grep -c "^bucket create s3/" "$1" | grep -qx 2 &&
          grep -q "^bucket create s3/public " "$1" && grep -q "^bucket create s3/private " "$1"' _ "$WORK/rc.log"
+check "with public-read.json next to it, init.sh grants anonymous GetObject from that file and nothing else" \
+  sh -c 'grep -qx "bucket anonymous set-json $2/public-read.json s3/public" "$1" &&
+         test "$(grep -c "^bucket anonymous " "$1")" = 1 &&
+         grep -qx "admin policy create s3 drust-objects $2/drust-objects.json" "$1"' _ "$WORK/rc.log" "$INIT_DIR"
+
+# The k3s chart mounts public-read.json only while publicFiles.enabled is on. init.sh
+# copied next to drust-objects.json alone must REMOVE any anonymous policy from
+# "public" instead of failing on the missing file or leaving an earlier grant in place.
+CASES=$((CASES + 1))
+mkdir -p "$WORK/nopub"
+cp "$INIT_DIR/init.sh" "$INIT_DIR/drust-objects.json" "$WORK/nopub/"
+INIT_SH="$WORK/nopub/init.sh" run_init "$ROOT_AK" "$ROOT_SK" "$DR_AK" "$DR_SK"; rc=$?
+if [ "$rc" = 0 ] && grep -qx "bucket anonymous set private s3/public" "$WORK/rc.log" &&
+   ! grep -q "set-json" "$WORK/rc.log" &&
+   test "$(grep -c "^bucket anonymous " "$WORK/rc.log")" = 1 &&
+   grep -qx "admin policy create s3 drust-objects $(cd "$WORK/nopub" && pwd)/drust-objects.json" "$WORK/rc.log" &&
+   grep -q "no anonymous access" "$WORK/init.out"; then
+  ok "without public-read.json, init.sh sets public back to private (no set-json)"
+else
+  fail "without public-read.json: exit $rc, calls: $(grep '^bucket anonymous' "$WORK/rc.log" | tr '\n' '|')"
+fi
 
 # ---- 5. the generator -------------------------------------------------------------
 # A copy under <tmp>/deploy/ so the script's own `root` resolves to <tmp>.

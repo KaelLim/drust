@@ -1,0 +1,100 @@
+{{- if and .Values.storage.enabled .Values.publicFiles.enabled }}
+{{- /* /public/* -> the store's "public" bucket, through Caddy with the Compose rules
+       (files/public-proxy.Caddyfile). A standalone Deployment, not a sidecar of the store:
+       the store's pod template and its NetworkPolicy stay untouched by publicFiles, and the
+       ingress controller can reach only this pod's 8080, never the store's 9000. The pod
+       wears ONLY publicProxy.selectorLabels (never drust.labels, which carries name: drust)
+       and holds no credential: it gets what an anonymous caller gets. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-public-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+data:
+  Caddyfile: {{ .Files.Get "files/public-proxy.Caddyfile" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: public-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "publicProxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "publicProxy.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/caddyfile: {{ .Files.Get "files/public-proxy.Caddyfile" | sha256sum }}
+    spec:
+      {{- with .Values.scheduling.publicProxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.publicProxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.publicProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduling.publicProxy.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: caddy
+          image: {{ .Values.publicProxy.image | quote }}
+          args: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+          env:
+            # The Compose block reads its upstream from this variable; same block, same name.
+            - { name: PUBLIC_OBJECTS_UPSTREAM, value: "{{ include "rustfs.svcName" . }}:9000" }
+          ports:
+            - { name: http, containerPort: 8080 }   # unprivileged: no NET_BIND_SERVICE
+          readinessProbe:                          # admin API is off
+            tcpSocket: { port: 8080 }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            {{- toYaml .Values.resources.publicProxy | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/caddy, readOnly: true }
+            - { name: data, mountPath: /data }   # Caddy's storage dir; without it one error at start
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-public-proxy
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: public-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "drust.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "publicProxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}
