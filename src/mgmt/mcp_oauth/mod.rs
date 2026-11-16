@@ -4,6 +4,7 @@
 //! `db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`. Release notes: CHANGELOG.md.
 pub mod clients;
 pub mod config;
+pub mod envelope;
 pub mod metadata;
 pub mod oauth_error_layer;
 pub mod params;
