@@ -373,6 +373,29 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   stop framing only; the consequence is bounded because the code goes only to the victim's
   own loopback and the attacker would also need the PKCE verifier of that request.
 
+**Deliberate — MCP OAuth code exchange (MA0-7):**
+
+- A wrong `code_verifier` does **not** consume the code, and failed attempts on one code
+  have **no "N strikes and the code is void" limit**. Voiding would let anyone who only saw
+  the loopback callback URL turn the real client's exchange into a replay and revoke its
+  whole grant. This follows the spec rather than relaxing it: OAuth 2.1 §7.5.3 says the AS
+  SHOULD NOT revoke issued tokens on a replayed code that carries invalid parameters, for
+  exactly this denial-of-service reason, and §4.1.3 revokes on a second *valid* token
+  request. A verifier generated as RFC 7636 §7.1 recommends carries ≥ 256 bits of entropy,
+  so guessing is not the threat. Compensating: `store::redeem_code`'s fixed check order with
+  every failure returning before any write (`an_invalid_redemption_writes_nothing`,
+  `total_changes`), and the replay-only-after-every-check rule
+  (`a_failed_second_redemption_does_not_revoke`).
+- The per-code budget is charged **only when a check fails**; a valid exchange of the same
+  code never reads it (`eleven_wrong_verifiers_on_one_code_reach_the_per_code_budget` ends
+  with a 200). Moving the charge before verification looks "cheaper" but lets whoever holds
+  a code without its verifier lock the real client out of its exchange (OAuth 2.1 §7.5.3).
+  Likewise the per-IP miss budget counts unknown codes only.
+- A missing `redirect_uri` or `code_verifier` answers `invalid_grant`, not
+  `invalid_request`: every "known code, incomplete or mismatched request" gets one answer.
+  Requiring `redirect_uri` is a compatibility choice (the SDK sends it), not a security
+  boundary — PKCE stops code injection.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

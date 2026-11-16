@@ -148,6 +148,31 @@ No new route, page or environment variable; no response changes.
   **Without `DRUST_MCP=on`, or with no authorization in progress, sign-in redirects exactly
   as before.** No new environment variable, no schema change, no deploy file change.
 
+### MCP OAuth authorization server — code exchange (MA0-7)
+
+- **`POST /oauth/token` now redeems authorization codes** (only when `DRUST_MCP=on`;
+  nothing changes otherwise). A code is single-use, expires 5 minutes after consent, and is
+  bound to the client id, the exact redirect URI (port included, no case or percent-decoding
+  normalisation), the resource and the PKCE S256 challenge. Success answers
+  `{"access_token":"drust_mcpat_…","token_type":"Bearer","expires_in":<DRUST_MCP_OAUTH_ACCESS_TTL_SECS>,"refresh_token":"drust_mcprt_…","scope":"mcp"}`
+  with `Cache-Control: no-store`. A request that fails ANY check is refused with
+  `invalid_grant` **without consuming the code**, so a wrong `code_verifier` cannot burn a
+  code for the real client; a second request that passes every check is refused and
+  **revokes the whole grant** (`revoke_reason='code_replay'`, OAuth 2.1 §7.5.3 / §4.1.3), and
+  is logged as a `warn` plus an audit row attributed to the admin. A missing `redirect_uri`
+  or `code_verifier` is `invalid_grant` too (one answer for every mismatch). Tokens and codes
+  are stored only as domain-separated hashes. Audit: `mcp_oauth.token.code` on success,
+  `mcp_oauth.grant.revoke` (`code_replay`) on replay, both with the grant owner as the actor;
+  failed attempts write no audit row.
+- **Rate limits never read a valid request.** Unknown codes count against a per-IP budget
+  (30 per 60 s), failed attempts on a known code against a per-code budget (10 per 300 s);
+  exhausting either turns further failures into `429 temporarily_unavailable` with
+  `Retry-After`. The right verifier still succeeds after the per-code budget is spent, so
+  whoever holds a code without its verifier cannot lock the real client out.
+- The refresh grant still answers `unsupported_grant_type` until MA0-8, so keep `on` off
+  hosts anyone relies on. No new environment variable, no schema change, no deploy file
+  change.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,

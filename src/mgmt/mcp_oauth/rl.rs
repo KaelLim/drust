@@ -1,7 +1,8 @@
-//! In-memory limiters for `/oauth/token` and `/oauth/revoke`, and the limiter
-//! key shapes. Budgets are hardcoded (no env): failed lookups per client IP,
-//! verifier failures per code, and refresh exchanges per grant. A request that
-//! presents a valid credential never touches the per-IP miss bucket.
+//! In-memory limiters for `/oauth/token`, and the limiter key shapes
+//! (`/oauth/revoke` reads no budget). Budgets are hardcoded (no env): failed
+//! lookups per client IP, failed checks per code, and refresh exchanges per
+//! grant. A request that presents a valid credential never touches the per-IP
+//! miss bucket.
 
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
 use crate::safety::ip::ClientIp;
@@ -21,7 +22,7 @@ const CLEANUP_EVERY: Duration = Duration::from_secs(60);
 pub struct McpOauthLimiters {
     /// Failed credential lookups, keyed by [`client_ip_key`].
     pub miss_ip: Arc<RateLimiter>,
-    /// Verifier failures on a code that exists, keyed by [`code_key`].
+    /// Failed checks on a code that exists, keyed by [`code_key`].
     pub per_code: Arc<RateLimiter>,
     /// Refresh exchanges on a grant that exists, keyed by [`grant_key`].
     pub per_grant: Arc<RateLimiter>,

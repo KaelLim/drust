@@ -254,8 +254,9 @@ exactly like a path that never existed.
 - **Metadata** is pure (no lock, no I/O, no request header read) and carries
   `Cache-Control: public, max-age=300`, so it must never be derived from `Host` or
   `X-Forwarded-*`.
-- **Token** validates and dispatches only: both grant types answer `unsupported_grant_type`
-  until the code exchange and refresh rotation land. It touches no table.
+- **Token** validates and dispatches; `authorization_code` is the code exchange below, and
+  `refresh_token` answers `unsupported_grant_type` until refresh rotation lands (it touches
+  no table).
 - **Revoke is per grant and not rate-limited.** Any genuine access or refresh token of an
   unrevoked grant — even one that is expired, revoked or rotated — revokes the whole grant
   (`store::lookup_for_revoke` over `find_grant_for_revocation`, then `revoke_mcp_grant` with
@@ -377,6 +378,64 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
   The plaintext code goes into that `Location` and nowhere else — no log, no audit field
   (source pin `plaintext_code_never_reaches_logs_or_audit`). Not rate-limited: the caller
   is a signed-in admin.
+
+### Code redemption (`POST /oauth/token`, `grant_type=authorization_code`)
+
+- **Before any lock**, in error-priority order: `client_id` missing → `invalid_request`,
+  not in `KNOWN_CLIENTS` → `invalid_client` (400: an `Authorization` header was already
+  refused); `code` missing → `invalid_request`; `code` not 43 characters → a miss, never
+  queried. A 43-character string proves nothing — an admin session cookie has that shape —
+  only the hash lookup decides whether it is a code.
+- **One read, every check, then the only writes.** `store::redeem_code` reads the code, its
+  grant and the admin id + `created_at` match in one INNER JOIN (so a code whose grant row
+  is gone is a miss), then checks in a fixed order: code live, grant unrevoked and inside
+  idle and absolute, admin matching, `client_id`, `redirect_uri` byte for byte (missing is a
+  failure; no case or percent-decoding normalisation), `resource` (when sent: our resource
+  and equal to the code row's, or the row has none), verifier shape (RFC 7636 §4.1),
+  S256. **Every check failure returns `Invalid` before the first write**, so a failed
+  attempt never consumes the code. Only after every check passed is `redeemed_at` looked
+  at: set → `Replay`; unset → `UPDATE … WHERE redeemed_at IS NULL AND expires_at > now`
+  (the SQL itself is a single-use gate) and `issue_token_pair`. The handler holds the meta
+  mutex across the whole read-mark-issue sequence, which is what serialises concurrent
+  redemptions; `concurrent_valid_exchanges_issue_at_most_once` pins the observable result.
+  Do not move the read to another connection or put an `.await` inside that transaction.
+- **The handler never commits `Miss` or `Invalid`.** One `Invalid` comes after the
+  `redeemed_at` mark — the grant's deadline crossing its second between the SELECT and the
+  refresh INSERT — and only dropping the transaction rolls that mark back.
+- **Replay = a second request that passed every check.** The handler revokes the whole
+  grant in the same transaction (`GrantOwner::holder`, `code_replay`), commits, and answers
+  `invalid_grant`. One grant has exactly one code (`insert_grant_and_code`), so that is
+  exactly "revoke every token issued from this code" (OAuth 2.1 §4.1.3); changing the
+  one-code-per-grant shape means redesigning this scope. The primary reason a failed second
+  request does NOT revoke is OAuth 2.1 §7.5.3 (no revocation on a replayed code with invalid
+  parameters — otherwise whoever holds a code without its verifier could turn the real
+  client's valid request into a revocation trigger). A replay after the code expired is
+  refused without revoking: the replayer gets nothing.
+- **Rate limits read failures only.** A valid exchange (and a replay) reads no bucket;
+  `Miss` charges `miss_ip` (`rl::client_ip_key` on the handler's `ClientIp`), `Invalid`
+  charges `per_code` (`rl::code_key`); an exhausted bucket turns that failure into
+  `429 temporarily_unavailable` with `Retry-After`.
+- **Issued tokens.** `issue_token_pair` inserts one refresh (`expires_at` = the grant's
+  `MIN(idle, absolute)`; a parent must belong to the same grant, but parent liveness is the
+  caller's job) and one access whose `refresh_id` is that refresh, and sets the grant's
+  `last_used_at` — which is what keeps an exchanged grant out of the sweep's abandoned rule.
+  The access `expires_at` is now + TTL and is **not** capped by the grant's absolute
+  deadline: `find_grant_by_access` checks the grant on every use, so the MCP resource server
+  must authorize through it, never through the access row alone.
+- **Audit and logs.** `mcp_oauth.token.code` and the replay's `mcp_oauth.grant.revoke`
+  (`code_replay`) carry the grant owner as top-level `actor_admin_id` /
+  `actor_email_snapshot` (a request that passed every check presented the code and its
+  verifier), written after the guard is dropped; `Miss` / `Invalid` write none. The replay
+  `warn` carries `grant_id` and `admin_id` only. `server_error` logs the stage and
+  `sqlite_error_without_sql`, never a request parameter.
+- **Requiring `redirect_uri` is compatibility, not a security boundary.** OAuth 2.1 drops it
+  from the token request but lets clients send it; Claude Code's SDK does. If it stops, the
+  fallback is "accept absent, compare when present" — PKCE still stops code injection. A
+  missing `redirect_uri` or `code_verifier` is `invalid_grant`, like every other mismatch.
+- `CodeRedeemRequest`, `IssuedTokens` and `RedeemOutcome` hold plaintext credentials and
+  derive no `Debug` (pin `credential_types_do_not_derive_debug`); tests use `matches!`.
+  `verify_s256` uses `ct_eq` (pin `verify_s256_compares_in_constant_time`) — convention and
+  defence in depth only, the challenge is not a secret.
 
 ## Tenant creation cap and quota tier
 
