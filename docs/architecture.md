@@ -29,13 +29,13 @@ generated_by: docs/gen-architecture.py
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 63 | 529 | 187 | 107 |
+| [`mgmt/`](#srcmgmt) | 63 | 530 | 188 | 107 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
 | [`safety/`](#srcsafety) | 8 | 51 | 2 | 19 |
 | [`storage/`](#srcstorage) | 18 | 192 | 24 | 109 |
-| [`tenant/`](#srctenant) | 39 | 297 | 124 | 80 |
+| [`tenant/`](#srctenant) | 39 | 297 | 124 | 81 |
 
 ## Group dependency graph
 
@@ -233,25 +233,25 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
-- [`mcp_oauth/authorize.rs`](../src/mgmt/mcp_oauth/authorize.rs) — `GET /oauth/authorize` (MA0-PLAN §3.8.3, §3.6). · 13 pub
+- [`mcp_oauth/authorize.rs`](../src/mgmt/mcp_oauth/authorize.rs) — `GET /oauth/authorize`: validates the request and hands it to the consent page. · 14 pub
 - [`mcp_oauth/clients.rs`](../src/mgmt/mcp_oauth/clients.rs) — Pinned OAuth clients. drust accepts exactly the clients listed here; there · 3 pub
 - [`mcp_oauth/config.rs`](../src/mgmt/mcp_oauth/config.rs) — `McpOauthConfig`: whether the MCP OAuth authorization server is on, the public · 10 pub
-- [`mcp_oauth/consent.rs`](../src/mgmt/mcp_oauth/consent.rs) — MA0-6 — browser consent for the MCP OAuth AS (`GET /oauth/consent`, · 8 pub
-- [`mcp_oauth/envelope.rs`](../src/mgmt/mcp_oauth/envelope.rs) — Resume envelope and resume cookie (MA0-PLAN §3.5.2, §3.5.3). · 17 pub
-- [`mcp_oauth/metadata.rs`](../src/mgmt/mcp_oauth/metadata.rs) — RFC 8414 authorization-server metadata (MA0-PLAN §3.7, §3.8.1). · 2 pub
+- [`mcp_oauth/consent.rs`](../src/mgmt/mcp_oauth/consent.rs) — Browser consent for the MCP OAuth AS (`GET /oauth/consent`, · 8 pub
+- [`mcp_oauth/envelope.rs`](../src/mgmt/mcp_oauth/envelope.rs) — Resume envelope and resume cookie: the signed authorize request that the · 17 pub
+- [`mcp_oauth/metadata.rs`](../src/mgmt/mcp_oauth/metadata.rs) — RFC 8414 authorization-server metadata (`GET /.well-known/oauth-authorization-server`). · 2 pub
 - [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 22 pub
-- [`mcp_oauth/oauth_error_layer.rs`](../src/mgmt/mcp_oauth/oauth_error_layer.rs) — OAuth JSON errors for `/oauth/token` and `/oauth/revoke` (MA0-PLAN §3.6). · 3 pub
-- [`mcp_oauth/params.rs`](../src/mgmt/mcp_oauth/params.rs) — Form / query parameter parsing for the OAuth endpoints (MA0-PLAN §3.3). · 3 pub
+- [`mcp_oauth/oauth_error_layer.rs`](../src/mgmt/mcp_oauth/oauth_error_layer.rs) — OAuth JSON errors for `/oauth/token` and `/oauth/revoke`. · 3 pub
+- [`mcp_oauth/params.rs`](../src/mgmt/mcp_oauth/params.rs) — Form / query parameter parsing for the OAuth endpoints. · 3 pub
 - [`mcp_oauth/pkce.rs`](../src/mgmt/mcp_oauth/pkce.rs) — PKCE (RFC 7636), S256 only: the authorize-side challenge shape check and · 3 pub
-- [`mcp_oauth/redirect.rs`](../src/mgmt/mcp_oauth/redirect.rs) — `redirect_uri` validation for `GET /oauth/authorize` (MA0-PLAN §3.8.2). · 5 pub
-- [`mcp_oauth/refresh.rs`](../src/mgmt/mcp_oauth/refresh.rs) — MA0-8 — the refresh_token grant's state machine (design §4.6, plan §3.8.5b). · 4 pub
-- [`mcp_oauth/revoke.rs`](../src/mgmt/mcp_oauth/revoke.rs) — `POST /oauth/revoke` — RFC 7009, always per GRANT (MA0-PLAN §3.8.6). · 1 pub
+- [`mcp_oauth/redirect.rs`](../src/mgmt/mcp_oauth/redirect.rs) — `redirect_uri` validation for `GET /oauth/authorize`. · 5 pub
+- [`mcp_oauth/refresh.rs`](../src/mgmt/mcp_oauth/refresh.rs) — The refresh_token grant's state machine. · 4 pub
+- [`mcp_oauth/revoke.rs`](../src/mgmt/mcp_oauth/revoke.rs) — `POST /oauth/revoke` — RFC 7009, always per GRANT. · 1 pub
 - [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for `/oauth/token`, and the limiter key shapes · 11 pub
 - [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives, token-to-grant lookups, · 21 pub
 - [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
-- [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token` (MA0-PLAN §3.8.4): request validation, grant-type · 3 pub
+- [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token`: request validation, grant-type dispatch, the · 3 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
-- [`mcp_oauth/ui.rs`](../src/mgmt/mcp_oauth/ui.rs) — MA0-9 — the admin-plane faces of MCP OAuth grants: the settings card · 7 pub
+- [`mcp_oauth/ui.rs`](../src/mgmt/mcp_oauth/ui.rs) — The admin-plane faces of MCP OAuth grants: the settings card · 7 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
 - [`mod.rs`](../src/mgmt/mod.rs) — 37 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
