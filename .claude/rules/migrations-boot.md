@@ -14,6 +14,9 @@ Fires on `src/db/` (migrations), `src/main.rs` (boot), `src/storage/meta.rs` (fr
 
 The same discipline elsewhere:
 
+- **MCP OAuth cleanup is not a migration.** Expired and orphaned `_mcp_oauth_*` rows are
+  deleted by the hourly `mcp_oauth::sweep` in the device-code reaper loop, never by
+  `run_migrations` — the boot path creates those tables and deletes nothing.
 - **T4 (CLI multi-PAT)**: legacy-revoke + backfill probe qualified `AND label IS NULL`, index relax guarded on `sqlite_master.sql NOT LIKE '%label%'`, reroll revokes only the unlabeled UI PAT.
 - **One-shot backfills that must NEVER re-run.** `tenants.owner_admin_id`: the boot backfill (assigns legacy live tenants to the lowest-id owner; soft-deleted stay NULL) **runs exactly once** — inside the `owner_admin_id` column-create branch, NOT every boot — so a later deliberate NULL (orphan / transfer-to-null) is never re-owned. The **egress allowlist** seed from each tenant's existing `_system_webhooks` origins is guarded by a marker — the "never resurrect a removed entry every boot" idempotency invariant.
 - **`strict_rebuild_tenant`**: boot-time **idempotent** migration (gated on `pragma_table_list.strict`) rebuilding pre-STRICT collections via per-table copy-then-swap, reconstructing DDL verbatim from `sqlite_master.sql` (temp table `_system_strict_tmp_<name>`, collision-proof; the pre-commit `foreign_key_check` is scoped to the rebuilt table so one orphan can't block clean siblings).

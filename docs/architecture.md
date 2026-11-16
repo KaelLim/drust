@@ -22,14 +22,14 @@ generated_by: docs/gen-architecture.py
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
 | [`(root)/`](#srcroot) | 6 | 34 | 3 | 30 |
-| [`auth/`](#srcauth) | 10 | 53 | 3 | 50 |
+| [`auth/`](#srcauth) | 10 | 53 | 3 | 51 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 48 | 415 | 126 | 56 |
+| [`mgmt/`](#srcmgmt) | 50 | 428 | 128 | 57 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
@@ -234,8 +234,10 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
 - [`mcp_oauth/config.rs`](../src/mgmt/mcp_oauth/config.rs) — `McpOauthConfig`: whether the MCP OAuth authorization server is on, the public · 10 pub
-- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 3 pub
+- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 5 pub
 - [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for `/oauth/token` and `/oauth/revoke`, and the limiter · 11 pub
+- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives and token-to-grant lookups. · 9 pub
+- [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
 - [`mod.rs`](../src/mgmt/mod.rs) — 37 pub

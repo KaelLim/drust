@@ -158,6 +158,73 @@ that returns JSON 401 and never a 302.
 bearer plus `Accept: text/html` still redirects to `/login`; only a present bearer or
 `Accept: application/json` gets a JSON 401.
 
+## MCP OAuth authorization server
+
+### Grants, revocation and cleanup
+
+The unit of revocation is the **grant** (`_mcp_oauth_grants`). Every revoke goes through
+`mcp_oauth::store::revoke_mcp_grant(tx, &GrantOwner, grant_id, RevokeReason)`, which
+revokes the grant, its refresh and access rows and upload tickets, and DELETEs its
+unredeemed codes, all in the caller's transaction. The owner is bound in the SQL
+(`WHERE id = ? AND admin_id = ?`); `GrantOwner` has no public field and no `Default`, and
+is minted only by `GrantOwner::caller`, `GrantOwner::holder` (a `GrantRef`, which only
+`store.rs` constructs; pinned to that one grant, so it can never revoke a sibling grant of
+the same admin) and, from MA0-9, `GrantOwner::managed` (team-page authority). Absent, not
+yours and already revoked all return the same `RevokedGrant::NotFound` — the management
+plane answers one 404. **The owner is bound in SQL; the type only forces you to name one.**
+`GrantOwner::caller` trusts the `AdminId` it is handed — take it only from the request's
+`Extension<AdminId>`, never construct one from a path or form value.
+
+**No post-commit step**, as long as all three hold: MCP OAuth tokens are not in
+`tenant::auth_cache` or any other cache; they cannot open SSE or rooms streams; and no MCP
+request holds a connection or session open past a single request (the account MCP
+endpoint is stateless — no GET stream, no rmcp session — and a tus upload bound to a
+ticket re-checks the ticket and its grant on every PATCH). A phase that breaks any of them
+gives every `revoke_mcp_grant` caller and `remove_admin` an eviction duty (CLAUDE.md
+invariants 4 and 5). `change_role`, owner transfer, tenant soft-delete and id recycling
+deliberately do NOT revoke grants: visibility is decided on every call.
+
+**Child rows never vouch for themselves.** Every read of `_mcp_oauth_codes`,
+`_mcp_oauth_refresh`, `_mcp_oauth_access` or `_mcp_upload_tickets` that decides validity
+INNER JOINs `_mcp_oauth_grants` AND `admins` on `id` + `created_at`; a child row's own
+columns (including the ticket's copied `admin_id`) never prove the grant exists. A
+connection without `PRAGMA foreign_keys = ON` that deletes a grant leaves its children
+behind, and this join is what keeps them dead until the sweep removes them.
+
+**Three layers against `admins` rowid recycling**, in this order of strength:
+(1) `remove_admin` deletes the grants explicitly in its transaction; (2) the FK
+`ON DELETE CASCADE`, which needs `PRAGMA foreign_keys = ON` on the connection; (3) every
+lookup matches `admins.created_at` against the grant's `admin_created_at`. Layer 3 does
+NOT hold when the top rowid is recycled within the same second (`created_at` is second
+precision) — never remove layer 1 on the grounds that the FK "already cascades".
+
+**Two lookup strengths.** `find_grant_by_access` / `find_grant_by_refresh` are
+authorization strength: token unrevoked and unexpired, grant unrevoked and inside both its
+idle and absolute deadlines, admin id AND created_at matching. A refresh's rotation state
+is not part of them — that decision, with its grace window, belongs to `refresh::rotate`
+alone, and `find_grant_by_refresh` never decides whether to issue tokens.
+`find_grant_for_revocation` is revocation strength, for `/oauth/revoke` only: the access or
+refresh row merely has to exist (revoked, expired, rotated or superseded all count) and its
+grant must be unrevoked with a matching admin — so a client revoking with a just-expired
+access token really ends the grant instead of getting a 200 that changed nothing. **Only a
+`GrantRef` from `find_grant_by_access` may authorize an MCP call**; every other `GrantRef`
+(revocation lookup, refresh probe, code replay, refresh reuse) may only feed
+`GrantOwner::holder`. A wrong prefix or length answers `None` without touching SQL.
+
+**Sweep.** `mcp_oauth::sweep::sweep_mcp_oauth` runs in the hourly device-code reaper loop
+in `main.rs`, unconditionally (whether or not `DRUST_MCP` is on), in one transaction:
+expired codes, access, refresh and upload tickets; grants whose
+`COALESCE(revoked_at, MIN(idle_expires_at, absolute_expires_at))` is more than 30 days
+old; grants that can never be redeemed any more (`authorization_code`, never used, no code
+and no refresh left — a double-clicked or abandoned approval); and orphan grants whose
+admin id/created_at no longer match. A rotated refresh is kept until its own `expires_at` —
+reuse detection needs the row. Not on the boot path. Restoring a backup resurrects grants
+revoked after the snapshot. Turning `DRUST_MCP` off pauses MCP OAuth and revokes nothing:
+grants still inside their limits work again when it is turned back on.
+
+`remove_admin`'s audit field `revoked_mcp_grants` counts the removed admin's grants that
+were still live at removal, not the rows its DELETE removed.
+
 ## Tenant creation cap and quota tier
 
 Both are **admin-plane only**, deliberately: a tenant's own service key must never be able
@@ -238,6 +305,8 @@ remains (the crud.rs doc on that function): between releasing the lock and the f
 evictions, an admin PAT request can already reach the id, and if a request racing the
 soft-delete had left an old-incarnation pool cached, it can see that pool and, at worst,
 re-insert it into the MCP cache after the sweep — two races and a trusted caller.
+The same rule covers MCP OAuth grants: `remove_admin` deletes `_mcp_oauth_grants` for the
+removed admin explicitly, inside the same transaction, before `DELETE FROM admins`.
 
 ## Provenance
 

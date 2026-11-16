@@ -61,6 +61,31 @@ Groundwork only: no route, page or response changes. Nothing reads the new state
 - **Rollback**: reverting leaves the five empty tables in place; older binaries ignore them.
   Their shape is fixed from the first boot on any host.
 
+### MCP OAuth authorization server — revocation and cleanup (MA0-3)
+
+No new route, page or environment variable; no response changes.
+
+- **Removing an admin deletes their MCP OAuth grants in the same transaction.**
+  `DELETE /admin/team/{id}` now explicitly deletes the removed admin's
+  `_mcp_oauth_grants` rows (their codes, refresh and access tokens and upload tickets
+  go with them through the foreign key) before deleting the `admins` row. The response
+  is unchanged; the `admin.team.remove` audit entry gains `revoked_mcp_grants` — the
+  number of that admin's grants that were still live (unrevoked, inside both deadlines)
+  at removal, not the number of rows deleted (0 on a host that never enabled `DRUST_MCP`).
+- **Hourly MCP OAuth cleanup.** The hourly device-code reaper also deletes expired
+  authorization codes, access and refresh tokens and upload tickets, grants whose
+  revocation or expiry is more than 30 days old, grants that can never be redeemed any
+  more (an approval whose code expired unused), and grants whose admin no longer exists.
+  It runs whether or not `DRUST_MCP` is on, does nothing on empty tables, and needs no
+  deploy change on systemd or Docker.
+- Operations note: restoring a backup brings back any MCP grant revoked after the
+  snapshot was taken, exactly like admin PATs. After a restore, revoke MCP
+  connections again from the settings page (available from MA0-9).
+- Operations note: turning `DRUST_MCP` off **pauses** MCP OAuth; it revokes nothing.
+  Grants still inside their idle and absolute limits work again when it is turned back
+  on. To cut connections, revoke them (settings page or team page, from MA0-9) or
+  remove the admin.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,

@@ -294,6 +294,30 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
 - An unrecognised `DRUST_MCP`, or an unusable `DRUST_PUBLIC_URL` with `DRUST_MCP=on`,
   **boots with MCP off and an `error` line**, never a boot failure — fail closed for the new
   surface without taking the trusted planes down. Do not turn it into a startup error.
+- `remove_admin` deletes `_mcp_oauth_grants` **explicitly** although the FK cascades: the
+  cascade needs `PRAGMA foreign_keys = ON` on the deleting connection, and the
+  `admin_created_at` check that backs both up fails on a same-second rowid recycle
+  (`admins.created_at` is second precision). The explicit DELETE is layer 1
+  (`.claude/rules/auth-tenancy.md` §MCP OAuth). Pinned by
+  `remove_admin_deletes_grants_even_without_fk_cascade`.
+- `revoke_mcp_grant` and the MCP sweep do **not** clear the auth cache or evict any bus:
+  MCP OAuth tokens are never cached and open no SSE or rooms stream. That is also why no
+  MCP revoke site appears in `pat_evict_pin`'s `SITES`.
+- The MCP OAuth sweep runs **even when `DRUST_MCP` is off** — a host that was once `on`
+  keeps rows. It is not a boot step (invariant 1).
+- `find_grant_for_revocation` accepts an expired, revoked, rotated or superseded token
+  of an unrevoked grant: revoking the grant is the narrowing direction (RFC 7009 §2.1),
+  and requiring a live token made `/oauth/revoke` answer 200 while the grant stayed
+  alive. Its `GrantRef` may only feed `GrantOwner::holder`; only `find_grant_by_access`
+  authorizes. `find_grant_by_refresh` likewise ignores rotation state on purpose:
+  rotation, grace and reuse are `refresh::rotate`'s decision alone.
+- `GrantOwner::holder` is pinned to the grant its `GrantRef` proves: a token of G1 can
+  never revoke G2, even of the same admin. `caller` is not pinned and is only ever fed
+  the request's `Extension<AdminId>`.
+- `remove_admin` does **not** also delete the four MCP child tables: the production meta
+  connection is FK ON, and a child row orphaned on an FK-OFF connection is dead because
+  every validity read INNER JOINs grants and admins (`.claude/rules/auth-tenancy.md`
+  §MCP OAuth, "Child rows never vouch for themselves").
 
 ## Canonical sources — do not hand-verify against prose
 
