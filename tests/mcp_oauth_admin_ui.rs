@@ -887,12 +887,15 @@ async fn settings_card_lists_own_grants_with_flags() {
             .unwrap();
         (g1, g2, g3, ga, host)
     };
-    let display = {
+    let displays: Vec<String> = {
         let c = fx.meta.lock().await;
-        drust::mgmt::mcp_oauth::ui::list_grants_for_settings(&c, fx.owner_id).unwrap()[0]
-            .client_display
-            .clone()
+        drust::mgmt::mcp_oauth::ui::list_grants_for_settings(&c, fx.owner_id)
+            .unwrap()
+            .into_iter()
+            .map(|g| g.client_display)
+            .collect()
     };
+    assert_eq!(displays.len(), 2, "g1 and g2 listed");
     let s = ui_session(&fx, fx.owner_id).await;
     let resp = ui_send(&fx.app, "GET", "/admin/settings", Some(&s), None, HTML).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -914,7 +917,17 @@ async fn settings_card_lists_own_grants_with_flags() {
     assert_eq!(card.matches("<span class=\"pill warn\"").count(), 1);
     assert!(card.contains("<code data-mcp-sibling-at>2026-01-02 03:04:05</code>"));
     assert!(card.contains(&format!("<code>{host}</code>")));
-    assert!(card.contains(&display));
+    // Anchored on the row's name cell: the card description also mentions
+    // the client by name, so a bare `contains` could not fail.
+    for display in &displays {
+        let cell = format!("<div class=\"key-name\">{display}");
+        let want = displays.iter().filter(|d| *d == display).count();
+        assert_eq!(
+            card.matches(&cell).count(),
+            want,
+            "client_display rendered per row"
+        );
+    }
     assert!(card.contains("data-mcp-grant-revoke-all"));
 }
 
