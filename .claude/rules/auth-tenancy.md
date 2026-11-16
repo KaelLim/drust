@@ -171,7 +171,8 @@ unredeemed codes, all in the caller's transaction. The owner is bound in the SQL
 (`WHERE id = ? AND admin_id = ?`); `GrantOwner` has no public field and no `Default`, and
 is minted only by `GrantOwner::caller`, `GrantOwner::holder` (a `GrantRef`, which only
 `store.rs` constructs; pinned to that one grant, so it can never revoke a sibling grant of
-the same admin) and, from MA0-9, `GrantOwner::managed` (team-page authority). Absent, not
+the same admin) and `GrantOwner::managed` (team-page authority; it takes a `ui::TeamAuthority`,
+which only `ui::team_authority` builds — see Revoke UI below). Absent, not
 yours and already revoked all return the same `RevokedGrant::NotFound` — the management
 plane answers one 404. **The owner is bound in SQL; the type only forces you to name one.**
 `GrantOwner::caller` trusts the `AdminId` it is handed — take it only from the request's
@@ -468,7 +469,7 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
 - **Deliberate deviation from the strict reading of OAuth 2.1 §4.3.1**: inside the grace
   siblings coexist and the loser is cut alone (design §9 #8 (a), user decision) — several
   Claude Code processes on one machine share one credential and race refreshes. Its cost: a
-  thief who wins an in-grace race keeps a branch until the grant's deadline (the MA0-9
+  thief who wins an in-grace race keeps a branch until the grant's deadline (the
   settings card shows `sibling_rejected_at` for manual revocation). Do not "tighten" b) into a grant
   revoke without re-asking the user.
 - **`GrantRef` for e) only**: `RefreshState::holder` is `Some` only for a rotated,
@@ -514,6 +515,44 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   grace looks like a race or a theft.
 - `RotateOutcome` holds `IssuedTokens` and derives no `Debug` (pin
   `rotate_outcome_does_not_derive_debug` in `refresh.rs`); tests use `matches!`.
+
+### Revoke UI (settings card, team page)
+
+`mcp_oauth::settings_routes` merges into `settings_router` and `mcp_oauth::team_routes` into
+`team_router`, each after that router's `.with_state`, only when `enabled()`; both ride
+`protected` (cookie or `drust_pat_*`, `AuthMethod` read for the audit `auth_method`
+`admin_cookie` / `admin_pat`). Handlers are in `mcp_oauth::ui`, never in `admin_team.rs`
+(that file is a `pat_evict_pin` site).
+
+- **Settings (`POST /admin/settings/mcp-grants/{id}/revoke`, `…/revoke-all`)** act on the
+  caller's own grants only, whatever the role: `GrantOwner::caller`, fed ONLY from the
+  request's `Extension<AdminId>`. Under `src/mgmt/mcp_oauth/`, `AdminId(` appears only in an
+  extractor's destructuring pattern — never built from a path, form or query value.
+  Foreign, unknown and already-revoked ids are one `404 MCP_GRANT_NOT_FOUND`; success and an
+  empty revoke-all are a 303 to `base("/admin/settings")`. `settings_page` reads the grant
+  list only when `enabled()`; a failed read renders an error line AND the Revoke all form
+  (which finds live ids itself), never an "empty" card. Revoke-all's count can exceed the
+  rows the card showed: the list also matches `admin_created_at`, `revoke_all_mcp_grants`
+  matches `admin_id` only.
+- **Team (`DELETE /admin/team/{id}/mcp-grants`)**: `{id}` is an admin id.
+  `require_sees_team_layer` gates only GET, so the authority is in the handler:
+  `ui::team_authority` = `remove_admin`'s matrix — not `can_manage_members` →
+  `403 NOT_A_MANAGER` (before any lookup, so a member learns nothing about ids); target
+  missing → `404 ADMIN_NOT_FOUND`; target role other than `member` and caller not
+  `can_manage_privileged` → `403 PRIVILEGED_ROLE_REQUIRED` (an allow-list on the target role,
+  so an unknown stored role fails closed). An admin revoking their OWN grants here therefore
+  gets 403, exactly like removing themselves; the settings page is their way. The target's
+  role is read on the same meta guard the revoke runs under; the caller's role comes from
+  `admin_profile_layer` (an earlier lock — the same shape as `remove_admin`).
+  `TeamAuthority`'s field is private and `GrantOwner::managed` is its only consumer: a
+  reminder not to skip the gate, not a security boundary (`AdminProfileExt` is all-pub).
+- **No post-commit step**: no auth-cache clear, no bus eviction, no `clear_admin_pat` — the
+  three conditions under "Grants, revocation and cleanup" hold. A cache added for MCP tokens
+  later must be evicted by these three handlers and every other `revoke_mcp_grant` caller.
+- **`DRUST_MCP` off is a pause, not a revocation**: the card and routes disappear, the grants
+  stay live and work again when it is turned back on. To cut a connection off, revoke it
+  before turning MCP off or right after turning it back on. There is no boot-time revoke
+  (invariant 1).
 
 ## Tenant creation cap and quota tier
 

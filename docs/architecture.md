@@ -21,19 +21,19 @@ generated_by: docs/gen-architecture.py
 
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
-| [`(root)/`](#srcroot) | 6 | 34 | 3 | 30 |
-| [`auth/`](#srcauth) | 10 | 54 | 3 | 52 |
+| [`(root)/`](#srcroot) | 6 | 34 | 3 | 31 |
+| [`auth/`](#srcauth) | 10 | 54 | 3 | 53 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 62 | 519 | 181 | 104 |
+| [`mgmt/`](#srcmgmt) | 63 | 529 | 187 | 107 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
-| [`safety/`](#srcsafety) | 8 | 51 | 2 | 18 |
+| [`safety/`](#srcsafety) | 8 | 51 | 2 | 19 |
 | [`storage/`](#srcstorage) | 18 | 192 | 24 | 109 |
 | [`tenant/`](#srctenant) | 39 | 297 | 124 | 80 |
 
@@ -239,7 +239,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`mcp_oauth/consent.rs`](../src/mgmt/mcp_oauth/consent.rs) — MA0-6 — browser consent for the MCP OAuth AS (`GET /oauth/consent`, · 8 pub
 - [`mcp_oauth/envelope.rs`](../src/mgmt/mcp_oauth/envelope.rs) — Resume envelope and resume cookie (MA0-PLAN §3.5.2, §3.5.3). · 17 pub
 - [`mcp_oauth/metadata.rs`](../src/mgmt/mcp_oauth/metadata.rs) — RFC 8414 authorization-server metadata (MA0-PLAN §3.7, §3.8.1). · 2 pub
-- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 19 pub
+- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 22 pub
 - [`mcp_oauth/oauth_error_layer.rs`](../src/mgmt/mcp_oauth/oauth_error_layer.rs) — OAuth JSON errors for `/oauth/token` and `/oauth/revoke` (MA0-PLAN §3.6). · 3 pub
 - [`mcp_oauth/params.rs`](../src/mgmt/mcp_oauth/params.rs) — Form / query parameter parsing for the OAuth endpoints (MA0-PLAN §3.3). · 3 pub
 - [`mcp_oauth/pkce.rs`](../src/mgmt/mcp_oauth/pkce.rs) — PKCE (RFC 7636), S256 only: the authorize-side challenge shape check and · 3 pub
@@ -251,6 +251,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
 - [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token` (MA0-PLAN §3.8.4): request validation, grant-type · 3 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
+- [`mcp_oauth/ui.rs`](../src/mgmt/mcp_oauth/ui.rs) — MA0-9 — the admin-plane faces of MCP OAuth grants: the settings card · 7 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
 - [`mod.rs`](../src/mgmt/mod.rs) — 37 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub

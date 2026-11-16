@@ -415,6 +415,24 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   the `(grant_id, refresh_id)` pair read from the presented token's own row in the same
   transaction, and every UPDATE also binds `grant_id`. It is not an IDOR surface.
 
+**Deliberate — MCP OAuth revoke UI (MA0-9):**
+
+- MCP grant revoke surfaces carry no `require_owner_layer`, no CSRF field, no rate limit and
+  no cache or bus eviction. `/admin/settings/mcp-grants/*` acts only on the caller's own
+  grants (owner bound in SQL through `GrantOwner::caller`, fed only from
+  `Extension<AdminId>`), and `DELETE /admin/team/{id}/mcp-grants` applies `remove_admin`'s
+  matrix in the handler (`ui::team_authority`) — neither is a host-wide surface, so
+  invariant 8 does not apply. Revocation narrows access, so like `cli-tokens/{id}/revoke` it
+  relies on the `SameSite=Lax` session cookie alone, and a forced revoke costs only a
+  re-authorization. MCP grants are not in the auth cache and MCP tokens cannot open SSE or
+  rooms, so there is nothing to evict. Compensating module:
+  `mcp_oauth::store::revoke_mcp_grant`. Revisit if MCP tokens are ever cached.
+- An admin revoking their OWN connections from the team page gets
+  `403 PRIVILEGED_ROLE_REQUIRED`, the same answer `remove_admin` gives an admin acting on
+  their own row; the settings page's Revoke all is their way. Do not special-case "self".
+- `DRUST_MCP` off pauses grants and revokes nothing (owner decision): no boot-time revoke
+  (that would be a credential revocation on the boot path, invariant 1).
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

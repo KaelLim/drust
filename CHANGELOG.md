@@ -205,6 +205,33 @@ No new route, page or environment variable; no response changes.
   successful refresh writes no audit row.
 - No new environment variable, no schema change, no deploy file change.
 
+### MCP OAuth authorization server — settings card and team revoke (MA0-9)
+
+- **Settings → "MCP connections" and a team-page revoke (only when `DRUST_MCP=on`).** The
+  settings page lists the MCP OAuth connections you authorized (client, callback host, when
+  authorized and last used in UTC, an "expired" flag, and a "duplicate refresh" flag with
+  the time a superseded refresh token of that connection was last presented), with a
+  per-row Revoke and a Revoke all. Revoking acts only on your own connections, whatever
+  your role: another admin's connection id answers `404 MCP_GRANT_NOT_FOUND`, exactly like
+  an unknown or already-revoked id. If the list cannot be read, the card says so and still
+  offers Revoke all. The team page gains "Revoke MCP" on the rows where "Remove" already
+  appears (`DELETE /admin/team/{id}/mcp-grants`, `200 {"revoked": n}`, same authority as
+  removing that admin: a member gets `403 NOT_A_MANAGER`, an admin acting on an owner or
+  admin row — including their own — gets `403 PRIVILEGED_ROLE_REQUIRED`, an unknown id
+  `404 ADMIN_NOT_FOUND`); the account, its sessions and its PATs are untouched. Both faces
+  accept the session cookie and a `drust_pat_*` bearer, like the rest of `/admin/*`; an MCP
+  access token is refused there. A revoked connection's refresh token answers
+  `invalid_grant` at `/oauth/token`, so Claude Code re-authorizes.
+- **With MCP off, neither page changes by a single byte and the three routes are not
+  mounted.** Turning `DRUST_MCP` off pauses MCP connections; it does not revoke them — they
+  come back when it is turned on again, within their idle and absolute limits. To cut a
+  connection off, revoke it here before turning MCP off, or right after turning it back on.
+- Audit: `mcp_oauth.grant.revoke` (`reason=user` with `grant_id`, or one row
+  `reason=user_all` with `revoked`) and `admin.mcp_grant.revoke` (`target_admin_id`,
+  `revoked`), with the acting admin as the top-level actor and `auth_method` `admin_cookie`
+  or `admin_pat`.
+- No new environment variable, no schema change, no deploy file change.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,

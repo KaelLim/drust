@@ -120,6 +120,7 @@ reachable by an untrusted caller.
 | `/oauth/authorize` | unauthenticated; mounted only when `DRUST_MCP=on`. Writes nothing. Before client and `redirect_uri` validation it answers an HTML error page and never redirects; after it, only to the pinned loopback `redirect_uri` |
 | `/oauth/consent`, `/oauth/consent/approve`, `/oauth/consent/deny` | **admin session cookie only** — a `drust_pat_*` bearer gets 403 `MCP_CONSENT_COOKIE_REQUIRED`; mounted only when `DRUST_MCP` resolves to enabled |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
+| `/admin/settings/mcp-grants/*`, `DELETE /admin/team/{id}/mcp-grants` | admin session cookie or `drust_pat_*` — mounted only when `DRUST_MCP=on`. Settings acts on the caller's own grants only (404 otherwise); the team route carries `remove_admin`'s authority matrix in the handler |
 | `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose and k3s; on k3s through the chart's `public-proxy` Caddy), never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
