@@ -402,7 +402,10 @@ pub async fn consent_page(
         Ok(Some(i)) => i,
         Ok(None) => return fail(Fail::AdminMissing, return_link(cfg, &wire, now), false),
         Err(e) => {
-            tracing::warn!(error = ?e, "mcp consent page: admin lookup failed");
+            tracing::warn!(
+                error = %crate::error::sqlite_error_without_sql(&e),
+                "mcp consent page: admin lookup failed"
+            );
             return fail(Fail::Internal, return_link(cfg, &wire, now), false);
         }
     };
@@ -573,7 +576,10 @@ pub async fn consent_approve(
             return fail_page(locale, theme, Fail::AdminMissing, back(), true, true);
         }
         Err(e) => {
-            tracing::warn!(error = ?e, "mcp consent approve: grant insert failed");
+            tracing::warn!(
+                error = %crate::error::sqlite_error_without_sql(&e),
+                "mcp consent approve: grant insert failed"
+            );
             return fail_page(locale, theme, Fail::Internal, back(), true, true);
         }
     };
