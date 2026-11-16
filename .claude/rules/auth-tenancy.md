@@ -418,7 +418,10 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
 - **Issued tokens.** `issue_token_pair` inserts one refresh (`expires_at` = the grant's
   `MIN(idle, absolute)`; a parent must belong to the same grant, but parent liveness is the
   caller's job) and one access whose `refresh_id` is that refresh, and sets the grant's
-  `last_used_at` — which is what keeps an exchanged grant out of the sweep's abandoned rule.
+  `last_used_at`. The sweep's abandoned rule deletes only a never-used grant with no code
+  and no refresh row left, so a fresh refresh row spares an exchanged grant too, but
+  `last_used_at` is what still spares it once its code and refresh rows have been swept
+  (`an_exchanged_grant_is_not_swept_as_abandoned`).
   The access `expires_at` is now + TTL and is **not** capped by the grant's absolute
   deadline: `find_grant_by_access` checks the grant on every use, so the MCP resource server
   must authorize through it, never through the access row alone.

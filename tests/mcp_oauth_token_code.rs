@@ -383,14 +383,26 @@ async fn an_exchanged_grant_is_not_swept_as_abandoned() {
         let out = store::redeem_code(&tx, &cfg(), &request(&s)).unwrap();
         assert!(matches!(out, RedeemOutcome::Issued { .. }));
         tx.commit().unwrap();
-        conn.execute(
-            "UPDATE _mcp_oauth_codes SET expires_at = datetime('now','-1 second')",
-            [],
+        // The abandoned rule spares a grant that still has a code or a refresh
+        // row, so take both away: only last_used_at may keep this grant.
+        conn.execute_batch(
+            "UPDATE _mcp_oauth_codes SET expires_at = datetime('now','-1 second'); \
+             UPDATE _mcp_oauth_refresh SET expires_at = datetime('now','-1 second'); \
+             UPDATE _mcp_oauth_access SET expires_at = datetime('now','-1 second');",
         )
         .unwrap();
+        let last_used: Option<String> = conn
+            .query_row(
+                "SELECT last_used_at FROM _mcp_oauth_grants WHERE id = ?1",
+                params![s.grant_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(last_used.is_some(), "the exchange set last_used_at");
     }
     let swept = drust::mgmt::mcp_oauth::sweep::sweep_mcp_oauth(&fx.meta).await;
     assert_eq!(swept.codes, 1, "the redeemed code expired and was swept");
+    assert_eq!(swept.refresh, 1, "its refresh expired and was swept");
     assert_eq!(swept.abandoned, 0);
     let conn = fx.meta.lock().await;
     assert_eq!(
