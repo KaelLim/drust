@@ -41,7 +41,8 @@ CREATE INDEX IF NOT EXISTS idx_cli_device_codes_expires ON _cli_device_codes(exp
 // `add_column_if_missing` and are appended LAST here in the same order (see the
 // column-order note on SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS). The
 // `--` comments INSIDE each CREATE TABLE body are stored verbatim in
-// sqlite_master.sql, so they are part of the frozen text too.
+// sqlite_master.sql, so they are part of the frozen text too. The exact text is
+// pinned by `mcp_oauth_ddl_text_is_frozen`.
 //
 // Names MUST stay `_mcp_*`: run_migrations DROPs four `_oauth_*` tables on every
 // boot (v1.29.2 retraction). Pinned by `mcp_oauth_rows_survive_reboot`.
@@ -3745,6 +3746,139 @@ mod tests {
                  never reorder or retype. Hashes only — never a plaintext token column."
             );
         }
+    }
+
+    /// Every `_mcp_*` table and index, as `sqlite_master.sql` stores it on a
+    /// fresh install, in (type, name) order. Automatic indexes (NULL sql) skipped.
+    fn mcp_ddl_text(c: &Connection) -> String {
+        mcp_schema(c)
+            .into_iter()
+            .filter_map(|(ty, name, sql)| sql.map(|sql| format!("-- {ty} {name}\n{sql};\n")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The exact DDL a host gets on its first boot. `mcp_oauth_fresh_install_matches_migration`
+    /// builds both of its sides from the same const, so it cannot see a type, constraint or
+    /// comment edit; this literal can.
+    const FROZEN_MCP_DDL: &str = r#"-- index idx_mcp_oauth_access_expires
+CREATE INDEX idx_mcp_oauth_access_expires ON _mcp_oauth_access(expires_at);
+
+-- index idx_mcp_oauth_access_grant
+CREATE INDEX idx_mcp_oauth_access_grant   ON _mcp_oauth_access(grant_id);
+
+-- index idx_mcp_oauth_access_refresh
+CREATE INDEX idx_mcp_oauth_access_refresh ON _mcp_oauth_access(refresh_id);
+
+-- index idx_mcp_oauth_codes_expires
+CREATE INDEX idx_mcp_oauth_codes_expires ON _mcp_oauth_codes(expires_at);
+
+-- index idx_mcp_oauth_codes_grant
+CREATE INDEX idx_mcp_oauth_codes_grant   ON _mcp_oauth_codes(grant_id);
+
+-- index idx_mcp_oauth_grants_admin
+CREATE INDEX idx_mcp_oauth_grants_admin ON _mcp_oauth_grants(admin_id);
+
+-- index idx_mcp_oauth_refresh_expires
+CREATE INDEX idx_mcp_oauth_refresh_expires ON _mcp_oauth_refresh(expires_at);
+
+-- index idx_mcp_oauth_refresh_grant
+CREATE INDEX idx_mcp_oauth_refresh_grant   ON _mcp_oauth_refresh(grant_id);
+
+-- index idx_mcp_oauth_refresh_parent
+CREATE INDEX idx_mcp_oauth_refresh_parent  ON _mcp_oauth_refresh(parent_id) WHERE parent_id IS NOT NULL;
+
+-- index idx_mcp_upload_tickets_expires
+CREATE INDEX idx_mcp_upload_tickets_expires ON _mcp_upload_tickets(expires_at);
+
+-- index idx_mcp_upload_tickets_grant
+CREATE INDEX idx_mcp_upload_tickets_grant   ON _mcp_upload_tickets(grant_id);
+
+-- table _mcp_oauth_access
+CREATE TABLE _mcp_oauth_access (
+  token_hash  TEXT    PRIMARY KEY,        -- hash(Access, token)
+  grant_id    INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  refresh_id  INTEGER NOT NULL,           -- the refresh issued IN THE SAME RESPONSE as this access
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT    NOT NULL,           -- now + access_ttl
+  revoked_at  TEXT
+) STRICT;
+
+-- table _mcp_oauth_codes
+CREATE TABLE _mcp_oauth_codes (
+  code_hash      TEXT    PRIMARY KEY,     -- hash(Code, code)
+  grant_id       INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  client_id      TEXT    NOT NULL,
+  redirect_uri   TEXT    NOT NULL,        -- the exact validated string, port included
+  code_challenge TEXT    NOT NULL,        -- 43-char base64url S256 challenge
+  resource       TEXT,                    -- resource sent at authorize, NULL when omitted
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at     TEXT    NOT NULL,        -- now + 300 seconds
+  redeemed_at    TEXT
+) STRICT;
+
+-- table _mcp_oauth_grants
+CREATE TABLE _mcp_oauth_grants (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id            INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  admin_created_at    TEXT    NOT NULL,   -- copied in SQL from admins.created_at at approve
+  client_id           TEXT    NOT NULL,   -- a KNOWN_CLIENTS client_id
+  redirect_host       TEXT    NOT NULL,   -- 'localhost' | '127.0.0.1' (host only, no port)
+  scope               TEXT    NOT NULL DEFAULT 'mcp',
+  kind                TEXT    NOT NULL DEFAULT 'authorization_code', -- no CHECK: a later device-grant flow adds 'device'
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  last_used_at        TEXT,
+  idle_expires_at     TEXT    NOT NULL,   -- MIN(now + idle, absolute_expires_at), slid on refresh
+  absolute_expires_at TEXT    NOT NULL,   -- now + max, fixed at approve
+  sibling_rejected_at TEXT,               -- last time a superseded sibling refresh was presented
+  revoked_at          TEXT,
+  revoke_reason       TEXT                -- mcp_oauth::store::RevokeReason::as_str()
+) STRICT;
+
+-- table _mcp_oauth_refresh
+CREATE TABLE _mcp_oauth_refresh (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id      INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  parent_id     INTEGER,                  -- the refresh this one was exchanged from; NULL = from the code
+  token_hash    TEXT    NOT NULL UNIQUE,  -- hash(Refresh, token)
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at    TEXT    NOT NULL,         -- the grant's MIN(idle, absolute) at issue; never shortened
+  rotated_at    TEXT,                     -- first successful exchange of THIS token
+  superseded_at TEXT,                     -- a sibling won; this one lost
+  revoked_at    TEXT,
+  revoke_reason TEXT                      -- 'sibling_superseded' or a RevokeReason
+) STRICT;
+
+-- table _mcp_upload_tickets
+CREATE TABLE _mcp_upload_tickets (  -- written by the account-level MCP file tools; shape fixed here
+  ticket_hash  TEXT    PRIMARY KEY,       -- hash(UploadTicket, ticket)
+  grant_id     INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  admin_id     INTEGER NOT NULL,          -- copied in SQL from the grant row, never passed in
+  tenant_id    TEXT    NOT NULL,          -- NO FK to tenants: the id-recycle DELETE would fail
+  tenant_created_at TEXT NOT NULL,        -- copied in SQL from tenants.created_at at issue
+  max_bytes    INTEGER NOT NULL,
+  path         TEXT,
+  visibility   TEXT    NOT NULL CHECK (visibility IN ('public','private')),
+  create_by    TEXT    NOT NULL,          -- tus create must happen before this (issue + 15 min)
+  bound_upload TEXT,                      -- NULL | 'creating' (claim sentinel) | tus upload token
+  expires_at   TEXT    NOT NULL,          -- extended to the tus session expiry once bound
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  revoked_at   TEXT
+) STRICT;
+"#;
+
+    #[test]
+    fn mcp_oauth_ddl_text_is_frozen() {
+        let tmp = TempDir::new().unwrap();
+        let fresh = crate::storage::meta::open_meta(&tmp.path().join("meta.sqlite")).unwrap();
+        let got = mcp_ddl_text(&fresh);
+        assert!(
+            got == FROZEN_MCP_DDL,
+            "the _mcp_* DDL text changed. It is FROZEN once a host has booted it: \
+             `CREATE TABLE IF NOT EXISTS` never reshapes an existing table, so an edit \
+             reaches fresh installs only. A new column goes through add_column_if_missing \
+             (appended last), never an edit of this text.\n--- now ---\n{got}"
+        );
     }
 
     #[test]
