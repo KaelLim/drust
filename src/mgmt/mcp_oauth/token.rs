@@ -367,13 +367,18 @@ async fn audit_sibling(
     admin_id: i64,
     branch_revoked: bool,
 ) {
+    let message = if branch_revoked {
+        "superseded sibling refresh presented"
+    } else {
+        "rotated refresh re-presented after its successor was used"
+    };
     let mut e = crate::safety::audit::AuditEntry::failure(
         "-",
         "-",
         "mcp_oauth.refresh.sibling_rejected",
         started.elapsed().as_millis() as u64,
         "invalid_grant",
-        "superseded sibling refresh presented",
+        message,
     );
     e.auth_method = Some("mcp_oauth".to_string());
     e = e.with_extra(serde_json::json!({

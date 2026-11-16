@@ -147,7 +147,10 @@ pub fn team_authority(
 }
 
 fn internal(e: rusqlite::Error) -> Response {
-    tracing::warn!(error = %e, "mcp_oauth ui: meta query failed");
+    tracing::warn!(
+        error = %crate::error::sqlite_error_without_sql(&e),
+        "mcp_oauth ui: meta query failed"
+    );
     json_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         "INTERNAL",
