@@ -30,6 +30,9 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::auth::middleware::AdminId;
+use crate::mgmt::mcp_oauth::config::McpOauthConfig;
+use crate::mgmt::mcp_oauth::envelope::AuthzRequest;
+use crate::mgmt::mcp_oauth::redirect::RedirectTarget;
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
 
 /// Stored in `revoke_reason` on the grant and on each refresh row it revokes.
@@ -304,6 +307,71 @@ pub fn lookup_for_revoke(conn: &Connection, token: &str) -> rusqlite::Result<Opt
     let client_id: String =
         conn.query_row(SQL_GRANT_CLIENT_ID, params![grant.grant_id], |r| r.get(0))?;
     Ok(Some(RevokeTarget { grant, client_id }))
+}
+
+/// What consent approval created. `code` is the plaintext authorization code:
+/// it goes into the 303 `Location` and nowhere else (no log, no audit). No
+/// `Debug`, so it cannot be formatted by accident.
+pub struct NewCode {
+    pub grant_id: i64,
+    pub code: String,
+}
+
+// `admin_created_at` is copied in SQL, from the same row the INSERT selects:
+// an admins row deleted since the consent page means 0 rows, never a grant
+// bound to a placeholder. One statement, so `created_at` (column default),
+// `idle_expires_at` and `absolute_expires_at` share one 'now'. `MIN(x, y)` with
+// two arguments is SQLite's scalar MIN; both are datetime() text.
+const SQL_INSERT_GRANT: &str = "\
+INSERT INTO _mcp_oauth_grants \
+       (admin_id, admin_created_at, client_id, redirect_host, scope, kind, \
+        idle_expires_at, absolute_expires_at) \
+SELECT a.id, a.created_at, ?2, ?3, 'mcp', 'authorization_code', \
+       MIN(datetime('now', ?4), datetime('now', ?5)), datetime('now', ?5) \
+  FROM admins a WHERE a.id = ?1";
+
+const SQL_INSERT_CODE: &str = "\
+INSERT INTO _mcp_oauth_codes \
+       (code_hash, grant_id, client_id, redirect_uri, code_challenge, resource, expires_at) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+300 seconds'))";
+
+/// MA0-6 consent approval: one grant (`kind = 'authorization_code'`, scope
+/// `mcp`, absolute = now + max_days, idle = MIN(now + idle_days, absolute))
+/// and its one code (hash only, 300 s), in the caller's transaction. The admins
+/// row is re-read inside the INSERT; no row => `Err(QueryReturnedNoRows)` and
+/// nothing written. `redirect` must be the `RedirectTarget` that
+/// `redirect_uri_allowed` returned for `req.redirect_uri`: its `raw` (port
+/// included) is what the token endpoint compares, its `host` is the grant's.
+pub fn insert_grant_and_code(
+    tx: &Transaction<'_>,
+    cfg: &McpOauthConfig,
+    admin_id: i64,
+    req: &AuthzRequest,
+    redirect: &RedirectTarget,
+) -> rusqlite::Result<NewCode> {
+    let idle = format!("+{} days", cfg.idle_days());
+    let max = format!("+{} days", cfg.max_days());
+    let n = tx.execute(
+        SQL_INSERT_GRANT,
+        params![admin_id, req.client_id, redirect.host, idle, max],
+    )?;
+    if n == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows); // admins row gone
+    }
+    let grant_id = tx.last_insert_rowid();
+    let code = tokens::new_token(TokenKind::Code);
+    tx.execute(
+        SQL_INSERT_CODE,
+        params![
+            tokens::hash(TokenKind::Code, &code),
+            grant_id,
+            req.client_id,
+            redirect.raw,
+            req.code_challenge,
+            req.resource,
+        ],
+    )?;
+    Ok(NewCode { grant_id, code })
 }
 
 fn find(

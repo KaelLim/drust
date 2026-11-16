@@ -5,6 +5,7 @@
 pub mod authorize;
 pub mod clients;
 pub mod config;
+pub mod consent;
 pub mod envelope;
 pub mod metadata;
 pub mod oauth_error_layer;
@@ -50,6 +51,18 @@ pub fn public_routes(state: &MgmtState) -> Router {
         )
         .route("/oauth/authorize", get(authorize::authorize))
         .merge(oauth_api)
+        .with_state(state.clone())
+}
+
+/// Consent routes (MA0-6), already `with_state`. `MgmtState::with_data_dir`
+/// merges them into `protected` ONLY when `McpOauthConfig::enabled()`, so they
+/// sit under `admin_session_layer` (`AdminId` + `AuthMethod`), the profile and
+/// inner theme layers, and inside `frame_guard_layers`.
+pub fn session_routes(state: &MgmtState) -> Router {
+    Router::new()
+        .route("/oauth/consent", get(consent::consent_page))
+        .route("/oauth/consent/approve", post(consent::consent_approve))
+        .route("/oauth/consent/deny", post(consent::consent_deny))
         .with_state(state.clone())
 }
 

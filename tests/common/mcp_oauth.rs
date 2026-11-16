@@ -38,6 +38,16 @@ pub async fn fixture(enabled: bool) -> McpOauthFixture {
 /// router and `meta` share ONE connection, opened by `open_meta` with
 /// `PRAGMA foreign_keys = ON`.
 pub async fn fixture_with(cfg: McpOauthConfig) -> McpOauthFixture {
+    build_fixture(cfg, None, |_| {}).await
+}
+
+/// The one fixture builder. `owner_email` is written onto the bootstrap
+/// admin; `edit` adjusts the state just before the router is built.
+async fn build_fixture(
+    cfg: McpOauthConfig,
+    owner_email: Option<&str>,
+    edit: impl FnOnce(&mut MgmtState),
+) -> McpOauthFixture {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().to_path_buf();
     let log_dir = data_dir.join("audit");
@@ -52,6 +62,13 @@ pub async fn fixture_with(cfg: McpOauthConfig) -> McpOauthFixture {
             |r| r.get(0),
         )
         .unwrap();
+    if let Some(email) = owner_email {
+        conn.execute(
+            "UPDATE admins SET email = ?1 WHERE id = ?2",
+            params![email, owner_id],
+        )
+        .unwrap();
+    }
     let meta = Arc::new(Mutex::new(conn));
     let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(
         data_dir.clone(),
@@ -70,6 +87,7 @@ pub async fn fixture_with(cfg: McpOauthConfig) -> McpOauthFixture {
     );
     state.log_dir = log_dir; // remove_admin writes an audit file entry
     state.mcp_oauth = Arc::new(cfg);
+    edit(&mut state);
     let app = state.with_data_dir(data_dir);
     McpOauthFixture {
         app,
@@ -327,4 +345,204 @@ pub fn set_cookie(resp: &axum::http::Response<axum::body::Body>, name: &str) -> 
         .filter_map(|v| v.to_str().ok())
         .find(|line| line.split_once('=').is_some_and(|(k, _)| k == name))
         .map(str::to_string)
+}
+
+// ─── Consent helpers (MA0-6). Full paths only, same reason as above.
+//
+// Two constraints on every caller, both from sharing a test binary:
+// - Login budget: `test_default` gives `/login` and the admin OAuth callback
+//   5 attempts per IP per 60 s each, and these requests carry no
+//   X-Forwarded-For, so ONE fixture allows at most 5 password logins and 5
+//   callbacks.
+// - Audit rows: other g_admin members install the process-global audit writer
+//   and `admin_oauth::oauth_audit_logged_on_success` reads the NEWEST
+//   `oauth_google` success row, expecting `kael@example.com` / admin 1. So a
+//   Google login here is always admin 1 with `kael@example.com`; any other
+//   admin signs in by password or GitHub.
+
+/// `POST /login` (at most 5 per fixture, see above); asserts 303 and returns
+/// `"drust_session=<value>"`.
+pub async fn login(app: &axum::Router, user: &str, pass: &str) -> String {
+    let resp = post_form(
+        app,
+        "/login",
+        &[("username", user), ("password", pass)],
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::SEE_OTHER,
+        "login {user}"
+    );
+    match set_cookie(&resp, "drust_session") {
+        Some(line) => cookie_kv(&line),
+        None => panic!("login {user}: no drust_session cookie"),
+    }
+}
+
+/// The value of `<input type="hidden" name="{name}" value="…">`, HTML-unescaped.
+pub fn hidden_field(html: &str, name: &str) -> Option<String> {
+    let marker = format!("type=\"hidden\" name=\"{name}\" value=\"");
+    let start = html.find(&marker)? + marker.len();
+    let end = html[start..].find('"')? + start;
+    Some(
+        html[start..end]
+            .replace("&#34;", "\"")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#60;", "<")
+            .replace("&lt;", "<")
+            .replace("&#62;", ">")
+            .replace("&gt;", ">")
+            .replace("&#38;", "&")
+            .replace("&amp;", "&"),
+    )
+}
+
+/// `name=value` of a `Set-Cookie` line (everything before the first ';').
+pub fn cookie_kv(set_cookie_line: &str) -> String {
+    set_cookie_line
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// `fixture(enabled)` plus one fake admin-login provider (`"google"` or
+/// `"github"`) and `owner_email` on the bootstrap admin (id 1), the shape of
+/// tests/admin_oauth.rs. Installs no audit writer.
+pub async fn fixture_with_provider(
+    enabled: bool,
+    provider: &str,
+    fake: &Arc<super::oauth_helpers::FakeProvider>,
+    owner_email: &str,
+) -> McpOauthFixture {
+    use drust::oauth::provider::OauthProvider;
+    let adapter: Arc<dyn OauthProvider> = match provider {
+        "google" => Arc::new(drust::oauth::google::GoogleAdapter::new(
+            "test-client-id".to_string(),
+            "test-client-secret".to_string(),
+            format!("{}/authorize", fake.base_url),
+            format!("{}/token", fake.base_url),
+        )),
+        "github" => Arc::new(drust::oauth::github::GitHubAdapter::new(
+            "test-client-id".to_string(),
+            "test-client-secret".to_string(),
+            format!("{}/login/oauth/authorize", fake.base_url),
+            format!("{}/login/oauth/access_token", fake.base_url),
+            fake.base_url.clone(),
+        )),
+        other => panic!("fixture_with_provider: unknown provider {other:?}"),
+    };
+    let name: &'static str = if provider == "google" {
+        "google"
+    } else {
+        "github"
+    };
+    let mut providers: std::collections::HashMap<&'static str, Arc<dyn OauthProvider>> =
+        std::collections::HashMap::new();
+    providers.insert(name, adapter);
+    let registry = drust::oauth::ProviderRegistry::from_providers(providers);
+    let cfg = if enabled {
+        McpOauthConfig::for_tests(PUBLIC_URL)
+    } else {
+        McpOauthConfig::disabled()
+    };
+    build_fixture(cfg, Some(owner_email), move |state| {
+        state.public_url = "http://test".to_string();
+        state.oauth_registry = Arc::new(registry);
+    })
+    .await
+}
+
+/// A 43-character S256 challenge (RFC 7636 appendix B).
+pub const FIXED_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+/// An envelope for Claude Code with `FIXED_CHALLENGE` and no resource, sealed
+/// at `now_unix`. `McpOauthConfig::for_tests` uses fixed keys, so an envelope
+/// sealed with one `for_tests(PUBLIC_URL)` opens under the fixture's.
+pub fn sealed_envelope(
+    cfg: &McpOauthConfig,
+    redirect_uri: &str,
+    state: Option<&str>,
+    now_unix: u64,
+) -> String {
+    let req = drust::mgmt::mcp_oauth::envelope::AuthzRequest {
+        client_id: CC_CLIENT_ID.to_string(),
+        redirect_uri: redirect_uri.to_string(),
+        state: state.map(str::to_string),
+        code_challenge: FIXED_CHALLENGE.to_string(),
+        resource: None,
+    };
+    match drust::mgmt::mcp_oauth::envelope::seal(cfg, &req, now_unix) {
+        Ok(w) => w,
+        Err(e) => panic!("sealed_envelope: seal refused: {e:?}"),
+    }
+}
+
+/// `Location` minus the base path, i.e. the root path the router serves.
+pub fn router_path(location: &str) -> String {
+    location
+        .strip_prefix(drust::base_path::base_path())
+        .unwrap_or(location)
+        .to_string()
+}
+
+pub struct CodeGrant {
+    pub code: String,
+    pub verifier: String,
+    pub redirect_uri: String,
+    pub state: Option<String>,
+    pub iss: String,
+}
+
+/// authorize (SDK shape, `resource = RESOURCE`) -> consent GET (session +
+/// resume) -> approve (session + resume + csrf), asserting each status.
+/// Takes a session; never logs in itself, so it spends no login budget.
+pub async fn obtain_code(
+    fx: &McpOauthFixture,
+    session_cookie: &str,
+    port: u16,
+    state: Option<&str>,
+) -> CodeGrant {
+    use axum::http::StatusCode;
+    let (verifier, challenge) = pkce();
+    let redirect_uri = loopback_redirect(port);
+    let q = authorize_query(&challenge, &redirect_uri, state, Some(RESOURCE));
+    let resp = get(&fx.app, &format!("/oauth/authorize?{q}"), &[session_cookie]).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "authorize");
+    let consent_uri = router_path(&location(&resp));
+    let resume = cookie_kv(
+        &set_cookie(&resp, drust::mgmt::mcp_oauth::envelope::RESUME_COOKIE)
+            .expect("authorize sets the resume cookie"),
+    );
+    let resp = get(&fx.app, &consent_uri, &[session_cookie, &resume]).await;
+    assert_eq!(resp.status(), StatusCode::OK, "consent page");
+    let csrf_cookie = cookie_kv(
+        &set_cookie(&resp, drust::mgmt::mcp_oauth::consent::CSRF_COOKIE)
+            .expect("consent page sets the csrf cookie"),
+    );
+    let html = body_text(resp).await;
+    let req = hidden_field(&html, "req").expect("req field");
+    let csrf = hidden_field(&html, "csrf").expect("csrf field");
+    let resp = post_form(
+        &fx.app,
+        "/oauth/consent/approve",
+        &[("req", &req), ("csrf", &csrf)],
+        &[session_cookie, &resume, &csrf_cookie],
+        &[],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "approve");
+    let loc = location(&resp);
+    CodeGrant {
+        code: query_param(&loc, "code").expect("code in the redirect"),
+        verifier,
+        redirect_uri,
+        state: query_param(&loc, "state"),
+        iss: query_param(&loc, "iss").expect("iss in the redirect"),
+    }
 }

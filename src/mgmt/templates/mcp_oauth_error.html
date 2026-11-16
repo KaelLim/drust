@@ -21,7 +21,7 @@
     <p class="login-sub">{{ t.s("mcp_oauth.error.sub") }}</p>
     <div class="banner danger" role="alert">
       <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
-      <div class="b-body">
+      <div class="b-body" data-kind="{{ kind }}">
         {% match kind %}
           {% when "client_unknown" %}
         <div class="b-title">{{ t.s("mcp_oauth.error.client_unknown_title") }}</div>
@@ -29,6 +29,33 @@
           {% when "redirect_rejected" %}
         <div class="b-title">{{ t.s("mcp_oauth.error.redirect_rejected_title") }}</div>
         <p>{{ t.s("mcp_oauth.error.redirect_rejected_body") }}</p>
+          {% when "consent_no_request" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.no_request") }}</p>
+          {% when "consent_malformed" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.malformed") }}</p>
+          {% when "consent_bad_mac" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.invalid") }}</p>
+          {% when "consent_expired" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.expired") }}</p>
+          {% when "consent_mismatch" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.mismatch") }}</p>
+          {% when "consent_client_changed" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.client_changed") }}</p>
+          {% when "consent_csrf" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.csrf") }}</p>
+          {% when "consent_admin_missing" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.admin_missing") }}</p>
+          {% when "consent_internal" %}
+        <div class="b-title">{{ t.s("mcp_oauth.consent_error.title") }}</div>
+        <p>{{ t.s("mcp_oauth.consent_error.internal") }}</p>
           {% when _ %}
         <div class="b-title">{{ t.s("mcp_oauth.error.request_invalid_title") }}</div>
         <p>{{ t.s("mcp_oauth.error.request_invalid_body") }}</p>

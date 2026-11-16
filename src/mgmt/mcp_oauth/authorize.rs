@@ -121,15 +121,35 @@ pub(crate) enum ErrorKind {
     RequestInvalid,
     ClientUnknown,
     RedirectRejected,
+    // MA0-6 consent (`consent.rs` maps its `Fail` onto these).
+    ConsentNoRequest,
+    ConsentMalformed,
+    ConsentBadMac,
+    ConsentExpired,
+    ConsentMismatch,
+    ConsentClientChanged,
+    ConsentCsrf,
+    ConsentAdminMissing,
+    ConsentInternal,
 }
 
 impl ErrorKind {
-    /// The template matches on this string.
+    /// The template matches on this string, and renders it as the banner's
+    /// `data-kind` attribute (tests key on that, not on translated copy).
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::RequestInvalid => "request_invalid",
             Self::ClientUnknown => "client_unknown",
             Self::RedirectRejected => "redirect_rejected",
+            Self::ConsentNoRequest => "consent_no_request",
+            Self::ConsentMalformed => "consent_malformed",
+            Self::ConsentBadMac => "consent_bad_mac",
+            Self::ConsentExpired => "consent_expired",
+            Self::ConsentMismatch => "consent_mismatch",
+            Self::ConsentClientChanged => "consent_client_changed",
+            Self::ConsentCsrf => "consent_csrf",
+            Self::ConsentAdminMissing => "consent_admin_missing",
+            Self::ConsentInternal => "consent_internal",
         }
     }
 }
@@ -139,7 +159,8 @@ pub(crate) struct ErrorPageModel {
     /// Already passed through `display_received`.
     pub received_redirect: Option<String>,
     pub pinned: Option<&'static KnownClient>,
-    /// Always `None` in MA0-5; MA0-6 sets it to a loopback return link.
+    /// `None` on authorize's pages; consent sets it to a loopback return link
+    /// (`error=access_denied`) when the envelope is MAC-valid and re-validates.
     pub back_href: Option<String>,
 }
 
@@ -1086,5 +1107,91 @@ mod tests {
         assert_eq!(ErrorKind::RequestInvalid.code(), "request_invalid");
         assert_eq!(ErrorKind::ClientUnknown.code(), "client_unknown");
         assert_eq!(ErrorKind::RedirectRejected.code(), "redirect_rejected");
+        assert_eq!(ErrorKind::ConsentNoRequest.code(), "consent_no_request");
+        assert_eq!(ErrorKind::ConsentMalformed.code(), "consent_malformed");
+        assert_eq!(ErrorKind::ConsentBadMac.code(), "consent_bad_mac");
+        assert_eq!(ErrorKind::ConsentExpired.code(), "consent_expired");
+        assert_eq!(ErrorKind::ConsentMismatch.code(), "consent_mismatch");
+        assert_eq!(
+            ErrorKind::ConsentClientChanged.code(),
+            "consent_client_changed"
+        );
+        assert_eq!(ErrorKind::ConsentCsrf.code(), "consent_csrf");
+        assert_eq!(
+            ErrorKind::ConsentAdminMissing.code(),
+            "consent_admin_missing"
+        );
+        assert_eq!(ErrorKind::ConsentInternal.code(), "consent_internal");
+    }
+
+    /// Every kind renders its own `data-kind` and, for the consent kinds, its
+    /// own copy — a branch added after `{% when _ %}` would never match.
+    #[test]
+    fn every_error_kind_renders_its_data_kind_and_copy() {
+        use crate::mgmt::i18n::Locale;
+        use crate::mgmt::theme::Theme;
+        let kinds = [
+            (
+                ErrorKind::RequestInvalid,
+                "mcp_oauth.error.request_invalid_body",
+            ),
+            (
+                ErrorKind::ClientUnknown,
+                "mcp_oauth.error.client_unknown_body",
+            ),
+            (
+                ErrorKind::RedirectRejected,
+                "mcp_oauth.error.redirect_rejected_body",
+            ),
+            (
+                ErrorKind::ConsentNoRequest,
+                "mcp_oauth.consent_error.no_request",
+            ),
+            (
+                ErrorKind::ConsentMalformed,
+                "mcp_oauth.consent_error.malformed",
+            ),
+            (ErrorKind::ConsentBadMac, "mcp_oauth.consent_error.invalid"),
+            (ErrorKind::ConsentExpired, "mcp_oauth.consent_error.expired"),
+            (
+                ErrorKind::ConsentMismatch,
+                "mcp_oauth.consent_error.mismatch",
+            ),
+            (
+                ErrorKind::ConsentClientChanged,
+                "mcp_oauth.consent_error.client_changed",
+            ),
+            (ErrorKind::ConsentCsrf, "mcp_oauth.consent_error.csrf"),
+            (
+                ErrorKind::ConsentAdminMissing,
+                "mcp_oauth.consent_error.admin_missing",
+            ),
+            (
+                ErrorKind::ConsentInternal,
+                "mcp_oauth.consent_error.internal",
+            ),
+        ];
+        let t = Translator::new(Locale::En);
+        for (kind, body_key) in kinds {
+            let page = McpOauthErrorPage {
+                t: Translator::new(Locale::En),
+                palette_resolved: crate::mgmt::theme::palette_for(Theme::System),
+                kind: kind.code(),
+                received_redirect: None,
+                pinned: None,
+                back_href: None,
+            };
+            let html = page.render().unwrap();
+            assert!(
+                html.contains(&format!("data-kind=\"{}\"", kind.code())),
+                "{kind:?}"
+            );
+            let copy = t.s(body_key);
+            assert!(!copy.is_empty() && copy != body_key, "{body_key}");
+            assert!(
+                html.contains(copy.as_ref()),
+                "{kind:?}: {body_key} not rendered"
+            );
+        }
     }
 }

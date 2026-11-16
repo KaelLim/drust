@@ -949,10 +949,12 @@ impl MgmtState {
                 axum::routing::delete(crate::mgmt::admin_pat::cli_token_logout),
             )
             .with_state(self.clone());
-        // MA0 — OAuth AS (metadata, token, revoke). Merged ONLY when DRUST_MCP
-        // resolves to enabled, so a disabled host answers these paths exactly like
-        // a path that never existed. Inside `frame_guard_layers` below like the
-        // rest of `public`.
+        // MA0 — OAuth AS, unauthenticated half: metadata, authorize, token,
+        // revoke (`mcp_oauth::public_routes`). The consent half (`/oauth/consent`,
+        // `/oauth/consent/approve`, `/oauth/consent/deny`) needs a session and is
+        // merged into `protected` below. Both merge ONLY when DRUST_MCP resolves to
+        // enabled, so a disabled host answers these paths exactly like a path that
+        // never existed. Inside `frame_guard_layers` below like the rest of `public`.
         let public = if self.mcp_oauth.enabled() {
             public.merge(crate::mgmt::mcp_oauth::public_routes(&self))
         } else {
@@ -1554,7 +1556,7 @@ impl MgmtState {
         // applied FIRST. Previous order (session first, theme last) had
         // profile_layer always seeing an empty extensions map and falling
         // back to `placeholder()` → "??" + "admin" in the sidebar.
-        let protected = tenants_router
+        let protected_routes = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
             .merge(backups_router)
@@ -1564,7 +1566,15 @@ impl MgmtState {
             .merge(metrics_router)
             .merge(settings_router)
             .merge(team_router)
-            .merge(cli_device_router)
+            .merge(cli_device_router);
+        // MA0-6: consent needs AdminId + AuthMethod + the inner theme layer, so it
+        // rides `protected`; not merged at all when MCP OAuth is disabled.
+        let protected_routes = if self.mcp_oauth.enabled() {
+            protected_routes.merge(crate::mgmt::mcp_oauth::session_routes(&self))
+        } else {
+            protected_routes
+        };
+        let protected = protected_routes
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
