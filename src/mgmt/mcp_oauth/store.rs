@@ -1,4 +1,5 @@
-//! MCP OAuth grant store — revocation primitives and token-to-grant lookups.
+//! MCP OAuth grant store — revocation primitives, token-to-grant lookups,
+//! grant/code creation, code redemption and token issuance.
 //!
 //! Every function here runs on the caller's connection or transaction. None of
 //! them locks `meta`, awaits, commits, or writes audit: the handler does
@@ -32,6 +33,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::auth::middleware::AdminId;
 use crate::mgmt::mcp_oauth::config::McpOauthConfig;
 use crate::mgmt::mcp_oauth::envelope::AuthzRequest;
+use crate::mgmt::mcp_oauth::pkce;
 use crate::mgmt::mcp_oauth::redirect::RedirectTarget;
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
 
@@ -342,6 +344,11 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now', '+300 seconds'))";
 /// nothing written. `redirect` must be the `RedirectTarget` that
 /// `redirect_uri_allowed` returned for `req.redirect_uri`: its `raw` (port
 /// included) is what the token endpoint compares, its `host` is the grant's.
+///
+/// Every grant has exactly ONE code. A replayed code revokes its whole grant,
+/// which equals "revoke every token issued from that code" only because of
+/// this; hanging a second code on an existing grant means redesigning the
+/// `code_replay` revocation scope first.
 pub fn insert_grant_and_code(
     tx: &Transaction<'_>,
     cfg: &McpOauthConfig,
@@ -372,6 +379,248 @@ pub fn insert_grant_and_code(
         ],
     )?;
     Ok(NewCode { grant_id, code })
+}
+
+// ─── Code redemption and token issuance (MA0-7; issue_token_pair also MA0-8) ──
+
+/// One read for the whole decision: the code, its grant, and whether the admin
+/// row still matches BOTH id and created_at. The INNER JOIN means a code whose
+/// grant row is gone (FK off) is a Miss: a child row never vouches for itself.
+/// Booleans are computed in SQL, so every time comparison uses SQLite's
+/// `datetime('now')` (MA0-PLAN §3.2).
+const REDEEM_SELECT: &str = "\
+SELECT c.grant_id,
+       g.admin_id,
+       c.client_id,
+       c.redirect_uri,
+       c.code_challenge,
+       c.resource,
+       c.redeemed_at IS NOT NULL,
+       c.expires_at > datetime('now'),
+       g.revoked_at IS NULL
+         AND g.idle_expires_at > datetime('now')
+         AND g.absolute_expires_at > datetime('now'),
+       EXISTS (SELECT 1 FROM admins ad
+                WHERE ad.id = g.admin_id AND ad.created_at = g.admin_created_at)
+  FROM _mcp_oauth_codes c
+  JOIN _mcp_oauth_grants g ON g.id = c.grant_id
+ WHERE c.code_hash = ?1";
+
+/// Single-use gate. `redeemed_at IS NULL` makes a concurrent second redemption a
+/// 0-row update; `expires_at` is re-checked so a code that expired between the
+/// two statements cannot be marked.
+const REDEEM_MARK: &str = "\
+UPDATE _mcp_oauth_codes
+   SET redeemed_at = datetime('now')
+ WHERE code_hash = ?1
+   AND redeemed_at IS NULL
+   AND expires_at > datetime('now')";
+
+/// Root or child refresh. expires_at = the grant's MIN(idle, absolute) as it
+/// stands NOW (MA0-8 slides idle BEFORE calling issue_token_pair). A parent must
+/// belong to the same grant (ids are AUTOINCREMENT but never trusted alone).
+/// Parent LIVENESS (revoked / rotated / superseded) is NOT checked here: that is
+/// the caller's job (MA0-8 `refresh::rotate`).
+const ISSUE_REFRESH: &str = "\
+INSERT INTO _mcp_oauth_refresh (grant_id, parent_id, token_hash, expires_at)
+SELECT g.id, ?2, ?3, MIN(g.idle_expires_at, g.absolute_expires_at)
+  FROM _mcp_oauth_grants g
+ WHERE g.id = ?1
+   AND g.revoked_at IS NULL
+   AND g.idle_expires_at > datetime('now')
+   AND g.absolute_expires_at > datetime('now')
+   AND (?2 IS NULL OR EXISTS (SELECT 1 FROM _mcp_oauth_refresh p
+                               WHERE p.id = ?2 AND p.grant_id = ?1))";
+
+/// refresh_id = the refresh inserted by THIS call (same response), never a parent.
+const ISSUE_ACCESS: &str = "\
+INSERT INTO _mcp_oauth_access (token_hash, grant_id, refresh_id, expires_at)
+VALUES (?1, ?2, ?3, datetime('now', ?4))";
+
+/// The sweep's abandoned-grant rule reads `last_used_at IS NULL`: setting it
+/// here is what keeps an exchanged grant out of that rule.
+const TOUCH_GRANT: &str = "\
+UPDATE _mcp_oauth_grants SET last_used_at = datetime('now') WHERE id = ?1";
+
+/// No `Debug`, same reason as `IssuedTokens` (and kept that way by the same pin).
+struct CodeRow {
+    grant_id: i64,
+    admin_id: i64,
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    resource: Option<String>,
+    redeemed: bool,
+    code_live: bool,
+    grant_live: bool,
+    admin_ok: bool,
+}
+
+/// One refresh and one access, issued in one response. NO `Debug`: the fields
+/// are live plaintext credentials (pinned by `credential_types_do_not_derive_debug`).
+pub struct IssuedTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub refresh_id: i64,
+    pub expires_in: u32,
+}
+
+/// Inserts one refresh (`parent_id = parent_refresh_id`) and one access whose
+/// `refresh_id` is that refresh, and sets the grant's `last_used_at`.
+/// `refresh.expires_at` = the grant's MIN(idle, absolute) after any slide; the
+/// access expires `access_ttl_secs` from now and is NOT capped by the grant —
+/// `find_grant_by_access` checks the grant's deadlines on every use.
+///
+/// `Err(QueryReturnedNoRows)` with nothing inserted when the grant is gone,
+/// revoked or expired, or the parent belongs to another grant.
+pub fn issue_token_pair(
+    tx: &Transaction<'_>,
+    cfg: &McpOauthConfig,
+    grant_id: i64,
+    parent_refresh_id: Option<i64>,
+) -> rusqlite::Result<IssuedTokens> {
+    let refresh_token = tokens::new_token(TokenKind::Refresh);
+    let n = tx.execute(
+        ISSUE_REFRESH,
+        params![
+            grant_id,
+            parent_refresh_id,
+            tokens::hash(TokenKind::Refresh, &refresh_token)
+        ],
+    )?;
+    if n != 1 {
+        // Grant gone, revoked, expired, or a foreign parent. Nothing was inserted.
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    let refresh_id = tx.last_insert_rowid();
+    let access_token = tokens::new_token(TokenKind::Access);
+    let ttl = cfg.access_ttl_secs();
+    tx.execute(
+        ISSUE_ACCESS,
+        params![
+            tokens::hash(TokenKind::Access, &access_token),
+            grant_id,
+            refresh_id,
+            format!("+{ttl} seconds")
+        ],
+    )?;
+    tx.execute(TOUCH_GRANT, params![grant_id])?;
+    Ok(IssuedTokens {
+        access_token,
+        refresh_token,
+        refresh_id,
+        expires_in: ttl,
+    })
+}
+
+/// What the token endpoint received for `grant_type=authorization_code`. NO
+/// `Debug`: it holds the plaintext code and verifier.
+pub struct CodeRedeemRequest<'a> {
+    pub code: &'a str,
+    pub client_id: &'a str,
+    pub redirect_uri: Option<&'a str>,
+    pub verifier: Option<&'a str>,
+    pub resource: Option<&'a str>,
+}
+
+/// `Issued` / `Replay` carry a `GrantRef` (the audit row names the owner): a
+/// request that passed every check presented the code AND its verifier. Like
+/// every `GrantRef` but `find_grant_by_access`'s, it may only feed
+/// `GrantOwner::holder` and audit attribution.
+///
+/// `Miss` / `Invalid`: the caller MUST NOT commit. Every CHECK fails before any
+/// write, but one `Invalid` follows the `redeemed_at` mark (the grant's
+/// deadline crossed its second between two statements), and only dropping the
+/// transaction rolls that mark back. NO `Debug`: `Issued` holds `IssuedTokens`.
+pub enum RedeemOutcome {
+    Issued {
+        grant: GrantRef,
+        tokens: IssuedTokens,
+    },
+    Miss,
+    Invalid,
+    Replay {
+        grant: GrantRef,
+    },
+}
+
+/// MA0-PLAN §3.8.4 step 7. One read, then every check in a fixed order (code
+/// live → grant live and admin id + created_at → client_id → redirect_uri byte
+/// for byte → resource → verifier shape → S256 in constant time); ANY failure
+/// returns `Invalid` before anything is written, so a wrong verifier never
+/// consumes the code. Only then `redeemed_at`: already set → `Replay` (the
+/// caller revokes the grant); else mark it and issue the pair.
+pub fn redeem_code(
+    tx: &Transaction<'_>,
+    cfg: &McpOauthConfig,
+    req: &CodeRedeemRequest<'_>,
+) -> rusqlite::Result<RedeemOutcome> {
+    let code_hash = tokens::hash(TokenKind::Code, req.code);
+    let row = tx
+        .query_row(REDEEM_SELECT, params![code_hash], |r| {
+            Ok(CodeRow {
+                grant_id: r.get(0)?,
+                admin_id: r.get(1)?,
+                client_id: r.get(2)?,
+                redirect_uri: r.get(3)?,
+                code_challenge: r.get(4)?,
+                resource: r.get(5)?,
+                redeemed: r.get(6)?,
+                code_live: r.get(7)?,
+                grant_live: r.get(8)?,
+                admin_ok: r.get(9)?,
+            })
+        })
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(RedeemOutcome::Miss);
+    };
+
+    // ---- every check, in the §3.8.4 order; any failure returns BEFORE any write ----
+    if !row.code_live || !row.grant_live || !row.admin_ok {
+        return Ok(RedeemOutcome::Invalid);
+    }
+    if row.client_id != req.client_id {
+        return Ok(RedeemOutcome::Invalid);
+    }
+    if req.redirect_uri != Some(row.redirect_uri.as_str()) {
+        return Ok(RedeemOutcome::Invalid); // missing, or not byte-identical (port included)
+    }
+    if let Some(r) = req.resource
+        && (!cfg.is_our_resource(r) || row.resource.as_deref().is_some_and(|stored| stored != r))
+    {
+        return Ok(RedeemOutcome::Invalid);
+    }
+    let Some(v) = req.verifier else {
+        return Ok(RedeemOutcome::Invalid);
+    };
+    if !pkce::verifier_well_formed(v) || !pkce::verify_s256(v, &row.code_challenge) {
+        return Ok(RedeemOutcome::Invalid);
+    }
+
+    // ---- all checks passed: only from here on may anything be written ----
+    let grant = GrantRef {
+        grant_id: row.grant_id,
+        admin_id: row.admin_id,
+    };
+    if row.redeemed {
+        return Ok(RedeemOutcome::Replay { grant }); // the caller revokes, in this tx
+    }
+    if tx.execute(REDEEM_MARK, params![code_hash])? != 1 {
+        // The SQL gate itself (pinned by `redeem_mark_is_itself_a_single_use_gate`).
+        // Not reachable while the handler holds the meta mutex for the whole
+        // read-mark-issue sequence.
+        return Ok(RedeemOutcome::Invalid);
+    }
+    let tokens = match issue_token_pair(tx, cfg, row.grant_id, None) {
+        Ok(t) => t,
+        // The grant's idle/absolute deadline crossed its second between
+        // REDEEM_SELECT and ISSUE_REFRESH. The mark above is in this tx; the
+        // caller drops it (rollback).
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(RedeemOutcome::Invalid),
+        Err(e) => return Err(e),
+    };
+    Ok(RedeemOutcome::Issued { grant, tokens })
 }
 
 fn find(
@@ -419,5 +668,99 @@ mod tests {
             all.len(),
             "revoke_reason strings must be distinct"
         );
+    }
+
+    /// A real meta.sqlite (open_meta creates the MCP OAuth tables) with one
+    /// admin and one grant; returns the connection and the grant id.
+    fn meta_with_grant(dir: &std::path::Path) -> (Connection, i64) {
+        let conn = crate::storage::meta::open_meta(&dir.join("meta.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO admins (username, password_hash) VALUES ('root', '$oauth-only$')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO _mcp_oauth_grants \
+               (admin_id, admin_created_at, client_id, redirect_host, \
+                idle_expires_at, absolute_expires_at) \
+             SELECT id, created_at, 'c', 'localhost', \
+                    datetime('now', '+30 days'), datetime('now', '+90 days') FROM admins",
+            [],
+        )
+        .unwrap();
+        let g = conn.last_insert_rowid();
+        (conn, g)
+    }
+
+    fn seed_code_row(conn: &Connection, grant_id: i64, code: &str, expires: &str) -> String {
+        let h = tokens::hash(TokenKind::Code, code);
+        conn.execute(
+            "INSERT INTO _mcp_oauth_codes \
+               (code_hash, grant_id, client_id, redirect_uri, code_challenge, expires_at) \
+             VALUES (?1, ?2, 'c', 'http://localhost:1/callback', 'x', datetime('now', ?3))",
+            params![h, grant_id, expires],
+        )
+        .unwrap();
+        h
+    }
+
+    /// Single use does not rest on the handler's meta mutex alone: the MARK
+    /// statement itself refuses a second redemption and an expired code.
+    #[test]
+    fn redeem_mark_is_itself_a_single_use_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let live = seed_code_row(
+            &conn,
+            g,
+            &tokens::new_token(TokenKind::Code),
+            "+300 seconds",
+        );
+        assert_eq!(conn.execute(REDEEM_MARK, [&live]).unwrap(), 1, "first mark");
+        assert_eq!(
+            conn.execute(REDEEM_MARK, [&live]).unwrap(),
+            0,
+            "second mark"
+        );
+        let expired = seed_code_row(&conn, g, &tokens::new_token(TokenKind::Code), "-1 second");
+        assert_eq!(
+            conn.execute(REDEEM_MARK, [&expired]).unwrap(),
+            0,
+            "expired code"
+        );
+    }
+
+    /// The text between the end of the previous item (`}` or `;`) and `head`:
+    /// where a `#[derive(..)]` for that item would have to be.
+    fn attrs_before<'a>(prod: &'a str, head: &str) -> &'a str {
+        let at = prod
+            .find(head)
+            .unwrap_or_else(|| panic!("`{head}` not found in store.rs production code"));
+        let from = prod[..at].rfind(['}', ';']).map_or(0, |i| i + 1);
+        &prod[from..at]
+    }
+
+    /// These types hold a plaintext code + verifier or plaintext tokens; a
+    /// `Debug` impl is one `{:?}` away from putting a live credential in a log.
+    /// Tests use `matches!` (unwrap_err/expect_err need `T: Debug`).
+    #[test]
+    fn credential_types_do_not_derive_debug() {
+        use crate::tenant::rooms::srcpin::{code_only, production_half};
+        let stripped = code_only(include_str!("store.rs"));
+        let prod = production_half(&stripped);
+        for (head, name) in [
+            ("pub struct IssuedTokens", "IssuedTokens"),
+            ("pub struct CodeRedeemRequest", "CodeRedeemRequest"),
+            ("pub enum RedeemOutcome", "RedeemOutcome"),
+        ] {
+            assert!(
+                !attrs_before(prod, head).contains("Debug"),
+                "{name} must not derive Debug"
+            );
+            assert!(
+                !prod.contains(&format!("Debug for {name}")),
+                "{name} must not implement Debug"
+            );
+        }
     }
 }
