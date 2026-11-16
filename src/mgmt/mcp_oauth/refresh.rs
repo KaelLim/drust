@@ -634,6 +634,26 @@ mod tests {
         ));
     }
 
+    /// A refresh row whose grant row is gone (unreachable while foreign keys are on) is
+    /// a dead token: it reads the budget like a) and writes nothing.
+    #[test]
+    fn an_orphaned_refresh_row_reads_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, _admin, gid) = setup(dir.path());
+        let r1 = root(&conn, gid);
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        let n = conn
+            .execute("DELETE FROM _mcp_oauth_grants WHERE id = ?1", params![gid])
+            .unwrap();
+        assert_eq!(n, 1);
+        let (r, read) = run_full_bucket(&conn, &r1.refresh_token);
+        assert!(read && throttled(&r), "an orphaned refresh row is charged");
+        assert!(matches!(
+            run(&conn, &r1.refresh_token),
+            Err(OAuthError::InvalidGrant)
+        ));
+    }
+
     #[test]
     fn lookup_grant_id_ignores_liveness() {
         let dir = tempfile::tempdir().unwrap();

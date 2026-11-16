@@ -1613,7 +1613,7 @@ async fn admin_created_at_alone_does_not_survive_a_same_second_recycle() {
             .unwrap()
             .is_some(),
         "documented limitation of layer 3, not a desired property — this is why \
-         remove_admin's explicit DELETE is layer 1 (IA §9.4); if layer 3 is ever \
+         remove_admin's explicit DELETE is layer 1; if layer 3 is ever \
          strengthened (e.g. a per-admin random nonce), flip this assertion"
     );
 }
