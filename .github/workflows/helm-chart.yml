@@ -1,0 +1,54 @@
+name: Helm chart
+
+# The k3s Helm chart (deploy/helm/drust/) is ON HOLD: frozen at chart 0.2.0 /
+# appVersion 1.67.0, the state last verified live on a k3s cluster, and not kept
+# in step with the bare-metal and Docker targets. That is why this job is not on
+# CI's every-push gate (ci.yml): render_test.sh asserts Chart.yaml's appVersion
+# equals Cargo.toml's version, and that the chart's files/rustfs-init/ and the
+# /public/* block of files/public-proxy.Caddyfile are byte copies of
+# deploy/compose-rustfs/ and deploy/compose.Caddyfile. On every push, each
+# release bump and each edit to those Compose files would turn CI red until the
+# frozen chart followed. Here it runs only when the chart itself (or this file)
+# changes, or by hand.
+#
+# Resuming the chart (see .claude/rules/build-deploy.md §Deployment targets,
+# "Resuming k3s"): those same assertions will demand appVersion == the current
+# Cargo.toml version and the Compose copies resynced before this goes green, and
+# the job moves back into ci.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - '.github/workflows/helm-chart.yml'
+  workflow_dispatch:
+
+jobs:
+  # The chart had zero CI coverage: `render_test.sh` only ever ran when someone
+  # remembered to. That is how appVersion sat at 1.49.4 for nine releases while
+  # values.yaml carried the real (also stale) image tag. Offline — `helm
+  # template` + `kubeconform`, no cluster — so it costs under a minute.
+  helm-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup helm
+        uses: azure/setup-helm@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      # Reads Cargo.toml to assert Chart.yaml's appVersion matches it — that
+      # field is the image tag `helm install` actually pulls. While the chart is
+      # on hold, any run after a release bump or a Compose-side edit (a push that
+      # touches deploy/helm/** or this file, or a dispatch) fails here by design;
+      # that red is the hold, not a regression.
+      - name: helm render tests
+        run: bash deploy/helm/drust/tests/render_test.sh
