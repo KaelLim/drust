@@ -781,6 +781,22 @@ welcome = "歡迎回來。"
 meta_description = "登入 drust — 慈濟基金會的多租戶 SQLite BaaS 管理主控台。"
 title = "drust — 登入"
 
+[mcp_oauth.error]
+page_title = "授權已停止 · drust"
+heading = "這個授權請求已停止"
+sub = "沒有任何資料送回開啟這一頁的程式。"
+request_invalid_title = "請求格式不正確"
+request_invalid_body = "缺少必要參數、參數重複或過長。請從 Claude Code 重新開始登入（/mcp 選 Authenticate，或執行 claude mcp login）。"
+client_unknown_title = "無法辨識的應用程式"
+client_unknown_body = "此伺服器目前只接受 Claude Code。"
+redirect_rejected_title = "未登記的回傳位址"
+redirect_rejected_body = "這個請求要求導回的位址不是 Claude Code 登記的位址。如果 Claude Code 最近更新過，本伺服器保存的登記副本可能已過時，請通知伺服器管理者。"
+label_received = "收到的 redirect_uri："
+label_accepted = "接受的位址（任意 port）："
+label_pinned_on = "登記副本的抓取日期："
+back_to_client = "返回 Claude Code"
+close_hint = "可以關閉這個分頁。"
+
 [settings.page]
 title = "drust 管理 — 設定"
 meta_description = "drust 管理 — 個別管理員偏好設定（語言等）。"

@@ -65,3 +65,35 @@ fn mcp_oauth_metadata_under_empty_base() {
     assert_eq!(m["revocation_endpoint"], "https://drust.test/oauth/revoke");
     assert!(!m["issuer"].as_str().unwrap().ends_with('/'));
 }
+
+#[test]
+fn mcp_oauth_consent_location_and_resume_cookie_in_root_mode() {
+    // First-write-wins OnceLock: every #[test] in this binary sets "".
+    drust::base_path::set("");
+    assert_eq!(
+        drust::mgmt::mcp_oauth::authorize::consent_location("abc"),
+        "/oauth/consent?req=abc"
+    );
+    let c = drust::mgmt::mcp_oauth::envelope::resume_cookie("abc");
+    assert!(
+        c.starts_with("drust_mcp_oauth_resume=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=600"),
+        "{c}"
+    );
+}
+
+#[test]
+fn mcp_oauth_error_redirect_iss_in_root_mode() {
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    assert_eq!(cfg.issuer(), "https://drust.test"); // no trailing '/'
+    assert_eq!(
+        drust::mgmt::mcp_oauth::authorize::error_redirect_location(
+            &cfg,
+            "http://localhost:1/callback",
+            drust::mgmt::mcp_oauth::authorize::AuthzErrorCode::InvalidRequest,
+            None,
+            Some("s"),
+        ),
+        "http://localhost:1/callback?error=invalid_request&state=s&iss=https%3A%2F%2Fdrust.test"
+    );
+}

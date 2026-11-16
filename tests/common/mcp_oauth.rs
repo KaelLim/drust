@@ -257,3 +257,74 @@ pub async fn body_text(resp: axum::http::Response<axum::body::Body>) -> String {
         .unwrap();
     String::from_utf8(b.to_vec()).unwrap()
 }
+
+// ─── Authorize helpers (MA0-5). Full paths only, same reason as above.
+
+/// `(verifier, challenge)` from the production PKCE generator.
+pub fn pkce() -> (String, String) {
+    drust::oauth::state::issue_pkce()
+}
+
+pub fn loopback_redirect(port: u16) -> String {
+    format!("http://localhost:{port}/callback")
+}
+
+/// The MCP SDK's authorize query, in its order: response_type, client_id,
+/// code_challenge, code_challenge_method, redirect_uri, state?, scope,
+/// prompt=consent, resource?. Every value form-urlencoded.
+pub fn authorize_query(
+    challenge: &str,
+    redirect_uri: &str,
+    state: Option<&str>,
+    resource: Option<&str>,
+) -> String {
+    let mut s = url::form_urlencoded::Serializer::new(String::new());
+    s.append_pair("response_type", "code")
+        .append_pair("client_id", CC_CLIENT_ID)
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("redirect_uri", redirect_uri);
+    if let Some(st) = state {
+        s.append_pair("state", st);
+    }
+    s.append_pair("scope", "mcp offline_access")
+        .append_pair("prompt", "consent");
+    if let Some(r) = resource {
+        s.append_pair("resource", r);
+    }
+    s.finish()
+}
+
+/// The `Location` header; panics with a message when absent.
+pub fn location(resp: &axum::http::Response<axum::body::Body>) -> String {
+    match resp
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .map(|v| v.to_str())
+    {
+        Some(Ok(v)) => v.to_string(),
+        other => panic!(
+            "expected a Location header (status {}), got {other:?}",
+            resp.status()
+        ),
+    }
+}
+
+/// The form-decoded value of `key` in the part after '?'; first match; None
+/// when the key is absent.
+pub fn query_param(url: &str, key: &str) -> Option<String> {
+    let (_, q) = url.split_once('?')?;
+    url::form_urlencoded::parse(q.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+}
+
+/// The full `Set-Cookie` line whose cookie name is `name`.
+pub fn set_cookie(resp: &axum::http::Response<axum::body::Body>, name: &str) -> Option<String> {
+    resp.headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|line| line.split_once('=').is_some_and(|(k, _)| k == name))
+        .map(str::to_string)
+}

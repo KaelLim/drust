@@ -1,11 +1,12 @@
 //! `redirect_uri` validation for `GET /oauth/authorize` (MA0-PLAN §3.8.2).
 //!
-//! This file is the review surface of MA0-5. It deliberately never calls
-//! `url::Url::parse` outside its tests: WHATWG parsing lower-cases hosts,
-//! resolves dot-segments, rewrites numeric IPv4 and drops an explicit default
-//! port, so a parse-then-compare check would accept spellings that are not the
-//! pinned string — and the token endpoint later compares the same raw bytes
-//! against the code row. Only prefix and byte comparisons happen here.
+//! This file is the review surface of MA0-5. It deliberately never runs the
+//! input through the `url` crate's parser outside its tests: WHATWG parsing
+//! lower-cases hosts, resolves dot-segments, rewrites numeric IPv4 and drops
+//! an explicit default port, so a parse-then-compare check would accept
+//! spellings that are not the pinned string — and the token endpoint later
+//! compares the same raw bytes against the code row. Only prefix and byte
+//! comparisons happen here.
 
 use crate::mgmt::mcp_oauth::clients::KnownClient;
 

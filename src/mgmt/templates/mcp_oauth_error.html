@@ -1,0 +1,54 @@
+{# page-kind: standalone #}
+<!doctype html>
+<html lang="{{ t.locale_code() }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>{{ t.s("mcp_oauth.error.page_title") }}</title>
+{% include "_favicon.html" %}
+{% include "_styles.html" %}
+<style>
+  body.mcp-oauth-page{height:auto;min-height:100vh;overflow:auto}
+  .mcp-oauth-code{word-break:break-all}
+</style>
+</head>
+<body class="login-page mcp-oauth-page">
+<div class="login-shell">
+  <div class="login-card">
+    <div class="login-brand"><div><div class="brand-name">drust</div></div></div>
+    <h1 class="login-title">{{ t.s("mcp_oauth.error.heading") }}</h1>
+    <p class="login-sub">{{ t.s("mcp_oauth.error.sub") }}</p>
+    <div class="banner danger" role="alert">
+      <span class="b-icon"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      <div class="b-body">
+        {% match kind %}
+          {% when "client_unknown" %}
+        <div class="b-title">{{ t.s("mcp_oauth.error.client_unknown_title") }}</div>
+        <p>{{ t.s("mcp_oauth.error.client_unknown_body") }}</p>
+          {% when "redirect_rejected" %}
+        <div class="b-title">{{ t.s("mcp_oauth.error.redirect_rejected_title") }}</div>
+        <p>{{ t.s("mcp_oauth.error.redirect_rejected_body") }}</p>
+          {% when _ %}
+        <div class="b-title">{{ t.s("mcp_oauth.error.request_invalid_title") }}</div>
+        <p>{{ t.s("mcp_oauth.error.request_invalid_body") }}</p>
+        {% endmatch %}
+      </div>
+    </div>
+    {% if let Some(r) = received_redirect %}
+    <p class="login-sub">{{ t.s("mcp_oauth.error.label_received") }} <code class="mcp-oauth-code">{{ r }}</code></p>
+    {% endif %}
+    {% if let Some(c) = pinned %}
+    <p class="login-sub">{{ t.s("mcp_oauth.error.label_accepted") }}
+      {% for u in c.redirect_uris %}<code class="mcp-oauth-code">{{ u }}</code> {% endfor %}</p>
+    <p class="login-sub">{{ t.s("mcp_oauth.error.label_pinned_on") }} <code>{{ c.pinned_on }}</code></p>
+    {% endif %}
+    {% if let Some(h) = back_href %}
+    <a class="login-cta" href="{{ h }}">{{ t.s("mcp_oauth.error.back_to_client") }}</a>
+    {% else %}
+    <div class="login-foot">{{ t.s("mcp_oauth.error.close_hint") }}</div>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

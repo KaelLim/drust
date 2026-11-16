@@ -761,6 +761,22 @@ welcome = "Welcome back."
 meta_description = "Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation."
 title = "drust — sign in"
 
+[mcp_oauth.error]
+page_title = "Authorization stopped · drust"
+heading = "This authorization request was stopped"
+sub = "Nothing was sent back to the application that opened this page."
+request_invalid_title = "The request is malformed"
+request_invalid_body = "A required parameter is missing, repeated, or too long. Start the sign-in again from Claude Code (/mcp, then Authenticate, or claude mcp login)."
+client_unknown_title = "Unknown application"
+client_unknown_body = "This server currently accepts only Claude Code."
+redirect_rejected_title = "Unregistered return address"
+redirect_rejected_body = "The address this request asked to return to is not one that Claude Code registered. If Claude Code was updated recently, the copy of its registration pinned on this server may be out of date. Tell the server operator."
+label_received = "Received redirect_uri:"
+label_accepted = "Accepted addresses (any port):"
+label_pinned_on = "Registration copy pinned on:"
+back_to_client = "Return to Claude Code"
+close_hint = "You can close this tab."
+
 [settings.page]
 title = "drust admin — settings"
 meta_description = "drust admin — per-admin preferences (language, etc)."
