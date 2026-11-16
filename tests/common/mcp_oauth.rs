@@ -546,3 +546,66 @@ pub async fn obtain_code(
         iss: query_param(&loc, "iss").expect("iss in the redirect"),
     }
 }
+
+// ─── Token helpers (MA0-7). Full paths only, same reason as above.
+
+/// The MCP SDK's token request for a code, in its order: grant_type, code,
+/// code_verifier, redirect_uri, client_id, resource (`RESOURCE`, as
+/// `obtain_code` sent at authorize).
+pub fn token_form_for(cg: &CodeGrant) -> Vec<(String, String)> {
+    [
+        ("grant_type", "authorization_code"),
+        ("code", cg.code.as_str()),
+        ("code_verifier", cg.verifier.as_str()),
+        ("redirect_uri", cg.redirect_uri.as_str()),
+        ("client_id", CC_CLIENT_ID),
+        ("resource", RESOURCE),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// `POST /oauth/token` (a root path: the production router has no `/drust`)
+/// with `token_form_for(cg)`.
+pub async fn exchange(
+    app: &axum::Router,
+    cg: &CodeGrant,
+) -> axum::http::Response<axum::body::Body> {
+    let form = token_form_for(cg);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    post_form(app, "/oauth/token", &pairs, &[], &[]).await
+}
+
+pub struct Tokens {
+    pub access: String,
+    pub refresh: String,
+    pub grant_id: i64,
+}
+
+/// `obtain_code` (port 53_682) -> `exchange` -> 200, with the grant id
+/// resolved through `find_grant_by_access`.
+pub async fn obtain_tokens(fx: &McpOauthFixture, session_cookie: &str) -> Tokens {
+    let cg = obtain_code(fx, session_cookie, 53_682, None).await;
+    let resp = exchange(&fx.app, &cg).await;
+    assert_eq!(resp.status(), axum::http::StatusCode::OK, "token exchange");
+    let v = body_json(resp).await;
+    let access = v["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string();
+    let refresh = v["refresh_token"]
+        .as_str()
+        .expect("refresh_token")
+        .to_string();
+    let conn = fx.meta.lock().await;
+    let grant_id = drust::mgmt::mcp_oauth::store::find_grant_by_access(&conn, &access)
+        .unwrap()
+        .expect("the new access token resolves to its grant")
+        .grant_id();
+    Tokens {
+        access,
+        refresh,
+        grant_id,
+    }
+}

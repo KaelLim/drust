@@ -793,31 +793,23 @@ async fn unknown_grant_types_are_unsupported() {
     }
 }
 
-/// MA0-7 and MA0-8 each rewrite one half of this test.
+/// MA0-8 rewrites this test. (The code exchange landed with MA0-7; its tests
+/// are in `mcp_oauth_token_code.rs`.)
 #[tokio::test]
-async fn ma0_4_known_grants_are_not_yet_supported() {
+async fn refresh_token_grant_is_not_yet_supported() {
     let fx = fixture(true).await;
-    let code = [
-        ("grant_type", "authorization_code"),
-        ("code", "x"),
-        ("code_verifier", "y"),
-        ("redirect_uri", "z"),
-        ("client_id", CC_CLIENT_ID),
-    ];
     let refresh = [
         ("grant_type", "refresh_token"),
         ("refresh_token", "drust_mcprt_x"),
     ];
-    for (name, pairs) in [("code", &code[..]), ("refresh", &refresh[..])] {
-        let resp = post_form(&fx.app, "/oauth/token", pairs, &[], &[]).await;
-        assert_oauth_error(
-            resp,
-            StatusCode::BAD_REQUEST,
-            "unsupported_grant_type",
-            name,
-        )
-        .await;
-    }
+    let resp = post_form(&fx.app, "/oauth/token", &refresh, &[], &[]).await;
+    assert_oauth_error(
+        resp,
+        StatusCode::BAD_REQUEST,
+        "unsupported_grant_type",
+        "refresh",
+    )
+    .await;
 }
 
 #[tokio::test]
