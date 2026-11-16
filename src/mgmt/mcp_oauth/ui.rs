@@ -265,9 +265,7 @@ mod tests {
                 "PRIVILEGED_ROLE_REQUIRED".to_string()
             )
         );
-        let a = team_authority(&conn, &profile("owner"), ids[2])
-            .ok()
-            .expect("owner on an unknown role");
+        let a = team_authority(&conn, &profile("owner"), ids[2]).expect("owner on an unknown role");
         assert_eq!(a.target_admin_id(), ids[2]);
     }
 
