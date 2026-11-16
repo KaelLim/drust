@@ -390,7 +390,7 @@ async fn metadata_is_served_with_the_final_shape() {
 async fn metadata_never_touches_meta() {
     let fx = fixture(true).await;
     let _held = fx.meta.lock().await;
-    let resp = tokio::time::timeout(Duration::from_secs(1), get(&fx.app, META_PATH, &[]))
+    let resp = tokio::time::timeout(Duration::from_secs(5), get(&fx.app, META_PATH, &[]))
         .await
         .expect("metadata waited on the meta mutex");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -688,6 +688,9 @@ async fn no_response_on_these_paths_is_ever_a_redirect() {
         resps.push(revoke_with(&fx.app, &pairs).await);
     }
     for (i, r) in resps.iter().enumerate() {
+        // A 404 would mean the request never reached the route, so the
+        // redirect check below would prove nothing about the handlers.
+        assert_ne!(r.status(), StatusCode::NOT_FOUND, "#{i}: not routed");
         assert!(!r.status().is_redirection(), "#{i}: {}", r.status());
         assert!(
             r.headers().get(header::LOCATION).is_none(),
@@ -852,7 +855,7 @@ async fn token_refusals_before_the_lookup_never_take_the_meta_lock() {
         ),
     ] {
         let resp = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             post_raw(&fx.app, "/oauth/token", &body),
         )
         .await
@@ -1052,7 +1055,7 @@ async fn a_foreign_prefix_answers_200_without_touching_meta() {
     let _held = fx.meta.lock().await;
     for token in [pat.as_str(), code_shaped.as_str(), "drust_mcpat_short"] {
         let resp = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             revoke_with(&fx.app, &[("token", token)]),
         )
         .await

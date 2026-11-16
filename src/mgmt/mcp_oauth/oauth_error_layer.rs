@@ -354,11 +354,41 @@ mod tests {
 
     #[tokio::test]
     async fn rewrites_plain_text_client_errors_keeping_the_status() {
-        for st in [400u16, 404, 413, 415, 422, 401, 411] {
+        for st in [400u16, 403, 404, 408, 413, 415, 422, 401, 411] {
             let status = StatusCode::from_u16(st).unwrap();
             let resp = through_layer(move || async move { (status, "x") }, "POST").await;
             assert_shape(resp, status, "invalid_request", &format!("{st}")).await;
         }
+    }
+
+    /// A 401 that `OAuthError` did not build (say, from an auth layer added
+    /// later) keeps its status but becomes `invalid_request`, and every one of
+    /// its headers is dropped, `WWW-Authenticate` included: only
+    /// `InvalidClientHeader` ever answers `invalid_client` with a challenge.
+    #[tokio::test]
+    async fn an_unmarked_401_becomes_invalid_request_without_its_challenge() {
+        let resp = through_layer(
+            || async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, r#"Basic realm="elsewhere""#)],
+                    "no",
+                )
+            },
+            "POST",
+        )
+        .await;
+        let h = assert_shape(
+            resp,
+            StatusCode::UNAUTHORIZED,
+            "invalid_request",
+            "unmarked 401",
+        )
+        .await;
+        assert!(
+            h.get(header::WWW_AUTHENTICATE).is_none(),
+            "challenge dropped"
+        );
     }
 
     #[tokio::test]

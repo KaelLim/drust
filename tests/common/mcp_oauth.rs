@@ -483,12 +483,37 @@ pub fn sealed_envelope(
     }
 }
 
+/// Everything a response exposes: status, every header (name-sorted, values
+/// in order) and the body bytes. "Answers exactly like a path that never
+/// existed" is snapshot equality.
+pub async fn response_snapshot(
+    resp: axum::http::Response<axum::body::Body>,
+) -> (axum::http::StatusCode, Vec<(String, Vec<u8>)>, Vec<u8>) {
+    let status = resp.status();
+    let mut headers: Vec<(String, Vec<u8>)> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
+        .collect();
+    headers.sort_by(|a, b| a.0.cmp(&b.0));
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap()
+        .to_vec();
+    (status, headers, body)
+}
+
 /// `Location` minus the base path, i.e. the root path the router serves.
+/// Strict: a `Location` without the base prefix is a base-path bug in the
+/// code under test, never something to paper over.
 pub fn router_path(location: &str) -> String {
-    location
-        .strip_prefix(drust::base_path::base_path())
-        .unwrap_or(location)
-        .to_string()
+    let base = drust::base_path::base_path();
+    match location.strip_prefix(base) {
+        Some(rest) if rest.starts_with('/') => rest.to_string(),
+        _ => {
+            panic!("router_path: Location {location:?} does not start with the base path {base:?}/")
+        }
+    }
 }
 
 pub struct CodeGrant {

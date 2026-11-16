@@ -1345,17 +1345,23 @@ async fn stale_resume_cookie_falls_back_and_is_cleared() {
 async fn consent_routes_are_not_mounted_when_disabled() {
     let fx = fixture(false).await;
     let session = session_for(&fx, fx.owner_id).await;
-    let reference = get(&fx.app, "/oauth/nonexistent", &[&session]).await;
-    let ref_status = reference.status();
-    let ref_body = body_text(reference).await;
     for (method, uri) in [
         ("GET", "/oauth/consent"),
         ("POST", "/oauth/consent/approve"),
         ("POST", "/oauth/consent/deny"),
     ] {
+        // The same method and session on a path that never existed.
+        let reference = response_snapshot(
+            send_with(&fx, method, "/oauth/nonexistent", &[&session], &[], "").await,
+        )
+        .await;
+        assert_eq!(reference.0, StatusCode::NOT_FOUND, "{method} reference");
         let resp = send_with(&fx, method, uri, &[&session], &[], "").await;
-        assert_eq!(resp.status(), ref_status, "{method} {uri}");
-        assert_eq!(body_text(resp).await, ref_body, "{method} {uri}");
+        assert_eq!(
+            response_snapshot(resp).await,
+            reference,
+            "{method} {uri}: status, headers and body"
+        );
     }
 }
 

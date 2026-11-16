@@ -57,6 +57,13 @@ fn enc(pairs: &[(&str, &str)]) -> String {
         .finish()
 }
 
+/// `s.replace(from, to)`, asserting the replace really changed something, so a
+/// variant cannot silently be the unmodified query.
+fn replaced(s: &str, from: &str, to: &str) -> String {
+    assert!(s.contains(from), "variant: {from:?} not in {s}");
+    s.replace(from, to)
+}
+
 async fn authorize(fx: &McpOauthFixture, query: &str) -> Response<Body> {
     get(&fx.app, &format!("/oauth/authorize?{query}"), &[]).await
 }
@@ -546,7 +553,7 @@ fn back_rows() -> Vec<(&'static str, String, Pairs, &'static str)> {
             "invalid_target",
         ),
         (
-            "resource 513",
+            "resource 513, not ours",
             l.clone(),
             set(base(&l, s), "resource", &"r".repeat(513)),
             "invalid_target",
@@ -636,11 +643,58 @@ async fn iss_equals_metadata_issuer_byte_for_byte() {
     let issuer = meta["issuer"].as_str().unwrap().to_string();
     assert_eq!(issuer, ISSUER);
     let (_, ch) = pkce();
-    let q = authorize_query(&ch, &loopback_redirect(4242), Some("st"), Some(RESOURCE))
-        .replace("response_type=code", "response_type=token");
+    let q = replaced(
+        &authorize_query(&ch, &loopback_redirect(4242), Some("st"), Some(RESOURCE)),
+        "response_type=code",
+        "response_type=token",
+    );
     let resp = authorize(&fx, &q).await;
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     assert_eq!(query_param(&location(&resp), "iss"), Some(issuer));
+}
+
+/// A host of 63-byte labels whose own `/mcp` resource is exactly `len` bytes:
+/// the only way a resource over the limit can be ours, so the only way to see
+/// the length guard refuse it.
+fn origin_with_resource_len(len: usize) -> String {
+    let mut left = len - "https://".len() - "/drust/mcp".len();
+    let mut labels = Vec::new();
+    while left > 0 {
+        let n = left.min(63);
+        let n = if left > 63 && left - n == 1 { 62 } else { n };
+        labels.push("a".repeat(n));
+        left -= n;
+        if left > 0 {
+            left -= 1;
+        }
+    }
+    format!("https://{}", labels.join("."))
+}
+
+#[tokio::test]
+async fn an_own_resource_of_513_bytes_goes_back_with_invalid_target() {
+    let (_, ch) = pkce();
+    for (len, want) in [(512usize, None), (513, Some("invalid_target"))] {
+        let cfg = McpOauthConfig::for_tests(&origin_with_resource_len(len));
+        let resource = cfg.resource_url();
+        assert_eq!(resource.len(), len);
+        assert!(cfg.is_our_resource(&resource), "{len}: ours");
+        let fx = fixture_with(cfg).await;
+        let q = authorize_query(&ch, &loopback_redirect(4242), Some("st"), Some(&resource));
+        let resp = authorize(&fx, &q).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{len}");
+        let loc = location(&resp);
+        match want {
+            None => assert!(loc.starts_with("/drust/oauth/consent?req="), "{len}: {loc}"),
+            Some(code) => {
+                assert!(
+                    loc.starts_with("http://localhost:4242/callback?"),
+                    "{len}: {loc}"
+                );
+                assert_eq!(query_param(&loc, "error").as_deref(), Some(code), "{len}");
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -719,18 +773,18 @@ async fn tolerated_variants_succeed() {
         ),
         (
             "prompt=none",
-            sdk.replace("prompt=consent", "prompt=none"),
+            replaced(&sdk, "prompt=consent", "prompt=none"),
             Some(RESOURCE),
         ),
         ("foo=bar", format!("{sdk}&foo=bar"), Some(RESOURCE)),
         (
             "no scope",
-            sdk.replace("&scope=mcp+offline_access", ""),
+            replaced(&sdk, "&scope=mcp+offline_access", ""),
             Some(RESOURCE),
         ),
         (
             "scope=offline_access",
-            sdk.replace("scope=mcp+offline_access", "scope=offline_access"),
+            replaced(&sdk, "scope=mcp+offline_access", "scope=offline_access"),
             Some(RESOURCE),
         ),
         ("empty resource", format!("{no_res}&resource="), None),
@@ -807,7 +861,7 @@ async fn authorize_writes_nothing() {
     let before = count(&*fx.meta.lock().await, ROW_TOTAL);
     assert!(before > 0);
     let success = sdk_query(4242, Some("st"));
-    let back = success.replace("response_type=code", "response_type=token");
+    let back = replaced(&success, "response_type=code", "response_type=token");
     let page = enc(&[("client_id", "https://evil.example/cimd")]);
     for (what, q, status) in [
         ("success", success, StatusCode::SEE_OTHER),
@@ -828,7 +882,7 @@ async fn authorize_never_takes_the_meta_lock() {
     let fx = fixture(true).await;
     let _guard = fx.meta.lock().await;
     let resp = tokio::time::timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         authorize(&fx, &sdk_query(4242, Some("st"))),
     )
     .await

@@ -48,6 +48,10 @@ const MAC_LEN: usize = 32;
 pub const MAX_CLIENT_ID: usize = 256;
 /// == `redirect::MAX_REDIRECT_URI_BYTES`.
 pub const MAX_REDIRECT_URI: usize = 64;
+const _: () = assert!(
+    MAX_REDIRECT_URI == crate::mgmt::mcp_oauth::redirect::MAX_REDIRECT_URI_BYTES,
+    "the envelope's redirect_uri limit is redirect_uri_allowed's limit"
+);
 pub const MAX_STATE: usize = 512;
 pub const CHALLENGE_LEN: usize = 43;
 pub const MAX_RESOURCE: usize = 512;

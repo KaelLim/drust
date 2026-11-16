@@ -600,18 +600,48 @@ mod tests {
     ];
 
     /// Invariant 15: default mode is byte-identical, so a hardcoded `/drust`
-    /// would pass every page test. Every outbound URL in the four partials
-    /// starts with the base-path helper.
+    /// would pass every page test. Every outbound URL in the four partials and
+    /// the two OAuth pages starts with the base-path helper: a form `action=`
+    /// (after any whitespace; `data-action="…"` is a JS hook, not a form
+    /// action), a `fetch('` and an `href="`. The one exception is the error
+    /// page's back link to the client, which is the validated loopback
+    /// redirect, never a drust URL.
     #[test]
     fn templates_route_through_base_path() {
         const BASE: &str = "{{ crate::base_path::base_path() }}";
-        let mut urls = 0;
-        for (name, src) in PARTIALS {
+        const ERROR_BACK_LINK: &str = "{{ h }}";
+        let pages: Vec<(&str, &str)> = PARTIALS
+            .iter()
+            .copied()
+            .chain([
+                (
+                    "mcp_oauth_consent.html",
+                    include_str!("../templates/mcp_oauth_consent.html"),
+                ),
+                (
+                    "mcp_oauth_error.html",
+                    include_str!("../templates/mcp_oauth_error.html"),
+                ),
+            ])
+            .collect();
+        let (mut urls, mut back_links) = (0, 0);
+        for (name, src) in pages {
             assert!(!src.contains("/drust"), "{name} hardcodes /drust");
-            // Leading space: `data-action="…"` is a JS hook, not a form action.
-            for needle in [" action=\"", "fetch('"] {
+            for needle in ["action=\"", "fetch('", "href=\""] {
                 for (at, _) in src.match_indices(needle) {
+                    if needle == "action=\""
+                        && !src[..at].ends_with(|c: char| c.is_ascii_whitespace())
+                    {
+                        continue; // `data-action="…"`
+                    }
                     let rest = &src[at + needle.len()..];
+                    if name == "mcp_oauth_error.html"
+                        && needle == "href=\""
+                        && rest.starts_with(ERROR_BACK_LINK)
+                    {
+                        back_links += 1;
+                        continue;
+                    }
                     assert!(
                         rest.starts_with(BASE),
                         "{name}: `{needle}` not followed by the base path"
@@ -620,8 +650,10 @@ mod tests {
                 }
             }
         }
-        // Two form actions on the card, one fetch on the team page.
-        assert_eq!(urls, 3);
+        // Card: two form actions; team page: one fetch; consent: three form
+        // actions and one link.
+        assert_eq!(urls, 7);
+        assert_eq!(back_links, 1, "the error page's back link");
     }
 
     /// MA0-PLAN §3.11 rule 4: the two existing pages change only by a

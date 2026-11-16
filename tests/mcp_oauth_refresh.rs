@@ -577,16 +577,13 @@ async fn a_superseded_sibling_presented_long_after_still_cuts_only_its_branch() 
 // ─── branch a): dead or mismatched ───────────────────────────────────────────
 
 /// (label, SQL applied first, the SDK form field to replace).
-type DeadCase = (
-    &'static str,
-    &'static str,
-    Option<(&'static str, &'static str)>,
-);
+type DeadCase<'a> = (&'static str, &'static str, Option<(&'static str, &'a str)>);
 
 #[tokio::test]
 async fn dead_or_mismatched_refresh_is_invalid_grant_and_writes_nothing() {
     // In the SQL, {g} = grant id, {r} = refresh id, {a} = owner id.
-    let cases: [DeadCase; 9] = [
+    let trailing_slash = format!("{RESOURCE}/");
+    let cases: [DeadCase<'_>; 9] = [
         (
             "idle passed",
             "UPDATE _mcp_oauth_grants SET idle_expires_at = datetime('now','-1 minute') WHERE id = {g}",
@@ -625,7 +622,7 @@ async fn dead_or_mismatched_refresh_is_invalid_grant_and_writes_nothing() {
         (
             "resource with a trailing slash",
             "",
-            Some(("resource", "https://drust.test/drust/mcp/")),
+            Some(("resource", trailing_slash.as_str())),
         ),
         (
             "another server's resource",

@@ -936,7 +936,7 @@ mod tests {
                 D_RESOURCE,
             ),
             (
-                "resource 513 bytes",
+                "resource 513 bytes, not ours",
                 set(sdk(), "resource", &r513),
                 InvalidTarget,
                 D_RESOURCE,
@@ -965,6 +965,52 @@ mod tests {
             };
             assert_eq!(target.raw, REDIRECT, "{what}");
         }
+    }
+
+    /// An origin whose own `/mcp` resource is exactly `len` bytes: a host of
+    /// 63-byte labels. Only such a config makes a resource over `MAX_RESOURCE`
+    /// pass `is_our_resource`, so only it shows the length guard at work.
+    pub(crate) fn origin_with_resource_len(len: usize) -> String {
+        let path = crate::base_path::base("/mcp");
+        let mut left = len - "https://".len() - path.len();
+        let mut labels = Vec::new();
+        while left > 0 {
+            let n = left.min(63);
+            // Never leave a 1-byte remainder that only a dot could fill.
+            let n = if left > 63 && left - n == 1 { 62 } else { n };
+            labels.push("a".repeat(n));
+            left -= n;
+            if left > 0 {
+                left -= 1; // the dot
+            }
+        }
+        format!("https://{}", labels.join("."))
+    }
+
+    #[test]
+    fn an_own_resource_over_the_limit_is_refused_by_the_length_guard() {
+        let origin = origin_with_resource_len(envelope::MAX_RESOURCE + 1);
+        let c = McpOauthConfig::for_tests(&origin);
+        let r513 = c.resource_url();
+        assert_eq!(r513.len(), envelope::MAX_RESOURCE + 1);
+        assert!(
+            c.is_our_resource(&r513),
+            "only the length guard can refuse it"
+        );
+        let p = set(sdk(), "resource", &r513);
+        match evaluate(&c, Some(&q(&p))) {
+            Decision::Back {
+                code, description, ..
+            } => assert_eq!(
+                (code, description),
+                (AuthzErrorCode::InvalidTarget, D_RESOURCE)
+            ),
+            _ => panic!("a 513-byte resource must go back with invalid_target"),
+        }
+        // At the limit it proceeds.
+        let c = McpOauthConfig::for_tests(&origin_with_resource_len(envelope::MAX_RESOURCE));
+        let p = set(sdk(), "resource", &c.resource_url());
+        assert!(matches!(evaluate(&c, Some(&q(&p))), Decision::Proceed(_)));
     }
 
     #[test]
