@@ -144,6 +144,10 @@ pub fn open_meta(path: &Path) -> anyhow::Result<Connection> {
     // v1.57 — member tenant-cap request queue, from the same shared const so
     // fresh + upgraded DBs get byte-identical schema (drift-proof).
     conn.execute_batch(crate::db::migrations::SQL_CREATE_TENANT_CAP_REQUESTS_IF_NOT_EXISTS)?;
+    // MCP OAuth AS tables, from the same shared const run_migrations uses
+    // so fresh + upgraded DBs get byte-identical schema (drift-proof). Frozen
+    // once deployed; see the const's doc in db::migrations.
+    conn.execute_batch(crate::db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS)?;
     apply_migrations(&conn)?;
     Ok(conn)
 }

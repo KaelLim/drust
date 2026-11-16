@@ -31,6 +31,104 @@ CREATE TABLE IF NOT EXISTS _cli_device_codes (
 CREATE INDEX IF NOT EXISTS idx_cli_device_codes_expires ON _cli_device_codes(expires_at);
 "#;
 
+// MCP OAuth authorization server: grants, codes, refresh, access, and the upload
+// tickets the account-level MCP file tools will write. One shared const for
+// open_meta (fresh install) and run_migrations (upgrade) so both get
+// byte-identical schema.
+//
+// FROZEN on first deploy to ANY host: `IF NOT EXISTS` means a changed shape is
+// never applied to a DB that already has the table. Later columns go through
+// `add_column_if_missing` and are appended LAST here in the same order (see the
+// column-order note on SQL_CREATE_SYSTEM_UPLOAD_SESSIONS_IF_NOT_EXISTS). The
+// `--` comments INSIDE each CREATE TABLE body are stored verbatim in
+// sqlite_master.sql, so they are part of the frozen text too.
+//
+// Names MUST stay `_mcp_*`: run_migrations DROPs four `_oauth_*` tables on every
+// boot (v1.29.2 retraction). Pinned by `mcp_oauth_rows_survive_reboot`.
+pub const SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS: &str = r#"
+-- Names MUST NOT start with `_oauth_`: run_migrations DROPs four such tables on every boot.
+-- CREATE TABLE/INDEX IF NOT EXISTS only: mints, revokes and deletes nothing (invariant 1).
+-- All *_at columns hold SQLite datetime() text 'YYYY-MM-DD HH:MM:SS' (UTC), written and
+-- compared in SQL only — never a Rust to_rfc3339() string (see §3.2).
+
+CREATE TABLE IF NOT EXISTS _mcp_oauth_grants (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id            INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  admin_created_at    TEXT    NOT NULL,   -- copied in SQL from admins.created_at at approve
+  client_id           TEXT    NOT NULL,   -- a KNOWN_CLIENTS client_id
+  redirect_host       TEXT    NOT NULL,   -- 'localhost' | '127.0.0.1' (host only, no port)
+  scope               TEXT    NOT NULL DEFAULT 'mcp',
+  kind                TEXT    NOT NULL DEFAULT 'authorization_code', -- no CHECK: a later device-grant flow adds 'device'
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  last_used_at        TEXT,
+  idle_expires_at     TEXT    NOT NULL,   -- MIN(now + idle, absolute_expires_at), slid on refresh
+  absolute_expires_at TEXT    NOT NULL,   -- now + max, fixed at approve
+  sibling_rejected_at TEXT,               -- last time a superseded sibling refresh was presented
+  revoked_at          TEXT,
+  revoke_reason       TEXT                -- mcp_oauth::store::RevokeReason::as_str()
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_grants_admin ON _mcp_oauth_grants(admin_id);
+
+CREATE TABLE IF NOT EXISTS _mcp_oauth_codes (
+  code_hash      TEXT    PRIMARY KEY,     -- hash(Code, code)
+  grant_id       INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  client_id      TEXT    NOT NULL,
+  redirect_uri   TEXT    NOT NULL,        -- the exact validated string, port included
+  code_challenge TEXT    NOT NULL,        -- 43-char base64url S256 challenge
+  resource       TEXT,                    -- resource sent at authorize, NULL when omitted
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at     TEXT    NOT NULL,        -- now + 300 seconds
+  redeemed_at    TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_codes_grant   ON _mcp_oauth_codes(grant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_codes_expires ON _mcp_oauth_codes(expires_at);
+
+CREATE TABLE IF NOT EXISTS _mcp_oauth_refresh (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id      INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  parent_id     INTEGER,                  -- the refresh this one was exchanged from; NULL = from the code
+  token_hash    TEXT    NOT NULL UNIQUE,  -- hash(Refresh, token)
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at    TEXT    NOT NULL,         -- the grant's MIN(idle, absolute) at issue; never shortened
+  rotated_at    TEXT,                     -- first successful exchange of THIS token
+  superseded_at TEXT,                     -- a sibling won; this one lost
+  revoked_at    TEXT,
+  revoke_reason TEXT                      -- 'sibling_superseded' or a RevokeReason
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_refresh_grant   ON _mcp_oauth_refresh(grant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_refresh_parent  ON _mcp_oauth_refresh(parent_id) WHERE parent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_refresh_expires ON _mcp_oauth_refresh(expires_at);
+
+CREATE TABLE IF NOT EXISTS _mcp_oauth_access (
+  token_hash  TEXT    PRIMARY KEY,        -- hash(Access, token)
+  grant_id    INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  refresh_id  INTEGER NOT NULL,           -- the refresh issued IN THE SAME RESPONSE as this access
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT    NOT NULL,           -- now + access_ttl
+  revoked_at  TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_access_grant   ON _mcp_oauth_access(grant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_access_refresh ON _mcp_oauth_access(refresh_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_access_expires ON _mcp_oauth_access(expires_at);
+
+CREATE TABLE IF NOT EXISTS _mcp_upload_tickets (  -- written by the account-level MCP file tools; shape fixed here
+  ticket_hash  TEXT    PRIMARY KEY,       -- hash(UploadTicket, ticket)
+  grant_id     INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
+  admin_id     INTEGER NOT NULL,          -- copied in SQL from the grant row, never passed in
+  tenant_id    TEXT    NOT NULL,          -- NO FK to tenants: the id-recycle DELETE would fail
+  max_bytes    INTEGER NOT NULL,
+  path         TEXT,
+  visibility   TEXT    NOT NULL CHECK (visibility IN ('public','private')),
+  create_by    TEXT    NOT NULL,          -- tus create must happen before this (issue + 15 min)
+  bound_upload TEXT,                      -- NULL | 'creating' (claim sentinel) | tus upload token
+  expires_at   TEXT    NOT NULL,          -- extended to the tus session expiry once bound
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  revoked_at   TEXT
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mcp_upload_tickets_grant   ON _mcp_upload_tickets(grant_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_upload_tickets_expires ON _mcp_upload_tickets(expires_at);
+"#;
+
 pub const SQL_CREATE_SYSTEM_USERS_IF_NOT_EXISTS: &str = r#"
 CREATE TABLE IF NOT EXISTS _system_users (
   id            TEXT PRIMARY KEY,
@@ -1317,6 +1415,12 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     // CREATE TABLE/INDEX IF NOT EXISTS only; mints/revokes/deletes no
     // credential, so a second boot is a pure no-op (v1.41.5 invariant).
     meta.execute_batch(SQL_CREATE_CLI_DEVICE_CODES_IF_NOT_EXISTS)?;
+
+    // MCP OAuth AS tables (+ the account-level MCP upload tickets). CREATE
+    // TABLE/INDEX IF NOT EXISTS only; mints/revokes/deletes no credential, so a
+    // second boot is a pure no-op (v1.41.5 invariant). `_mcp_*`, never `_oauth_*`
+    // — the v1.29.2 step above drops four `_oauth_*` tables on every boot.
+    meta.execute_batch(SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS)?;
 
     // v1.50 — tenant ownership. Idempotent by construction (run_migrations
     // runs on EVERY boot — v1.41.5 invariant): (a) ADD COLUMN only when the
@@ -3305,5 +3409,409 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bonus, 4, "a second boot must not reset an operator's bonus");
+    }
+
+    // ---------------------------------------------------------------------
+    // MCP OAuth AS tables (`SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`). These query
+    // sqlite_master by table NAME, never through the const, so the fresh-install
+    // and boot-migration paths are compared with each other, not with a literal.
+    // ---------------------------------------------------------------------
+
+    const MCP_TABLES: [&str; 5] = [
+        "_mcp_oauth_access",
+        "_mcp_oauth_codes",
+        "_mcp_oauth_grants",
+        "_mcp_oauth_refresh",
+        "_mcp_upload_tickets",
+    ];
+
+    /// A meta DB from before the MCP OAuth tables existed. Same shape as
+    /// `v129_admins_role_column_added_and_backfilled_to_owner`'s fixture.
+    fn pre_ma0_meta() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenants (id TEXT PRIMARY KEY, allow_self_register INTEGER NOT NULL DEFAULT 0, db_bytes INTEGER NOT NULL DEFAULT 0, files_bytes INTEGER NOT NULL DEFAULT 0, stats_updated_at TEXT);
+            CREATE TABLE admins (
+                id INTEGER PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO admins (username, password_hash, email) VALUES ('alice', 'hash', 'a@x');",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// (type, name, sql) of the five tables and every index on them, ORDER BY
+    /// type, name. `IN`, not `LIKE`: `_` is a LIKE wildcard.
+    fn mcp_schema(c: &Connection) -> Vec<(String, String, Option<String>)> {
+        c.prepare(
+            "SELECT type, name, sql FROM sqlite_master
+             WHERE tbl_name IN ('_mcp_oauth_access', '_mcp_oauth_codes', '_mcp_oauth_grants',
+                                '_mcp_oauth_refresh', '_mcp_upload_tickets')
+             ORDER BY type, name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    fn cols(c: &Connection, t: &str) -> Vec<String> {
+        c.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+            .unwrap()
+            .query_map([t], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn count_rows(c: &Connection, t: &str) -> i64 {
+        c.query_row(&format!("SELECT count(*) FROM \"{t}\""), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// One grant for `username`, `admin_id` and `admin_created_at` copied in SQL.
+    fn seed_mcp_grant(c: &Connection, username: &str) -> i64 {
+        c.execute(
+            "INSERT INTO _mcp_oauth_grants
+                 (admin_id, admin_created_at, client_id, redirect_host,
+                  idle_expires_at, absolute_expires_at)
+             SELECT id, created_at, 'test-client', 'localhost',
+                    datetime('now', '+30 days'), datetime('now', '+90 days')
+             FROM admins WHERE username = ?1",
+            [username],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    }
+
+    /// One code, refresh, access and upload ticket hanging off `grant_id`.
+    fn seed_mcp_children(c: &Connection, grant_id: i64, tag: &str) {
+        c.execute(
+            "INSERT INTO _mcp_oauth_codes
+                 (code_hash, grant_id, client_id, redirect_uri, code_challenge, expires_at)
+             VALUES (?1, ?2, 'test-client', 'http://localhost:1/cb', 'chal',
+                     datetime('now', '+300 seconds'))",
+            rusqlite::params![format!("code-{tag}"), grant_id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO _mcp_oauth_refresh (grant_id, token_hash, expires_at)
+             VALUES (?1, ?2, datetime('now', '+30 days'))",
+            rusqlite::params![grant_id, format!("rt-{tag}")],
+        )
+        .unwrap();
+        let refresh_id = c.last_insert_rowid();
+        c.execute(
+            "INSERT INTO _mcp_oauth_access (token_hash, grant_id, refresh_id, expires_at)
+             VALUES (?1, ?2, ?3, datetime('now', '+3600 seconds'))",
+            rusqlite::params![format!("at-{tag}"), grant_id, refresh_id],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO _mcp_upload_tickets
+                 (ticket_hash, grant_id, admin_id, tenant_id, max_bytes, visibility,
+                  create_by, expires_at)
+             SELECT ?1, id, admin_id, 't1', 1024, 'private',
+                    datetime('now', '+15 minutes'), datetime('now', '+15 minutes')
+             FROM _mcp_oauth_grants WHERE id = ?2",
+            rusqlite::params![format!("upl-{tag}"), grant_id],
+        )
+        .unwrap();
+    }
+
+    fn table_count(schema: &[(String, String, Option<String>)]) -> usize {
+        schema.iter().filter(|(t, _, _)| t == "table").count()
+    }
+
+    #[test]
+    fn mcp_oauth_fresh_install_matches_migration() {
+        let tmp = TempDir::new().unwrap();
+        let fresh = crate::storage::meta::open_meta(&tmp.path().join("meta.sqlite")).unwrap();
+        let fresh_schema = mcp_schema(&fresh);
+
+        let upgraded = pre_ma0_meta();
+        assert!(
+            mcp_schema(&upgraded).is_empty(),
+            "the pre-MCP fixture must not have the tables yet"
+        );
+        run_migrations(&upgraded, tmp.path()).unwrap();
+        let upgraded_schema = mcp_schema(&upgraded);
+
+        assert_eq!(
+            table_count(&fresh_schema),
+            5,
+            "fresh install: {fresh_schema:?}"
+        );
+        assert_eq!(
+            table_count(&upgraded_schema),
+            5,
+            "upgrade: {upgraded_schema:?}"
+        );
+        let named_idx = |s: &[(String, String, Option<String>)]| {
+            s.iter()
+                .filter(|(t, n, _)| t == "index" && n.starts_with("idx_mcp_"))
+                .count()
+        };
+        // grants 1, codes 2, refresh 3, access 3, tickets 2.
+        assert_eq!(named_idx(&fresh_schema), 11);
+        assert_eq!(named_idx(&upgraded_schema), 11);
+        assert_eq!(
+            fresh_schema, upgraded_schema,
+            "fresh install and boot migration must produce byte-identical MCP OAuth schema"
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_ddl_idempotent_across_two_boots() {
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let first = mcp_schema(&conn);
+        assert_eq!(table_count(&first), 5, "{first:?}");
+        run_migrations(&conn, tmp.path()).unwrap();
+        assert_eq!(
+            mcp_schema(&conn),
+            first,
+            "a second boot must not change the schema"
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_rows_survive_reboot() {
+        // Guards the `_mcp_*` naming: run_migrations DROPs four `_oauth_*`
+        // tables on every boot, so a table renamed under that prefix would be
+        // emptied on each restart.
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let grant = seed_mcp_grant(&conn, "alice");
+        seed_mcp_children(&conn, grant, "a");
+        run_migrations(&conn, tmp.path()).unwrap();
+        run_migrations(&conn, tmp.path()).unwrap();
+        for t in MCP_TABLES {
+            assert_eq!(count_rows(&conn, t), 1, "{t} lost its row across two boots");
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_foreign_keys_are_exactly_these() {
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let fks = |t: &str| -> Vec<(String, String, String, String)> {
+            conn.prepare(
+                "SELECT \"table\", \"from\", \"to\", on_delete FROM pragma_foreign_key_list(?1)",
+            )
+            .unwrap()
+            .query_map([t], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        let one = |parent: &str, from: &str| {
+            vec![(
+                parent.to_string(),
+                from.to_string(),
+                "id".to_string(),
+                "CASCADE".to_string(),
+            )]
+        };
+        assert_eq!(fks("_mcp_oauth_grants"), one("admins", "admin_id"));
+        for t in [
+            "_mcp_oauth_codes",
+            "_mcp_oauth_refresh",
+            "_mcp_oauth_access",
+            "_mcp_upload_tickets",
+        ] {
+            assert_eq!(fks(t), one("_mcp_oauth_grants", "grant_id"), "{t}");
+        }
+        // The tenant id-recycle branch hard-DELETEs the `tenants` row; a
+        // non-CASCADE FK from a ticket would make that DELETE fail.
+        assert!(
+            fks("_mcp_upload_tickets")
+                .iter()
+                .all(|(p, ..)| p != "tenants"),
+            "_mcp_upload_tickets must have no FK to tenants"
+        );
+    }
+
+    #[test]
+    fn mcp_oauth_column_order_is_frozen() {
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let expect: [(&str, &[&str]); 5] = [
+            (
+                "_mcp_oauth_grants",
+                &[
+                    "id",
+                    "admin_id",
+                    "admin_created_at",
+                    "client_id",
+                    "redirect_host",
+                    "scope",
+                    "kind",
+                    "created_at",
+                    "last_used_at",
+                    "idle_expires_at",
+                    "absolute_expires_at",
+                    "sibling_rejected_at",
+                    "revoked_at",
+                    "revoke_reason",
+                ],
+            ),
+            (
+                "_mcp_oauth_codes",
+                &[
+                    "code_hash",
+                    "grant_id",
+                    "client_id",
+                    "redirect_uri",
+                    "code_challenge",
+                    "resource",
+                    "created_at",
+                    "expires_at",
+                    "redeemed_at",
+                ],
+            ),
+            (
+                "_mcp_oauth_refresh",
+                &[
+                    "id",
+                    "grant_id",
+                    "parent_id",
+                    "token_hash",
+                    "created_at",
+                    "expires_at",
+                    "rotated_at",
+                    "superseded_at",
+                    "revoked_at",
+                    "revoke_reason",
+                ],
+            ),
+            (
+                "_mcp_oauth_access",
+                &[
+                    "token_hash",
+                    "grant_id",
+                    "refresh_id",
+                    "created_at",
+                    "expires_at",
+                    "revoked_at",
+                ],
+            ),
+            (
+                "_mcp_upload_tickets",
+                &[
+                    "ticket_hash",
+                    "grant_id",
+                    "admin_id",
+                    "tenant_id",
+                    "max_bytes",
+                    "path",
+                    "visibility",
+                    "create_by",
+                    "bound_upload",
+                    "expires_at",
+                    "created_at",
+                    "revoked_at",
+                ],
+            ),
+        ];
+        for (t, want) in expect {
+            assert_eq!(
+                cols(&conn, t),
+                want,
+                "{t}: FROZEN after first deploy: append new columns via add_column_if_missing, \
+                 never reorder or retype. Hashes only — never a plaintext token column."
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_oauth_tables_are_strict() {
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        for t in MCP_TABLES {
+            let strict: i64 = conn
+                .query_row(
+                    "SELECT strict FROM pragma_table_list WHERE name=?1",
+                    [t],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("{t}: {e}"));
+            assert_eq!(strict, 1, "{t} must be STRICT");
+        }
+    }
+
+    #[test]
+    fn mcp_upload_tickets_visibility_check() {
+        let tmp = TempDir::new().unwrap();
+        let conn = pre_ma0_meta();
+        run_migrations(&conn, tmp.path()).unwrap();
+        let grant = seed_mcp_grant(&conn, "alice");
+        let insert = |hash: &str, visibility: &str| {
+            conn.execute(
+                "INSERT INTO _mcp_upload_tickets
+                     (ticket_hash, grant_id, admin_id, tenant_id, max_bytes, visibility,
+                      create_by, expires_at)
+                 SELECT ?1, id, admin_id, 't1', 1, ?2, datetime('now'), datetime('now')
+                 FROM _mcp_oauth_grants WHERE id = ?3",
+                rusqlite::params![hash, visibility, grant],
+            )
+        };
+        assert!(
+            insert("h1", "secret").is_err(),
+            "visibility CHECK must refuse 'secret'"
+        );
+        assert_eq!(insert("h2", "private").unwrap(), 1);
+        assert_eq!(insert("h3", "public").unwrap(), 1);
+    }
+
+    #[test]
+    fn mcp_oauth_admin_delete_cascades_on_open_meta() {
+        // Until remove_admin deletes grants explicitly — and on a rollback to an
+        // older binary — the FK CASCADE is the only thing that takes an admin's
+        // grants and tokens with the admin. The declaration alone (see
+        // mcp_oauth_foreign_keys_are_exactly_these) proves nothing unless the
+        // connection enforces FKs, so this runs on open_meta's connection, which
+        // sets `PRAGMA foreign_keys = ON`.
+        let tmp = TempDir::new().unwrap();
+        let conn = crate::storage::meta::open_meta(&tmp.path().join("meta.sqlite")).unwrap();
+        for u in ["casc", "keep"] {
+            conn.execute(
+                "INSERT INTO admins (username, password_hash) VALUES (?1, 'x')",
+                [u],
+            )
+            .unwrap();
+        }
+        let gone = seed_mcp_grant(&conn, "casc");
+        seed_mcp_children(&conn, gone, "casc");
+        let kept = seed_mcp_grant(&conn, "keep");
+        seed_mcp_children(&conn, kept, "keep");
+        for t in MCP_TABLES {
+            assert_eq!(count_rows(&conn, t), 2, "{t} before the delete");
+        }
+
+        conn.execute("DELETE FROM admins WHERE username = 'casc'", [])
+            .unwrap();
+
+        for t in MCP_TABLES {
+            assert_eq!(
+                count_rows(&conn, t),
+                1,
+                "{t}: exactly the other admin's row remains"
+            );
+        }
+        let left: i64 = conn
+            .query_row("SELECT id FROM _mcp_oauth_grants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, kept, "the second admin's grant is untouched");
     }
 }
