@@ -96,7 +96,15 @@ impl GrantOwner {
             pinned_grant: Some(grant.grant_id),
         }
     }
-    // `managed(&ui::TeamAuthority)` arrives with MA0-9 (`pinned_grant: None`).
+
+    /// The team page (MA0-9): an admin acting on another admin's grants. Only
+    /// `ui::team_authority` mints the proof, after the `remove_admin` matrix.
+    pub fn managed(authority: &super::ui::TeamAuthority) -> Self {
+        Self {
+            admin_id: authority.target_admin_id(),
+            pinned_grant: None,
+        }
+    }
 }
 
 /// Only `store.rs` constructs this (private fields). It proves the caller

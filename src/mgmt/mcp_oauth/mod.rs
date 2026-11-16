@@ -19,6 +19,7 @@ pub mod store;
 pub mod sweep;
 pub mod token;
 pub mod tokens;
+pub mod ui;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
