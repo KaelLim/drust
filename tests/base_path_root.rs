@@ -33,3 +33,18 @@ fn empty_base_drops_the_prefix() {
         "/t/abc/oauth/"
     );
 }
+
+#[test]
+fn mcp_oauth_urls_drop_the_prefix() {
+    // Same first-write-wins value as the test above, so order does not matter.
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    assert_eq!(cfg.issuer(), "https://drust.test"); // no trailing '/'
+    assert_eq!(cfg.resource_url(), "https://drust.test/mcp");
+    assert_eq!(
+        cfg.endpoint_url("/oauth/token"),
+        "https://drust.test/oauth/token"
+    );
+    assert!(cfg.is_our_resource("https://drust.test/mcp"));
+    assert!(!cfg.is_our_resource("https://drust.test/drust/mcp"));
+}
