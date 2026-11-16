@@ -12,13 +12,19 @@
 //! Turning DRUST_MCP off hides these routes but revokes nothing: the grants
 //! stay live in meta and work again when it is turned back on.
 
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Extension, Json};
 use rusqlite::{Connection, OptionalExtension, params};
 
+use super::store::{self, GrantOwner, RevokeReason, RevokedGrant};
+use crate::auth::middleware::{AdminId, AuthMethod};
 use crate::error::json_error;
 use crate::mgmt::admin_profile::AdminProfileExt;
+use crate::mgmt::routes::MgmtState;
 use crate::mgmt::tenant_authz::{can_manage_members, can_manage_privileged};
+use crate::safety::audit::AuditEntry;
 
 /// One row of the settings card. Askama reads the public fields.
 pub struct McpGrantRow {
@@ -147,6 +153,185 @@ fn internal(e: rusqlite::Error) -> Response {
         "INTERNAL",
         "internal error",
     )
+}
+
+/// `POST /admin/settings/mcp-grants/{id}/revoke`. Owner-bound in SQL via
+/// `GrantOwner::caller` — someone else's id, an unknown id and an
+/// already-revoked id are the SAME 404 (no existence oracle), whatever the
+/// caller's role. `caller` MUST come from the `Extension<AdminId>` extractor,
+/// never from the path (rules: auth-tenancy "MCP grant revoke UI").
+pub async fn settings_revoke(
+    State(s): State<MgmtState>,
+    Extension(caller): Extension<AdminId>,
+    Path(grant_id): Path<i64>,
+    method: Option<Extension<AuthMethod>>,
+) -> Response {
+    let email = {
+        let conn = s.meta.lock().await;
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => return internal(e),
+        };
+        let outcome = match store::revoke_mcp_grant(
+            &tx,
+            &GrantOwner::caller(&caller),
+            grant_id,
+            RevokeReason::User,
+        ) {
+            Ok(r) => r,
+            Err(e) => return internal(e),
+        };
+        if outcome == RevokedGrant::NotFound {
+            // Nothing was written; dropping `tx` rolls back.
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "MCP_GRANT_NOT_FOUND",
+                "no active MCP connection with that id for this admin",
+            );
+        }
+        if let Err(e) = tx.commit() {
+            return internal(e);
+        }
+        email_of(&conn, caller.0)
+    }; // meta guard dropped before the audit await
+    let entry = audit_entry(
+        "mcp_oauth.grant.revoke",
+        caller.0,
+        email,
+        method.as_ref(),
+        serde_json::json!({ "grant_id": grant_id, "reason": "user" }),
+    );
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
+}
+
+/// `POST /admin/settings/mcp-grants/revoke-all` — the caller's own grants only.
+/// Zero grants is not an error (idempotent 303). The count is whatever
+/// `revoke_all_mcp_grants` found live for this admin id, which can exceed the
+/// rows the card showed (the card also filters on `admin_created_at`).
+pub async fn settings_revoke_all(
+    State(s): State<MgmtState>,
+    Extension(caller): Extension<AdminId>,
+    method: Option<Extension<AuthMethod>>,
+) -> Response {
+    let (n, email) = {
+        let conn = s.meta.lock().await;
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => return internal(e),
+        };
+        let n = match store::revoke_all_mcp_grants(
+            &tx,
+            &GrantOwner::caller(&caller),
+            RevokeReason::UserAll,
+        ) {
+            Ok(n) => n,
+            Err(e) => return internal(e),
+        };
+        if let Err(e) = tx.commit() {
+            return internal(e);
+        }
+        let email = if n > 0 {
+            email_of(&conn, caller.0)
+        } else {
+            None
+        };
+        (n, email)
+    };
+    if n > 0 {
+        let entry = audit_entry(
+            "mcp_oauth.grant.revoke",
+            caller.0,
+            email,
+            method.as_ref(),
+            serde_json::json!({ "reason": "user_all", "revoked": n }),
+        );
+        crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    }
+    Redirect::to(&crate::base_path::base("/admin/settings")).into_response()
+}
+
+/// `DELETE /admin/team/{id}/mcp-grants` — revoke every MCP grant of `{id}`
+/// (an ADMIN id, not a tenant id: this route is on `team_router`, never under
+/// `tenant_ownership_layer`). Authority decided in-handler: the route layer on
+/// `team_router` gates only GET.
+pub async fn team_revoke_mcp(
+    State(s): State<MgmtState>,
+    Path(target_id): Path<i64>,
+    Extension(AdminId(caller_id)): Extension<AdminId>,
+    Extension(profile): Extension<AdminProfileExt>,
+    method: Option<Extension<AuthMethod>>,
+) -> Response {
+    let (n, caller_email) = {
+        let conn = s.meta.lock().await;
+        let authority = match team_authority(&conn, &profile, target_id) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => return internal(e),
+        };
+        let n = match store::revoke_all_mcp_grants(
+            &tx,
+            &GrantOwner::managed(&authority),
+            RevokeReason::TeamAdmin,
+        ) {
+            Ok(n) => n,
+            Err(e) => return internal(e),
+        };
+        if let Err(e) = tx.commit() {
+            return internal(e);
+        }
+        (n, email_of(&conn, caller_id))
+    };
+    let entry = audit_entry(
+        "admin.mcp_grant.revoke",
+        caller_id,
+        caller_email,
+        method.as_ref(),
+        serde_json::json!({ "target_admin_id": target_id, "revoked": n }),
+    );
+    crate::safety::audit::write_entry(&s.log_dir, &entry).await;
+    Json(serde_json::json!({ "revoked": n })).into_response()
+}
+
+/// Read under the guard the handler already holds (no second lock).
+fn email_of(conn: &Connection, admin_id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT email FROM admins WHERE id = ?1",
+        params![admin_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Host-level sentinel tenant "-" like `login_submit`; `actor_admin_id` and
+/// `actor_email_snapshot` always paired (audit.rs doc). `auth_method` names
+/// which arm of `admin_session_layer` admitted the caller.
+fn audit_entry(
+    op: &str,
+    admin_id: i64,
+    email: Option<String>,
+    method: Option<&Extension<AuthMethod>>,
+    extra: serde_json::Value,
+) -> AuditEntry {
+    let mut entry = AuditEntry::success("-", "-", op, 0);
+    entry.actor_admin_id = Some(admin_id);
+    entry.actor_email_snapshot = email;
+    entry.auth_method = audit_auth_method(method.map(|Extension(m)| *m));
+    entry.with_extra(extra)
+}
+
+/// Exhaustive on purpose: a third `AuthMethod` variant must pick its string here.
+fn audit_auth_method(method: Option<AuthMethod>) -> Option<String> {
+    match method {
+        Some(AuthMethod::Cookie) => Some("admin_cookie".to_string()),
+        Some(AuthMethod::Pat) => Some("admin_pat".to_string()),
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -345,6 +530,39 @@ mod tests {
         }
         assert!(by_id(live).last_used_at.is_some());
         assert!(by_id(expired).last_used_at.is_none());
+    }
+
+    /// Integration tests cannot read audit rows (first-write-wins global
+    /// writer), so the row shape is pinned here: actor and email paired,
+    /// the session arm named, the host-level sentinel tenant.
+    #[test]
+    fn audit_entry_carries_the_actor_and_the_session_arm() {
+        let extra = serde_json::json!({ "grant_id": 7, "reason": "user" });
+        let cookie = audit_entry(
+            "mcp_oauth.grant.revoke",
+            3,
+            Some("a@example.test".to_string()),
+            Some(&Extension(AuthMethod::Cookie)),
+            extra.clone(),
+        );
+        assert_eq!(cookie.tenant, "-");
+        assert_eq!(cookie.op, "mcp_oauth.grant.revoke");
+        assert_eq!(cookie.actor_admin_id, Some(3));
+        assert_eq!(
+            cookie.actor_email_snapshot.as_deref(),
+            Some("a@example.test")
+        );
+        assert_eq!(cookie.auth_method.as_deref(), Some("admin_cookie"));
+        assert_eq!(serde_json::Value::Object(cookie.extra), extra);
+        let pat = audit_entry(
+            "admin.mcp_grant.revoke",
+            3,
+            None,
+            Some(&Extension(AuthMethod::Pat)),
+            serde_json::json!({}),
+        );
+        assert_eq!(pat.auth_method.as_deref(), Some("admin_pat"));
+        assert_eq!(audit_auth_method(None), None);
     }
 
     #[test]

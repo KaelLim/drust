@@ -68,6 +68,36 @@ pub fn session_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
+/// MA0-9 settings-page revoke routes, already `with_state`.
+/// `MgmtState::with_data_dir` merges them into `settings_router` (after its
+/// `.with_state`) ONLY when `McpOauthConfig::enabled()`, so they sit inside
+/// `protected` (`admin_session_layer`: cookie or `drust_pat_*`).
+pub fn settings_routes(state: &MgmtState) -> Router {
+    Router::new()
+        .route(
+            "/admin/settings/mcp-grants/revoke-all",
+            post(ui::settings_revoke_all),
+        )
+        .route(
+            "/admin/settings/mcp-grants/{id}/revoke",
+            post(ui::settings_revoke),
+        )
+        .with_state(state.clone())
+}
+
+/// MA0-9 team-page revoke route, already `with_state`. Merged into
+/// `team_router` after its `.with_state` (so after `require_sees_team_layer`,
+/// which gates only GET anyway) ONLY when enabled; the authority matrix is
+/// `ui::team_authority`, inside the handler.
+pub fn team_routes(state: &MgmtState) -> Router {
+    Router::new()
+        .route(
+            "/admin/team/{id}/mcp-grants",
+            axum::routing::delete(ui::team_revoke_mcp),
+        )
+        .with_state(state.clone())
+}
+
 /// en and zh-TW must carry the same keys under every MCP OAuth prefix (build.rs
 /// only checks en). The two later prefixes are empty until MA0-9 and are
 /// checked automatically from then on.

@@ -110,8 +110,9 @@ pub struct MgmtState {
     /// Every reader checks `enabled()` first; while disabled nothing reads it and no
     /// route is mounted, which is what keeps a DRUST_MCP-unset host byte-identical.
     pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
-    /// MA0 — in-memory limiters for `/oauth/token` and `/oauth/revoke` (miss-only per-IP,
-    /// per-code, per-grant). Cleanup task spawned by main.rs only when enabled.
+    /// MA0 — in-memory limiters for `/oauth/token` (miss-only per-IP, per-code,
+    /// per-grant); `/oauth/revoke` reads no budget. Cleanup task spawned by main.rs
+    /// only when enabled.
     pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
 }
 
@@ -1501,6 +1502,12 @@ impl MgmtState {
                 axum::routing::post(super::admin_pat::cli_token_revoke),
             )
             .with_state(settings_state);
+        // MA0-9 — MCP grant revoke routes, mounted only when MCP OAuth is on.
+        let settings_router = if self.mcp_oauth.enabled() {
+            settings_router.merge(crate::mgmt::mcp_oauth::settings_routes(&self))
+        } else {
+            settings_router
+        };
 
         // v1.29.0 — admin team management CRUD.
         let team_router = Router::new()
@@ -1537,6 +1544,15 @@ impl MgmtState {
                 crate::mgmt::tenant_authz::require_sees_team_layer,
             ))
             .with_state(self.clone());
+        // MA0-9 — "revoke this admin's MCP connections", mounted only when MCP
+        // OAuth is on. Merged after `.with_state` (a `with_state` router cannot
+        // join a `Router<MgmtState>`); `require_sees_team_layer` gates only GET
+        // (tenant_authz.rs), and the handler carries the remove_admin matrix.
+        let team_router = if self.mcp_oauth.enabled() {
+            team_router.merge(crate::mgmt::mcp_oauth::team_routes(&self))
+        } else {
+            team_router
+        };
 
         // v1.44 (CLI Phase 2, T3) — device-flow approval pages. Ride inside
         // `protected` (session-gated): a no-cookie browser request 302s to
