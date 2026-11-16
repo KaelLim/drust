@@ -153,7 +153,7 @@ flowchart LR
 | `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用檔案儲存，接 S3 相容服務（已驗證：RustFS、Garage；限制見下文）。`GARAGE_` 字首是歷史名稱；Compose 的儲存設定檔會替你設好 |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：只有對帳頁清理舊版「每租戶 bucket」時使用。兩者都要設；只設一個會在啟動時警告並視為未設定 |
-| `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案、簽署與 MCP 宣告 URL 對外使用的來源，不含路徑。Compose 設為 `http://localhost`；chart 由 ingress 主機推得 |
+| `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案、簽署與 MCP 宣告 URL 對外使用的來源，不含路徑。Compose 設為 `http://localhost`；k3s chart 由 ingress 主機推得（該 chart 暫停維護，凍結於 drust 1.67.0） |
 
 S3 資料路徑走 `object_store::aws::AmazonS3`（path-style、SigV4），已在 RustFS（Compose 預設）與 Garage（bare-metal 參考主機）上驗證。有兩件事是固定的、無法設定：bucket 名稱 `public` 與 `private`，以及 SigV4 的 region 字串 `garage`；儲存服務必須兩者都接受。bucket 名稱全域唯一、或會檢查簽章 region 的代管服務（AWS S3、B2）無法直接使用；MinIO 與 R2 在本版未經測試。
 

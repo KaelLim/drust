@@ -10,7 +10,7 @@
 # (`mapfile`) and GNU find (`-printf`), so `make test-shell` and
 # tests/backup_roundtrip.rs fail there for reasons that have nothing to do with
 # drust. This is the one place the whole integration suite runs on the OS that
-# all three deployment targets actually use.
+# every deployment target actually uses.
 #
 # The source is COPIED into a volume (tracked files plus untracked ones that
 # are not ignored), so nothing the tests write lands in the host working tree.

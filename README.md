@@ -153,7 +153,7 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables file storage on an S3-compatible store (verified: RustFS, Garage; constraints below). The `GARAGE_` names are historical. Compose's storage file sets them for you |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage only — used solely by the reconcile page to clean up buckets from the retired per-tenant layout. Set both; one alone is ignored with a boot warning |
-| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the chart derives it from the ingress host |
+| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the k3s chart derives it from the ingress host (the chart is on hold, frozen at drust 1.67.0) |
 
 The S3 data path uses `object_store::aws::AmazonS3` (path-style, SigV4). It is verified against RustFS (the Compose default) and Garage (the bare-metal reference host). Two things are fixed and not configurable: the bucket names `public` and `private`, and the SigV4 region string `garage`. A store has to accept both. A hosted provider whose bucket names are global, or which checks the signing region (AWS S3, B2), cannot be used as it stands; MinIO and R2 are untested in this release.
 

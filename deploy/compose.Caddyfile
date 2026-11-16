@@ -31,8 +31,8 @@
 #     (pinned by deploy/tests/compose_public_route_test.sh) and with the bare-metal
 #     host's block in ../garage/deploy/Caddyfile (outside this repo: checked by
 #     hand). The k3s chart's deploy/helm/drust/files/public-proxy.Caddyfile carries a
-#     byte copy of this whole handle_path block (pinned by the chart's
-#     tests/render_test.sh): edit both together. copy_response is MANDATORY inside
+#     byte copy of this whole handle_path block as of the chart's freeze; the chart
+#     is on hold, so edit this block alone. copy_response is MANDATORY inside
 #     handle_response: without it the body is silently dropped (200, 0 bytes).
 # Verified on Caddy 2.11.9 (the image `caddy:2` resolved to it); docker-compose.yml
 # keeps the floating `caddy:2` tag so the proxy keeps receiving security releases.

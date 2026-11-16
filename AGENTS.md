@@ -246,6 +246,19 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   operator's remedy is to move that RPC behind a service key or make its cost independent of
   caller parameters.
 
+**Deliberate — the k3s chart is on hold (not the PAT family):**
+
+- `deploy/helm/drust/` is frozen at chart 0.2.0 / `appVersion` 1.67.0 and is not kept in step
+  with the two active targets, bare-metal systemd and Docker (CLAUDE.md invariant 17). A
+  Docker or bare-metal change with no chart counterpart — a new env knob, path, route or
+  recurring job, a `Cargo.toml` version past `appVersion`, `deploy/compose-rustfs/*` or the
+  Compose `/public/*` block differing from the chart's copies — is expected drift, not a
+  defect. Do not report it and do not "fix" the chart. The chart's render test lives in
+  `.github/workflows/helm-chart.yml` and runs only when `deploy/helm/**` or that workflow
+  changes, or by hand, so it does not gate those edits. Resuming the chart is a separate,
+  deliberate step (`.claude/rules/build-deploy.md` §Deployment targets, "Resuming k3s"); a
+  diff that edits `deploy/helm/**` outside such a resume is itself the finding.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

@@ -22,8 +22,8 @@ RestartSec=5s
 TimeoutStopSec=30s
 UMask=0077
 # Webhook fan-out knobs (all have working Rust defaults; listed here so they
-# are discoverable together on this deploy target — Compose + Helm carry the
-# same set):
+# are discoverable together on this deploy target — Compose carries the same
+# set; the on-hold Helm chart is not kept in step):
 #   DRUST_WEBHOOK_MAX_CONCURRENCY  deliveries in flight process-wide (default 64)
 #   DRUST_WEBHOOK_MAX_PER_TENANT   webhook registrations per tenant (default 32)
 #   DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY  deliveries in flight PER TENANT
