@@ -446,14 +446,76 @@ async fn login_page(
     )
 }
 
+/// MA0-1 — login CSRF guard (W3C Fetch Metadata). True only when a browser
+/// has declared this request `Sec-Fetch-Site: cross-site`.
+///
+/// Why this shape and not a CSRF field or an Origin check:
+/// - The session cookie is `SameSite=Lax`, and Lax does not stop a cross-site
+///   top-level POST from *setting* a cookie, so without this a third-party page
+///   can sign the victim's browser in as an account whose credentials the page
+///   author holds (any admin or member on this host).
+/// - A required form field would break the trusted automation that POSTs
+///   `/login` directly (eval harness, ~33 test files). Those clients send no
+///   Fetch Metadata, so they are untouched here.
+/// - `Origin` vs `DRUST_PUBLIC_URL` would refuse operators who browse the admin
+///   UI by an internal hostname, and the proxy rewrites `Host`.
+///
+/// Fail direction: only a browser can carry a login CSRF. Browsers send one of
+/// `cross-site` / `same-site` / `same-origin` / `none` (Fetch Metadata §2.3),
+/// and `Sec-`-prefixed headers cannot be set or removed by page script (§4.2).
+/// The spec says servers SHOULD ignore an invalid value (§2.1), so a value that
+/// is not visible ASCII, or an unknown token, is treated as absent (allowed).
+/// Any one `cross-site` among repeated headers refuses. A redirect chain with
+/// any cross-site hop is already reported as `cross-site` by the browser (§4.1).
+///
+/// Deliberately NOT applied to the admin OAuth callback: that request is a
+/// cross-site top-level GET by construction, and its login-CSRF defence is the
+/// state + PKCE cookie pair (`oauth_login.rs`). See AGENTS.md.
+fn is_browser_cross_site(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all("sec-fetch-site")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.trim().eq_ignore_ascii_case("cross-site"))
+}
+
 async fn login_submit(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
+    headers: axum::http::HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let op = "POST /login";
+    // MA0-1 — refuse a browser-declared cross-site POST FIRST: before the
+    // per-IP limiter (a cross-site page must not spend the victim IP's 5/min
+    // login budget), before the meta lock, before argon2. Nothing below this
+    // line runs for such a request, so no session row, no cookie.
+    // NEVER put `form.username` / `form.password` into this audit row.
+    // Anything that reads request state to shape this login's outcome (e.g. a
+    // post-login redirect cookie) must be read AFTER this `if`, so a refused
+    // request neither consumes nor clears it.
+    if is_browser_cross_site(&headers) {
+        let mut entry = crate::safety::audit::AuditEntry::failure(
+            "-",
+            "-",
+            op,
+            0,
+            "LOGIN_CROSS_SITE",
+            "cross-site login refused",
+        );
+        entry.auth_method = Some("password".to_string());
+        entry = entry.with_extra(serde_json::json!({ "auth_kind": "admin" }));
+        crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+        let mut resp = axum::Json(serde_json::json!({
+            "error_code": "LOGIN_CROSS_SITE",
+            "message": "cross-site login refused",
+        }))
+        .into_response();
+        *resp.status_mut() = StatusCode::FORBIDDEN;
+        return resp;
+    }
     // v1.19.2 — per-IP rate limit. Same shape as tenant login_handler.
     if !state.admin_login_rl.check(ip) {
         let mut entry =
@@ -1523,5 +1585,67 @@ impl MgmtState {
                 outer_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
             ))
+    }
+}
+
+#[cfg(test)]
+mod login_cross_site_tests {
+    use super::is_browser_cross_site;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn hm(values: &[&[u8]]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for v in values {
+            h.append("sec-fetch-site", HeaderValue::from_bytes(v).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn cross_site_values_refuse() {
+        for v in [
+            &b"cross-site"[..],
+            b"Cross-Site",
+            b"CROSS-SITE",
+            b" cross-site ",
+            b"\tcross-site",
+        ] {
+            assert!(
+                is_browser_cross_site(&hm(&[v])),
+                "{:?} must refuse",
+                String::from_utf8_lossy(v)
+            );
+        }
+    }
+
+    #[test]
+    fn other_tokens_and_absence_pass() {
+        assert!(!is_browser_cross_site(&HeaderMap::new()));
+        for v in [
+            &b"same-origin"[..],
+            b"same-site",
+            b"none",
+            b"",
+            b"cross-sitex",
+            b"cross site",
+        ] {
+            assert!(
+                !is_browser_cross_site(&hm(&[v])),
+                "{:?} must pass",
+                String::from_utf8_lossy(v)
+            );
+        }
+    }
+
+    #[test]
+    fn any_repeated_cross_site_refuses() {
+        assert!(is_browser_cross_site(&hm(&[b"same-origin", b"cross-site"])));
+        assert!(is_browser_cross_site(&hm(&[b"cross-site", b"same-origin"])));
+    }
+
+    #[test]
+    fn non_visible_ascii_is_treated_as_absent() {
+        // `to_str()` fails on obs-text; Fetch Metadata §2.1: ignore invalid values.
+        assert!(!is_browser_cross_site(&hm(&[b"cross-site\xff"])));
     }
 }
