@@ -283,7 +283,8 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   or localhost; otherwise the `Secure` session cookie cannot be set over HTTP at all); a
   sibling-subdomain (`same-site`) attacker — the pre-existing cookie-tossing residual, not
   addressed here; and same-origin active content, which is invariant 14's job
-  (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's.
+  (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's. The consent
+  page's signed-in identity line (MA0-6) is the follow-up line for the same-site residual.
 
 **Deliberate — MCP OAuth AS (not the PAT family):**
 
@@ -356,6 +357,21 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   so a budget would protect nothing (the per-IP buckets elsewhere count only misses on
   endpoints that do work). Pinned by `authorize_writes_nothing` and
   `authorize_never_takes_the_meta_lock`.
+
+**Deliberate — MCP OAuth consent (MA0-6):**
+
+- The consent page sets **no Content-Security-Policy**, and the admin plane must **not** gain
+  a `form-action` directive. `frame_guard_layers` adds `frame-ancestors 'none'` only when a
+  response has no CSP of its own, so a page-level CSP would silently drop the framing guard;
+  and approve is a POST answered by a 303 to `http://localhost:<port>`, which `form-action`
+  would block in browsers that apply it to redirects — no test would notice.
+- consent / approve / deny are **not rate-limited**, and approve's PAT refusal is **not** an
+  `admin_session_layer` regression: the layer still accepts PATs everywhere else; only these
+  three handlers refuse anything but the cookie arm (`AuthMethod`).
+- Known residual, accepted: UI-redress lures (a popup steering a signed-in admin to press
+  Authorize) get no extra defence such as a delayed-enable button. `frame-ancestors` / XFO
+  stop framing only; the consequence is bounded because the code goes only to the victim's
+  own loopback and the attacker would also need the PKCE verifier of that request.
 
 ## Canonical sources — do not hand-verify against prose
 

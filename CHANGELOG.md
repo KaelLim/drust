@@ -126,6 +126,28 @@ No new route, page or environment variable; no response changes.
   variable, no schema change, no deploy file change: both active targets already forward
   `/oauth/*` to drust.
 
+### MCP OAuth authorization server — consent (MA0-6)
+
+- **Consent page** at `/oauth/consent` (approve / deny; mounted only when `DRUST_MCP=on`).
+  Accepts only a signed-in browser session: an admin PAT gets
+  `403 MCP_CONSENT_COOKIE_REQUIRED`, so a short-lived CLI PAT can never be traded for a
+  90-day MCP grant. Approve and deny carry double-submit CSRF bound to the admin and to the
+  request, and must come from the browser that started the authorization (the resume
+  cookie must match the request). Every step re-checks the pinned client and its redirect,
+  and the page shows the client and the return address only from the signed request. It
+  states what the authorization covers (every tenant the account can see, with the current
+  count), the permissions, what revoking does and does not stop, the lifetimes, and the
+  signed-in identity next to the buttons. Approve creates one grant and one single-use
+  authorization code (stored hashed, valid 300 seconds) and audits
+  `mcp_oauth.grant.create`; deny audits `mcp_oauth.consent.deny`. Each authorization asks
+  again; consent is never remembered. The code cannot be exchanged yet: the token endpoint
+  still answers `unsupported_grant_type` until MA0-7.
+- **Sign-in resumes the authorization.** After signing in (password, Google or GitHub) with
+  an authorization in progress, the browser returns to the consent page instead of the
+  tenant list; an expired or invalid resume cookie is cleared and sign-in lands as usual.
+  **Without `DRUST_MCP=on`, or with no authorization in progress, sign-in redirects exactly
+  as before.** No new environment variable, no schema change, no deploy file change.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,

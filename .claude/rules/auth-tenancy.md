@@ -154,7 +154,9 @@ A new credential source that resolves to `AuthCtx::Service{admin_id: Some(..)}` 
 Lifecycle routes live on the **public** router via a self-contained `resolve_cli_caller`
 that returns JSON 401 and never a 302.
 
-`admin_session_layer` is cookie-**or**-PAT. The browser-302 invariant is preserved: no
+`admin_session_layer` is cookie-**or**-PAT. It tags each arm with an `AuthMethod`
+extension (`Cookie` / `Pat`); a handler that must tell them apart (today only MCP consent)
+reads it. The browser-302 invariant is preserved: no
 bearer plus `Accept: text/html` still redirects to `/login`; only a present bearer or
 `Accept: application/json` gets a JSON 401.
 
@@ -321,6 +323,60 @@ both to OAuth JSON (pinned by `error_page_is_html_not_oauth_json`).
 - **Clock failure fails closed**: `envelope::now_unix()` returns `Option`; authorize
   answers `server_error` on `None`, and every `open` caller passes
   `now_unix().unwrap_or(u64::MAX)`. Never map a clock failure to 0.
+
+### Consent (`/oauth/consent`, `/approve`, `/deny`)
+
+`mcp_oauth::session_routes` merges into `protected` (inside `admin_session_layer`, the
+profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
+
+- **Cookie arm only.** Each handler's first statement reads `Option<Extension<AuthMethod>>`;
+  anything but `Some(Cookie)` — `Pat`, or no tag at all — is 403 JSON
+  `MCP_CONSENT_COOKIE_REQUIRED`. `AuthMethod` has no `Default`, so a missing tag can never
+  read as `Cookie`. approve/deny take the body as `Bytes` and parse it AFTER that check (a
+  `Form` extractor would answer a PAT's bad body with 422 first). A PAT must never become a
+  90-day grant, and revoking the PAT would not reach the grant.
+- **Admin session writers.** The only places that create an admin session are
+  `login_submit` and the admin OAuth callback (the two `auth::session::create_session`
+  callers). A new one must not accept a PAT or any bearer as its authentication, or
+  consent's cookie-only rule is void — and the consent tests would not notice.
+- **Browser binding.** The resume cookie (set only by `/oauth/authorize`) must be present
+  and byte-equal to the `req` shown (GET) or submitted (approve/deny); a query-only `req`
+  is refused. The envelope is re-opened on every step and re-validated with `find_client`
+  and the SAME `redirect_uri_allowed` authorize uses. Client name, `client_id` and the
+  return host:port on the page come from the opened envelope and the pinned list only.
+- **CSRF.** Double submit: `drust_mcp_oauth_csrf` cookie (`HttpOnly`, `SameSite=Lax`,
+  `Path=cookie_path("")`, `Max-Age=600`) plus a hidden field. Expected value
+  `HMAC-SHA256(csrf_key, "drust-mcp-csrf-v1\0" || admin_id (i64 LE) || ":" ||
+  SHA-256(req))`, base64url. Three constant-time checks, all required: field non-empty,
+  cookie == field, field == expected. Bound to the admin (another admin's token fails) and
+  to the request (a token cannot approve a different envelope); the domain tag keeps it
+  apart from the CLI device token under the same key.
+- **Identity.** The page reads `COALESCE(email, username), role` from `admins` itself and
+  counts visible live tenants with `tenant_authz::visibility_where`; it never trusts
+  `AdminProfileExt`, whose fallback is a placeholder member. A missing row is
+  `consent_admin_missing`; approve re-reads the row inside the grant INSERT (`INSERT …
+  SELECT … FROM admins`), so a row deleted between page and approve writes nothing.
+- **Cookie clearing.** Cleared only when the request proves the cookie belongs to this
+  `req` AND the flow cannot finish with it: approve/deny success (both), an envelope that
+  no longer opens or re-validates with cookie == `req` (both on POST, resume only on GET —
+  `ClientChanged` included, because `resume_target` only opens and would otherwise bring
+  every login back to the error page for 10 minutes). A mismatch, a CSRF failure, a missing
+  admin row on GET and any form-level error clear nothing: the browser holds ONE csrf cookie,
+  written by the latest consent GET, most likely for a newer tab.
+- **Login resume.** `envelope::resume_target` is asked by `login_submit` (after the
+  cross-site refusal and the password check) and `oauth_callback`, after the session is
+  created. Its first statement is the `enabled()` check, so a disabled host never reads the
+  cookie (source pin). A cookie that opens yields the fixed `base("/oauth/consent")` — never
+  a URL from the cookie; a dead one yields `ClearStale`, appended (never inserted, which
+  would drop the session cookie). Clock failure passes `u64::MAX`: every envelope opens as
+  `Expired` and every resume cookie is `ClearStale`.
+- **Approve** writes one grant (`kind='authorization_code'`, scope `mcp`, absolute = now +
+  max days, idle = MIN(now + idle days, absolute)) and one code (hash only, 300 s, the raw
+  `redirect_uri` and the challenge/resource from the envelope) in one transaction, audits
+  after the lock is dropped, and 303s with exactly `code`, `state` (when sent) and `iss`.
+  The plaintext code goes into that `Location` and nowhere else — no log, no audit field
+  (source pin `plaintext_code_never_reaches_logs_or_audit`). Not rate-limited: the caller
+  is a signed-in admin.
 
 ## Tenant creation cap and quota tier
 

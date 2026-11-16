@@ -67,6 +67,11 @@ The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executi
 - Caddy 2.6.2's response-matcher allowlist has **no regex or case-insensitive option**, only a plain glob on `header`. The matcher's exact shape, and the fact that it must stay in lockstep with `storage::files::is_unsafe_inline_type`, are documented once in `.claude/rules/storage-files.md` — read that before editing the `@markup` matcher.
 - **An S3-API upstream needs the query string dropped** (`rewrite * /public{path}?`). RustFS honours `?response-content-type=` on anonymous GETs, and a case-variant type slips past the case-sensitive matcher. Garage's website endpoint is not an S3 API, but the strip costs nothing there.
 
+**Do not log the `Location` of `/oauth/consent/approve` responses** in a proxy access log:
+it carries a one-time MCP authorization code (compensated by PKCE, a 300-second lifetime
+and single use, but a log is not where it belongs). Default Caddy access logs do not record
+response headers; keep it that way for that path.
+
 The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. The on-hold k3s chart's `deploy/helm/drust/files/public-proxy.Caddyfile` carries a byte copy of the Compose `handle_path /public/*` block as of the chart's freeze; while the hold lasts it is not a lockstep partner, so edit the Compose block alone (§Tests). Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
 ## Deployment targets

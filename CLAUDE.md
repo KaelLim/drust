@@ -118,6 +118,7 @@ reachable by an untrusted caller.
 | `/.well-known/oauth-authorization-server` (AS metadata) | unauthenticated — mounted **only when `DRUST_MCP` resolves to enabled** (`McpOauthConfig::enabled()`: `on` with a valid `DRUST_PUBLIC_URL`; `auto` currently mounts nothing). Pure JSON from config, never touches meta, never reads `Host` |
 | `/oauth/token`, `/oauth/revoke` | unauthenticated, same mount rule. The credential is the token in the form body — never a cookie, never the query string; only `drust_mcpat_` / `drust_mcprt_` are recognised, so a PAT or tenant key sent here is "an invalid token" and untouched. Every non-2xx is OAuth JSON with `Cache-Control: no-store` |
 | `/oauth/authorize` | unauthenticated; mounted only when `DRUST_MCP=on`. Writes nothing. Before client and `redirect_uri` validation it answers an HTML error page and never redirects; after it, only to the pinned loopback `redirect_uri` |
+| `/oauth/consent`, `/oauth/consent/approve`, `/oauth/consent/deny` | **admin session cookie only** — a `drust_pat_*` bearer gets 403 `MCP_CONSENT_COOKIE_REQUIRED`; mounted only when `DRUST_MCP` resolves to enabled |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
 | `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose and k3s; on k3s through the chart's `public-proxy` Caddy), never through drust |
 
