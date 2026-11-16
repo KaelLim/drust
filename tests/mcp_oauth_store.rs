@@ -5,6 +5,7 @@
 
 use drust::auth::middleware::AdminId;
 use drust::mgmt::mcp_oauth::store::{self, GrantOwner, GrantRef, RevokeReason, RevokedGrant};
+use drust::mgmt::mcp_oauth::sweep::{SweepCounts, sweep_mcp_oauth};
 use drust::mgmt::mcp_oauth::tokens::{self, TokenKind};
 use rusqlite::params;
 
@@ -1015,4 +1016,368 @@ async fn revocation_lookup_refuses_a_revoked_or_orphan_grant() {
             .expect("an expired grant is still revocable");
         assert_eq!(r.grant_id(), gc);
     }
+}
+
+// ─── C. sweep_mcp_oauth ──────────────────────────────────────────────────────
+
+/// The C1 shape on one live grant: two access and two refresh rows (one of
+/// each expired), three codes (expired-unredeemed, expired-redeemed, live) and
+/// two tickets (one expired). A sweep removes exactly 2 codes, 1 access,
+/// 1 refresh and 1 ticket.
+fn seed_expiring_children(conn: &rusqlite::Connection, admin_id: i64) -> i64 {
+    let g = live_grant(conn, admin_id);
+    let t1 = seed_tokens(conn, g);
+    seed_tokens(conn, g);
+    conn.execute(
+        "UPDATE _mcp_oauth_access SET expires_at = datetime('now', '-1 second') \
+          WHERE token_hash = ?1",
+        params![tokens::hash(TokenKind::Access, &t1.access)],
+    )
+    .unwrap();
+    age(
+        conn,
+        "_mcp_oauth_refresh",
+        "expires_at",
+        "id",
+        t1.refresh_id,
+        "-1 second",
+    );
+    let expired = seed_code(conn, g, REDIRECT, CHALLENGE, None);
+    let redeemed = seed_code(conn, g, REDIRECT, CHALLENGE, None);
+    seed_code(conn, g, REDIRECT, CHALLENGE, None);
+    for (code, redeem) in [(expired, false), (redeemed, true)] {
+        conn.execute(
+            "UPDATE _mcp_oauth_codes SET expires_at = datetime('now', '-1 second'), \
+               redeemed_at = CASE WHEN ?2 THEN datetime('now', '-2 minutes') END \
+             WHERE code_hash = ?1",
+            params![tokens::hash(TokenKind::Code, &code), redeem],
+        )
+        .unwrap();
+    }
+    seed_ticket(conn, g, "-1 second");
+    seed_ticket(conn, g, "+1 hour");
+    g
+}
+
+fn children(conn: &rusqlite::Connection, g: i64) -> [i64; 4] {
+    [
+        "_mcp_oauth_codes",
+        "_mcp_oauth_access",
+        "_mcp_oauth_refresh",
+        "_mcp_upload_tickets",
+    ]
+    .map(|t| {
+        count(
+            conn,
+            &format!("SELECT COUNT(*) FROM {t} WHERE grant_id = {g}"),
+        )
+    })
+}
+
+fn grant_exists(conn: &rusqlite::Connection, g: i64) -> bool {
+    count(
+        conn,
+        &format!("SELECT COUNT(*) FROM _mcp_oauth_grants WHERE id = {g}"),
+    ) == 1
+}
+
+#[tokio::test]
+async fn sweep_deletes_expired_children_and_keeps_live_ones() {
+    let fx = fixture(false).await;
+    let g = seed_expiring_children(&*fx.meta.lock().await, fx.owner_id);
+    let counts = sweep_mcp_oauth(&fx.meta).await;
+    assert_eq!(
+        counts,
+        SweepCounts {
+            codes: 2,
+            access: 1,
+            refresh: 1,
+            tickets: 1,
+            ..SweepCounts::default()
+        }
+    );
+    let c = fx.meta.lock().await;
+    assert!(grant_exists(&c, g));
+    assert_eq!(children(&c, g), [1, 1, 1, 1], "the live rows stay");
+    for t in [
+        "_mcp_oauth_codes",
+        "_mcp_oauth_access",
+        "_mcp_oauth_refresh",
+        "_mcp_upload_tickets",
+    ] {
+        assert_eq!(
+            count(
+                &c,
+                &format!("SELECT COUNT(*) FROM {t} WHERE expires_at < datetime('now')")
+            ),
+            0,
+            "{t}: no expired row survives"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sweep_keeps_a_rotated_refresh_until_it_expires() {
+    let fx = fixture(false).await;
+    let (g, t) = {
+        let c = fx.meta.lock().await;
+        let g = live_grant(&c, fx.owner_id);
+        let t = seed_tokens(&c, g);
+        age(
+            &c,
+            "_mcp_oauth_refresh",
+            "rotated_at",
+            "id",
+            t.refresh_id,
+            "-2 days",
+        );
+        (g, t)
+    };
+    assert_eq!(sweep_mcp_oauth(&fx.meta).await, SweepCounts::default());
+    let c = fx.meta.lock().await;
+    assert_eq!(
+        count(
+            &c,
+            &format!(
+                "SELECT COUNT(*) FROM _mcp_oauth_refresh WHERE id = {} AND grant_id = {g}",
+                t.refresh_id
+            )
+        ),
+        1,
+        "refresh-reuse detection needs the rotated row until its own expiry"
+    );
+}
+
+#[tokio::test]
+async fn sweep_grant_retention_is_thirty_days_after_end_of_life() {
+    let fx = fixture(false).await;
+    // (label, idle, absolute, revoked_at, deleted)
+    let rows: [(&str, &str, &str, Option<&str>, bool); 7] = [
+        ("a", "+30 days", "+90 days", None, false),
+        ("b", "-10 days", "+80 days", None, false),
+        ("c", "-31 days", "+59 days", None, true),
+        ("d", "+30 days", "-31 days", None, true),
+        ("e", "+30 days", "+90 days", Some("-10 days"), false),
+        ("f", "+30 days", "+90 days", Some("-31 days"), true),
+        ("g", "-40 days", "+50 days", Some("-10 days"), false),
+    ];
+    let ids: Vec<i64> = {
+        let c = fx.meta.lock().await;
+        rows.iter()
+            .map(|(_, idle, absolute, revoked, _)| {
+                // Seed live and give it tokens FIRST (so its refresh/access are
+                // unexpired), then age the grant into the row's shape.
+                let g = live_grant(&c, fx.owner_id);
+                seed_tokens(&c, g);
+                age(&c, "_mcp_oauth_grants", "idle_expires_at", "id", g, idle);
+                age(
+                    &c,
+                    "_mcp_oauth_grants",
+                    "absolute_expires_at",
+                    "id",
+                    g,
+                    absolute,
+                );
+                if let Some(r) = revoked {
+                    age(&c, "_mcp_oauth_grants", "revoked_at", "id", g, r);
+                    c.execute(
+                        "UPDATE _mcp_oauth_grants SET revoke_reason = 'user' WHERE id = ?1",
+                        params![g],
+                    )
+                    .unwrap();
+                }
+                g
+            })
+            .collect()
+    };
+    let counts = sweep_mcp_oauth(&fx.meta).await;
+    // Child counts 0: the sweep touched no surviving child; a deleted grant's
+    // children go by CASCADE, which `changes()` does not count.
+    assert_eq!(
+        counts,
+        SweepCounts {
+            grants: 3,
+            ..SweepCounts::default()
+        }
+    );
+    let c = fx.meta.lock().await;
+    for ((label, .., deleted), g) in rows.iter().zip(ids) {
+        assert_eq!(grant_exists(&c, g), !deleted, "row ({label})");
+        let [_, access, refresh, _] = children(&c, g);
+        if *deleted {
+            assert_eq!((access, refresh), (0, 0), "row ({label}) children cascade");
+        } else {
+            assert_eq!((access, refresh), (1, 1), "row ({label}) children stay");
+        }
+    }
+}
+
+#[tokio::test]
+async fn sweep_deletes_orphan_grants_and_their_children() {
+    let fx = fixture(false).await;
+    let bob = add_admin(&fx, "bob", "", "member").await;
+    let (g1, g2) = {
+        let c = fx.meta.lock().await;
+        // (a) the admin snapshot no longer matches
+        let g1 = live_grant(&c, fx.owner_id);
+        seed_tokens(&c, g1);
+        c.execute(
+            "UPDATE _mcp_oauth_grants SET admin_created_at = '2000-01-01 00:00:00' WHERE id = ?1",
+            params![g1],
+        )
+        .unwrap();
+        // (b) the admin was deleted by an out-of-process tool without FK enforcement
+        let g2 = live_grant(&c, bob);
+        seed_tokens(&c, g2);
+        c.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        c.execute("DELETE FROM admins WHERE id = ?1", params![bob])
+            .unwrap();
+        c.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        (g1, g2)
+    };
+    assert_eq!(
+        sweep_mcp_oauth(&fx.meta).await,
+        SweepCounts {
+            orphans: 2,
+            ..SweepCounts::default()
+        }
+    );
+    let c = fx.meta.lock().await;
+    for g in [g1, g2] {
+        assert!(!grant_exists(&c, g), "orphan grant {g} is deleted");
+        assert_eq!(
+            children(&c, g),
+            [0, 0, 0, 0],
+            "grant {g}'s children cascade"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sweep_counts_an_old_orphan_once() {
+    let fx = fixture(false).await;
+    let g = {
+        let c = fx.meta.lock().await;
+        let g = live_grant(&c, fx.owner_id);
+        seed_tokens(&c, g);
+        age(&c, "_mcp_oauth_grants", "revoked_at", "id", g, "-31 days");
+        c.execute(
+            "UPDATE _mcp_oauth_grants SET revoke_reason = 'user', \
+               admin_created_at = '2000-01-01 00:00:00' WHERE id = ?1",
+            params![g],
+        )
+        .unwrap();
+        g
+    };
+    assert_eq!(
+        sweep_mcp_oauth(&fx.meta).await,
+        SweepCounts {
+            grants: 1,
+            ..SweepCounts::default()
+        },
+        "the retention rule runs first; the orphan rule no longer sees the row"
+    );
+    assert!(!grant_exists(&*fx.meta.lock().await, g));
+}
+
+#[tokio::test]
+async fn sweep_is_idempotent_and_a_no_op_on_empty_tables() {
+    let fx = fixture(false).await;
+    assert_eq!(sweep_mcp_oauth(&fx.meta).await.total(), 0, "empty tables");
+    seed_expiring_children(&*fx.meta.lock().await, fx.owner_id);
+    assert!(sweep_mcp_oauth(&fx.meta).await.total() > 0);
+    assert_eq!(sweep_mcp_oauth(&fx.meta).await.total(), 0, "second sweep");
+}
+
+#[tokio::test]
+async fn sweep_is_all_or_nothing() {
+    let fx = fixture(false).await;
+    let (g, old) = {
+        let c = fx.meta.lock().await;
+        let g = seed_expiring_children(&c, fx.owner_id);
+        // A grant the retention rule deletes, so the forced failure fires.
+        let old = live_grant(&c, fx.owner_id);
+        seed_tokens(&c, old);
+        age(
+            &c,
+            "_mcp_oauth_grants",
+            "idle_expires_at",
+            "id",
+            old,
+            "-31 days",
+        );
+        c.execute_batch(
+            "CREATE TEMP TRIGGER t_fail BEFORE DELETE ON main._mcp_oauth_grants \
+             BEGIN SELECT RAISE(ABORT, 'forced'); END",
+        )
+        .unwrap();
+        (g, old)
+    };
+    assert_eq!(
+        sweep_mcp_oauth(&fx.meta).await,
+        SweepCounts::default(),
+        "a failed sweep reports nothing"
+    );
+    {
+        let c = fx.meta.lock().await;
+        assert_eq!(
+            children(&c, g),
+            [3, 2, 2, 2],
+            "the child DELETEs that ran before the failure rolled back"
+        );
+        assert!(grant_exists(&c, old));
+        c.execute_batch("DROP TRIGGER temp.t_fail").unwrap();
+    }
+    assert_eq!(
+        sweep_mcp_oauth(&fx.meta).await,
+        SweepCounts {
+            codes: 2,
+            access: 1,
+            refresh: 1,
+            tickets: 1,
+            grants: 1,
+            ..SweepCounts::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn sweep_deletes_grants_that_can_never_be_redeemed() {
+    let fx = fixture(false).await;
+    let (g1, g2, g3, g4) = {
+        let c = fx.meta.lock().await;
+        // G1: its only code has expired, never redeemed.
+        let g1 = live_grant(&c, fx.owner_id);
+        let code = seed_code(&c, g1, REDIRECT, CHALLENGE, None);
+        c.execute(
+            "UPDATE _mcp_oauth_codes SET expires_at = datetime('now', '-1 second') \
+              WHERE code_hash = ?1",
+            params![tokens::hash(TokenKind::Code, &code)],
+        )
+        .unwrap();
+        // G2: a code that can still be redeemed.
+        let g2 = live_grant(&c, fx.owner_id);
+        seed_code(&c, g2, REDIRECT, CHALLENGE, None);
+        // G3: has a refresh.
+        let g3 = live_grant(&c, fx.owner_id);
+        seed_tokens(&c, g3);
+        // G4: nothing at all.
+        let g4 = live_grant(&c, fx.owner_id);
+        (g1, g2, g3, g4)
+    };
+    let counts = sweep_mcp_oauth(&fx.meta).await;
+    assert_eq!(
+        counts,
+        SweepCounts {
+            codes: 1,
+            abandoned: 2,
+            ..SweepCounts::default()
+        }
+    );
+    assert_eq!(counts.total(), 3, "total() includes abandoned");
+    let c = fx.meta.lock().await;
+    assert!(!grant_exists(&c, g1));
+    assert!(grant_exists(&c, g2));
+    assert!(grant_exists(&c, g3));
+    assert!(!grant_exists(&c, g4));
 }

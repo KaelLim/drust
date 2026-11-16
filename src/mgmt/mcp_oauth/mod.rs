@@ -5,4 +5,5 @@
 pub mod config;
 pub mod rl;
 pub mod store;
+pub mod sweep;
 pub mod tokens;

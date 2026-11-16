@@ -510,9 +510,12 @@ async fn main() -> anyhow::Result<()> {
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
     // v1.44 (CLI Phase 2, T1) — hourly reaper for expired device-flow codes.
-    // Unconditional (device codes are independent of Garage). Reaping is
-    // best-effort cleanup; `expires_at` is the source of truth, so a missed
-    // tick just means rows linger until the next sweep.
+    // MA0-3 — the same tick sweeps the MCP OAuth tables (`mcp_oauth::sweep`).
+    // Both are unconditional: device codes are independent of Garage, and the
+    // MCP sweep runs whether or not DRUST_MCP is on (rows a previous `on`
+    // left behind still need clearing). Reaping is best-effort cleanup;
+    // `expires_at` is the source of truth, so a missed tick just means rows
+    // linger until the next sweep.
     {
         let meta_for_reaper = meta.clone();
         tokio::spawn(async move {
@@ -525,6 +528,19 @@ async fn main() -> anyhow::Result<()> {
                     drust::mgmt::cli_device::sweep_expired_device_codes(&meta_for_reaper).await;
                 if reaped > 0 {
                     tracing::info!(reaped, "cli device-code reaper swept expired codes");
+                }
+                let mcp = drust::mgmt::mcp_oauth::sweep::sweep_mcp_oauth(&meta_for_reaper).await;
+                if mcp.total() > 0 {
+                    tracing::info!(
+                        codes = mcp.codes,
+                        access = mcp.access,
+                        refresh = mcp.refresh,
+                        tickets = mcp.tickets,
+                        grants = mcp.grants,
+                        abandoned = mcp.abandoned,
+                        orphans = mcp.orphans,
+                        "mcp oauth sweep removed expired rows"
+                    );
                 }
             }
         });
