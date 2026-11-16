@@ -1,4 +1,4 @@
-//! #925 — merged harness for the admin test group (29 of 31 members).
+//! #925 — merged harness for the admin test group (30 of 32 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! `admin_pat_bearer` and `admin_pat_reroll` are NOT here: they keep their own
@@ -81,3 +81,5 @@ mod admin_team_invariants;
 mod admin_users;
 #[path = "admin_webhook_handlers.rs"]
 mod admin_webhook_handlers;
+#[path = "mcp_oauth_store.rs"]
+mod mcp_oauth_store;
