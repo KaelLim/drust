@@ -259,6 +259,32 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   deliberate step (`.claude/rules/build-deploy.md` §Deployment targets, "Resuming k3s"); a
   diff that edits `deploy/helm/**` outside such a resume is itself the finding.
 
+**Deliberate — admin login CSRF (not the PAT family):**
+
+- `Sec-Fetch-Site: cross-site` is checked in `login_submit` **only**. Threat: a third-party
+  page signs a visitor's browser in as an account whose credentials the page author holds
+  (any admin or member on the same host). The admin OAuth callback (`mgmt/oauth_login.rs`)
+  is a cross-site top-level GET from the IdP by construction — adding the check there
+  refuses every Google / GitHub login. Its login-CSRF defence is the state + PKCE cookie
+  pair verified at callback; `tests/admin_login_cross_site.rs` drives the full callback
+  success path with `cross-site` to pin that it stays unchecked.
+- `/login` deliberately has **no required CSRF field** and no `Origin` / `Host` comparison.
+  The eval harness and ~33 test files POST `/login` directly; a required field would block
+  that trusted automation, operators who browse the admin UI by an internal hostname send an
+  `Origin` that is not `DRUST_PUBLIC_URL`, and the proxy rewrites `Host`. Requests with no
+  Fetch Metadata (non-browser clients) pass by design — only a browser can carry a login
+  CSRF, and page script cannot set or strip a `Sec-` header. Unknown or unparseable values
+  also pass: the Fetch Metadata spec says servers SHOULD ignore an invalid value.
+- The check runs **before** the per-IP login limiter. Moving it after would let a
+  cross-site page spend the victim IP's 5/min login budget — a test pins the order
+  (`tests/admin_login_cross_site.rs`).
+- Not covered, accepted: browsers that send no Fetch Metadata; plain-HTTP non-localhost
+  deployments with `DRUST_DEV_NO_SECURE_COOKIES` set (Fetch Metadata is sent only to HTTPS
+  or localhost; otherwise the `Secure` session cookie cannot be set over HTTP at all); a
+  sibling-subdomain (`same-site`) attacker — the pre-existing cookie-tossing residual, not
+  addressed here; and same-origin active content, which is invariant 14's job
+  (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

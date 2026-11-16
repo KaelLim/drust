@@ -118,6 +118,13 @@ accessor closes the soft-delete race after it. `register` filters `deleted_at IS
 same `allow_self_register` read, so a deleted tenant answers like an unknown id, and `login`
 opens with `get_if_live` too.
 
+The admin **password** login (`login_submit`, `mgmt/routes.rs`) refuses
+`Sec-Fetch-Site: cross-site` with `403 LOGIN_CROSS_SITE` before its per-IP limiter and
+before touching `meta` (login CSRF, MA0-1). **Never add that check to the admin OAuth
+callback**: the callback is a cross-site navigation from the IdP by construction, and its
+login-CSRF defence is the state and PKCE cookies set at start and verified at callback.
+No CSRF field on `/login`, on purpose — see AGENTS.md Adjudicated verdicts.
+
 ## CLI device flow
 
 `POST /auth/cli/device/{start,poll}` is public and implements RFC-8628. `poll` returns

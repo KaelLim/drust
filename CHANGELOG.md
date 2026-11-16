@@ -1,3 +1,31 @@
+## Unreleased
+
+One admin-plane change: a browser-declared cross-site `POST /login` is refused with
+`403 LOGIN_CROSS_SITE` (MA0-1, below); every other login — the drust login form, scripts,
+the eval harness — is unchanged.
+
+### Fixed
+
+- **`POST /login` refuses a browser-declared cross-site submission (MA0-1).** The admin
+  password login had no CSRF token, and the session cookie's `SameSite=Lax` does not stop a
+  cross-site top-level POST from *setting* that cookie, so a third-party page could sign a
+  visitor's browser in to drust as an account whose credentials the page author holds (any
+  admin or member on the same host). `login_submit` now answers
+  `403 {"error_code":"LOGIN_CROSS_SITE","message":"cross-site login refused"}`
+  when the request carries `Sec-Fetch-Site: cross-site` (case-insensitive), before the
+  per-IP login limiter, the meta lock and the password check — so a refused attempt sets no
+  cookie, creates no session and does not spend the 5/min login budget of the IP it came
+  from. One failure audit row (`error_code = LOGIN_CROSS_SITE`) is written per refusal.
+  **Unchanged:** the drust login form (same-origin), `same-site` and `none`, and every client
+  that sends no Fetch Metadata — scripts, the eval harness, the test suite. The Google /
+  GitHub admin login callback is deliberately not checked: it is a cross-site navigation by
+  construction and is bound by its state and PKCE cookies. Residual: browsers that send no
+  Fetch Metadata, and plain-HTTP non-localhost deployments that set
+  `DRUST_DEV_NO_SECURE_COOKIES` (browsers send Fetch Metadata only to HTTPS or localhost;
+  without that variable the session cookie is `Secure` and a plain-HTTP login yields no
+  usable session anyway). No new environment variable, no schema change; not gated on
+  `DRUST_MCP`.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,
