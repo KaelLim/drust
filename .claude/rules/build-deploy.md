@@ -72,6 +72,16 @@ it carries a one-time MCP authorization code (compensated by PKCE, a 300-second 
 and single use, but a log is not where it belongs). Default Caddy access logs do not record
 response headers; keep it that way for that path.
 
+**The RFC 8414 root rule for a path-mounted issuer is not configured on bare metal yet.**
+The host's `/drust/*` block serves the MCP OAuth AS metadata at
+`/drust/.well-known/oauth-authorization-server`; the root location
+`/.well-known/oauth-authorization-server/drust` has no proxy rule, so the metadata is
+reachable only under the base path (Compose serves drust at the root and needs no rule).
+To check whether the AS is enabled on a host: the boot log has one line beginning
+`MCP OAuth AS enabled` or `MCP OAuth AS disabled`, and `GET <DRUST_PUBLIC_URL><base
+path>/.well-known/oauth-authorization-server` answers 200 only when it is enabled (404
+otherwise).
+
 The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. The on-hold k3s chart's `deploy/helm/drust/files/public-proxy.Caddyfile` carries a byte copy of the Compose `handle_path /public/*` block as of the chart's freeze; while the hold lasts it is not a lockstep partner, so edit the Compose block alone (§Tests). Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
 ## Deployment targets

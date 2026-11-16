@@ -121,7 +121,7 @@ opens with `get_if_live` too.
 
 The admin **password** login (`login_submit`, `mgmt/routes.rs`) refuses
 `Sec-Fetch-Site: cross-site` with `403 LOGIN_CROSS_SITE` before its per-IP limiter and
-before touching `meta` (login CSRF, MA0-1). **Never add that check to the admin OAuth
+before touching `meta` (login CSRF). **Never add that check to the admin OAuth
 callback**: the callback is a cross-site navigation from the IdP by construction, and its
 login-CSRF defence is the state and PKCE cookies set at start and verified at callback.
 No CSRF field on `/login`, on purpose — see AGENTS.md Adjudicated verdicts.
@@ -155,8 +155,9 @@ Lifecycle routes live on the **public** router via a self-contained `resolve_cli
 that returns JSON 401 and never a 302.
 
 `admin_session_layer` is cookie-**or**-PAT. It tags each arm with an `AuthMethod`
-extension (`Cookie` / `Pat`); a handler that must tell them apart (today only MCP consent)
-reads it. The browser-302 invariant is preserved: no
+extension (`Cookie` / `Pat`); a handler that must tell them apart reads it: MCP consent
+to refuse a PAT, and the MCP revoke UI handlers (`ui::settings_revoke`,
+`settings_revoke_all`, `team_revoke_mcp`) for the audit `auth_method`. The browser-302 invariant is preserved: no
 bearer plus `Accept: text/html` still redirects to `/login`; only a present bearer or
 `Accept: application/json` gets a JSON 401.
 
@@ -180,11 +181,13 @@ plane answers one 404. **The owner is bound in SQL; the type only forces you to 
 
 **No post-commit step**, as long as all three hold: MCP OAuth tokens are not in
 `tenant::auth_cache` or any other cache; they cannot open SSE or rooms streams; and no MCP
-request holds a connection or session open past a single request (the account MCP
-endpoint is stateless — no GET stream, no rmcp session — and a tus upload bound to a
-ticket re-checks the ticket and its grant on every PATCH). A phase that breaks any of them
-gives every `revoke_mcp_grant` caller and `remove_admin` an eviction duty (CLAUDE.md
-invariants 4 and 5). `change_role`, owner transfer, tenant soft-delete and id recycling
+request holds a connection or session open past a single request. Today no endpoint
+accepts a `drust_mcpat_` token, so all three hold trivially; they are the conditions the
+account-level MCP endpoint and ticket-bound uploads must keep when they ship: the endpoint
+stateless (no GET stream, no rmcp session, every request authorized through
+`find_grant_by_access`), and a tus upload bound to a ticket re-checking the ticket and its
+grant on every PATCH. A feature that breaks any of them gives every `revoke_mcp_grant`
+caller and `remove_admin` an eviction duty (CLAUDE.md invariants 4 and 5). `change_role`, owner transfer, tenant soft-delete and id recycling
 deliberately do NOT revoke grants: visibility is decided on every call.
 
 **Child rows never vouch for themselves.** Every read of `_mcp_oauth_codes`,
@@ -193,6 +196,19 @@ INNER JOINs `_mcp_oauth_grants` AND `admins` on `id` + `created_at`; a child row
 columns (including the ticket's copied `admin_id`) never prove the grant exists. A
 connection without `PRAGMA foreign_keys = ON` that deletes a grant leaves its children
 behind, and this join is what keeps them dead until the sweep removes them.
+
+**Upload tickets.** `_mcp_upload_tickets` exists, but nothing issues or reads a ticket yet:
+only `revoke_mcp_grant` (which revokes a grant's tickets) and the sweep touch the table.
+The contract for the upload feature that will, written above the DDL in `db/migrations.rs`:
+a ticket is issued with `INSERT … SELECT …, t.created_at FROM tenants t WHERE t.id = ? AND
+t.deleted_at IS NULL`, so `tenant_created_at` is copied in SQL, and every ticket read joins
+`tenants` on `id`, `created_at` and `deleted_at IS NULL` in addition to the grant and admin
+join. A tenant id is recyclable (the id-recycle branch of `make_tenant_inner` hard-deletes
+the soft-deleted row), and `tenant_created_at` is what keeps a ticket from resolving to the
+new tenant, the way `admin_created_at` does for admins. Accepted residual: a ticket carries
+`grant_id` only, so cutting one refresh branch (branch b below) does not reach a ticket
+minted through that branch; a nullable column naming the minting branch can be added
+through `add_column_if_missing` when tickets ship.
 
 **Three layers against `admins` rowid recycling**, in this order of strength:
 (1) `remove_admin` deletes the grants explicitly in its transaction; (2) the FK
@@ -224,9 +240,23 @@ expired codes, access, refresh and upload tickets; grants whose
 old; grants that can never be redeemed any more (`authorization_code`, never used, no code
 and no refresh left — a double-clicked or abandoned approval); and orphan grants whose
 admin id/created_at no longer match. A rotated refresh is kept until its own `expires_at` —
-reuse detection needs the row. Not on the boot path. Restoring a backup resurrects grants
-revoked after the snapshot. Turning `DRUST_MCP` off pauses MCP OAuth and revokes nothing:
-grants still inside their limits work again when it is turned back on.
+reuse detection needs the row. Not on the boot path: the reaper's first tick is one hour
+after boot and ticks restart with the process, so an expired row is removed at the first
+hourly tick after its expiry, not "within the hour". Turning `DRUST_MCP` off pauses MCP
+OAuth and revokes nothing: grants still inside their limits work again when it is turned
+back on.
+
+**Backup restore** brings back every grant revoked after the snapshot AND re-arms every
+refresh token rotated after it (the restored row is unrotated again, so the rotated token
+the client already replaced is live once more, and the reuse evidence is gone). After a
+restore, revoke all MCP connections (Revoke all on each account's settings card, or Revoke
+MCP on the team page) and let the clients re-authorize.
+
+**Refresh-row growth** is bounded only by the per-grant budget, an accepted cost of the
+trusted tier (the holder is a signed-in account's own client): one credential holder can add
+a refresh and an access row on every charged rotation (branches c and d-2, 10 per 60 s per
+grant), access rows go at their own expiry, and every rotated refresh stays until its own
+`expires_at` (the grant's `MIN(idle, absolute)` when it was issued).
 
 `remove_admin`'s audit field `revoked_mcp_grants` counts the removed admin's grants that
 were still live at removal, not the rows its DELETE removed.
@@ -247,21 +277,25 @@ exactly like a path that never existed.
   `Cache-Control: no-store`. `Retry-After` is carried over by the rewrite; `Allow` on a 405 is
   added by axum's top-level route future *outside* the layer, not by the layer.
   `error_description` is never set from caller input or i18n.
-- **Credentials come from the form body only.** No cookie, no query parameter. An
-  `Authorization` header is always 401 `invalid_client` with a matching-scheme
-  `WWW-Authenticate`, so a front proxy that injects HTTP auth must not forward it to `/oauth/*`.
+- **Credentials come from the form body only.** No cookie, no query parameter. The
+  `Content-Type` check runs first (anything but `application/x-www-form-urlencoded` is 400
+  `invalid_request`, header or not); with a form body, an `Authorization` header is 401
+  `invalid_client` with a matching-scheme `WWW-Authenticate`, so a front proxy that injects
+  HTTP auth must not forward it to `/oauth/*`.
   Repeating a defined parameter is `invalid_request`, judged on the decoded key; an empty
   value counts as absent; unknown parameters are ignored even when repeated.
 - **Metadata** is pure (no lock, no I/O, no request header read) and carries
   `Cache-Control: public, max-age=300`, so it must never be derived from `Host` or
-  `X-Forwarded-*`.
+  `X-Forwarded-*`. `scopes_supported` lists `mcp` and `offline_access`, while every token
+  response says `"scope":"mcp"` by design: a grant's scope is always `mcp`, `offline_access`
+  is accepted and a refresh token is always issued.
 - **Token** validates and dispatches; `authorization_code` is the code exchange and
   `refresh_token` the refresh rotation, both below.
 - **Revoke is per grant and not rate-limited.** Any genuine access or refresh token of an
   unrevoked grant — even one that is expired, revoked or rotated — revokes the whole grant
   (`store::lookup_for_revoke` over `find_grant_for_revocation`, then `revoke_mcp_grant` with
-  the owner bound in SQL via `GrantOwner::holder`). An expired access row is swept within the
-  hour, after which it no longer maps to its grant. `token_type_hint` is ignored; `client_id`
+  the owner bound in SQL via `GrantOwner::holder`). An expired access row is swept at the first
+  hourly tick after its expiry, after which it no longer maps to its grant. `token_type_hint` is ignored; `client_id`
   is optional, an unknown one is `invalid_client`, a mismatching one `unauthorized_client`.
   Unknown token, foreign prefix and already-revoked grant are all 200 with an empty body, and
   no per-IP budget is read: the lookup runs first, so a budget would save nothing, and the
@@ -284,7 +318,8 @@ both to OAuth JSON (pinned by `error_page_is_html_not_oauth_json`).
   here is a 400 HTML page (`mcp_oauth_error.html`, standalone, no script, no `Location`,
   no `Set-Cookie`) — an unvalidated redirect is never followed, and an unknown `client_id`
   is never echoed. Every later failure is a 303 to the validated redirect with `error`,
-  `error_description`, `state` (only when sent, first value verbatim) and `iss`
+  `error_description`, `state` (only when sent and at most 512 bytes, first value verbatim)
+  and `iss`
   (`cfg.issuer()`, byte-identical to the metadata `issuer`): `response_type` (missing or
   repeated `invalid_request`, another value `unsupported_response_type`), PKCE (`S256`
   only, a 43-character challenge), `scope` (only `mcp` / `offline_access`, else
@@ -308,19 +343,24 @@ both to OAuth JSON (pinned by `error_page_is_html_not_oauth_json`).
   `drust_mcp_oauth_resume` cookie (`Path=cookie_path("")`, `HttpOnly`, `SameSite=Lax`,
   `Max-Age=600`, `Secure` unless `DRUST_DEV_NO_SECURE_COOKIES`).
 - **No database, no lock, no limiter, no audit.** The handler reads `MgmtState.mcp_oauth`
-  only (pinned by `authorize_writes_nothing` and `authorize_never_takes_the_meta_lock`).
+  only. Two of the four are pinned: `authorize_writes_nothing` (the row counts of the five
+  `_mcp_*` tables, `sessions` and `admins` do not move) and `authorize_never_takes_the_meta_lock`; no limiter and no
+  audit row hold by reading the handler.
   `error_description` values are English ASCII constants, never i18n or caller input.
 - **Log hygiene**: authorize and consent logs may carry only the reason, `client_id`,
   `pinned_on` and the `display_received` form of a rejected `redirect_uri`. Never log
-  `state`, `code_challenge`, `resource`, the raw query or an envelope.
+  `state`, `code_challenge`, `resource`, the raw query or an envelope. A rejected redirect
+  from the pinned client warns at most once per 60 s per process, carrying a `suppressed`
+  count; the others log at `debug`.
 - **`SameSite=Lax` is required**: the resume cookie must survive the cross-site top-level
   return from Google/GitHub login; `Strict` breaks the consent flow after sign-in. Do not
   "harden" it to `Strict` (same reason as the session cookie, `src/auth/middleware.rs`
   `session_cookie_is_samesite_lax`).
-- **The resume cookie is login continuation, not a CSRF or browser-binding defence**:
-  anyone who can steer a browser into the consent page with a given `req` can first steer it
-  through authorize. Forged approvals are stopped by the consent CSRF token, which must
-  never be dropped on the strength of the cookie.
+- **The resume cookie selects which request resumes after login, and consent requires it
+  to equal `req`; it is not the CSRF defence**: anyone who can steer a browser into the
+  consent page with a given `req` can first steer it through authorize. Forged approvals are
+  stopped by the consent CSRF token (the HMAC token below), which must never be dropped on
+  the strength of the cookie.
 - **Clock failure fails closed**: `envelope::now_unix()` returns `Option`; authorize
   answers `server_error` on `None`, and every `open` caller passes
   `now_unix().unwrap_or(u64::MAX)`. Never map a clock failure to 0.
@@ -335,23 +375,30 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
   `MCP_CONSENT_COOKIE_REQUIRED`. `AuthMethod` has no `Default`, so a missing tag can never
   read as `Cookie`. approve/deny take the body as `Bytes` and parse it AFTER that check (a
   `Form` extractor would answer a PAT's bad body with 422 first). A PAT must never become a
-  90-day grant, and revoking the PAT would not reach the grant.
+  long-lived MCP grant (90 days by default, up to 365 with `DRUST_MCP_OAUTH_MAX_DAYS`), and
+  revoking the PAT would not reach the grant.
 - **Admin session writers.** The only places that create an admin session are
   `login_submit` and the admin OAuth callback (the two `auth::session::create_session`
   callers). A new one must not accept a PAT or any bearer as its authentication, or
   consent's cookie-only rule is void — and the consent tests would not notice.
-- **Browser binding.** The resume cookie (set only by `/oauth/authorize`) must be present
+- **Request binding.** The resume cookie (set only by `/oauth/authorize`) must be present
   and byte-equal to the `req` shown (GET) or submitted (approve/deny); a query-only `req`
-  is refused. The envelope is re-opened on every step and re-validated with `find_client`
+  is refused. This picks the request; the CSRF token below is what stops a forgery. The envelope is re-opened on every step and re-validated with `find_client`
   and the SAME `redirect_uri_allowed` authorize uses. Client name, `client_id` and the
   return host:port on the page come from the opened envelope and the pinned list only.
 - **CSRF.** Double submit: `drust_mcp_oauth_csrf` cookie (`HttpOnly`, `SameSite=Lax`,
-  `Path=cookie_path("")`, `Max-Age=600`) plus a hidden field. Expected value
+  `Path=cookie_path("")`, `Max-Age=600`, `Secure` unless `DRUST_DEV_NO_SECURE_COOKIES`)
+  plus a hidden field. Expected value
   `HMAC-SHA256(csrf_key, "drust-mcp-csrf-v1\0" || admin_id (i64 LE) || ":" ||
   SHA-256(req))`, base64url. Three constant-time checks, all required: field non-empty,
   cookie == field, field == expected. Bound to the admin (another admin's token fails) and
-  to the request (a token cannot approve a different envelope); the domain tag keeps it
-  apart from the CLI device token under the same key.
+  to the request (a token cannot approve a different envelope). The CLI device token uses a
+  different key (`McpOauthConfig::csrf_key` versus `cli_device`'s own per-process secret);
+  the domain tag is defence in depth on top (`check_csrf_rejects_a_cli_device_token`).
+  Known residual, denial only: a same-site attacker (a sibling subdomain) can plant a
+  longer-`Path` CSRF cookie that the browser sends first, and make approve and deny fail
+  until it expires; it cannot forge an approval, which needs the HMAC of this admin and
+  this `req`.
 - **Identity.** The page reads `COALESCE(email, username), role` from `admins` itself and
   counts visible live tenants with `tenant_authz::visibility_where`; it never trusts
   `AdminProfileExt`, whose fallback is a placeholder member. A missing row is
@@ -361,9 +408,11 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
   `req` AND the flow cannot finish with it: approve/deny success (both), an envelope that
   no longer opens or re-validates with cookie == `req` (both on POST, resume only on GET —
   `ClientChanged` included, because `resume_target` only opens and would otherwise bring
-  every login back to the error page for 10 minutes). A mismatch, a CSRF failure, a missing
-  admin row on GET and any form-level error clear nothing: the browser holds ONE csrf cookie,
-  written by the latest consent GET, most likely for a newer tab.
+  every login back to the error page for 10 minutes), and on approve, after the CSRF check
+  passed, a missing admin row or an internal failure of the grant write (both). A mismatch,
+  a CSRF failure, a missing admin row on GET and any form-level error clear nothing: the
+  browser holds ONE csrf cookie, written by the latest consent GET, most likely for a newer
+  tab.
 - **Login resume.** `envelope::resume_target` is asked by `login_submit` (after the
   cross-site refusal and the password check) and `oauth_callback`, after the session is
   created. Its first statement is the `enabled()` check, so a disabled host never reads the
@@ -375,9 +424,13 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
   max days, idle = MIN(now + idle days, absolute)) and one code (hash only, 300 s, the raw
   `redirect_uri` and the challenge/resource from the envelope) in one transaction, audits
   after the lock is dropped, and 303s with exactly `code`, `state` (when sent) and `iss`.
-  The plaintext code goes into that `Location` and nowhere else — no log, no audit field
-  (source pin `plaintext_code_never_reaches_logs_or_audit`). Not rate-limited: the caller
-  is a signed-in admin.
+  The plaintext code goes into that `Location` and nowhere else — no log, no audit field.
+  The source pin `mcp_oauth::source_pins::plaintext_code_never_reaches_logs_or_audit`
+  scans the comment-stripped code of `consent.rs`, `token.rs`, `refresh.rs` and `revoke.rs`
+  for log and audit sites naming a credential (its scanner is checked by
+  `the_hygiene_scanner_flags_planted_leaks`). Not rate-limited: the caller is a signed-in
+  admin. The `mcp_oauth.grant.create` and `mcp_oauth.consent.deny` audit rows carry the
+  admin as top-level actor with `actor_email_snapshot` = `COALESCE(email, username)`.
 
 ### Code redemption (`POST /oauth/token`, `grant_type=authorization_code`)
 
@@ -471,11 +524,11 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   Time is second precision: the window is (G−1, G] seconds; `G = 0` sends every second
   presentation to e).
 - **Deliberate deviation from the strict reading of OAuth 2.1 §4.3.1**: inside the grace
-  siblings coexist and the loser is cut alone (design §9 #8 (a), user decision) — several
+  siblings coexist and the loser is cut alone (owner decision, 2026-11-14) — several
   Claude Code processes on one machine share one credential and race refreshes. Its cost: a
   thief who wins an in-grace race keeps a branch until the grant's deadline (the
   settings card shows `sibling_rejected_at` for manual revocation). Do not "tighten" b) into a grant
-  revoke without re-asking the user.
+  revoke without re-asking the owner.
 - **`GrantRef` for e) only**: `RefreshState::holder` is `Some` only for a rotated,
   unsuperseded, live refresh of a live grant with a matching admin; e) fails closed on
   `None`. `revoke_mcp_refresh_branch` takes no `GrantOwner`: it is `pub(crate)`, its only
@@ -485,12 +538,18 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   that code. Two deliberate code deviations: a foreign `resource` is `invalid_grant`, not
   RFC 8707's `invalid_target` (after a `DRUST_PUBLIC_URL` change, Claude Code refreshing with
   the old resource is sent to re-authorize instead of getting stuck); rate limiting answers
-  `temporarily_unavailable`, which is not a standard token-endpoint code (MA0-PLAN §3.6).
+  429 `temporarily_unavailable`, which is not a standard token-endpoint code, on purpose:
+  the client discards its tokens and re-authorizes only on `invalid_grant`, so a 429 must
+  not look like a dead grant.
   The exceptions are a missing `refresh_token` (`invalid_request`) and a `scope` item other
   than `mcp` / `offline_access` (`invalid_scope`, via `authorize::scope_items_ok`, the same
-  function authorize uses; an empty `scope` counts as not sent). All rejections are byte
-  identical (`every_refresh_rejection_is_byte_identical`): never add an
-  `error_description` that tells a losing sibling from a dead token.
+  function authorize uses; an empty `scope` counts as not sent). While budgets remain, all
+  rejections are byte identical (`every_refresh_rejection_is_byte_identical`): never add an
+  `error_description` that tells a losing sibling from a dead token. Once the caller's own
+  per-IP miss budget is spent, an unknown token answers 429 while a known dead one may still
+  answer `invalid_grant` (it charges its grant's bucket instead), and `Retry-After` differs
+  by bucket. That reveals only that a token the caller already holds, a 256-bit secret,
+  exists.
 - **Check order and budgets.** `scope`, `resource` and the token's prefix + length are pure
   checks before the lock and before any budget (an access token presented as a refresh is
   refused here). Under the lock, `refresh::lookup_grant_id` looks the hash up ignoring
@@ -523,7 +582,7 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   row carries a token, a hash or a request field.
 - **Operator note**: a grant revoked with `refresh_reuse` that its user reports as "I just
   opened my laptop" — check the audit row's `rotated_secs_ago` first. Thousands of seconds is
-  a process that slept past the grace (design §10.2 #8, an accepted cost); just past the
+  a process that slept past the grace (an accepted cost); just past the
   grace looks like a race or a theft.
 - `RotateOutcome` holds `IssuedTokens` and derives no `Debug` (pin
   `rotate_outcome_does_not_derive_debug` in `refresh.rs`); tests use `matches!`.
@@ -539,7 +598,8 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
 - **Settings (`POST /admin/settings/mcp-grants/{id}/revoke`, `…/revoke-all`)** act on the
   caller's own grants only, whatever the role: `GrantOwner::caller`, fed ONLY from the
   request's `Extension<AdminId>`. Under `src/mgmt/mcp_oauth/`, `AdminId(` appears only in an
-  extractor's destructuring pattern — never built from a path, form or query value.
+  extractor's destructuring pattern — never built from a path, form or query value (pinned
+  by `admin_id_is_only_ever_destructured_from_the_extension`).
   Foreign, unknown and already-revoked ids are one `404 MCP_GRANT_NOT_FOUND`; success and an
   empty revoke-all are a 303 to `base("/admin/settings")`. `settings_page` reads the grant
   list only when `enabled()`; a failed read renders an error line AND the Revoke all form
@@ -552,8 +612,12 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   `403 NOT_A_MANAGER` (before any lookup, so a member learns nothing about ids); target
   missing → `404 ADMIN_NOT_FOUND`; target role other than `member` and caller not
   `can_manage_privileged` → `403 PRIVILEGED_ROLE_REQUIRED` (an allow-list on the target role,
-  so an unknown stored role fails closed). An admin revoking their OWN grants here therefore
-  gets 403, exactly like removing themselves; the settings page is their way. The target's
+  so an unknown stored role fails closed). An `admin`-role account revoking its OWN grants
+  here therefore gets 403, exactly like removing itself, and the settings page is its way;
+  an owner may act on its own row, as `remove_admin` lets it. The `{"revoked": n}` count
+  (and the audit row's `revoked`) is every unrevoked grant under that admin id: it includes
+  expired grants and grants left by a previous holder of a recycled admin id, which the
+  target's own settings card does not list. The target's
   role is read on the same meta guard the revoke runs under; the caller's role comes from
   `admin_profile_layer` (an earlier lock — the same shape as `remove_admin`).
   `TeamAuthority`'s field is private and `GrantOwner::managed` is its only consumer: a

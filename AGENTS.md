@@ -269,7 +269,7 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   pair verified at callback; `tests/admin_login_cross_site.rs` drives the full callback
   success path with `cross-site` to pin that it stays unchecked.
 - `/login` deliberately has **no required CSRF field** and no `Origin` / `Host` comparison.
-  The eval harness and ~33 test files POST `/login` directly; a required field would block
+  The eval harness and dozens of test files POST `/login` directly; a required field would block
   that trusted automation, operators who browse the admin UI by an internal hostname send an
   `Origin` that is not `DRUST_PUBLIC_URL`, and the proxy rewrites `Host`. Requests with no
   Fetch Metadata (non-browser clients) pass by design — only a browser can carry a login
@@ -284,14 +284,21 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   sibling-subdomain (`same-site`) attacker — the pre-existing cookie-tossing residual, not
   addressed here; and same-origin active content, which is invariant 14's job
   (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's. The consent
-  page's signed-in identity line (MA0-6) is the follow-up line for the same-site residual.
+  page names the signed-in account next to its buttons, which is the only mitigation for
+  the same-site residual there.
 
 **Deliberate — MCP OAuth AS (not the PAT family):**
 
 - `_mcp_upload_tickets.tenant_id` has **no FK to `tenants`** — deliberate. The tenant
   id-recycle branch hard-`DELETE`s the `tenants` row (`mgmt::tenants::crud`); a non-CASCADE
-  FK would make that recycle fail on any leftover ticket. Tickets are deleted explicitly in
-  that branch from MA1b on. Do not "add the missing FK".
+  FK would make that recycle fail on any leftover ticket. Nothing issues or reads tickets
+  yet. What keeps a recycled id safe once tickets ship is `tenant_created_at`, copied in SQL
+  from `tenants.created_at` at issue, plus a read that joins `tenants` on `id`, `created_at`
+  and `deleted_at IS NULL` (the contract above the DDL in `db/migrations.rs`), the way
+  `admin_created_at` guards against `admins` rowid recycling. Do not "add the missing FK".
+  Accepted residual: a ticket carries `grant_id` only, so cutting one refresh branch does
+  not reach a ticket minted through that branch; a nullable column for the minting branch
+  can be added through `add_column_if_missing` when tickets ship.
 - An unrecognised `DRUST_MCP`, or an unusable `DRUST_PUBLIC_URL` with `DRUST_MCP=on`,
   **boots with MCP off and an `error` line**, never a boot failure — fail closed for the new
   surface without taking the trusted planes down. Do not turn it into a startup error.
@@ -339,11 +346,11 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `OAuthErrorMark`) to a bare `invalid_request` / `server_error`. Passing "anything that is
   already JSON" would let an internal error string reach an unauthenticated caller.
 
-**Deliberate — MCP OAuth authorize (MA0):**
+**Deliberate — MCP OAuth authorize:**
 
 - `/oauth/*` ignores unknown parameters (OAuth 2.1 MUST). The "reject unknown top-level
-  arguments" decision (design §9 #6) applies only to the MA1 account endpoint's tool
-  arguments; applying it here breaks conforming clients.
+  arguments" rule planned for the tool arguments of the future account-level MCP endpoint
+  does not apply here; applying it would break conforming clients.
 - `prompt` is always ignored, including `prompt=none`: drust is not an OpenID provider and
   Claude Code only sends `prompt=consent`. Consent is shown every time regardless.
 - `redirect_uri_allowed` deliberately does **not** call `url::Url::parse`. WHATWG parsing
@@ -355,10 +362,11 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   and do not reject it to make a canonical-form test pass.
 - authorize has no rate limit and writes no audit row: it touches no database and no lock,
   so a budget would protect nothing (the per-IP buckets elsewhere count only misses on
-  endpoints that do work). Pinned by `authorize_writes_nothing` and
-  `authorize_never_takes_the_meta_lock`.
+  endpoints that do work). Writing nothing and taking no lock are pinned by
+  `authorize_writes_nothing` and `authorize_never_takes_the_meta_lock`; no limiter and no
+  audit row hold by reading the handler.
 
-**Deliberate — MCP OAuth consent (MA0-6):**
+**Deliberate — MCP OAuth consent:**
 
 - The consent page sets **no Content-Security-Policy**, and the admin plane must **not** gain
   a `form-action` directive. `frame_guard_layers` adds `frame-ancestors 'none'` only when a
@@ -373,7 +381,7 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   stop framing only; the consequence is bounded because the code goes only to the victim's
   own loopback and the attacker would also need the PKCE verifier of that request.
 
-**Deliberate — MCP OAuth code exchange (MA0-7):**
+**Deliberate — MCP OAuth code exchange:**
 
 - A wrong `code_verifier` does **not** consume the code, and failed attempts on one code
   have **no "N strikes and the code is void" limit**. Voiding would let anyone who only saw
@@ -396,17 +404,21 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   Requiring `redirect_uri` is a compatibility choice (the SDK sends it), not a security
   boundary — PKCE stops code injection.
 
-**Deliberate — MCP OAuth refresh rotation (MA0-8):**
+**Deliberate — MCP OAuth refresh rotation:**
 
 - An MCP refresh token presented within the grace window after its rotation gets a SIBLING
   pair instead of triggering reuse detection, and a superseded sibling, when presented,
   revokes only its own branch (`store::revoke_mcp_refresh_branch`), not the grant. This
-  deviates from the strict reading of OAuth 2.1 §4.3.1 on purpose (design §9 #8, user
-  decision): one machine's Claude Code processes share one credential and race refreshes,
-  and a grant revoke would log every session out. Reuse detection is intact OUTSIDE the
-  grace (`refresh::rotate` branch e revokes the grant, `refresh_reuse`). Known cost: a thief
-  who wins the in-grace race keeps a branch until the grant's idle/absolute deadline; the
-  settings card (MA0-9) shows `sibling_rejected_at` for manual revocation. Compensating
+  deviates from the strict reading of OAuth 2.1 §4.3.1 on purpose (owner decision,
+  2026-11-14; do not tighten it without re-asking the owner): one machine's Claude Code
+  processes share one credential and race refreshes, and a grant revoke would log every
+  session out. Reuse detection is intact OUTSIDE the grace (`refresh::rotate` branch e
+  revokes the grant, `refresh_reuse`), and a full per-grant bucket cannot suppress it
+  (`a_dead_siblings_flood_cannot_suppress_reuse_detection`). The grace counts from the
+  parent's first rotation, so issuing siblings cannot extend it
+  (`a_sibling_issued_in_grace_does_not_extend_the_grace`). Known cost: a thief who wins the
+  in-grace race keeps a branch until the grant's idle/absolute deadline; the settings card
+  shows `sibling_rejected_at` for manual revocation. Compensating
   module: `src/mgmt/mcp_oauth/refresh.rs` (branch order b before c is load-bearing — a
   superseded row has `rotated_at IS NULL` — and is pinned by
   `the_first_sibling_used_wins_and_the_loser_is_cut_alone` and
@@ -415,7 +427,7 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   the `(grant_id, refresh_id)` pair read from the presented token's own row in the same
   transaction, and every UPDATE also binds `grant_id`. It is not an IDOR surface.
 
-**Deliberate — MCP OAuth revoke UI (MA0-9):**
+**Deliberate — MCP OAuth revoke UI:**
 
 - MCP grant revoke surfaces carry no `require_owner_layer`, no CSRF field, no rate limit and
   no cache or bus eviction. `/admin/settings/mcp-grants/*` acts only on the caller's own
@@ -427,9 +439,10 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   re-authorization. MCP grants are not in the auth cache and MCP tokens cannot open SSE or
   rooms, so there is nothing to evict. Compensating module:
   `mcp_oauth::store::revoke_mcp_grant`. Revisit if MCP tokens are ever cached.
-- An admin revoking their OWN connections from the team page gets
-  `403 PRIVILEGED_ROLE_REQUIRED`, the same answer `remove_admin` gives an admin acting on
-  their own row; the settings page's Revoke all is their way. Do not special-case "self".
+- An `admin`-role account revoking its OWN connections from the team page gets
+  `403 PRIVILEGED_ROLE_REQUIRED`, the same answer `remove_admin` gives it on its own row;
+  the settings page's Revoke all is its way. An owner may act on its own row there, as
+  `remove_admin` lets it. Do not special-case "self".
 - `DRUST_MCP` off pauses grants and revokes nothing (owner decision): no boot-time revoke
   (that would be a credential revocation on the boot path, invariant 1).
 

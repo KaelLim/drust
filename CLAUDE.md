@@ -84,7 +84,7 @@ Three SQLite files, three lifetimes:
 
 | File | Holds | Notes |
 |---|---|---|
-| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs, MCP OAuth grants and token hashes (`_mcp_*`, hashed only) | tokens stored hashed **and** plaintext, so `whoami` and the admin UI can echo the key |
+| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs, MCP OAuth grants and token hashes (`_mcp_*`) | bearer tokens and admin PATs stored hashed **and** plaintext, so `whoami` and the admin UI can echo the key; `_mcp_*` stores hashes only |
 | `tenants/<id>/data.sqlite` | one per tenant: user collections + `_system_*` tables | reads via `SQLITE_OPEN_READONLY` connections under `sqlite3_set_authorizer`; writes serialize on a per-tenant writer mutex (`pool.with_writer`) |
 | `meta_logs.sqlite` | the host-wide audit log | written by a single batching task; lossy under backpressure by design |
 
@@ -117,10 +117,10 @@ reachable by an untrusted caller.
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
 | `/.well-known/oauth-authorization-server` (AS metadata) | unauthenticated — mounted **only when `DRUST_MCP` resolves to enabled** (`McpOauthConfig::enabled()`: `on` with a valid `DRUST_PUBLIC_URL`; `auto` currently mounts nothing). Pure JSON from config, never touches meta, never reads `Host` |
 | `/oauth/token`, `/oauth/revoke` | unauthenticated, same mount rule. The credential is in the form body — never a cookie, never the query string: an authorization code plus its PKCE verifier (token), or a `drust_mcpat_` / `drust_mcprt_` token; a PAT or tenant key sent here is "an invalid token" and untouched. Every non-2xx is OAuth JSON with `Cache-Control: no-store` |
-| `/oauth/authorize` | unauthenticated; mounted only when `DRUST_MCP=on`. Writes nothing. Before client and `redirect_uri` validation it answers an HTML error page and never redirects; after it, only to the pinned loopback `redirect_uri` |
+| `/oauth/authorize` | unauthenticated; mounted only when `DRUST_MCP` resolves to enabled. Writes nothing. Before client and `redirect_uri` validation it answers an HTML error page and never redirects; after it, errors redirect only to the validated loopback `redirect_uri` and success goes to `/oauth/consent` |
 | `/oauth/consent`, `/oauth/consent/approve`, `/oauth/consent/deny` | **admin session cookie only** — a `drust_pat_*` bearer gets 403 `MCP_CONSENT_COOKIE_REQUIRED`; mounted only when `DRUST_MCP` resolves to enabled |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
-| `/admin/settings/mcp-grants/*`, `DELETE /admin/team/{id}/mcp-grants` | admin session cookie or `drust_pat_*` — mounted only when `DRUST_MCP=on`. Settings acts on the caller's own grants only (404 otherwise); the team route carries `remove_admin`'s authority matrix in the handler |
+| `/admin/settings/mcp-grants/*`, `DELETE /admin/team/{id}/mcp-grants` | admin session cookie or `drust_pat_*` — mounted only when `DRUST_MCP` resolves to enabled. Settings acts on the caller's own grants only (404 otherwise); the team route carries `remove_admin`'s authority matrix in the handler |
 | `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose and k3s; on k3s through the chart's `public-proxy` Caddy), never through drust |
 
 Configuration surfaces (caps, policies, egress allowlist, cron, invoke ACL, file caps,
@@ -464,7 +464,7 @@ the glob fires, just read the file.
 |---|---|---|
 | `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**`, `docker-compose*.yml` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
-| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/mgmt/mcp_oauth/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
+| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/mgmt/mcp_oauth/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, the MCP OAuth authorization server (grants, endpoints, consent, refresh rotation, revoke UI), quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
 | `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | object-store integration (S3 client, bucket probe), upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
