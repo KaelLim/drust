@@ -1095,8 +1095,26 @@ async fn a_sibling_issued_in_grace_does_not_extend_the_grace() {
     let (gid, t) = seeded(&fx).await;
     issued(refresh(&fx.app, &t.refresh).await, "c").await;
     age_rotation(&fx, t.refresh_id, 50).await;
+    let aged = rrow(&*fx.meta.lock().await, t.refresh_id).rotated;
+    assert!(aged.is_some(), "R1 rotated");
     issued(refresh(&fx.app, &t.refresh).await, "d-2 at 50 s").await;
-    age_rotation(&fx, t.refresh_id, 61).await;
+    assert_eq!(
+        rrow(&*fx.meta.lock().await, t.refresh_id).rotated,
+        aged,
+        "d-2 left rotated_at alone"
+    );
+    // Relative, so a grace re-armed by d-2 would survive into the check below.
+    let n = fx
+        .meta
+        .lock()
+        .await
+        .execute(
+            "UPDATE _mcp_oauth_refresh SET rotated_at = datetime(rotated_at, '-11 seconds') \
+              WHERE id = ?1",
+            params![t.refresh_id],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
     assert_invalid_grant(refresh(&fx.app, &t.refresh).await, "61 s").await;
     assert_eq!(
         grow(&*fx.meta.lock().await, gid).reason.as_deref(),
