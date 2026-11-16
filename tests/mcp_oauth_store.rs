@@ -3,11 +3,14 @@
 //! `fixture(false)` (DRUST_MCP off) unless it says otherwise: none of this is
 //! gated on the switch.
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use drust::auth::middleware::AdminId;
 use drust::mgmt::mcp_oauth::store::{self, GrantOwner, GrantRef, RevokeReason, RevokedGrant};
 use drust::mgmt::mcp_oauth::sweep::{SweepCounts, sweep_mcp_oauth};
 use drust::mgmt::mcp_oauth::tokens::{self, TokenKind};
 use rusqlite::params;
+use tower::ServiceExt;
 
 use crate::common::mcp_oauth::*;
 
@@ -1380,4 +1383,272 @@ async fn sweep_deletes_grants_that_can_never_be_redeemed() {
     assert!(grant_exists(&c, g2));
     assert!(grant_exists(&c, g3));
     assert!(!grant_exists(&c, g4));
+}
+
+// ─── D. remove_admin (DELETE /admin/team/{id} through the production router) ─
+
+/// Mints an admin session directly (no argon2, no login limiter).
+async fn session_for(fx: &McpOauthFixture, admin_id: i64) -> String {
+    let mut c = fx.meta.lock().await;
+    let token = drust::auth::session::create_session(&mut c, admin_id, 3600).unwrap();
+    format!("drust_session={token}")
+}
+
+/// Router path — no `/drust` (the proxy strips the base path before axum).
+async fn remove_via_http(
+    fx: &McpOauthFixture,
+    cookie: &str,
+    target: i64,
+) -> (StatusCode, serde_json::Value) {
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/team/{target}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+/// A grant with every child kind: refresh + access, an unredeemed code, a ticket.
+fn seed_full_grant(conn: &rusqlite::Connection, admin_id: i64) -> (i64, SeededTokens) {
+    let g = live_grant(conn, admin_id);
+    let t = seed_tokens(conn, g);
+    seed_code(conn, g, REDIRECT, CHALLENGE, None);
+    seed_ticket(conn, g, "+1 hour");
+    (g, t)
+}
+
+fn assert_full_tree_live(conn: &rusqlite::Connection, g: i64) {
+    assert_live_tree(conn, g);
+    assert_eq!(
+        children(conn, g),
+        [1, 1, 1, 1],
+        "grant {g} keeps every child"
+    );
+}
+
+fn assert_tokens_dead(conn: &rusqlite::Connection, t: &SeededTokens, label: &str) {
+    assert!(
+        store::find_grant_by_access(conn, &t.access)
+            .unwrap()
+            .is_none(),
+        "{label}"
+    );
+    assert!(
+        store::find_grant_by_refresh(conn, &t.refresh)
+            .unwrap()
+            .is_none(),
+        "{label}"
+    );
+    assert!(
+        store::find_grant_for_revocation(conn, &t.access)
+            .unwrap()
+            .is_none(),
+        "{label}"
+    );
+    assert!(
+        store::find_grant_for_revocation(conn, &t.refresh)
+            .unwrap()
+            .is_none(),
+        "{label}"
+    );
+}
+
+#[tokio::test]
+async fn remove_admin_clears_every_mcp_table_for_that_admin() {
+    for enabled in [false, true] {
+        let fx = fixture(enabled).await;
+        let alice = add_admin(&fx, "alice", "", "admin").await;
+        let (alice_grants, alice_tokens, owner_grant) = {
+            let c = fx.meta.lock().await;
+            let (a1, t1) = seed_full_grant(&c, alice);
+            let (a2, t2) = seed_full_grant(&c, alice);
+            let (o, _) = seed_full_grant(&c, fx.owner_id);
+            ([a1, a2], [t1, t2], o)
+        };
+        let cookie = session_for(&fx, fx.owner_id).await;
+        let (status, body) = remove_via_http(&fx, &cookie, alice).await;
+        assert_eq!(status, StatusCode::OK, "enabled={enabled}");
+        // The whole body, not one key: the response is byte-for-byte unchanged.
+        assert_eq!(
+            body,
+            serde_json::json!({ "removed": true }),
+            "enabled={enabled}"
+        );
+
+        let c = fx.meta.lock().await;
+        assert_eq!(
+            count(
+                &c,
+                &format!("SELECT COUNT(*) FROM _mcp_oauth_grants WHERE admin_id = {alice}")
+            ),
+            0,
+            "enabled={enabled}"
+        );
+        assert_eq!(
+            count(
+                &c,
+                &format!("SELECT COUNT(*) FROM _mcp_upload_tickets WHERE admin_id = {alice}")
+            ),
+            0,
+            "enabled={enabled}"
+        );
+        for g in alice_grants {
+            assert_eq!(children(&c, g), [0, 0, 0, 0], "enabled={enabled} grant {g}");
+        }
+        for t in &alice_tokens {
+            assert_tokens_dead(&c, t, &format!("enabled={enabled}"));
+        }
+        assert_full_tree_live(&c, owner_grant);
+    }
+}
+
+#[tokio::test]
+async fn remove_admin_deletes_grants_even_without_fk_cascade() {
+    let fx = fixture(false).await;
+    let alice = add_admin(&fx, "alice", "", "admin").await;
+    let alice_tokens = {
+        let c = fx.meta.lock().await;
+        let (_, t1) = seed_full_grant(&c, alice);
+        let (_, t2) = seed_full_grant(&c, alice);
+        [t1, t2]
+    };
+    let cookie = session_for(&fx, fx.owner_id).await;
+    // Outside any transaction (the pragma is a no-op inside one); the router's
+    // remove_admin transaction opens on this same connection and sees it.
+    fx.meta
+        .lock()
+        .await
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .unwrap();
+    let (status, _) = remove_via_http(&fx, &cookie, alice).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let c = fx.meta.lock().await;
+    assert_eq!(
+        count(
+            &c,
+            &format!("SELECT COUNT(*) FROM _mcp_oauth_grants WHERE admin_id = {alice}")
+        ),
+        0,
+        "layer 1: remove_admin deletes the grants itself, FK or no FK"
+    );
+    // Child rows may linger without the cascade; none of them resolves to a grant.
+    for t in &alice_tokens {
+        assert_tokens_dead(&c, t, "FK OFF");
+    }
+    c.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+}
+
+/// Deletes `admin_id` behind remove_admin's back (FK OFF, so neither layer 1
+/// nor layer 2 runs) and inserts a new admin under the SAME id whose
+/// created_at is the SQL expression `created_at_sql`.
+fn recycle_admin_id(conn: &rusqlite::Connection, admin_id: i64, created_at_sql: &str) {
+    conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+    conn.execute("DELETE FROM admins WHERE id = ?1", params![admin_id])
+        .unwrap();
+    conn.execute(
+        &format!(
+            "INSERT INTO admins (id, username, password_hash, email, role, created_at) \
+             VALUES (?1, 'recycled', '$oauth-only$', 'r@example.test', 'member', {created_at_sql})"
+        ),
+        params![admin_id],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+}
+
+#[tokio::test]
+async fn recycled_admin_id_does_not_inherit_old_grants() {
+    let fx = fixture(false).await;
+    let alice = add_admin(&fx, "alice", "", "member").await;
+    let (g, t) = {
+        let c = fx.meta.lock().await;
+        let g = live_grant(&c, alice);
+        let t = seed_tokens(&c, g);
+        recycle_admin_id(&c, alice, "datetime('now', '+1 day')");
+        (g, t)
+    };
+    assert_tokens_dead(&*fx.meta.lock().await, &t, "layer 3: created_at mismatch");
+    assert_eq!(
+        sweep_mcp_oauth(&fx.meta).await,
+        SweepCounts {
+            orphans: 1,
+            ..SweepCounts::default()
+        }
+    );
+    assert!(!grant_exists(&*fx.meta.lock().await, g));
+}
+
+#[tokio::test]
+async fn admin_created_at_alone_does_not_survive_a_same_second_recycle() {
+    let fx = fixture(false).await;
+    let alice = add_admin(&fx, "alice", "", "member").await;
+    let t = {
+        let c = fx.meta.lock().await;
+        let g = live_grant(&c, alice);
+        let t = seed_tokens(&c, g);
+        recycle_admin_id(
+            &c,
+            alice,
+            &format!("(SELECT admin_created_at FROM _mcp_oauth_grants WHERE id = {g})"),
+        );
+        t
+    };
+    let c = fx.meta.lock().await;
+    assert!(
+        store::find_grant_by_access(&c, &t.access)
+            .unwrap()
+            .is_some(),
+        "documented limitation of layer 3, not a desired property — this is why \
+         remove_admin's explicit DELETE is layer 1 (IA §9.4); if layer 3 is ever \
+         strengthened (e.g. a per-admin random nonce), flip this assertion"
+    );
+}
+
+#[tokio::test]
+async fn remove_admin_refusals_touch_no_grants() {
+    // (a) the last owner removes themself -> 409 LAST_OWNER (inside the tx).
+    {
+        let fx = fixture(false).await;
+        let (g, _) = seed_full_grant(&*fx.meta.lock().await, fx.owner_id);
+        let cookie = session_for(&fx, fx.owner_id).await;
+        let (status, body) = remove_via_http(&fx, &cookie, fx.owner_id).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error_code"], "LAST_OWNER");
+        assert_full_tree_live(&*fx.meta.lock().await, g);
+    }
+    // (b) a member removes the owner -> 403 (require_manage_members, before the lock).
+    {
+        let fx = fixture(false).await;
+        let m = add_admin(&fx, "m", "", "member").await;
+        let (g, _) = seed_full_grant(&*fx.meta.lock().await, fx.owner_id);
+        let cookie = session_for(&fx, m).await;
+        let (status, _) = remove_via_http(&fx, &cookie, fx.owner_id).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_full_tree_live(&*fx.meta.lock().await, g);
+    }
+    // (c) an admin removes another admin -> 403 PRIVILEGED_ROLE_REQUIRED (before the tx).
+    {
+        let fx = fixture(false).await;
+        let a1 = add_admin(&fx, "a1", "", "admin").await;
+        let a2 = add_admin(&fx, "a2", "", "admin").await;
+        let (g, _) = seed_full_grant(&*fx.meta.lock().await, a2);
+        let cookie = session_for(&fx, a1).await;
+        let (status, body) = remove_via_http(&fx, &cookie, a2).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error_code"], "PRIVILEGED_ROLE_REQUIRED");
+        assert_full_tree_live(&*fx.meta.lock().await, g);
+    }
 }

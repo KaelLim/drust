@@ -736,6 +736,7 @@ pub async fn change_role(
 /// Invariant: removing the last Owner is rejected with 409 LAST_OWNER.
 /// Enforced TOCTOU-safely inside an `unchecked_transaction`.
 /// Admin sessions are deleted manually; `_admin_tokens` CASCADE on FK delete.
+/// MCP OAuth grants are deleted explicitly inside the same transaction (MA0-3).
 pub async fn remove_admin(
     State(s): State<MgmtState>,
     Path(target_id): Path<i64>,
@@ -756,6 +757,7 @@ pub async fn remove_admin(
             Option<String>,
             Option<String>,
             crate::mgmt::pat_evict::PatReach,
+            i64,
         ),
         Response,
     > = {
@@ -881,6 +883,47 @@ pub async fn remove_admin(
                 .into_response();
         }
 
+        // MA0-3 — the removed admin's MCP OAuth grants go with them, explicitly.
+        // Layer 1 is this DELETE, in the same transaction as the admins row.
+        // Layer 2 is the FK `ON DELETE CASCADE` on `_mcp_oauth_grants.admin_id`,
+        // which only fires on a connection with `PRAGMA foreign_keys = ON`.
+        // Layer 3 is every lookup matching `admins.created_at` against the
+        // grant's `admin_created_at` snapshot — and it does NOT hold if the
+        // top rowid is recycled within the same second (`created_at` is second
+        // precision). So this DELETE is the defence, not belt-and-braces: do
+        // not remove it because the FK "already cascades". Child rows (codes,
+        // refresh, access, upload tickets) go with each grant through their
+        // own CASCADE. Nothing to do after commit: these grants are not in the
+        // data-plane auth cache and their tokens open no SSE or rooms streams.
+        // The audit counts the grants that were still LIVE (not the rows
+        // deleted, which include revoked/expired ones kept for 30 days).
+        let revoked_mcp_grants: i64 = match tx.query_row(
+            "SELECT COUNT(*) FROM _mcp_oauth_grants WHERE admin_id = ?1 \
+               AND revoked_at IS NULL \
+               AND idle_expires_at > datetime('now') AND absolute_expires_at > datetime('now')",
+            params![target_id],
+            |r| r.get(0),
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+                )
+                    .into_response();
+            }
+        };
+        if let Err(e) = tx.execute(
+            "DELETE FROM _mcp_oauth_grants WHERE admin_id = ?1",
+            params![target_id],
+        ) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error_code": "INTERNAL", "message": e.to_string() })),
+            )
+                .into_response();
+        }
+
         if let Err(e) = tx.execute("DELETE FROM admins WHERE id = ?1", params![target_id]) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -906,14 +949,21 @@ pub async fn remove_admin(
             )
             .ok();
 
-        Ok((target_role, target_email, caller_email, target_reach))
+        Ok((
+            target_role,
+            target_email,
+            caller_email,
+            target_reach,
+            revoked_mcp_grants,
+        ))
         // conn guard drops here — before any .await
     };
 
-    let (removed_role, removed_email, caller_email, removed_reach) = match db_result {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
+    let (removed_role, removed_email, caller_email, removed_reach, revoked_mcp_grants) =
+        match db_result {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
 
     // audit3 F4 — the cascade DELETE on `admins` revoked this admin's PATs at
     // the DB level (FK ON DELETE CASCADE), but a freshly-used PAT may still sit
@@ -941,6 +991,7 @@ pub async fn remove_admin(
         "removed_admin_id": target_id,
         "removed_role": removed_role,
         "removed_email": removed_email,
+        "revoked_mcp_grants": revoked_mcp_grants,
     }));
     crate::safety::audit::write_entry(&s.log_dir, &entry).await;
 
