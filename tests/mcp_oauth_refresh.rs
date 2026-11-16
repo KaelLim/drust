@@ -300,6 +300,7 @@ async fn session_for(fx: &McpOauthFixture, admin_id: i64) -> String {
 /// the sibling (A2b, R2b).
 struct Race {
     gid: i64,
+    r1: String,
     r1_id: i64,
     a2: String,
     r2: String,
@@ -313,6 +314,7 @@ async fn race(fx: &McpOauthFixture) -> Race {
     let (a2b, r2b) = issued(refresh(&fx.app, &t.refresh).await, "R1 in grace").await;
     Race {
         gid,
+        r1: t.refresh.clone(),
         r1_id: t.refresh_id,
         a2,
         r2,
@@ -804,10 +806,87 @@ async fn the_per_grant_bucket_rejects_the_11th_in_a_minute_and_only_for_that_gra
         let conn = fx.meta.lock().await;
         assert!(
             rrow(&conn, rid(&conn, &current)).rotated.is_none(),
-            "the 11th never reached the state machine"
+            "the 11th (branch c, charged) wrote nothing"
         );
     }
     issued(refresh(&fx.app, &t2.refresh).await, "another grant").await;
+}
+
+/// Presents `token` (a known token of the grant whose answer does not change
+/// the state machine: branch a or d-1) until the grant's bucket answers 429.
+/// The per-grant budget is 10 per 60 s, so at most 11 presentations.
+async fn fill_grant_bucket(fx: &McpOauthFixture, token: &str, ctx: &str) {
+    for i in 1..=11 {
+        let resp = refresh(&fx.app, token).await;
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            assert_throttled(resp, 60, &format!("{ctx}: fill {i}")).await;
+            return;
+        }
+        assert_invalid_grant(resp, &format!("{ctx}: fill {i}")).await;
+    }
+    panic!("{ctx}: the grant's bucket never filled");
+}
+
+/// A thief who rotated a stolen refresh first can make a dead token of the
+/// grant on demand (an in-grace sibling, cut once as the losing branch) and
+/// flood it. Reuse detection must not depend on that budget: the legitimate
+/// client's past-grace presentation of the rotated parent still revokes the
+/// grant, so the client re-authorizes and the thief's chain dies.
+#[tokio::test]
+async fn a_dead_siblings_flood_cannot_suppress_reuse_detection() {
+    let fx = fixture(true).await;
+    let (gid, t) = seeded(&fx).await;
+    // The thief: R1 -> R2 (first use), R1 again in grace -> R2b (sibling),
+    // R2 -> R3 (supersedes R2b), R2b once (its branch is cut: now dead).
+    let (_a2, r2) = issued(refresh(&fx.app, &t.refresh).await, "thief R1").await;
+    let (_a2b, r2b) = issued(refresh(&fx.app, &t.refresh).await, "thief R1 again").await;
+    let (a3, r3) = issued(refresh(&fx.app, &r2).await, "thief R2").await;
+    assert_invalid_grant(refresh(&fx.app, &r2b).await, "thief cuts R2b").await;
+    fill_grant_bucket(&fx, &r2b, "dead sibling flood").await;
+    // The legitimate client wakes up past the grace with R1.
+    age_rotation(&fx, t.refresh_id, 61).await;
+    assert_invalid_grant(refresh(&fx.app, &t.refresh).await, "legitimate R1").await;
+    {
+        let conn = fx.meta.lock().await;
+        let g = grow(&conn, gid);
+        assert!(g.revoked.is_some(), "grant revoked: {g:?}");
+        assert_eq!(g.reason.as_deref(), Some("refresh_reuse"));
+        assert!(!access_live(&conn, &a3), "the thief's access is dead");
+    }
+    // The thief's live chain is gone too (a dead token: charged, so it may be
+    // 429 while the bucket is still full; never a 200).
+    let resp = refresh(&fx.app, &r3).await;
+    assert_ne!(resp.status(), StatusCode::OK, "the thief's R3 is dead");
+}
+
+/// Branch b is terminal and runs at most once per token, so it reads no
+/// budget: a full bucket still cuts a superseded sibling's branch.
+#[tokio::test]
+async fn a_full_bucket_still_cuts_a_superseded_sibling() {
+    let fx = fixture(true).await;
+    let x = race(&fx).await;
+    issued(refresh(&fx.app, &x.r2).await, "R2 wins").await;
+    // R1 again inside the grace with its child rotated: d-1, charged.
+    fill_grant_bucket(&fx, &x.r1, "d-1 flood").await;
+    assert_invalid_grant(refresh(&fx.app, &x.r2b).await, "loser").await;
+    let conn = fx.meta.lock().await;
+    let loser = rrow(&conn, rid(&conn, &x.r2b));
+    assert!(loser.revoked.is_some(), "R2b revoked: {loser:?}");
+    assert_eq!(loser.reason.as_deref(), Some("sibling_superseded"));
+    assert!(!access_live(&conn, &x.a2b), "A2b revoked with its branch");
+}
+
+/// The issuing branches are charged: with the bucket full, a current token
+/// gets 429 and the transaction writes nothing.
+#[tokio::test]
+async fn a_full_bucket_refuses_a_current_token_and_writes_nothing() {
+    let fx = fixture(true).await;
+    let x = race(&fx).await;
+    let (_a3, r3) = issued(refresh(&fx.app, &x.r2).await, "R2 wins").await;
+    fill_grant_bucket(&fx, &x.r1, "d-1 flood").await;
+    let before = dump_now(&fx).await;
+    assert_throttled(refresh(&fx.app, &r3).await, 60, "R3 (branch c)").await;
+    assert_eq!(dump_now(&fx).await, before, "a refused c writes nothing");
 }
 
 #[tokio::test]
@@ -955,6 +1034,57 @@ async fn every_refresh_rejection_is_byte_identical() {
     for (label, s) in &shapes {
         assert_eq!(s, first, "{label} differs from a miss");
     }
+
+    // The two 429s: an exhausted miss_ip and an exhausted per_grant (filled
+    // through a dead token of the grant, branch a, which is charged). Every
+    // header but Retry-After, and the body, are the same.
+    let fx = fixture(true).await;
+    for i in 1..=30 {
+        let rnd = tokens::new_token(TokenKind::Refresh);
+        assert_invalid_grant(refresh(&fx.app, &rnd).await, &format!("miss {i}")).await;
+    }
+    let rnd = tokens::new_token(TokenKind::Refresh);
+    let miss_429 = shape_429(refresh(&fx.app, &rnd).await).await;
+
+    let fx = fixture(true).await;
+    let (_g, t) = seeded(&fx).await;
+    sql(
+        &fx,
+        &format!(
+            "UPDATE _mcp_oauth_refresh SET revoked_at = datetime('now') WHERE id = {}",
+            t.refresh_id
+        ),
+    )
+    .await;
+    fill_grant_bucket(&fx, &t.refresh, "per_grant").await;
+    let grant_429 = shape_429(refresh(&fx.app, &t.refresh).await).await;
+    assert_eq!(miss_429.0, 429);
+    assert_eq!(
+        miss_429, grant_429,
+        "miss_ip 429 differs from per_grant 429"
+    );
+}
+
+/// Status, every header except `Retry-After` (sorted name/value pairs) and
+/// the body bytes.
+async fn shape_429(resp: Response<Body>) -> (u16, Vec<(String, Vec<u8>)>, Vec<u8>) {
+    let status = resp.status().as_u16();
+    assert!(
+        resp.headers().contains_key(header::RETRY_AFTER),
+        "a 429 carries Retry-After"
+    );
+    let mut headers: Vec<(String, Vec<u8>)> = resp
+        .headers()
+        .iter()
+        .filter(|(k, _)| *k != header::RETRY_AFTER)
+        .map(|(k, v)| (k.as_str().to_string(), v.as_bytes().to_vec()))
+        .collect();
+    headers.sort();
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap()
+        .to_vec();
+    (status, headers, body)
 }
 
 /// d-2 never moves the parent's `rotated_at`: the grace always counts from

@@ -7,9 +7,10 @@
 //! exists charges that code's budget, and an issued or replayed code reads no
 //! bucket (MA0-PLAN §4; per-code charges failures only, so whoever holds a code
 //! without its verifier cannot lock the real client out of its exchange).
-//! Refresh is different by design: every request whose token hash exists —
-//! live or not — charges its grant's per-grant budget (10 per 60 s), and only
-//! an unknown hash charges the per-IP miss budget.
+//! Refresh is different by design: an unknown hash charges the per-IP miss
+//! budget; a known one (live or not) charges its grant's per-grant budget
+//! (10 per 60 s) only on the branches `refresh::rotate` bounds, decided from
+//! the snapshot — never on reuse detection or a losing sibling's branch cut.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -291,20 +292,23 @@ async fn grant_refresh(s: &MgmtState, ip: &ClientIp, p: &Params) -> Response {
             }
             Err(e) => return server_error("refresh-lookup", &e),
         };
-        // 6. per-grant bucket; a refused request is not pushed into the window.
-        if let Err(RateLimitedError(d)) = s.mcp_oauth_rl.per_grant.try_acquire(&rl::grant_key(gid))
-        {
-            return OAuthError::TemporarilyUnavailable {
-                retry_after_secs: rl::retry_after_secs(d),
-            }
-            .into_response();
-        }
-        // 7. one transaction for the snapshot and every write.
+        // 6. one transaction for the snapshot and every write.
         let tx = match conn.unchecked_transaction() {
             Ok(t) => t,
             Err(e) => return server_error("refresh-begin", &e),
         };
-        match refresh::rotate(&tx, &s.mcp_oauth, &hash, &req) {
+        // 7. the per-grant bucket, read by `rotate` only on the branches it
+        // bounds, after the snapshot decided the branch; a 429 from it drops
+        // the tx. A refused request is not pushed into the window.
+        let charge = || {
+            s.mcp_oauth_rl
+                .per_grant
+                .try_acquire(&rl::grant_key(gid))
+                .map_err(|RateLimitedError(d)| OAuthError::TemporarilyUnavailable {
+                    retry_after_secs: rl::retry_after_secs(d),
+                })
+        };
+        match refresh::rotate(&tx, &s.mcp_oauth, &hash, &req, charge) {
             Ok(o) => {
                 if let Err(e) = tx.commit() {
                     return server_error("refresh-commit", &e);

@@ -439,9 +439,10 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
 
 ### Refresh rotation (`POST /oauth/token`, `grant_type=refresh_token`)
 
-`mcp_oauth::refresh::rotate` is the whole decision; `token.rs::grant_refresh` only checks
-the request, picks the budget, opens the transaction and writes audit after the guard is
-dropped. The state machine reads ONE snapshot (`store::load_refresh_for_rotate`, an INNER
+`mcp_oauth::refresh::rotate` is the whole decision, including which branches read the
+per-grant budget; `token.rs::grant_refresh` only checks the request, does the hit/miss
+lookup, opens the transaction, hands `rotate` the budget as a closure and writes audit after
+the guard is dropped. The state machine reads ONE snapshot (`store::load_refresh_for_rotate`, an INNER
 JOIN on the grant, so an orphan refresh is refused) and decides, in this order, with `G` =
 `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS`:
 
@@ -490,10 +491,18 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
 - **Check order and budgets.** `scope`, `resource` and the token's prefix + length are pure
   checks before the lock and before any budget (an access token presented as a refresh is
   refused here). Under the lock, `refresh::lookup_grant_id` looks the hash up ignoring
-  liveness: unknown → `miss_ip`; known (revoked and rotated rows included) → `per_grant`
-  (`rl::grant_key`, 10 per 60 s), never `miss_ip`. Known cost: presenting a dead sibling
-  still spends its grant's budget; it grants nothing new (the same holder normally has the
-  parent and could trigger e) anyway).
+  liveness: unknown → `miss_ip`; known (revoked and rotated rows included) → never
+  `miss_ip`. For a known hash the grant's `per_grant` bucket (`rl::grant_key`, 10 per 60 s)
+  is read inside the transaction, only after the snapshot has decided the branch
+  (`rotate`'s `charge` closure; `try_acquire` is synchronous, so no await under the guard):
+  a), c), d-1) and d-2) are charged and answer 429 on a full bucket with the transaction
+  dropped; **b) and e) never read it**. They are terminal and self-limiting (e revokes the
+  grant once, b cuts one row once), and a full bucket must never stop them: charged, a
+  thief holding a dead token of the grant (a sibling it got in the grace and then cut)
+  could keep the bucket full, so the legitimate client's past-grace presentation would only
+  ever get 429 instead of e) and the thief would keep a live chain
+  (`a_dead_siblings_flood_cannot_suppress_reuse_detection`,
+  `only_the_bounded_branches_read_the_budget`).
 - **A wrong `client_id` is branch a) even with real reuse evidence**, so it revokes nothing:
   the Claude Code `client_id` is a public URL, a thief can always send the right one, and the
   order only affects callers that send a wrong one (`reuse_with_a_wrong_client_id_does_not_revoke`).

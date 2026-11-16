@@ -58,11 +58,13 @@ pub enum RotateOutcome {
     },
 }
 
-/// Pre-transaction lookup: hit/miss decides miss_ip vs per_grant (plan §3.8.5b preamble).
-/// Ignores liveness on purpose — a revoked or rotated row is a HIT (it costs per_grant, never
-/// the shared per-IP miss budget). Known: a dead sibling's holder can spend its grant's
-/// per_grant budget; that grants nothing new (the same holder normally has the parent and
-/// can trigger branch e) anyway). Review S4, rules "Refresh rotation".
+/// The hit/miss probe under the lock: an unknown hash charges the caller's per-IP miss
+/// budget, a known one never does. Ignores liveness on purpose — a revoked or rotated row is
+/// a HIT. Which branches of a hit charge the grant's per_grant budget is `rotate`'s call:
+/// the budget is read only after the snapshot has decided the branch, and the terminal
+/// branches b) and e) never read it. Charged here, a known dead token could keep the bucket
+/// full and turn the legitimate client's past-grace presentation (reuse, e) into a 429, so a
+/// refresh-token thief would never be cut off.
 pub(crate) fn lookup_grant_id(
     conn: &Connection,
     presented_hash: &str,
@@ -75,16 +77,24 @@ pub(crate) fn lookup_grant_id(
     .optional()
 }
 
+/// `charge` reads the grant's per_grant budget; an `Err` (the 429) is returned as is, before
+/// the branch writes anything. It is called exactly on the branches that need a bound:
+/// a) (a flood of known dead tokens), c) and d-2) (they issue tokens) and d-1) (a stamp).
+/// b) and e) never call it: each is terminal and self-limiting (b cuts one row once, e
+/// revokes the grant once), and a full bucket must never stop them.
 pub(crate) fn rotate(
     tx: &Transaction<'_>,
     cfg: &McpOauthConfig,
     presented_hash: &str,
     req: &RefreshRequest<'_>,
+    charge: impl FnOnce() -> Result<(), OAuthError>,
 ) -> Result<RotateOutcome, OAuthError> {
     let grace = format!("+{} seconds", cfg.refresh_grace_secs());
     // Swept between lookup and tx is impossible under the mutex; fail closed anyway.
-    // None is also a refresh whose grant row is gone (store's INNER JOIN).
+    // None is also a refresh whose grant row is gone (store's INNER JOIN): a dead token,
+    // charged like a).
     let Some(st) = store::load_refresh_for_rotate(tx, presented_hash, &grace).map_err(db)? else {
+        charge()?;
         return Err(OAuthError::InvalidGrant);
     };
 
@@ -94,9 +104,10 @@ pub(crate) fn rotate(
         || !st.admin_ok
         || req.client_id.is_some_and(|c| c != st.client_id)
     {
+        charge()?;
         return Err(OAuthError::InvalidGrant);
     }
-    // b) — MUST stay before c): a superseded row also satisfies !st.rotated.
+    // b) — MUST stay before c): a superseded row also satisfies !st.rotated. Not charged.
     if st.superseded {
         let n = store::revoke_mcp_refresh_branch(tx, st.grant_id, st.refresh_id).map_err(db)?;
         return Ok(RotateOutcome::RejectedSibling {
@@ -108,13 +119,15 @@ pub(crate) fn rotate(
     }
     // c)
     if !st.rotated {
+        charge()?;
         mark_rotated(tx, &st)?;
         supersede_siblings(tx, &st)?;
         slide_idle(tx, cfg, st.grant_id)?;
         return Ok(RotateOutcome::Issued(issue(tx, cfg, &st)?));
     }
-    // d)
+    // d) — both arms charged.
     if st.in_grace {
+        charge()?;
         if st.child_rotated {
             stamp_sibling_rejected(tx, st.grant_id)?;
             return Ok(RotateOutcome::RejectedSibling {
@@ -127,8 +140,8 @@ pub(crate) fn rotate(
         slide_idle(tx, cfg, st.grant_id)?;
         return Ok(RotateOutcome::Issued(issue(tx, cfg, &st)?));
     }
-    // e) — holder is Some only for a rotated, live, admin-matching row (S3); None is
-    // unreachable here (a) and b) returned already) and fails closed.
+    // e) — not charged. holder is Some only for a rotated, live, admin-matching row (S3);
+    // None is unreachable here (a) and b) returned already) and fails closed.
     let Some(holder) = st.holder.as_ref() else {
         return Err(OAuthError::InvalidGrant);
     };
@@ -299,7 +312,13 @@ mod tests {
         client_id: Option<&str>,
     ) -> Result<RotateOutcome, OAuthError> {
         let tx = conn.unchecked_transaction().unwrap();
-        let r = rotate(&tx, &cfg(), &h(token), &RefreshRequest { client_id });
+        let r = rotate(
+            &tx,
+            &cfg(),
+            &h(token),
+            &RefreshRequest { client_id },
+            || Ok(()),
+        );
         if r.is_ok() {
             tx.commit().unwrap();
         }
@@ -360,6 +379,7 @@ mod tests {
                 &cfg(),
                 &h(&t.refresh_token),
                 &RefreshRequest { client_id },
+                || Ok(()),
             );
             assert!(matches!(r, Err(OAuthError::InvalidGrant)), "{label}");
             assert_eq!(tx.total_changes(), before, "{label}: nothing written");
@@ -525,6 +545,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reason.as_deref(), Some("refresh_reuse"));
+    }
+
+    /// One rotate whose budget is exhausted: returns the outcome and whether
+    /// the budget was read. Commits on Ok, like the handler.
+    fn run_full_bucket(
+        conn: &Connection,
+        token: &str,
+    ) -> (Result<RotateOutcome, OAuthError>, bool) {
+        let read = std::cell::Cell::new(false);
+        let tx = conn.unchecked_transaction().unwrap();
+        let before = tx.total_changes();
+        let r = rotate(
+            &tx,
+            &cfg(),
+            &h(token),
+            &RefreshRequest { client_id: None },
+            || {
+                read.set(true);
+                Err(OAuthError::TemporarilyUnavailable {
+                    retry_after_secs: 7,
+                })
+            },
+        );
+        if r.is_ok() {
+            tx.commit().unwrap();
+        } else {
+            assert_eq!(
+                tx.total_changes(),
+                before,
+                "a refused branch writes nothing"
+            );
+        }
+        (r, read.get())
+    }
+
+    fn throttled(r: &Result<RotateOutcome, OAuthError>) -> bool {
+        matches!(
+            r,
+            Err(OAuthError::TemporarilyUnavailable {
+                retry_after_secs: 7
+            })
+        )
+    }
+
+    /// a), c), d-1) and d-2) read the budget and answer its 429 with nothing
+    /// written; b) and e) never read it and still decide.
+    #[test]
+    fn only_the_bounded_branches_read_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, _admin, gid) = setup(dir.path());
+        let r1 = root(&conn, gid);
+        // c) refused, then really taken.
+        let (r, read) = run_full_bucket(&conn, &r1.refresh_token);
+        assert!(read && throttled(&r), "c) is charged");
+        let r2 = issued(run(&conn, &r1.refresh_token));
+        // d-2) refused, then really taken.
+        let (r, read) = run_full_bucket(&conn, &r1.refresh_token);
+        assert!(read && throttled(&r), "d-2) is charged");
+        let r2b = issued(run(&conn, &r1.refresh_token));
+        issued(run(&conn, &r2.refresh_token)); // c) on R2 supersedes R2b
+        // d-1) refused.
+        let (r, read) = run_full_bucket(&conn, &r1.refresh_token);
+        assert!(read && throttled(&r), "d-1) is charged");
+        // b) decides without reading.
+        let (r, read) = run_full_bucket(&conn, &r2b.refresh_token);
+        assert!(!read, "b) never reads the budget");
+        assert!(matches!(
+            r,
+            Ok(RotateOutcome::RejectedSibling {
+                branch_revoked: true,
+                ..
+            })
+        ));
+        // a) (the cut branch is dead now) refused.
+        let (r, read) = run_full_bucket(&conn, &r2b.refresh_token);
+        assert!(read && throttled(&r), "a) is charged");
+        // e) decides without reading.
+        age_rotation(&conn, r1.refresh_id, 61);
+        let (r, read) = run_full_bucket(&conn, &r1.refresh_token);
+        assert!(!read, "e) never reads the budget");
+        assert!(matches!(
+            r,
+            Ok(RotateOutcome::RejectedReuse { revoked: true, .. })
+        ));
     }
 
     #[test]

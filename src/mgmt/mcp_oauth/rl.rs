@@ -24,7 +24,9 @@ pub struct McpOauthLimiters {
     pub miss_ip: Arc<RateLimiter>,
     /// Failed checks on a code that exists, keyed by [`code_key`].
     pub per_code: Arc<RateLimiter>,
-    /// Refresh exchanges on a grant that exists, keyed by [`grant_key`].
+    /// Refresh presentations of a known token of the grant, keyed by [`grant_key`];
+    /// read by `refresh::rotate` only on the branches it bounds (never on reuse
+    /// detection or a losing sibling's branch cut).
     pub per_grant: Arc<RateLimiter>,
 }
 
