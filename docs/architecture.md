@@ -29,7 +29,7 @@ generated_by: docs/gen-architecture.py
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 50 | 428 | 128 | 57 |
+| [`mgmt/`](#srcmgmt) | 56 | 452 | 140 | 69 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
@@ -233,11 +233,17 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
+- [`mcp_oauth/clients.rs`](../src/mgmt/mcp_oauth/clients.rs) — Pinned OAuth clients. drust accepts exactly the clients listed here; there · 3 pub
 - [`mcp_oauth/config.rs`](../src/mgmt/mcp_oauth/config.rs) — `McpOauthConfig`: whether the MCP OAuth authorization server is on, the public · 10 pub
-- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 5 pub
+- [`mcp_oauth/metadata.rs`](../src/mgmt/mcp_oauth/metadata.rs) — RFC 8414 authorization-server metadata (MA0-PLAN §3.7, §3.8.1). · 2 pub
+- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 12 pub
+- [`mcp_oauth/oauth_error_layer.rs`](../src/mgmt/mcp_oauth/oauth_error_layer.rs) — OAuth JSON errors for `/oauth/token` and `/oauth/revoke` (MA0-PLAN §3.6). · 3 pub
+- [`mcp_oauth/params.rs`](../src/mgmt/mcp_oauth/params.rs) — Form / query parameter parsing for the OAuth endpoints (MA0-PLAN §3.3). · 3 pub
+- [`mcp_oauth/revoke.rs`](../src/mgmt/mcp_oauth/revoke.rs) — `POST /oauth/revoke` — RFC 7009, always per GRANT (MA0-PLAN §3.8.6). · 1 pub
 - [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for `/oauth/token` and `/oauth/revoke`, and the limiter · 11 pub
-- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives and token-to-grant lookups. · 9 pub
+- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives and token-to-grant lookups. · 11 pub
 - [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
+- [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token` (MA0-PLAN §3.8.4). This unit ships the request · 3 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
 - [`mod.rs`](../src/mgmt/mod.rs) — 37 pub

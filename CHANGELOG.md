@@ -7,6 +7,9 @@ the eval harness — is unchanged.
 The MCP OAuth foundation (MA0-2, below) adds five empty `meta.sqlite` tables and five
 optional environment variables; none of them changes any HTTP response in this release.
 
+From MA0-4 (below), an explicit `DRUST_MCP=on` with a valid `DRUST_PUBLIC_URL` mounts the
+OAuth AS routes; with `DRUST_MCP` unset, `auto` or `off`, every response stays unchanged.
+
 ### Fixed
 
 - **`POST /login` refuses a browser-declared cross-site submission (MA0-1).** The admin
@@ -85,6 +88,25 @@ No new route, page or environment variable; no response changes.
   Grants still inside their idle and absolute limits work again when it is turned back
   on. To cut connections, revoke them (settings page or team page, from MA0-9) or
   remove the admin.
+
+### MCP OAuth authorization server — metadata, token skeleton, revoke (MA0-4)
+
+- **OAuth AS routes, mounted only with `DRUST_MCP=on` (MA0-4).** `GET
+  /.well-known/oauth-authorization-server` serves the final RFC 8414 metadata (`issuer` =
+  `DRUST_PUBLIC_URL` + base path, `none` client auth, S256, CIMD and `iss` flags, no
+  registration endpoint; `Cache-Control: public, max-age=300`). `POST /oauth/revoke`
+  implements RFC 7009 and always revokes the whole grant. `POST /oauth/token` only validates
+  and dispatches for now: both grant types answer `unsupported_grant_type` until MA0-7/MA0-8,
+  so do not set `on` on a host anyone relies on. Every non-2xx on these two endpoints is an
+  OAuth JSON error with `Cache-Control: no-store`. Revoking an expired or rotated token of a
+  live grant still revokes the grant. With `DRUST_MCP` unset, `auto` or `off`, nothing is
+  mounted and every response is byte-identical to before; `auto` starts mounting with MA1d.
+  No new environment variable, no schema change.
+- On the bare-metal host the metadata is reachable at
+  `https://<host>/drust/.well-known/oauth-authorization-server` through the existing
+  `/drust/*` proxy block; the RFC 8414 root location
+  (`/.well-known/oauth-authorization-server/drust`) needs a root proxy rule that ships later
+  (MA1c). Docker serves the routes at the root. No deploy file changes.
 
 ## v1.67.0 — 2026-11-15
 

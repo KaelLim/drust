@@ -115,6 +115,8 @@ reachable by an untrusted caller.
 | `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
+| `/.well-known/oauth-authorization-server` (AS metadata) | unauthenticated — mounted **only when `DRUST_MCP` resolves to enabled** (`McpOauthConfig::enabled()`: `on` with a valid `DRUST_PUBLIC_URL`; `auto` currently mounts nothing). Pure JSON from config, never touches meta, never reads `Host` |
+| `/oauth/token`, `/oauth/revoke` | unauthenticated, same mount rule. The credential is the token in the form body — never a cookie, never the query string; only `drust_mcpat_` / `drust_mcprt_` are recognised, so a PAT or tenant key sent here is "an invalid token" and untouched. Every non-2xx is OAuth JSON with `Cache-Control: no-store` |
 | `/admin/*` | admin session cookie **or** a `drust_pat_*` bearer |
 | `/public/*` | unauthenticated — served by the reverse proxy straight from the object store's `public` bucket (Garage on the bare-metal host, RustFS on Compose and k3s; on k3s through the chart's `public-proxy` Caddy), never through drust |
 

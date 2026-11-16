@@ -318,6 +318,25 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   connection is FK ON, and a child row orphaned on an FK-OFF connection is dead because
   every validity read INNER JOINs grants and admins (`.claude/rules/auth-tenancy.md`
   §MCP OAuth, "Child rows never vouch for themselves").
+- `/oauth/token`, `/oauth/revoke` and the AS metadata are in the unauthenticated `public`
+  router and **not** behind `require_owner_layer` (invariant 8): they are OAuth protocol
+  endpoints whose credential is the token in the body, and the caller (Claude Code) has no
+  admin session. Gating them would stop every member from revoking.
+- `/oauth/revoke` answers **200** for an unknown or foreign-prefix token and for a token
+  whose grant is already revoked (RFC 7009 §2.2), revokes **the whole grant** for either
+  token type (§2.1 allows it) — including when the presented token itself is expired,
+  revoked or rotated, as long as its grant is not — ignores `token_type_hint`, and accepts a
+  request **without** `client_id` (public client; the token is a 256-bit secret). It is
+  **not rate-limited**: the lookup runs before any budget could be checked, so a budget
+  saves no work, and a pre-lookup per-IP gate would, under a wrong
+  `DRUST_TRUSTED_PROXIES`, put every revoke on the host behind one shared bucket. Adding a
+  miss budget here is not a hardening.
+- `oauth_error_layer` and the 16 KiB body limit are mounted with `route_layer`, not `layer`:
+  `layer` would wrap the sub-router's default 404 and, through `merge`, risk turning unmatched
+  admin-plane paths into OAuth JSON. Pinned by `public_routes_alone_keeps_a_plain_404`.
+- `oauth_error_layer` rewrites a JSON error body that did not come from `OAuthError` (no
+  `OAuthErrorMark`) to a bare `invalid_request` / `server_error`. Passing "anything that is
+  already JSON" would let an internal error string reach an unauthenticated caller.
 
 ## Canonical sources — do not hand-verify against prose
 

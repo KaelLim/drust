@@ -198,11 +198,14 @@ lookup matches `admins.created_at` against the grant's `admin_created_at`. Layer
 NOT hold when the top rowid is recycled within the same second (`created_at` is second
 precision) — never remove layer 1 on the grounds that the FK "already cascades".
 
-**Two lookup strengths.** `find_grant_by_access` / `find_grant_by_refresh` are
-authorization strength: token unrevoked and unexpired, grant unrevoked and inside both its
-idle and absolute deadlines, admin id AND created_at matching. A refresh's rotation state
-is not part of them — that decision, with its grace window, belongs to `refresh::rotate`
-alone, and `find_grant_by_refresh` never decides whether to issue tokens.
+**Lookup strengths.** `find_grant_by_access` is the only authorization-strength lookup:
+access unrevoked and unexpired, grant unrevoked and inside both its idle and absolute
+deadlines, admin id AND created_at matching. `find_grant_by_refresh` applies the same row,
+grant and admin checks but deliberately ignores the refresh's `rotated_at` and
+`superseded_at`, so it is a validity probe, NOT authorization strength: its `GrantRef`
+identifies the grant a refresh belongs to and proves nothing about whether the presented
+token may be exchanged. Rotation, the grace window and reuse are `refresh::rotate`'s
+decision alone; no exchange or authorization is ever gated on `find_grant_by_refresh`.
 `find_grant_for_revocation` is revocation strength, for `/oauth/revoke` only: the access or
 refresh row merely has to exist (revoked, expired, rotated or superseded all count) and its
 grant must be unrevoked with a matching admin — so a client revoking with a just-expired
@@ -224,6 +227,47 @@ grants still inside their limits work again when it is turned back on.
 
 `remove_admin`'s audit field `revoked_mcp_grants` counts the removed admin's grants that
 were still live at removal, not the rows its DELETE removed.
+
+### Endpoints: metadata, token, revoke
+
+`mcp_oauth::public_routes` merges into the admin plane's `public` router (inside
+`frame_guard_layers`) only when `McpOauthConfig::enabled()`; disabled, its paths answer
+exactly like a path that never existed.
+
+- **Error format.** `/oauth/token` and `/oauth/revoke` sit under `oauth_error_layer`, mounted
+  with `route_layer` (never `layer` — `Router::layer` also wraps the sub-router's 404 fallback,
+  and `merge` keeps that fallback). Only a response built by `OAuthError` (it carries the
+  module-private `OAuthErrorMark` extension) passes through as an error; every other non-2xx —
+  axum's 405, the 16 KiB `DefaultBodyLimit` 413, extractor rejections, and any JSON body that
+  did not come from `OAuthError` — is rewritten to `{"error": …}`, keeping a 4xx status, and a
+  5xx or any 3xx becomes 500 `server_error` with no `Location`. Every response gets
+  `Cache-Control: no-store`. `Retry-After` is carried over by the rewrite; `Allow` on a 405 is
+  added by axum's top-level route future *outside* the layer, not by the layer.
+  `error_description` is never set from caller input or i18n.
+- **Credentials come from the form body only.** No cookie, no query parameter. An
+  `Authorization` header is always 401 `invalid_client` with a matching-scheme
+  `WWW-Authenticate`, so a front proxy that injects HTTP auth must not forward it to `/oauth/*`.
+  Repeating a defined parameter is `invalid_request`, judged on the decoded key; an empty
+  value counts as absent; unknown parameters are ignored even when repeated.
+- **Metadata** is pure (no lock, no I/O, no request header read) and carries
+  `Cache-Control: public, max-age=300`, so it must never be derived from `Host` or
+  `X-Forwarded-*`.
+- **Token** validates and dispatches only: both grant types answer `unsupported_grant_type`
+  until the code exchange and refresh rotation land. It touches no table.
+- **Revoke is per grant and not rate-limited.** Any genuine access or refresh token of an
+  unrevoked grant — even one that is expired, revoked or rotated — revokes the whole grant
+  (`store::lookup_for_revoke` over `find_grant_for_revocation`, then `revoke_mcp_grant` with
+  the owner bound in SQL via `GrantOwner::holder`). An expired access row is swept within the
+  hour, after which it no longer maps to its grant. `token_type_hint` is ignored; `client_id`
+  is optional, an unknown one is `invalid_client`, a mismatching one `unauthorized_client`.
+  Unknown token, foreign prefix and already-revoked grant are all 200 with an empty body, and
+  no per-IP budget is read: the lookup runs first, so a budget would save nothing, and the
+  token is a 256-bit secret. A foreign prefix (PAT, tenant key, code shape) is answered
+  before the `meta` lock. Audit (`mcp_oauth.grant.revoke`, owner in `extra.admin_id`, no
+  top-level actor — the presenter is not strongly authenticated) is written only when a
+  grant was actually revoked. No cache, bus or PAT eviction follows the commit — MCP tokens
+  are not in the auth cache and cannot open SSE or rooms; a cache added for MCP tokens later
+  makes every `revoke_mcp_grant` caller responsible for evicting it.
 
 ## Tenant creation cap and quota tier
 
