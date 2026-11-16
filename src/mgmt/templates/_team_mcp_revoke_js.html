@@ -18,10 +18,16 @@
         danger: true
       });
       if (!ok) return;
-      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team/' + encodeURIComponent(id) + '/mcp-grants', {
-        method:  'DELETE',
-        headers: { 'Accept': 'application/json' }
-      });
+      var res;
+      try {
+        res = await fetch('{{ crate::base_path::base_path() }}/admin/team/' + encodeURIComponent(id) + '/mcp-grants', {
+          method:  'DELETE',
+          headers: { 'Accept': 'application/json' }
+        });
+      } catch (err) {
+        mcpAlert('{{ t.s("tenant_files_admin.upload.network_error")|safe }}'.replace('{message}', function () { return String((err && err.message) || err); }));
+        return;
+      }
       var j = await res.json().catch(function () { return null; });
       if (res.ok) {
         mcpAlert('{{ t.s("admin_team.mcp.revoked_n")|safe }}'.replace('{n}', String((j && j.revoked) || 0)));
