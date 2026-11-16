@@ -898,8 +898,10 @@ pub async fn remove_admin(
         // precision). So this DELETE is the defence, not belt-and-braces: do
         // not remove it because the FK "already cascades". Child rows (codes,
         // refresh, access, upload tickets) go with each grant through their
-        // own CASCADE. Nothing to do after commit: these grants are not in the
-        // data-plane auth cache and their tokens open no SSE or rooms streams.
+        // own CASCADE. Nothing to do after commit, while all three hold: these
+        // grants' tokens are in no cache (not the data-plane auth cache, not
+        // any other), they open no SSE or rooms streams, and no MCP request
+        // holds a connection or session open past a single request.
         // The audit counts the grants that were still LIVE (not the rows
         // deleted, which include revoked/expired ones kept for 30 days).
         let revoked_mcp_grants: i64 = match tx.query_row(

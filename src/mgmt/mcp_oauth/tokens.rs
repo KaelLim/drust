@@ -1,6 +1,7 @@
 //! MCP OAuth token primitives: the four credential families the authorization
 //! server mints (access, refresh, authorization code, upload ticket), their
-//! domain-separated hashes, and the prefix + length shape check every dispatch
+//! domain-separated hashes, and the shape check (prefix and length; length
+//! alone for an authorization code, which has no prefix) every dispatch
 //! between credential families goes through.
 //!
 //! Only hashes are ever stored (`_mcp_*` tables); the plaintext leaves the
@@ -64,7 +65,10 @@ pub fn hash(kind: TokenKind, token: &str) -> String {
 /// Every dispatch between credential families MUST go through this, never a bare
 /// `starts_with`: every drust credential starts with `drust_`, a tenant bearer is
 /// `drust_` + 43 random chars (49), so its random body can itself begin with `upl_` or
-/// `mcpat_`. The families are kept apart by prefix AND length together.
+/// `mcpat_`. The prefixed families are kept apart by prefix AND length together. An
+/// authorization code has no prefix, so for it this checks the length (43) alone:
+/// any 43-character string passes, an admin session cookie included, and a true
+/// here never shows that a string is a code (only the hash lookup does).
 pub fn looks_like(kind: TokenKind, s: &str) -> bool {
     s.len() == kind.prefix().len() + BODY_LEN && s.starts_with(kind.prefix())
 }
@@ -217,8 +221,10 @@ mod tests {
                 }
             }
         }
-        // Prefix alone would collide: a tenant bearer is `drust_` + 43 random
-        // chars, so its body can begin with `upl_`. Length keeps it out.
+        // For the prefixed families, prefix alone would collide: a tenant bearer
+        // is `drust_` + 43 random chars, so its body can begin with `upl_`.
+        // Length keeps it out. An authorization code has no prefix: the
+        // credentials above stay out of `Code` by their length alone.
         let bearer_shaped = format!("drust_upl_{}", "A".repeat(39));
         assert_eq!(bearer_shaped.len(), 49);
         assert!(!looks_like(TokenKind::UploadTicket, &bearer_shaped));

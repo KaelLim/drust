@@ -453,7 +453,9 @@ VALUES (?1, ?2, ?3, datetime('now', ?4))";
 const TOUCH_GRANT: &str = "\
 UPDATE _mcp_oauth_grants SET last_used_at = datetime('now') WHERE id = ?1";
 
-/// No `Debug`, same reason as `IssuedTokens` (and kept that way by the same pin).
+/// The code row joined with its grant and admin checks. Holds no plaintext (the
+/// code itself is never read back, only its hash is matched), so no pin covers
+/// it; it derives nothing because nothing needs it.
 struct CodeRow {
     grant_id: i64,
     admin_id: i64,
