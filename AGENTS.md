@@ -396,6 +396,25 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   Requiring `redirect_uri` is a compatibility choice (the SDK sends it), not a security
   boundary — PKCE stops code injection.
 
+**Deliberate — MCP OAuth refresh rotation (MA0-8):**
+
+- An MCP refresh token presented within the grace window after its rotation gets a SIBLING
+  pair instead of triggering reuse detection, and a superseded sibling, when presented,
+  revokes only its own branch (`store::revoke_mcp_refresh_branch`), not the grant. This
+  deviates from the strict reading of OAuth 2.1 §4.3.1 on purpose (design §9 #8, user
+  decision): one machine's Claude Code processes share one credential and race refreshes,
+  and a grant revoke would log every session out. Reuse detection is intact OUTSIDE the
+  grace (`refresh::rotate` branch e revokes the grant, `refresh_reuse`). Known cost: a thief
+  who wins the in-grace race keeps a branch until the grant's idle/absolute deadline; the
+  settings card (MA0-9) shows `sibling_rejected_at` for manual revocation. Compensating
+  module: `src/mgmt/mcp_oauth/refresh.rs` (branch order b before c is load-bearing — a
+  superseded row has `rotated_at IS NULL` — and is pinned by
+  `the_first_sibling_used_wins_and_the_loser_is_cut_alone` and
+  `mark_rotated_refuses_a_superseded_row`).
+- The refresh branch revoke takes no `GrantOwner`: it is `pub(crate)`, its only caller passes
+  the `(grant_id, refresh_id)` pair read from the presented token's own row in the same
+  transaction, and every UPDATE also binds `grant_id`. It is not an IDOR surface.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

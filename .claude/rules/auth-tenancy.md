@@ -254,9 +254,8 @@ exactly like a path that never existed.
 - **Metadata** is pure (no lock, no I/O, no request header read) and carries
   `Cache-Control: public, max-age=300`, so it must never be derived from `Host` or
   `X-Forwarded-*`.
-- **Token** validates and dispatches; `authorization_code` is the code exchange below, and
-  `refresh_token` answers `unsupported_grant_type` until refresh rotation lands (it touches
-  no table).
+- **Token** validates and dispatches; `authorization_code` is the code exchange and
+  `refresh_token` the refresh rotation, both below.
 - **Revoke is per grant and not rate-limited.** Any genuine access or refresh token of an
   unrevoked grant — even one that is expired, revoked or rotated — revokes the whole grant
   (`store::lookup_for_revoke` over `find_grant_for_revocation`, then `revoke_mcp_grant` with
@@ -436,6 +435,85 @@ profile and inner theme layers, and `frame_guard_layers`) only when `enabled()`.
   derive no `Debug` (pin `credential_types_do_not_derive_debug`); tests use `matches!`.
   `verify_s256` uses `ct_eq` (pin `verify_s256_compares_in_constant_time`) — convention and
   defence in depth only, the challenge is not a secret.
+
+### Refresh rotation (`POST /oauth/token`, `grant_type=refresh_token`)
+
+`mcp_oauth::refresh::rotate` is the whole decision; `token.rs::grant_refresh` only checks
+the request, picks the budget, opens the transaction and writes audit after the guard is
+dropped. The state machine reads ONE snapshot (`store::load_refresh_for_rotate`, an INNER
+JOIN on the grant, so an orphan refresh is refused) and decides, in this order, with `G` =
+`DRUST_MCP_OAUTH_REFRESH_GRACE_SECS`:
+
+| Branch | Condition | Writes (same tx) | Answer |
+|---|---|---|---|
+| a) dead / foreign | refresh revoked or expired, grant revoked or past idle/absolute, admin id + `created_at` mismatch, or a sent `client_id` ≠ the grant's | nothing | `invalid_grant` |
+| b) losing sibling | `superseded_at` set | `store::revoke_mcp_refresh_branch`: this refresh + the access issued with it (`sibling_superseded`), grant `sibling_rejected_at` | `invalid_grant` |
+| c) first use | `rotated_at` NULL | mark rotated, supersede its unrotated siblings (same parent), slide idle, issue a child | 200 |
+| d-1) in grace, decided | rotated, within `G`, a child already rotated | grant `sibling_rejected_at` only | `invalid_grant` |
+| d-2) in grace, undecided | rotated, within `G`, no child rotated | slide idle, issue another child; invalidate nothing | 200 |
+| e) reuse | rotated, past `G` | `revoke_mcp_grant(GrantOwner::holder, refresh_reuse)` | `invalid_grant` |
+
+- **b before c is load-bearing**: a superseded row has `rotated_at IS NULL`, so checking c
+  first would send a losing sibling into first use; `mark_rotated`'s `superseded_at IS
+  NULL` is the second layer (it then refuses and the tx rolls back, but the branch is never
+  cut). b vs d/e is exclusive. Pinned by `the_first_sibling_used_wins_and_the_loser_is_cut_alone`
+  and `mark_rotated_refuses_a_superseded_row`.
+- **A superseded sibling never has children** (c supersedes only unrotated rows; d-2 issues
+  only under a rotated one), so a branch revoke is one refresh plus its access, no
+  recursion. In d-1 the audit's `refresh_id` is the re-presented PARENT, not a sibling.
+- **The grace counts from the parent's FIRST rotation.** d-2 never touches `rotated_at`, so
+  holding the parent cannot keep the grace open (`a_sibling_issued_in_grace_does_not_extend_the_grace`).
+  Time is second precision: the window is (G−1, G] seconds; `G = 0` sends every second
+  presentation to e).
+- **Deliberate deviation from the strict reading of OAuth 2.1 §4.3.1**: inside the grace
+  siblings coexist and the loser is cut alone (design §9 #8 (a), user decision) — several
+  Claude Code processes on one machine share one credential and race refreshes. Its cost: a
+  thief who wins an in-grace race keeps a branch until the grant's deadline (the MA0-9
+  settings card shows `sibling_rejected_at` for manual revocation). Do not "tighten" b) into a grant
+  revoke without re-asking the user.
+- **`GrantRef` for e) only**: `RefreshState::holder` is `Some` only for a rotated,
+  unsuperseded, live refresh of a live grant with a matching admin; e) fails closed on
+  `None`. `revoke_mcp_refresh_branch` takes no `GrantOwner`: it is `pub(crate)`, its only
+  caller passes the ids of the presented token's own row from the same snapshot, and every
+  UPDATE also binds `grant_id`.
+- **Error codes.** Every failure is `invalid_grant` because the SDK only re-authorizes on
+  that code. Two deliberate code deviations: a foreign `resource` is `invalid_grant`, not
+  RFC 8707's `invalid_target` (after a `DRUST_PUBLIC_URL` change, Claude Code refreshing with
+  the old resource is sent to re-authorize instead of getting stuck); rate limiting answers
+  `temporarily_unavailable`, which is not a standard token-endpoint code (MA0-PLAN §3.6).
+  The exceptions are a missing `refresh_token` (`invalid_request`) and a `scope` item other
+  than `mcp` / `offline_access` (`invalid_scope`, via `authorize::scope_items_ok`, the same
+  function authorize uses; an empty `scope` counts as not sent). All rejections are byte
+  identical (`every_refresh_rejection_is_byte_identical`): never add an
+  `error_description` that tells a losing sibling from a dead token.
+- **Check order and budgets.** `scope`, `resource` and the token's prefix + length are pure
+  checks before the lock and before any budget (an access token presented as a refresh is
+  refused here). Under the lock, `refresh::lookup_grant_id` looks the hash up ignoring
+  liveness: unknown → `miss_ip`; known (revoked and rotated rows included) → `per_grant`
+  (`rl::grant_key`, 10 per 60 s), never `miss_ip`. Known cost: presenting a dead sibling
+  still spends its grant's budget; it grants nothing new (the same holder normally has the
+  parent and could trigger e) anyway).
+- **A wrong `client_id` is branch a) even with real reuse evidence**, so it revokes nothing:
+  the Claude Code `client_id` is a public URL, a thief can always send the right one, and the
+  order only affects callers that send a wrong one (`reuse_with_a_wrong_client_id_does_not_revoke`).
+- **Lookup is by hash as the UNIQUE index key; there is deliberately no Rust-side
+  constant-time compare.** B-tree timing can only leak a prefix of a hash of a 256-bit
+  secret; do not "fix" it into fetch-then-compare.
+- **No post-commit step** after b) or e): no cache, bus or `clear_admin_pat` (MCP tokens are
+  in no cache and open no SSE or rooms). Demoting the grant's owner revokes nothing either
+  (`demoting_the_owner_does_not_touch_the_grant`): visibility is decided per MCP call.
+- **Audit**, written after the guard is dropped: `mcp_oauth.refresh.sibling_rejected`
+  (`grant_id`, `refresh_id`, `admin_id`, `branch_revoked`) for b) and d-1);
+  `mcp_oauth.grant.revoke` (`reason=refresh_reuse`, plus `refresh_id`, `admin_id`,
+  `rotated_secs_ago`, `revoked`) for e). The owner is `extra.admin_id` with no top-level
+  actor — the presenter is unknown, unlike the code exchange's. A success writes none; no
+  row carries a token, a hash or a request field.
+- **Operator note**: a grant revoked with `refresh_reuse` that its user reports as "I just
+  opened my laptop" — check the audit row's `rotated_secs_ago` first. Thousands of seconds is
+  a process that slept past the grace (design §10.2 #8, an accepted cost); just past the
+  grace looks like a race or a theft.
+- `RotateOutcome` holds `IssuedTokens` and derives no `Debug` (pin
+  `rotate_outcome_does_not_derive_debug` in `refresh.rs`); tests use `matches!`.
 
 ## Tenant creation cap and quota tier
 

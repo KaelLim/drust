@@ -173,6 +173,38 @@ No new route, page or environment variable; no response changes.
   hosts anyone relies on. No new environment variable, no schema change, no deploy file
   change.
 
+### MCP OAuth authorization server — refresh rotation (MA0-8)
+
+- **`POST /oauth/token` now accepts `grant_type=refresh_token`** (only when `DRUST_MCP=on`;
+  nothing changes otherwise). Every refresh rotates: the presented token is marked rotated
+  and a new access + refresh pair is issued; the grant's idle deadline slides, never past
+  its absolute deadline. A token presented again within `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS`
+  (default 60) of its rotation gets a *sibling* pair and nothing is invalidated; the first
+  sibling to be used wins and the others are marked superseded. Presenting a superseded
+  sibling answers `invalid_grant` and revokes **that branch only** (its refresh and the
+  access issued with it) — the grant and the winning branch stay live, and the grant
+  records `sibling_rejected_at`. Presenting the parent again after one of its children was
+  used answers `invalid_grant` and revokes nothing. Presenting a rotated token after the
+  grace revokes the whole grant (`refresh_reuse`). This is a deliberate deviation from the
+  strict reading of OAuth 2.1 §4.3.1 (accepted design §9 #8): several Claude Code processes
+  on one machine share one credential and can race a refresh.
+- Every refresh failure answers `invalid_grant` — the MCP SDK re-authorizes only on that
+  code — except a missing `refresh_token` (`invalid_request`), a `scope` item other than
+  `mcp` / `offline_access` (`invalid_scope`, the same rule as authorize) and rate limiting
+  (429 `temporarily_unavailable` with `Retry-After`). A `resource` that is not this server's
+  is `invalid_grant` too, not RFC 8707's `invalid_target`. `client_id` is optional; when
+  sent it must be the grant's.
+- **Per-grant limit: 10 refreshes per 60 s.** Any request whose refresh token exists (live
+  or not) spends its grant's budget; only an unknown token spends the per-IP miss budget
+  (30 per 60 s), and a wrong prefix or length spends nothing.
+- Audit: `mcp_oauth.refresh.sibling_rejected` (`branch_revoked` true for a superseded
+  sibling, false for a re-presented parent) and, for reuse, `mcp_oauth.grant.revoke` with
+  `reason=refresh_reuse` and `rotated_secs_ago` — how long after the rotation the old token
+  came back, so a laptop that slept past the grace can be told apart from a theft. Both put
+  the grant owner in `extra.admin_id` with no top-level actor (the presenter is unknown). A
+  successful refresh writes no audit row.
+- No new environment variable, no schema change, no deploy file change.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,
