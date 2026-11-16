@@ -44,7 +44,11 @@ UMask=0077
 #   DRUST_MCP_OAUTH_REFRESH_GRACE_SECS refresh retry grace (default 60; 0..=300)
 #   DRUST_MCP_OAUTH_IDLE_DAYS          grant idle expiry (default 30; 1..=MAX_DAYS)
 #   DRUST_MCP_OAUTH_MAX_DAYS           grant absolute expiry (default 90; 1..=365)
-# Requires DRUST_PUBLIC_URL to be the public https origin (no path).
+# DRUST_MCP governs only the account-level OAuth authorization server, never
+# the per-tenant /t/<id>/mcp endpoint. With `on`, DRUST_PUBLIC_URL must be the
+# public https origin (no path; a loopback http:// origin is accepted with a
+# warning, for development); an unusable DRUST_PUBLIC_URL or DRUST_BASE_PATH
+# leaves MCP off with one error line.
 # The semaphore bounds concurrent deliveries; this NOFILE floor keeps FD
 # headroom for SQLite handles + SSE/WS alongside those sockets.
 LimitNOFILE=65536

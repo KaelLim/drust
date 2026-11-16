@@ -106,7 +106,9 @@ services:
       # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
       # --- MCP OAuth authorization server (leave unset in this release) ---
       # `auto` (default) means off until the account-level /mcp endpoint ships.
-      # Needs DRUST_PUBLIC_URL (above) to be an https:// origin.
+      # Governs only the account-level OAuth authorization server, never the
+      # per-tenant /t/<id>/mcp endpoint. `on` needs DRUST_PUBLIC_URL (above) to be
+      # an https:// origin (a loopback http:// origin is accepted with a warning).
       # DRUST_MCP: "auto"
       # DRUST_MCP_OAUTH_ACCESS_TTL_SECS: "3600"
       # DRUST_MCP_OAUTH_REFRESH_GRACE_SECS: "60"
