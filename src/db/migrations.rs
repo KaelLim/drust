@@ -45,11 +45,23 @@ CREATE INDEX IF NOT EXISTS idx_cli_device_codes_expires ON _cli_device_codes(exp
 //
 // Names MUST stay `_mcp_*`: run_migrations DROPs four `_oauth_*` tables on every
 // boot (v1.29.2 retraction). Pinned by `mcp_oauth_rows_survive_reboot`.
+//
+// `_mcp_upload_tickets.tenant_created_at` is to tenants what
+// `_mcp_oauth_grants.admin_created_at` is to admins: a tenant id is recyclable
+// (the id-recycle branch of `make_tenant_inner` hard-deletes a soft-deleted
+// tenant's row and inserts a fresh one), and a ticket must never resolve to the
+// new tenant. The contract for the code that writes and reads tickets: a ticket
+// is issued with
+//   INSERT ... SELECT ..., t.created_at FROM tenants t
+//    WHERE t.id = ? AND t.deleted_at IS NULL
+// and every ticket read joins `tenants` on `id`, `created_at` and
+// `deleted_at IS NULL`, in addition to the grant and admin join.
 pub const SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS: &str = r#"
 -- Names MUST NOT start with `_oauth_`: run_migrations DROPs four such tables on every boot.
 -- CREATE TABLE/INDEX IF NOT EXISTS only: mints, revokes and deletes nothing (invariant 1).
 -- All *_at columns hold SQLite datetime() text 'YYYY-MM-DD HH:MM:SS' (UTC), written and
--- compared in SQL only — never a Rust to_rfc3339() string (see §3.2).
+-- compared in SQL only — never a Rust to_rfc3339() string, which sorts wrong against
+-- datetime() text ('T' after the date sorts above ' ').
 
 CREATE TABLE IF NOT EXISTS _mcp_oauth_grants (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +128,7 @@ CREATE TABLE IF NOT EXISTS _mcp_upload_tickets (  -- written by the account-leve
   grant_id     INTEGER NOT NULL REFERENCES _mcp_oauth_grants(id) ON DELETE CASCADE,
   admin_id     INTEGER NOT NULL,          -- copied in SQL from the grant row, never passed in
   tenant_id    TEXT    NOT NULL,          -- NO FK to tenants: the id-recycle DELETE would fail
+  tenant_created_at TEXT NOT NULL,        -- copied in SQL from tenants.created_at at issue
   max_bytes    INTEGER NOT NULL,
   path         TEXT,
   visibility   TEXT    NOT NULL CHECK (visibility IN ('public','private')),
@@ -3514,9 +3527,9 @@ mod tests {
         .unwrap();
         c.execute(
             "INSERT INTO _mcp_upload_tickets
-                 (ticket_hash, grant_id, admin_id, tenant_id, max_bytes, visibility,
-                  create_by, expires_at)
-             SELECT ?1, id, admin_id, 't1', 1024, 'private',
+                 (ticket_hash, grant_id, admin_id, tenant_id, tenant_created_at, max_bytes,
+                  visibility, create_by, expires_at)
+             SELECT ?1, id, admin_id, 't1', '2026-01-01 00:00:00', 1024, 'private',
                     datetime('now', '+15 minutes'), datetime('now', '+15 minutes')
              FROM _mcp_oauth_grants WHERE id = ?2",
             rusqlite::params![format!("upl-{tag}"), grant_id],
@@ -3712,6 +3725,7 @@ mod tests {
                     "grant_id",
                     "admin_id",
                     "tenant_id",
+                    "tenant_created_at",
                     "max_bytes",
                     "path",
                     "visibility",
@@ -3759,9 +3773,10 @@ mod tests {
         let insert = |hash: &str, visibility: &str| {
             conn.execute(
                 "INSERT INTO _mcp_upload_tickets
-                     (ticket_hash, grant_id, admin_id, tenant_id, max_bytes, visibility,
-                      create_by, expires_at)
-                 SELECT ?1, id, admin_id, 't1', 1, ?2, datetime('now'), datetime('now')
+                     (ticket_hash, grant_id, admin_id, tenant_id, tenant_created_at,
+                      max_bytes, visibility, create_by, expires_at)
+                 SELECT ?1, id, admin_id, 't1', '2026-01-01 00:00:00', 1, ?2,
+                        datetime('now'), datetime('now')
                  FROM _mcp_oauth_grants WHERE id = ?3",
                 rusqlite::params![hash, visibility, grant],
             )

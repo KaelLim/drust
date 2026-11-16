@@ -41,8 +41,8 @@ fn seed_ticket(conn: &rusqlite::Connection, grant_id: i64, expires: &str) -> Str
     let n = conn
         .execute(
             "INSERT INTO _mcp_upload_tickets (ticket_hash, grant_id, admin_id, tenant_id, \
-               max_bytes, path, visibility, create_by, expires_at) \
-             SELECT ?1, g.id, g.admin_id, 'blog', 1024, NULL, 'private', \
+               tenant_created_at, max_bytes, path, visibility, create_by, expires_at) \
+             SELECT ?1, g.id, g.admin_id, 'blog', '2026-01-01 00:00:00', 1024, NULL, 'private', \
                     datetime('now', '+15 minutes'), datetime('now', ?2) \
                FROM _mcp_oauth_grants g WHERE g.id = ?3",
             params![
