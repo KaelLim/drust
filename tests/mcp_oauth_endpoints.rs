@@ -793,23 +793,19 @@ async fn unknown_grant_types_are_unsupported() {
     }
 }
 
-/// MA0-8 rewrites this test. (The code exchange landed with MA0-7; its tests
-/// are in `mcp_oauth_token_code.rs`.)
+/// The refresh grant is dispatched (MA0-8): a malformed refresh token is
+/// `invalid_grant`, no longer `unsupported_grant_type`. Rotation, siblings and
+/// reuse are tested in `mcp_oauth_refresh.rs`; the code exchange in
+/// `mcp_oauth_token_code.rs`.
 #[tokio::test]
-async fn refresh_token_grant_is_not_yet_supported() {
+async fn refresh_token_grant_is_dispatched() {
     let fx = fixture(true).await;
     let refresh = [
         ("grant_type", "refresh_token"),
         ("refresh_token", "drust_mcprt_x"),
     ];
     let resp = post_form(&fx.app, "/oauth/token", &refresh, &[], &[]).await;
-    assert_oauth_error(
-        resp,
-        StatusCode::BAD_REQUEST,
-        "unsupported_grant_type",
-        "refresh",
-    )
-    .await;
+    assert_oauth_error(resp, StatusCode::BAD_REQUEST, "invalid_grant", "refresh").await;
 }
 
 #[tokio::test]
@@ -837,21 +833,32 @@ async fn a_repeated_resource_is_invalid_request() {
     assert_oauth_error(resp, StatusCode::BAD_REQUEST, "invalid_request", "resource").await;
 }
 
+/// Every refusal the token endpoint can make without a lookup answers while
+/// the meta mutex is held elsewhere: grant-type dispatch, the refresh grant's
+/// missing token, scope, resource and token-shape checks (MA0-8 runs these
+/// before any lock or budget; a well-formed refresh token does take the lock).
 #[tokio::test]
-async fn token_touches_no_table() {
+async fn token_refusals_before_the_lookup_never_take_the_meta_lock() {
     let fx = fixture(true).await;
     let _held = fx.meta.lock().await;
-    let body = format!(
-        "grant_type=refresh_token&refresh_token={}",
-        tokens::new_token(TokenKind::Refresh)
-    );
-    let resp = tokio::time::timeout(
-        Duration::from_secs(1),
-        post_raw(&fx.app, "/oauth/token", &body),
-    )
-    .await
-    .expect("token waited on the meta mutex");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let well_formed = tokens::new_token(TokenKind::Refresh);
+    for body in [
+        "grant_type=password".to_string(),
+        "grant_type=refresh_token".to_string(),
+        "grant_type=refresh_token&refresh_token=drust_mcprt_x".to_string(),
+        format!("grant_type=refresh_token&refresh_token={well_formed}&scope=admin"),
+        format!(
+            "grant_type=refresh_token&refresh_token={well_formed}&resource=https%3A%2F%2Fother.test%2Fmcp"
+        ),
+    ] {
+        let resp = tokio::time::timeout(
+            Duration::from_secs(1),
+            post_raw(&fx.app, "/oauth/token", &body),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("token waited on the meta mutex: {body:.40}"));
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body:.40}");
+    }
 }
 
 // ─── §4.2.5 revoke ───────────────────────────────────────────────────────────

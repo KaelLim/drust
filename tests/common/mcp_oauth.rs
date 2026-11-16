@@ -609,3 +609,27 @@ pub async fn obtain_tokens(fx: &McpOauthFixture, session_cookie: &str) -> Tokens
         grant_id,
     }
 }
+
+// ─── Refresh helper (MA0-8). Full paths only, same reason as above.
+
+/// The MCP SDK's refresh request: grant_type, refresh_token, client_id,
+/// resource; no scope. The request path is root-relative: the production
+/// router is mounted at root.
+pub async fn refresh(
+    app: &axum::Router,
+    refresh_token: &str,
+) -> axum::http::Response<axum::body::Body> {
+    post_form(
+        app,
+        "/oauth/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", CC_CLIENT_ID),
+            ("resource", RESOURCE),
+        ],
+        &[],
+        &[],
+    )
+    .await
+}

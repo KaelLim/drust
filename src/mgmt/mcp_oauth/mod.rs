@@ -12,6 +12,7 @@ pub mod oauth_error_layer;
 pub mod params;
 pub mod pkce;
 pub mod redirect;
+pub mod refresh;
 pub mod revoke;
 pub mod rl;
 pub mod store;

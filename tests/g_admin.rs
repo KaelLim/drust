@@ -1,4 +1,4 @@
-//! #925 — merged harness for the admin test group (34 of 36 members).
+//! #925 — merged harness for the admin test group (35 of 37 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! `admin_pat_bearer` and `admin_pat_reroll` are NOT here: they keep their own
@@ -87,6 +87,8 @@ mod mcp_oauth_authorize;
 mod mcp_oauth_consent;
 #[path = "mcp_oauth_endpoints.rs"]
 mod mcp_oauth_endpoints;
+#[path = "mcp_oauth_refresh.rs"]
+mod mcp_oauth_refresh;
 #[path = "mcp_oauth_store.rs"]
 mod mcp_oauth_store;
 #[path = "mcp_oauth_token_code.rs"]

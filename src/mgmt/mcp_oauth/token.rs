@@ -1,12 +1,15 @@
 //! `POST /oauth/token` (MA0-PLAN §3.8.4): request validation, grant-type
-//! dispatch, and the `authorization_code` exchange. `refresh_token` answers
-//! `unsupported_grant_type` until refresh rotation (MA0-8) lands.
+//! dispatch, the `authorization_code` exchange, and the `refresh_token` grant
+//! (MA0-8; the state machine is `refresh::rotate`).
 //!
 //! Rate limits never read a request that presents a valid credential: an
 //! unknown code charges the per-IP miss budget, a failed check on a code that
 //! exists charges that code's budget, and an issued or replayed code reads no
 //! bucket (MA0-PLAN §4; per-code charges failures only, so whoever holds a code
 //! without its verifier cannot lock the real client out of its exchange).
+//! Refresh is different by design: every request whose token hash exists —
+//! live or not — charges its grant's per-grant budget (10 per 60 s), and only
+//! an unknown hash charges the per-IP miss budget.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -17,7 +20,7 @@ use crate::mgmt::mcp_oauth::oauth_error_layer::{ClientAuthScheme, OAuthError};
 use crate::mgmt::mcp_oauth::params::{self, Params};
 use crate::mgmt::mcp_oauth::store::{self, GrantOwner, GrantRef, IssuedTokens, RevokeReason};
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
-use crate::mgmt::mcp_oauth::{clients, rl};
+use crate::mgmt::mcp_oauth::{authorize, clients, refresh, rl};
 use crate::mgmt::routes::MgmtState;
 use crate::safety::ip::ClientIp;
 use crate::safety::rate_limit::RateLimitedError;
@@ -105,9 +108,7 @@ pub async fn token(
     match p.get("grant_type") {
         None => OAuthError::InvalidRequest.into_response(),
         Some("authorization_code") => grant_authorization_code(&s, &ip, &p).await,
-        // MA0-8 replaces this arm with refresh rotation. Until then the AS is
-        // incomplete — reachable only under an explicit DRUST_MCP=on.
-        Some("refresh_token") => OAuthError::UnsupportedGrantType.into_response(),
+        Some("refresh_token") => grant_refresh(&s, &ip, &p).await,
         Some(_) => OAuthError::UnsupportedGrantType.into_response(),
     }
 }
@@ -241,7 +242,177 @@ async fn grant_authorization_code(s: &MgmtState, ip: &ClientIp, p: &Params) -> R
     }
 }
 
-/// The 200 token response (shared with MA0-8's refresh branch).
+/// MA0-PLAN §3.8.5b. Every failure is `invalid_grant` — the MCP SDK only
+/// discards its tokens and re-authorizes on that code — except a missing
+/// `refresh_token` (`invalid_request`), an unknown `scope` item
+/// (`invalid_scope`) and an exhausted budget (429). `scope`, `resource` and the
+/// token's shape are pure checks before any lock or budget; `client_id` needs
+/// the grant row and is checked by `rotate` (branch a).
+async fn grant_refresh(s: &MgmtState, ip: &ClientIp, p: &Params) -> Response {
+    let started = std::time::Instant::now();
+    // 1. required
+    let Some(presented) = p.get("refresh_token") else {
+        return OAuthError::InvalidRequest.into_response();
+    };
+    // 2. scope: the SAME item check authorize uses. An empty value counts as
+    // absent (params), i.e. "not sent", never `mcp`-by-default here.
+    if let Some(scope) = p.get("scope")
+        && !authorize::scope_items_ok(scope)
+    {
+        return OAuthError::InvalidScope.into_response();
+    }
+    // 3. resource: a mismatch is invalid_grant, not RFC 8707's invalid_target
+    // (the SDK re-authorizes only on invalid_grant).
+    if let Some(res) = p.get("resource")
+        && !s.mcp_oauth.is_our_resource(res)
+    {
+        return OAuthError::InvalidGrant.into_response();
+    }
+    // 4. prefix + length: no DB, no budget (an access token lands here too).
+    if !tokens::looks_like(TokenKind::Refresh, presented) {
+        return OAuthError::InvalidGrant.into_response();
+    }
+    let hash = tokens::hash(TokenKind::Refresh, presented);
+    let req = refresh::RefreshRequest {
+        client_id: p.get("client_id"),
+    };
+
+    // No `.await` in this block after the lock: `try_acquire` is synchronous,
+    // and a Transaction borrows a !Sync Connection. Holding the meta mutex for
+    // lookup + snapshot + writes is what serialises concurrent refreshes.
+    let outcome = {
+        let conn = s.meta.lock().await;
+        // 5. hit / miss (liveness ignored: a dead row is a hit).
+        let gid = match refresh::lookup_grant_id(&conn, &hash) {
+            Ok(Some(g)) => g,
+            Ok(None) => {
+                drop(conn);
+                return miss_response(s, ip);
+            }
+            Err(e) => return server_error("refresh-lookup", &e),
+        };
+        // 6. per-grant bucket; a refused request is not pushed into the window.
+        if let Err(RateLimitedError(d)) = s.mcp_oauth_rl.per_grant.try_acquire(&rl::grant_key(gid))
+        {
+            return OAuthError::TemporarilyUnavailable {
+                retry_after_secs: rl::retry_after_secs(d),
+            }
+            .into_response();
+        }
+        // 7. one transaction for the snapshot and every write.
+        let tx = match conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => return server_error("refresh-begin", &e),
+        };
+        match refresh::rotate(&tx, &s.mcp_oauth, &hash, &req) {
+            Ok(o) => {
+                if let Err(e) = tx.commit() {
+                    return server_error("refresh-commit", &e);
+                }
+                o
+            }
+            Err(e) => return e.into_response(), // tx dropped => rollback
+        }
+    }; // meta guard dropped here; audit only after this point.
+
+    // No cache, bus or PAT eviction follows a branch or grant revoke: MCP
+    // OAuth tokens are in no cache and cannot open SSE or rooms (store.rs).
+    match outcome {
+        refresh::RotateOutcome::Issued(t) => token_success(&t), // a success writes no audit
+        refresh::RotateOutcome::RejectedSibling {
+            grant_id,
+            refresh_id,
+            admin_id,
+            branch_revoked,
+        } => {
+            audit_sibling(s, started, grant_id, refresh_id, admin_id, branch_revoked).await;
+            OAuthError::InvalidGrant.into_response()
+        }
+        refresh::RotateOutcome::RejectedReuse {
+            grant_id,
+            refresh_id,
+            admin_id,
+            rotated_secs_ago,
+            revoked,
+        } => {
+            audit_reuse(
+                s,
+                started,
+                grant_id,
+                refresh_id,
+                admin_id,
+                rotated_secs_ago,
+                revoked,
+            )
+            .await;
+            OAuthError::InvalidGrant.into_response()
+        }
+    }
+}
+
+/// A superseded sibling (b, `branch_revoked = true`) or a parent presented
+/// after its race was decided (d-1, `false`; `refresh_id` is that parent).
+/// `admin_id` is the grant OWNER in `extra`, deliberately not the top-level
+/// actor: the presenter is unknown (same as `/oauth/revoke`). Never a token,
+/// a hash or any request field.
+async fn audit_sibling(
+    s: &MgmtState,
+    started: std::time::Instant,
+    grant_id: i64,
+    refresh_id: i64,
+    admin_id: i64,
+    branch_revoked: bool,
+) {
+    let mut e = crate::safety::audit::AuditEntry::failure(
+        "-",
+        "-",
+        "mcp_oauth.refresh.sibling_rejected",
+        started.elapsed().as_millis() as u64,
+        "invalid_grant",
+        "superseded sibling refresh presented",
+    );
+    e.auth_method = Some("mcp_oauth".to_string());
+    e = e.with_extra(serde_json::json!({
+        "grant_id": grant_id,
+        "refresh_id": refresh_id,
+        "admin_id": admin_id,
+        "branch_revoked": branch_revoked,
+    }));
+    crate::safety::audit::write_entry(&s.log_dir, &e).await;
+}
+
+/// Reuse past the grace (e). `rotated_secs_ago` lets an operator tell a laptop
+/// that slept past the grace from a race or a theft; owner in `extra.admin_id`,
+/// no top-level actor (the presenter is unknown). `success`: the op names the
+/// revocation, like the other `mcp_oauth.grant.revoke` rows.
+async fn audit_reuse(
+    s: &MgmtState,
+    started: std::time::Instant,
+    grant_id: i64,
+    refresh_id: i64,
+    admin_id: i64,
+    rotated_secs_ago: Option<i64>,
+    revoked: bool,
+) {
+    let mut e = crate::safety::audit::AuditEntry::success(
+        "-",
+        "-",
+        "mcp_oauth.grant.revoke",
+        started.elapsed().as_millis() as u64,
+    );
+    e.auth_method = Some("mcp_oauth".to_string());
+    e = e.with_extra(serde_json::json!({
+        "grant_id": grant_id,
+        "reason": RevokeReason::RefreshReuse.as_str(),
+        "refresh_id": refresh_id,
+        "admin_id": admin_id,
+        "rotated_secs_ago": rotated_secs_ago,
+        "revoked": revoked,
+    }));
+    crate::safety::audit::write_entry(&s.log_dir, &e).await;
+}
+
+/// The 200 token response (shared with the refresh grant).
 fn token_success(t: &IssuedTokens) -> Response {
     let body = serde_json::json!({
         "access_token": t.access_token,
@@ -261,7 +432,7 @@ fn token_success(t: &IssuedTokens) -> Response {
 }
 
 /// An unknown credential: charge the caller's per-IP miss budget. Quota left
-/// => the plain `invalid_grant`; exhausted => 429 (shared with MA0-8).
+/// => the plain `invalid_grant`; exhausted => 429 (shared with the refresh grant).
 fn miss_response(s: &MgmtState, ip: &ClientIp) -> Response {
     match s.mcp_oauth_rl.miss_ip.try_acquire(&rl::client_ip_key(ip)) {
         Ok(()) => OAuthError::InvalidGrant.into_response(),

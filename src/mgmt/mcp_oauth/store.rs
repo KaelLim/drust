@@ -1,5 +1,6 @@
 //! MCP OAuth grant store — revocation primitives, token-to-grant lookups,
-//! grant/code creation, code redemption and token issuance.
+//! grant/code creation, code redemption, token issuance, and the refresh
+//! rotation snapshot and branch revoke (the state machine is `refresh.rs`).
 //!
 //! Every function here runs on the caller's connection or transaction. None of
 //! them locks `meta`, awaits, commits, or writes audit: the handler does
@@ -103,7 +104,9 @@ impl GrantOwner {
 /// on the lookup that built it. Only a `GrantRef` from `find_grant_by_access`
 /// may authorize an MCP call (MA1a). Every other one — `find_grant_for_revocation`,
 /// `find_grant_by_refresh`, MA0-7 replay, MA0-8 reuse — may only feed
-/// `GrantOwner::holder`.
+/// `GrantOwner::holder`. MA0-8's (`RefreshState::holder`) exists only for a
+/// genuine, unrevoked, already-rotated refresh of a live grant whose admin
+/// still matches.
 #[derive(Debug)]
 pub struct GrantRef {
     grant_id: i64,
@@ -623,6 +626,141 @@ pub fn redeem_code(
     Ok(RedeemOutcome::Issued { grant, tokens })
 }
 
+// ─── Refresh rotation (MA0-8; the state machine is refresh::rotate) ──────────
+
+/// MA0-8. Revokes ONE refresh and the access rows whose refresh_id is it; stamps
+/// grants.sibling_rejected_at; the grant itself stays live. Returns the number of refresh
+/// rows revoked (0 or 1). No GrantOwner: the only caller (refresh::rotate) passes ids read
+/// from the presented token's own row in the same transaction — never from request input.
+/// pub(crate) on purpose (R8): a handler outside this crate's MCP module must not be able to
+/// call it with ids taken from a request.
+#[must_use = "0 means the branch was already revoked; the caller reports branch_revoked from it"]
+pub(crate) fn revoke_mcp_refresh_branch(
+    tx: &rusqlite::Transaction<'_>,
+    grant_id: i64,
+    refresh_id: i64,
+) -> rusqlite::Result<usize> {
+    let n = tx.execute(
+        "UPDATE _mcp_oauth_refresh \
+            SET revoked_at = datetime('now'), revoke_reason = 'sibling_superseded' \
+          WHERE id = ?1 AND grant_id = ?2 AND revoked_at IS NULL",
+        rusqlite::params![refresh_id, grant_id],
+    )?;
+    tx.execute(
+        "UPDATE _mcp_oauth_access SET revoked_at = datetime('now') \
+          WHERE refresh_id = ?1 AND grant_id = ?2 AND revoked_at IS NULL",
+        rusqlite::params![refresh_id, grant_id],
+    )?;
+    // Stamp only a grant that really owns this refresh (a mismatched pair touches nothing).
+    tx.execute(
+        "UPDATE _mcp_oauth_grants SET sibling_rejected_at = datetime('now') \
+          WHERE id = ?1 \
+            AND EXISTS (SELECT 1 FROM _mcp_oauth_refresh WHERE id = ?2 AND grant_id = ?1)",
+        rusqlite::params![grant_id, refresh_id],
+    )?;
+    Ok(n)
+}
+
+/// One snapshot of everything `refresh::rotate` decides on, read once inside
+/// its transaction. Holds no credential (ids, booleans and the grant's public
+/// `client_id` only).
+pub(crate) struct RefreshState {
+    pub(crate) refresh_id: i64,
+    pub(crate) grant_id: i64,
+    pub(crate) parent_id: Option<i64>,
+    pub(crate) rotated: bool,
+    pub(crate) superseded: bool,
+    /// Not revoked, not expired.
+    pub(crate) token_live: bool,
+    /// The grant's owner (audit extra, R10); NOT the presenter.
+    pub(crate) admin_id: i64,
+    /// The grant's.
+    pub(crate) client_id: String,
+    /// Not revoked, idle and absolute not passed.
+    pub(crate) grant_live: bool,
+    /// The admins row matches BOTH id and created_at.
+    pub(crate) admin_ok: bool,
+    /// Rotated AND datetime(rotated_at, grace) > now.
+    pub(crate) in_grace: bool,
+    pub(crate) child_rotated: bool,
+    /// None when not rotated (audit only, R10; never part of a decision).
+    pub(crate) rotated_secs_ago: Option<i64>,
+    /// S3: Some ONLY when rotated && !superseded && token_live && grant_live && admin_ok —
+    /// decided in Rust from the booleans above, no extra SQL. Used only on branch e).
+    pub(crate) holder: Option<GrantRef>,
+}
+
+/// The INNER JOIN on grants means a refresh whose grant row is gone (FK off)
+/// is `None`: a child row never vouches for itself. The admins match is a
+/// column (`admin_ok`) because `holder` depends on it; a mismatch is refused
+/// by branch a). Booleans are computed in SQL so every time comparison uses
+/// SQLite's `datetime('now')` (MA0-PLAN §3.2).
+const LOAD_REFRESH_FOR_ROTATE: &str = "\
+SELECT r.id,
+       r.grant_id,
+       r.parent_id,
+       r.rotated_at IS NOT NULL,
+       r.superseded_at IS NOT NULL,
+       (r.revoked_at IS NULL AND r.expires_at > datetime('now')),
+       g.admin_id,
+       g.client_id,
+       (g.revoked_at IS NULL
+        AND g.idle_expires_at     > datetime('now')
+        AND g.absolute_expires_at > datetime('now')),
+       EXISTS (SELECT 1 FROM admins ad
+                WHERE ad.id = g.admin_id AND ad.created_at = g.admin_created_at),
+       (r.rotated_at IS NOT NULL AND datetime(r.rotated_at, ?2) > datetime('now')),
+       EXISTS (SELECT 1 FROM _mcp_oauth_refresh c
+                WHERE c.grant_id = r.grant_id AND c.parent_id = r.id
+                  AND c.rotated_at IS NOT NULL),
+       CAST(strftime('%s','now') AS INTEGER) - CAST(strftime('%s', r.rotated_at) AS INTEGER)
+  FROM _mcp_oauth_refresh r
+  JOIN _mcp_oauth_grants g ON g.id = r.grant_id
+ WHERE r.token_hash = ?1";
+
+/// `presented_hash` = `tokens::hash(TokenKind::Refresh, token)`;
+/// `grace_modifier` is a SQLite datetime modifier such as `"+60 seconds"`.
+/// `None` when no refresh row with that hash has a grant row.
+pub(crate) fn load_refresh_for_rotate(
+    conn: &Connection,
+    presented_hash: &str,
+    grace_modifier: &str,
+) -> rusqlite::Result<Option<RefreshState>> {
+    let st = conn
+        .query_row(
+            LOAD_REFRESH_FOR_ROTATE,
+            params![presented_hash, grace_modifier],
+            |r| {
+                Ok(RefreshState {
+                    refresh_id: r.get(0)?,
+                    grant_id: r.get(1)?,
+                    parent_id: r.get(2)?,
+                    rotated: r.get(3)?,
+                    superseded: r.get(4)?,
+                    token_live: r.get(5)?,
+                    admin_id: r.get(6)?,
+                    client_id: r.get(7)?,
+                    grant_live: r.get(8)?,
+                    admin_ok: r.get(9)?,
+                    in_grace: r.get(10)?,
+                    child_rotated: r.get(11)?,
+                    rotated_secs_ago: r.get(12)?,
+                    holder: None,
+                })
+            },
+        )
+        .optional()?;
+    Ok(st.map(|mut s| {
+        if s.rotated && !s.superseded && s.token_live && s.grant_live && s.admin_ok {
+            s.holder = Some(GrantRef {
+                grant_id: s.grant_id,
+                admin_id: s.admin_id,
+            });
+        }
+        s
+    }))
+}
+
 fn find(
     conn: &Connection,
     kind: TokenKind,
@@ -728,6 +866,199 @@ mod tests {
             0,
             "expired code"
         );
+    }
+
+    // ─── MA0-8: branch revoke and the rotate snapshot ────────────────────────
+
+    fn cfg() -> McpOauthConfig {
+        McpOauthConfig::for_tests("https://drust.test")
+    }
+
+    fn issue(conn: &Connection, gid: i64, parent: Option<i64>) -> IssuedTokens {
+        let tx = conn.unchecked_transaction().unwrap();
+        let t = issue_token_pair(&tx, &cfg(), gid, parent).unwrap();
+        tx.commit().unwrap();
+        t
+    }
+
+    fn second_grant(conn: &Connection) -> i64 {
+        conn.execute(
+            "INSERT INTO _mcp_oauth_grants \
+               (admin_id, admin_created_at, client_id, redirect_host, \
+                idle_expires_at, absolute_expires_at) \
+             SELECT id, created_at, 'c', 'localhost', \
+                    datetime('now', '+30 days'), datetime('now', '+90 days') FROM admins",
+            [],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// (refresh revoked_at, revoke_reason, access revoked_at) for one pair.
+    fn pair_state(
+        conn: &Connection,
+        t: &IssuedTokens,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let (rr, reason): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT revoked_at, revoke_reason FROM _mcp_oauth_refresh WHERE id = ?1",
+                params![t.refresh_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let ar: Option<String> = conn
+            .query_row(
+                "SELECT revoked_at FROM _mcp_oauth_access WHERE token_hash = ?1",
+                params![tokens::hash(TokenKind::Access, &t.access_token)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (rr, reason, ar)
+    }
+
+    /// (sibling_rejected_at, revoked_at) of a grant.
+    fn grant_marks(conn: &Connection, gid: i64) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT sibling_rejected_at, revoked_at FROM _mcp_oauth_grants WHERE id = ?1",
+            params![gid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn branch_revoke(conn: &Connection, gid: i64, refresh_id: i64) -> usize {
+        let tx = conn.unchecked_transaction().unwrap();
+        let n = revoke_mcp_refresh_branch(&tx, gid, refresh_id).unwrap();
+        tx.commit().unwrap();
+        n
+    }
+
+    /// U1. Two siblings, each with its access: one branch revoke cuts exactly
+    /// one refresh and the access issued with it.
+    #[test]
+    fn branch_revoke_touches_one_refresh_and_its_access_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let root = issue(&conn, g, None);
+        let s1 = issue(&conn, g, Some(root.refresh_id));
+        let s2 = issue(&conn, g, Some(root.refresh_id));
+        assert_eq!(branch_revoke(&conn, g, s1.refresh_id), 1);
+        let (rr, reason, ar) = pair_state(&conn, &s1);
+        assert!(rr.is_some() && ar.is_some(), "S1 and its access revoked");
+        assert_eq!(reason.as_deref(), Some("sibling_superseded"));
+        assert_eq!(pair_state(&conn, &s2), (None, None, None), "S2 untouched");
+        assert_eq!(
+            pair_state(&conn, &root),
+            (None, None, None),
+            "root untouched"
+        );
+        let (sib, revoked) = grant_marks(&conn, g);
+        assert!(sib.is_some(), "sibling_rejected_at stamped");
+        assert!(revoked.is_none(), "the grant stays live");
+    }
+
+    /// U2.
+    #[test]
+    fn branch_revoke_twice_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let root = issue(&conn, g, None);
+        let s1 = issue(&conn, g, Some(root.refresh_id));
+        assert_eq!(branch_revoke(&conn, g, s1.refresh_id), 1);
+        let after_first = pair_state(&conn, &s1);
+        assert_eq!(branch_revoke(&conn, g, s1.refresh_id), 0);
+        assert_eq!(pair_state(&conn, &s1), after_first, "nothing moves again");
+    }
+
+    /// U3. Every UPDATE binds grant_id: another grant's id with S1's refresh
+    /// id revokes nothing and stamps nothing.
+    #[test]
+    fn branch_revoke_with_a_mismatched_grant_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g1) = meta_with_grant(dir.path());
+        let g2 = second_grant(&conn);
+        let s1 = issue(&conn, g1, None);
+        assert_eq!(branch_revoke(&conn, g2, s1.refresh_id), 0);
+        assert_eq!(pair_state(&conn, &s1), (None, None, None), "S1 untouched");
+        assert_eq!(grant_marks(&conn, g2), (None, None), "G2 not stamped");
+        assert_eq!(grant_marks(&conn, g1), (None, None), "G1 not stamped");
+    }
+
+    /// S3. The snapshot's `holder` (the only GrantRef MA0-8 can hand to
+    /// GrantOwner::holder) exists only for a rotated, unsuperseded, live
+    /// refresh of a live grant whose admin still matches.
+    #[test]
+    fn holder_is_none_unless_rotated_and_live() {
+        let cases: [(&str, &str, bool); 6] = [
+            ("not rotated", "", false),
+            (
+                "superseded",
+                "UPDATE _mcp_oauth_refresh SET superseded_at = datetime('now')",
+                false,
+            ),
+            (
+                "revoked",
+                "UPDATE _mcp_oauth_refresh SET rotated_at = datetime('now'), \
+                 revoked_at = datetime('now')",
+                false,
+            ),
+            (
+                "grant expired",
+                "UPDATE _mcp_oauth_refresh SET rotated_at = datetime('now'); \
+                 UPDATE _mcp_oauth_grants SET idle_expires_at = datetime('now', '-1 minute')",
+                false,
+            ),
+            (
+                "admin mismatch",
+                "UPDATE _mcp_oauth_refresh SET rotated_at = datetime('now'); \
+                 UPDATE admins SET created_at = '2000-01-01 00:00:00'",
+                false,
+            ),
+            (
+                "rotated and live",
+                "UPDATE _mcp_oauth_refresh SET rotated_at = datetime('now')",
+                true,
+            ),
+        ];
+        for (label, pre, want) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let (conn, g) = meta_with_grant(dir.path());
+            let t = issue(&conn, g, None);
+            if !pre.is_empty() {
+                conn.execute_batch(pre).unwrap();
+            }
+            let st = load_refresh_for_rotate(
+                &conn,
+                &tokens::hash(TokenKind::Refresh, &t.refresh_token),
+                "+60 seconds",
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("{label}: row not found"));
+            assert_eq!(st.holder.is_some(), want, "{label}");
+            if let Some(h) = &st.holder {
+                assert_eq!((h.grant_id(), h.admin_id()), (g, st.admin_id), "{label}");
+            }
+        }
+    }
+
+    /// A child row never vouches for itself: no grant row, no snapshot.
+    #[test]
+    fn load_refresh_for_rotate_needs_the_grant_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let t = issue(&conn, g, None);
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF; DELETE FROM _mcp_oauth_grants WHERE id = {g}; \
+             PRAGMA foreign_keys = ON;"
+        ))
+        .unwrap();
+        let st = load_refresh_for_rotate(
+            &conn,
+            &tokens::hash(TokenKind::Refresh, &t.refresh_token),
+            "+60 seconds",
+        )
+        .unwrap();
+        assert!(st.is_none());
     }
 
     /// The text between the end of the previous item (`}` or `;`) and `head`:
