@@ -106,6 +106,13 @@ pub struct MgmtState {
     /// `soft_delete_tenant` can invalidate the tenant's schedule-index entry
     /// (and the admin `⏰ _cron` page can reach the ops cores).
     pub cron: Arc<crate::cron::CronState>,
+    /// MA0 — MCP OAuth AS configuration (`DRUST_MCP`, `DRUST_PUBLIC_URL`, four TTL knobs).
+    /// Every reader checks `enabled()` first; while disabled nothing reads it and no
+    /// route is mounted, which is what keeps a DRUST_MCP-unset host byte-identical.
+    pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
+    /// MA0 — in-memory limiters for `/oauth/token` and `/oauth/revoke` (miss-only per-IP,
+    /// per-code, per-grant). Cleanup task spawned by main.rs only when enabled.
+    pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
 }
 
 #[derive(Template)]
@@ -801,6 +808,8 @@ impl MgmtState {
             functions_exec,
             fn_data_root: data_dir,
             cron: Arc::new(crate::cron::CronState::test_default()),
+            mcp_oauth: Arc::new(crate::mgmt::mcp_oauth::config::McpOauthConfig::disabled()),
+            mcp_oauth_rl: Arc::new(crate::mgmt::mcp_oauth::rl::McpOauthLimiters::new()),
         }
     }
 }

@@ -424,6 +424,16 @@ async fn main() -> anyhow::Result<()> {
     let mcp_http = Arc::new(McpHttpRegistry::new(mcp_reg));
 
     let public_url = std::env::var("DRUST_PUBLIC_URL").unwrap_or_default();
+
+    // MA0 — MCP OAuth AS config. Reads DRUST_MCP, DRUST_PUBLIC_URL (raw; the global
+    // `public_url` above is NOT rewritten) and the four DRUST_MCP_OAUTH_* knobs. An
+    // unusable value disables MCP with an error line; it never aborts boot.
+    let mcp_oauth = Arc::new(drust::mgmt::mcp_oauth::config::McpOauthConfig::from_env());
+    log_mcp_oauth_boot(&mcp_oauth);
+    let mcp_oauth_rl = Arc::new(drust::mgmt::mcp_oauth::rl::McpOauthLimiters::new());
+    if mcp_oauth.enabled() {
+        mcp_oauth_rl.spawn_cleanup();
+    }
     let oauth_registry_inner = drust::oauth::ProviderRegistry::from_env();
 
     // v1.29.0: DRUST_ADMIN_OAUTH_ALLOWED_EMAILS is deprecated. The allowlist
@@ -494,6 +504,8 @@ async fn main() -> anyhow::Result<()> {
         functions_exec: fn_executor.clone(),
         fn_data_root: cfg.data_dir.clone(),
         cron: cron_state.clone(),
+        mcp_oauth: mcp_oauth.clone(),
+        mcp_oauth_rl: mcp_oauth_rl.clone(),
     };
     let mgmt_router = mgmt_state.with_data_dir(cfg.data_dir.clone());
 
@@ -844,6 +856,24 @@ fn shutdown_grace_from(raw: Option<&str>) -> std::time::Duration {
 
 fn shutdown_grace() -> std::time::Duration {
     shutdown_grace_from(std::env::var("DRUST_SHUTDOWN_GRACE_SECS").ok().as_deref())
+}
+
+/// One status line (`info` when MCP is off by choice or by default, `error` when
+/// the operator asked for it and a value made that impossible), then any
+/// warnings (loopback http, knob clamps) at `warn`.
+fn log_mcp_oauth_boot(cfg: &drust::mgmt::mcp_oauth::config::McpOauthConfig) {
+    use drust::mgmt::mcp_oauth::config::DisabledReason as R;
+    let lines = cfg.boot_log_lines();
+    let Some((status, rest)) = lines.split_first() else {
+        return;
+    };
+    match cfg.disabled_reason() {
+        None | Some(R::ModeOff) | Some(R::AutoBeforeMa1d) => tracing::info!("{status}"),
+        Some(_) => tracing::error!("{status}"),
+    }
+    for line in rest {
+        tracing::warn!("{line}");
+    }
 }
 
 /// Graceful-shutdown trigger. Resolves on SIGINT (Ctrl-C) or SIGTERM
