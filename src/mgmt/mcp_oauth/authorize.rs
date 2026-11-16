@@ -360,10 +360,7 @@ fn after_redirect(
         return Err((InvalidRequest, D_DUPLICATE));
     }
     if let Some(scope) = p.get("scope")
-        && !scope
-            .split(' ')
-            .filter(|t| !t.is_empty())
-            .all(|t| t == "mcp" || t == "offline_access")
+        && !scope_items_ok(scope)
     {
         return Err((InvalidScope, D_SCOPE));
     }
@@ -392,6 +389,18 @@ fn after_redirect(
         code_challenge,
         resource,
     })
+}
+
+/// The scope-item rule: split on `' '`, skip empty items, every item `mcp` or
+/// `offline_access` (case-sensitive). Authorize (step 6) and the refresh grant
+/// (`token.rs`) both call this, so one scope string never gets two verdicts.
+/// What an ABSENT scope means stays with each caller (authorize: `mcp`;
+/// refresh: not sent).
+pub(crate) fn scope_items_ok(scope: &str) -> bool {
+    scope
+        .split(' ')
+        .filter(|t| !t.is_empty())
+        .all(|t| t == "mcp" || t == "offline_access")
 }
 
 /// `GET /oauth/authorize`. Reads the OAuth config only: no database handle,
@@ -625,6 +634,25 @@ mod tests {
         url::form_urlencoded::parse(qs.as_bytes())
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.into_owned())
+    }
+
+    /// The one scope-item rule, shared by authorize step 6 and the refresh
+    /// grant (MA0-8): space-separated, empty items skipped, each `mcp` or
+    /// `offline_access`, case-sensitive.
+    #[test]
+    fn scope_items_ok_table() {
+        for ok in [
+            "",
+            "mcp",
+            "offline_access",
+            "mcp offline_access",
+            "mcp  offline_access",
+        ] {
+            assert!(scope_items_ok(ok), "{ok:?} must pass");
+        }
+        for bad in ["admin", "mcp admin", "MCP"] {
+            assert!(!scope_items_ok(bad), "{bad:?} must fail");
+        }
     }
 
     #[test]
