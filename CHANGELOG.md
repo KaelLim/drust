@@ -616,6 +616,9 @@ update its toolchain first.
 
 The chart's own `deploy/helm/drust/CHANGELOG.md` lists every changed value.
 
+The chart is on hold after 0.2.0: it is not updated for later drust releases, and a default
+install keeps pulling drust 1.67.0.
+
 ### MCP (M1) — model-facing text, tool annotations, error results
 
 No new tool, no new argument, no transport change. Per-tenant `/t/<id>/mcp` only.

@@ -1,5 +1,12 @@
 # drust — k3s multi-instance Helm chart
 
+> [!IMPORTANT]
+> **This chart is on hold.** It is frozen at chart 0.2.0 for drust 1.67.0, which is what a
+> default install pulls, and it is not updated for later drust releases. Docker (the image
+> and Docker Compose) and bare-metal systemd are the maintained deployment targets.
+> Pointing it at a later drust image through `image.tag` is untested: its `/public` proxy
+> rules, env and volumes match 1.67.0 only.
+
 ## What this is
 
 This chart deploys **one drust instance per group**, with hard isolation between

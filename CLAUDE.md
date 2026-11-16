@@ -341,8 +341,8 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     (every `*/*+xml` essence), not an enumeration; the first version of this fix was broken
     by `application/rss+xml`. The proxy's `/public/*` blocks (`../garage/deploy/Caddyfile` on
     the host, `deploy/compose.Caddyfile` on Compose, and on k3s
-    `deploy/helm/drust/files/public-proxy.Caddyfile`, a byte copy of the Compose block pinned
-    by the chart's `render_test.sh`) are byte paths too: they carry the
+    `deploy/helm/drust/files/public-proxy.Caddyfile`, the on-hold chart's byte copy of the
+    Compose block as of its freeze, not edited with it) are byte paths too: they carry the
     `@markup` sandbox CSP and `nosniff`, and in front of an S3 API they must also drop the
     query string, which an S3 API honours as `response-content-type` on anonymous GETs.
 
@@ -359,16 +359,22 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     each request stays under the ingress limit — never raise a body limit to accommodate a
     large upload.
 
-17. **There are three parallel deployment targets, and a release is not done until all three
-    were re-checked.** Bare-metal systemd (this host), Docker Compose, and the k3s Helm chart
-    under `deploy/helm/drust/`. They share the binary and nothing else: unit files, timers,
-    volume paths, env, ingress and the operational sidecars are written three times. A change
-    that lands in one silently diverges from the other two, and no test sees it — the suite
-    does not run under systemd, does not build the image, and does not render the chart.
-    v1.58 is the worked example: `_trash` expiry lived only in `deploy/drust-janitor.timer`,
-    so for every Docker and k3s user nothing swept `_trash` at all, and that was found by a
-    code reviewer reading an unrelated fix rather than by any release step. The per-release
-    checklist is in `.claude/rules/build-deploy.md` §Three deployment targets.
+17. **There are two active deployment targets, and a release is not done until both were
+    re-checked.** Bare-metal systemd (this host) and Docker (the image plus Docker Compose).
+    They share the binary and nothing else: unit files, timers, volume paths, env, proxy
+    config and scheduled work are written once per target, and every env knob, path, route
+    and recurring job is checked on both. A change that lands in one silently diverges from
+    the other, and no test sees it — the suite does not run under systemd and does not build
+    the image. v1.58 is the worked example: `_trash` expiry lived only in
+    `deploy/drust-janitor.timer`, so for every Docker and k3s user nothing swept `_trash` at
+    all, and that was found by a code reviewer reading an unrelated fix rather than by any
+    release step. **The k3s Helm chart under `deploy/helm/drust/` is on hold**: frozen at
+    chart 0.2.0 / `appVersion` 1.67.0 (last verified live with drust 1.67.0, which is what a
+    default install pulls), not developed, not kept in step and not re-checked per release.
+    Do not edit the chart to follow a Docker or bare-metal change; drift between the chart
+    and the other two is expected while the hold lasts and is not a defect. The per-release
+    checklist and the steps for resuming the chart are in `.claude/rules/build-deploy.md`
+    §Deployment targets.
 
 18. **A search-index shadow head is writable only via its own sync triggers; its module
     internals only via the module.** An fts5 index HEAD (`_system_search_fts$<coll>$<name>`)
