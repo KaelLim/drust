@@ -68,13 +68,13 @@
                 <option value="admin"{% if row.role == "admin" %} selected{% endif %}>admin</option>
                 <option value="member"{% if row.role == "member" %} selected{% endif %}>member</option>
               </select>
-              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
+              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>{% if mcp_enabled %}{% include "_team_mcp_revoke_btn.html" %}{% endif %}
             {% else if row.role == "member" %}
               {# admin (team-manager) caller — may REMOVE a member but may not
                  set ANY role: every target other than `member` is privileged
                  (403 PRIVILEGED_ROLE_REQUIRED) and `member` is a no-op, so a
                  picker here would be dead UI. Owner/admin rows get nothing. #}
-              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>
+              <button type="button" class="btn sm ghost danger btn-remove">{{ t.s("admin_team.action.remove") }}</button>{% if mcp_enabled %}{% include "_team_mcp_revoke_btn.html" %}{% endif %}
             {% endif %}
           </td>
           {% endif %}
@@ -297,5 +297,5 @@
     });
   });
 })();
-</script>
+</script>{% if mcp_enabled %}{% include "_team_mcp_revoke_js.html" %}{% endif %}
 {% endblock %}

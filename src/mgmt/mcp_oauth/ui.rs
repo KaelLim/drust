@@ -576,4 +576,88 @@ mod tests {
             "https://unknown.example/x"
         );
     }
+
+    const PARTIALS: &[(&str, &str)] = &[
+        (
+            "_settings_mcp_grants.html",
+            include_str!("../templates/_settings_mcp_grants.html"),
+        ),
+        (
+            "_settings_mcp_grants_js.html",
+            include_str!("../templates/_settings_mcp_grants_js.html"),
+        ),
+        (
+            "_team_mcp_revoke_btn.html",
+            include_str!("../templates/_team_mcp_revoke_btn.html"),
+        ),
+        (
+            "_team_mcp_revoke_js.html",
+            include_str!("../templates/_team_mcp_revoke_js.html"),
+        ),
+    ];
+
+    /// Invariant 15: default mode is byte-identical, so a hardcoded `/drust`
+    /// would pass every page test. Every outbound URL in the four partials
+    /// starts with the base-path helper.
+    #[test]
+    fn templates_route_through_base_path() {
+        const BASE: &str = "{{ crate::base_path::base_path() }}";
+        let mut urls = 0;
+        for (name, src) in PARTIALS {
+            assert!(!src.contains("/drust"), "{name} hardcodes /drust");
+            // Leading space: `data-action="…"` is a JS hook, not a form action.
+            for needle in [" action=\"", "fetch('"] {
+                for (at, _) in src.match_indices(needle) {
+                    let rest = &src[at + needle.len()..];
+                    assert!(
+                        rest.starts_with(BASE),
+                        "{name}: `{needle}` not followed by the base path"
+                    );
+                    urls += 1;
+                }
+            }
+        }
+        // Two form actions on the card, one fetch on the team page.
+        assert_eq!(urls, 3);
+    }
+
+    /// MA0-PLAN §3.11 rule 4: the two existing pages change only by a
+    /// flag-gated include appended to the END of an existing line, so with
+    /// `mcp_enabled = false` they render byte-identically.
+    #[test]
+    fn templates_are_flag_gated_line_suffixes() {
+        let pages = [
+            (
+                "settings.html",
+                include_str!("../templates/settings.html"),
+                &["_settings_mcp_grants.html", "_settings_mcp_grants_js.html"][..],
+                2,
+            ),
+            (
+                "admin_team.html",
+                include_str!("../templates/admin_team.html"),
+                &["_team_mcp_revoke_btn.html", "_team_mcp_revoke_js.html"][..],
+                3,
+            ),
+        ];
+        for (page, src, names, want) in pages {
+            let mut found = 0;
+            for name in names {
+                let include = format!("{{% include \"{name}\" %}}");
+                let suffix = format!("{{% if mcp_enabled %}}{include}{{% endif %}}");
+                for line in src.lines().filter(|l| l.contains(&include)) {
+                    assert!(
+                        line.ends_with(&suffix),
+                        "{page}: `{name}` is not a flag-gated line suffix: {line:?}"
+                    );
+                    assert!(
+                        line.len() > suffix.len(),
+                        "{page}: `{name}` sits on a line of its own"
+                    );
+                    found += 1;
+                }
+            }
+            assert_eq!(found, want, "{page}: flag-gated includes");
+        }
+    }
 }

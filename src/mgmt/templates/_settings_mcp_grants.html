@@ -1,0 +1,41 @@
+{# MA0-9 — "MCP connections" card. Included only when mcp_enabled (settings.html).
+   Hooks are data-* attributes, not classes: no new CSS, _styles.html untouched. #}
+        <div class="card" style="margin-top:18px;" id="mcp-grants">
+          <div class="card-head"><div>
+            <div class="card-title">{{ t.s("settings.mcp_grants.card_title") }}</div>
+            <div class="card-sub">{{ t.s("settings.mcp_grants.desc") }}</div>
+          </div></div>
+          <div class="card-body" style="padding:14px 16px;">
+            {% if mcp_grants_error %}
+              <div class="muted">{{ t.s("settings.mcp_grants.load_failed") }}</div>
+            {% else if mcp_grants.is_empty() %}
+              <div class="muted">{{ t.s("settings.mcp_grants.empty") }}</div>
+            {% else %}
+              {% for g in mcp_grants %}
+              <div class="key-row">
+                <div class="key-info">
+                  <div class="key-name">{{ g.client_display }}{% if g.expired %} <span class="pill muted">{{ t.s("settings.mcp_grants.flag_expired") }}</span>{% endif %}{% if g.sibling_rejected_at.is_some() %} <span class="pill warn" title="{{ t.s("settings.mcp_grants.flag_sibling_rejected_hint") }}">{{ t.s("settings.mcp_grants.flag_sibling_rejected") }}</span>{% endif %}</div>
+                  <div class="key-desc muted">
+                    {{ t.s("settings.mcp_grants.col_kind") }}: {% if g.kind == "authorization_code" %}{{ t.s("settings.mcp_grants.kind_authorization_code") }}{% else %}<code>{{ g.kind }}</code>{% endif %} ·
+                    {{ t.s("settings.mcp_grants.col_host") }}: <code>{{ g.redirect_host }}</code> ·
+                    {{ t.s("settings.mcp_grants.col_created") }}: <code>{{ g.created_at }}</code> ·
+                    {{ t.s("settings.mcp_grants.col_last_used") }}:
+                    {% match g.last_used_at %}{% when Some with (v) %}<code>{{ v }}</code>{% when None %}{{ t.s("settings.mcp_grants.never") }}{% endmatch %}
+                    {% match g.sibling_rejected_at %}{% when Some with (v) %} · {{ t.s("settings.mcp_grants.col_sibling_rejected") }}: <code data-mcp-sibling-at>{{ v }}</code>{% when None %}{% endmatch %}
+                  </div>
+                </div>
+                <form method="post" style="margin:0;" data-mcp-grant-revoke
+                      action="{{ crate::base_path::base_path() }}/admin/settings/mcp-grants/{{ g.id }}/revoke">
+                  <button class="btn sm danger" type="submit">{{ t.s("settings.mcp_grants.btn_revoke") }}</button>
+                </form>
+              </div>
+              {% endfor %}
+            {% endif %}
+            {% if mcp_grants_error || !mcp_grants.is_empty() %}
+              <form method="post" style="margin:12px 0 0;" data-mcp-grant-revoke-all
+                    action="{{ crate::base_path::base_path() }}/admin/settings/mcp-grants/revoke-all">
+                <button class="btn sm ghost danger" type="submit">{{ t.s("settings.mcp_grants.btn_revoke_all") }}</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>

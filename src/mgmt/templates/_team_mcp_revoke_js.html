@@ -1,0 +1,34 @@
+{# MA0-9 — "revoke this member's MCP connections". Included after _modal.html.
+   The page IIFE's alertError is private, so this block carries its own. #}
+<script>
+(function () {
+  function mcpAlert(body) {
+    drustUI.alert({ title: '{{ t.s("common.modal.title_notice")|safe }}', body: body });
+  }
+  document.querySelectorAll('button[data-action="revoke-mcp"]').forEach(function (btn) {
+    btn.addEventListener('click', async function () {
+      var tr = btn.closest('tr[data-admin-id]');
+      if (!tr) return;
+      var id = tr.getAttribute('data-admin-id');
+      var email = tr.getAttribute('data-admin-email') || id;
+      var ok = await drustUI.confirm({
+        title:  '{{ t.s("admin_team.mcp.revoke_title")|safe }}',
+        body:   '{{ t.s("admin_team.mcp.revoke_body")|safe }}'.replace('{email}', function () { return email; }),
+        okText: '{{ t.s("admin_team.mcp.revoke_ok")|safe }}',
+        danger: true
+      });
+      if (!ok) return;
+      var res = await fetch('{{ crate::base_path::base_path() }}/admin/team/' + encodeURIComponent(id) + '/mcp-grants', {
+        method:  'DELETE',
+        headers: { 'Accept': 'application/json' }
+      });
+      var j = await res.json().catch(function () { return null; });
+      if (res.ok) {
+        mcpAlert('{{ t.s("admin_team.mcp.revoked_n")|safe }}'.replace('{n}', String((j && j.revoked) || 0)));
+        return;
+      }
+      mcpAlert((j && (j.message || j.error_code)) || '{{ t.s("common.error.http_status")|safe }}'.replace('{status}', res.status));
+    });
+  });
+})();
+</script>

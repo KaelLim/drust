@@ -228,6 +228,13 @@ result_skipped = "Skipped"
 result_none = "none"
 reason_invalid = "invalid email"
 reason_exists = "already an admin"
+
+[admin_team.mcp]
+revoke = "Revoke MCP"
+revoke_title = "Revoke MCP connections"
+revoke_body = "Revoke every MCP connection authorized by {email}? Their Claude Code sessions stop at the next request. The account itself is kept."
+revoke_ok = "Revoke"
+revoked_n = "Revoked {n} MCP connection(s)."
 [audit_body.aria]
 show_details_for = "show details for {op}"
 
@@ -862,6 +869,28 @@ col_expires = "Expires"
 btn_revoke = "Revoke"
 empty = "No CLI tokens. Run `drust auth login` to mint one."
 never = "never"
+
+[settings.mcp_grants]
+card_title = "MCP connections"
+desc = "Claude Code sessions you authorized in the browser. Each one can do what your account can do. Revoking one stops it at its next request. This is separate from the PAT and CLI tokens above, and signing out does not revoke these."
+empty = "No MCP connections."
+load_failed = "Could not load your MCP connections. Revoke all below still revokes every one of them."
+col_kind = "Type"
+col_host = "Callback host"
+col_created = "Authorized (UTC)"
+col_last_used = "Last used (UTC)"
+col_sibling_rejected = "Last duplicate refresh (UTC)"
+never = "never"
+kind_authorization_code = "browser sign-in"
+flag_expired = "expired"
+flag_sibling_rejected = "duplicate refresh"
+flag_sibling_rejected_hint = "A refresh token this connection had already replaced was presented; the latest time is shown in the row. This is normal when several Claude Code sessions on one machine refresh at the same moment. If Last used shows activity you do not recognize, revoke this connection."
+btn_revoke = "Revoke"
+btn_revoke_all = "Revoke all"
+
+[settings.mcp_grants.confirm]
+revoke_all_title = "Revoke all MCP connections"
+revoke_all_body = "Every Claude Code session authorized with your account stops at its next request and must be authorized again. Continue?"
 
 [tenant_api_keys.alert]
 update_failed_title = "Update failed"

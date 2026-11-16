@@ -203,6 +203,17 @@ struct SettingsPage {
     /// v1.44 (T7) — caller's active labeled CLI PATs (device-flow / `drust auth
     /// login`), listed with a per-row revoke form.
     cli_tokens: Vec<CliTokenRow>,
+    /// MA0-9 — `McpOauthConfig::enabled()`. False ⇒ the "MCP connections"
+    /// card and its script (both `{% if mcp_enabled %}` partials) emit nothing,
+    /// so the page is byte-identical to a build without MCP OAuth.
+    mcp_enabled: bool,
+    /// MA0-9 — the caller's live MCP OAuth grants; always empty when disabled
+    /// (`settings_page` does not even query the table then).
+    mcp_grants: Vec<crate::mgmt::mcp_oauth::ui::McpGrantRow>,
+    /// MA0-9 — the list query failed. The card then says so and STILL offers
+    /// "Revoke all" (which finds live ids itself), instead of an "empty" card
+    /// that reads as "nothing to revoke" during an incident.
+    mcp_grants_error: bool,
 }
 
 async fn settings_page(
@@ -254,6 +265,22 @@ async fn settings_page(
         .unwrap_or_default()
     };
 
+    // MA0-9 — read the grants only when MCP OAuth is on; off ⇒ no query, no
+    // new bytes (MA0-PLAN §3.11 rule 2).
+    let mcp_enabled = state.mcp_oauth.enabled();
+    let (mcp_grants, mcp_grants_error) = if mcp_enabled {
+        let conn = state.meta.lock().await;
+        match crate::mgmt::mcp_oauth::ui::list_grants_for_settings(&conn, caller_id) {
+            Ok(v) => (v, false),
+            Err(e) => {
+                tracing::warn!(error = %e, "settings: listing MCP grants failed");
+                (Vec::new(), true)
+            }
+        }
+    } else {
+        (Vec::new(), false)
+    };
+
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
@@ -274,6 +301,9 @@ async fn settings_page(
             pat_hash_prefix,
             pat_last_used_at,
             cli_tokens,
+            mcp_enabled,
+            mcp_grants,
+            mcp_grants_error,
         }
         .render()
         .unwrap_or_default(),

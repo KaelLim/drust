@@ -234,6 +234,13 @@ result_skipped = "已略過"
 result_none = "無"
 reason_invalid = "email 格式錯誤"
 reason_exists = "已是 admin"
+
+[admin_team.mcp]
+revoke = "撤銷 MCP"
+revoke_title = "撤銷 MCP 連線"
+revoke_body = "要撤銷 {email} 授權的所有 MCP 連線嗎？他們的 Claude Code 連線會在下一次請求時停止，帳號本身保留。"
+revoke_ok = "撤銷"
+revoked_n = "已撤銷 {n} 條 MCP 連線。"
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
 show_details_for = "顯示 {op} 的詳細資訊"
@@ -882,6 +889,28 @@ col_expires = "過期時間"
 btn_revoke = "撤銷"
 empty = "尚無 CLI token。執行 `drust auth login` 來產生一個。"
 never = "從未使用"
+
+[settings.mcp_grants]
+card_title = "MCP 連線"
+desc = "你在瀏覽器裡授權過的 Claude Code 連線。每一條都能做你的帳號能做的事。撤銷後，那條連線在下一次請求時停止。這與上方的 PAT、CLI token 無關；登出不會撤銷這些連線。"
+empty = "沒有 MCP 連線。"
+load_failed = "無法載入你的 MCP 連線。下方的「全部撤銷」仍會撤銷全部連線。"
+col_kind = "類型"
+col_host = "回傳主機"
+col_created = "授權時間（UTC）"
+col_last_used = "最後使用（UTC）"
+col_sibling_rejected = "最近一次重複 refresh（UTC）"
+never = "從未使用"
+kind_authorization_code = "瀏覽器登入"
+flag_expired = "已過期"
+flag_sibling_rejected = "重複的 refresh"
+flag_sibling_rejected_hint = "有人出示了這條連線已被取代的 refresh token，最近一次的時間顯示在列中。同一台機器上多個 Claude Code 工作階段同時 refresh 時，這是正常現象。如果「最後使用」顯示你不認得的活動，請撤銷這條連線。"
+btn_revoke = "撤銷"
+btn_revoke_all = "全部撤銷"
+
+[settings.mcp_grants.confirm]
+revoke_all_title = "撤銷全部 MCP 連線"
+revoke_all_body = "用你的帳號授權的每一條 Claude Code 連線，都會在下一次請求時停止，之後要重新授權。要繼續嗎？"
 
 [tenant_api_keys.alert]
 update_failed_title = "更新失敗"

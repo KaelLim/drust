@@ -84,6 +84,10 @@ struct AdminTeamPage {
     mascot_json_static: String,
     mascot_json_light: String,
     mascot_json_dark: String,
+    /// MA0-9 — `McpOauthConfig::enabled()`. False ⇒ the "Revoke MCP" button and
+    /// its script (both `{% if mcp_enabled %}` partials) emit nothing, so the
+    /// page is byte-identical to a build without MCP OAuth.
+    mcp_enabled: bool,
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -369,6 +373,7 @@ async fn team_page(
             mascot_json_static: trc.mascot_json_static,
             mascot_json_light: trc.mascot_json_light,
             mascot_json_dark: trc.mascot_json_dark,
+            mcp_enabled: s.mcp_oauth.enabled(),
         }
         .render()
         .unwrap_or_default(),

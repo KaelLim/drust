@@ -727,3 +727,265 @@ async fn team_revoke_scope_and_account_kept() {
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(ui_json(r).await, serde_json::json!({ "revoked": 0 }));
 }
+
+// ─── D. rendered pages (enabled) ─────────────────────────────────────────────
+
+/// Each `<tr data-admin-id="…"` segment of the team table, up to its `</tr>`.
+fn ui_rows(body: &str) -> Vec<(i64, &str)> {
+    const OPEN: &str = "<tr data-admin-id=\"";
+    let mut out = Vec::new();
+    for (at, _) in body.match_indices(OPEN) {
+        let rest = &body[at + OPEN.len()..];
+        let id: i64 = rest[..rest.find('"').unwrap()].parse().unwrap();
+        let end = rest.find("</tr>").expect("row closes");
+        out.push((id, &rest[..end]));
+    }
+    out
+}
+
+#[tokio::test]
+async fn team_button_visible_only_where_remove_is() {
+    let fx = mo::fixture(true).await;
+    let a = mo::add_admin(&fx, "alice", "", "admin").await;
+    let m = mo::add_admin(&fx, "mia", "", "member").await;
+    for (viewer, with_button) in [(fx.owner_id, vec![fx.owner_id, a, m]), (a, vec![m])] {
+        let s = ui_session(&fx, viewer).await;
+        let resp = ui_send(&fx.app, "GET", "/admin/team", Some(&s), None, HTML).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = ui_body(resp).await;
+        let rows = ui_rows(&body);
+        assert_eq!(rows.len(), 3, "viewer {viewer}: three admins listed");
+        for (id, row) in rows {
+            let buttons = row.matches("data-action=\"revoke-mcp\"").count();
+            let removes = row.matches("btn-remove").count();
+            let want = usize::from(with_button.contains(&id));
+            assert_eq!(
+                buttons, want,
+                "viewer {viewer}, row {id}: revoke-mcp buttons"
+            );
+            assert_eq!(
+                buttons, removes,
+                "viewer {viewer}, row {id}: button without Remove"
+            );
+        }
+        assert!(body.contains("/mcp-grants'"), "viewer {viewer}: script");
+        assert!(
+            body.contains("encodeURIComponent(id)"),
+            "viewer {viewer}: script"
+        );
+    }
+}
+
+#[test]
+fn mcp_ui_locale_sections_match_and_are_js_safe() {
+    fn flatten(
+        prefix: &str,
+        v: &toml::Value,
+        out: &mut std::collections::BTreeMap<String, String>,
+    ) {
+        match v {
+            toml::Value::Table(t) => {
+                for (k, child) in t {
+                    let key = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
+                    flatten(&key, child, out);
+                }
+            }
+            toml::Value::String(s) => {
+                out.insert(prefix.to_string(), s.clone());
+            }
+            other => {
+                out.insert(prefix.to_string(), other.to_string());
+            }
+        }
+    }
+    let load = |file: &str| {
+        let path = format!("{}/locales/{file}", env!("CARGO_MANIFEST_DIR"));
+        let v: toml::Value = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let mut all = std::collections::BTreeMap::new();
+        flatten("", &v, &mut all);
+        all.into_iter()
+            .filter(|(k, _)| {
+                k.starts_with("settings.mcp_grants.") || k.starts_with("admin_team.mcp.")
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let en = load("en.toml");
+    let zh = load("zh-TW.toml");
+    assert!(!en.is_empty(), "the MCP UI sections exist");
+    assert_eq!(
+        en.keys().collect::<Vec<_>>(),
+        zh.keys().collect::<Vec<_>>(),
+        "en and zh-TW disagree"
+    );
+    // These values reach single-quoted JS strings and attributes through `|safe`.
+    for (lang, map) in [("en", &en), ("zh-TW", &zh)] {
+        for (k, v) in map {
+            for bad in ["'", "\\", "\n", "\r", "</"] {
+                assert!(!v.contains(bad), "{lang} `{k}` contains {bad:?}");
+            }
+        }
+        assert!(
+            map["admin_team.mcp.revoke_body"].contains("{email}"),
+            "{lang}"
+        );
+        assert!(map["admin_team.mcp.revoked_n"].contains("{n}"), "{lang}");
+    }
+}
+
+/// The card: from its root `id` to the first `<script` after it (the card is
+/// the last thing in the content block; only `extra_scripts` follows).
+fn ui_card(body: &str) -> &str {
+    let start = body
+        .find("id=\"mcp-grants\"")
+        .expect("the MCP connections card");
+    let rest = &body[start..];
+    &rest[..rest.find("<script").expect("scripts follow the card")]
+}
+
+#[tokio::test]
+async fn settings_card_lists_own_grants_with_flags() {
+    let fx = mo::fixture(true).await;
+    let a = mo::add_admin(&fx, "alice", "", "admin").await;
+    let (g1, g2, g3, ga, host) = {
+        let c = fx.meta.lock().await;
+        let g1 = ui_grant(&c, fx.owner_id);
+        c.execute(
+            "UPDATE _mcp_oauth_grants SET sibling_rejected_at = '2026-01-02 03:04:05', \
+             last_used_at = datetime('now') WHERE id = ?1",
+            params![g1],
+        )
+        .unwrap();
+        let g2 = mo::seed_grant(
+            &c,
+            &SeedGrant {
+                admin_id: fx.owner_id,
+                idle: "-1 hour",
+                absolute: "+90 days",
+                revoked: false,
+            },
+        );
+        let g3 = mo::seed_grant(
+            &c,
+            &SeedGrant {
+                admin_id: fx.owner_id,
+                idle: "+30 days",
+                absolute: "+90 days",
+                revoked: true,
+            },
+        );
+        let ga = ui_grant(&c, a);
+        let host: String = c
+            .query_row(
+                "SELECT redirect_host FROM _mcp_oauth_grants WHERE id = ?1",
+                params![g1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (g1, g2, g3, ga, host)
+    };
+    let display = {
+        let c = fx.meta.lock().await;
+        drust::mgmt::mcp_oauth::ui::list_grants_for_settings(&c, fx.owner_id).unwrap()[0]
+            .client_display
+            .clone()
+    };
+    let s = ui_session(&fx, fx.owner_id).await;
+    let resp = ui_send(&fx.app, "GET", "/admin/settings", Some(&s), None, HTML).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = ui_body(resp).await;
+    let card = ui_card(&body);
+    let action = |g: i64| format!("/admin/settings/mcp-grants/{g}/revoke\"");
+    assert!(card.contains(&action(g1)), "own live grant listed");
+    assert!(card.contains(&action(g2)), "own expired grant listed");
+    assert!(!card.contains(&action(g3)), "revoked grant not listed");
+    assert!(
+        !card.contains(&action(ga)),
+        "another admin's grant not listed"
+    );
+    assert_eq!(
+        card.matches("<span class=\"pill muted\">expired</span>")
+            .count(),
+        1
+    );
+    assert_eq!(card.matches("<span class=\"pill warn\"").count(), 1);
+    assert!(card.contains("<code data-mcp-sibling-at>2026-01-02 03:04:05</code>"));
+    assert!(card.contains(&format!("<code>{host}</code>")));
+    assert!(card.contains(&display));
+    assert!(card.contains("data-mcp-grant-revoke-all"));
+}
+
+const EMPTY_EN: &str = "No MCP connections.";
+const LOAD_FAILED_EN: &str = "Could not load your MCP connections.";
+
+#[tokio::test]
+async fn settings_card_empty_state() {
+    let fx = mo::fixture(true).await;
+    let s = ui_session(&fx, fx.owner_id).await;
+    let resp = ui_send(&fx.app, "GET", "/admin/settings", Some(&s), None, HTML).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = ui_body(resp).await;
+    // The card slice, not the body: the revoke-all script names the same
+    // attribute in its selector.
+    let card = ui_card(&body);
+    assert!(card.contains(EMPTY_EN));
+    assert!(!card.contains("data-mcp-grant-revoke-all"));
+    assert!(!card.contains(LOAD_FAILED_EN));
+}
+
+#[tokio::test]
+async fn settings_card_zh_tw() {
+    let fx = mo::fixture(true).await;
+    {
+        let c = fx.meta.lock().await;
+        ui_grant(&c, fx.owner_id);
+    }
+    let s = ui_session(&fx, fx.owner_id).await;
+    let cookie = format!("{s}; drust_locale=zh-TW");
+    let resp = ui_send(&fx.app, "GET", "/admin/settings", Some(&cookie), None, HTML).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = ui_body(resp).await;
+    let card = ui_card(&body);
+    assert!(card.contains("MCP 連線"));
+    assert!(card.contains("全部撤銷"));
+}
+
+#[tokio::test]
+async fn settings_card_list_failure_still_offers_revoke_all() {
+    let fx = mo::fixture(true).await;
+    let g1 = {
+        let c = fx.meta.lock().await;
+        let g = ui_grant(&c, fx.owner_id);
+        mo::seed_tokens(&c, g);
+        c.execute_batch("ALTER TABLE _mcp_oauth_grants RENAME TO _mcp_oauth_grants_t19")
+            .unwrap();
+        g
+    };
+    let s = ui_session(&fx, fx.owner_id).await;
+    let resp = ui_send(&fx.app, "GET", "/admin/settings", Some(&s), None, HTML).await;
+    let status = resp.status();
+    let body = ui_body(resp).await;
+    {
+        let c = fx.meta.lock().await;
+        c.execute_batch("ALTER TABLE _mcp_oauth_grants_t19 RENAME TO _mcp_oauth_grants")
+            .unwrap();
+        assert!(ui_live(&c, g1));
+    }
+    assert_eq!(status, StatusCode::OK);
+    let card = ui_card(&body);
+    assert!(
+        card.contains(LOAD_FAILED_EN),
+        "the card says the list failed"
+    );
+    assert!(
+        card.contains("data-mcp-grant-revoke-all"),
+        "revoke-all is still offered"
+    );
+    assert!(
+        !card.contains(EMPTY_EN),
+        "an unreadable list never reads as empty"
+    );
+}
