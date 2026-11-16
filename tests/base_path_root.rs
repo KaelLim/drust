@@ -97,3 +97,42 @@ fn mcp_oauth_error_redirect_iss_in_root_mode() {
         "http://localhost:1/callback?error=invalid_request&state=s&iss=https%3A%2F%2Fdrust.test"
     );
 }
+
+#[test]
+fn empty_base_resume_target_is_root_consent() {
+    drust::base_path::set("");
+    use drust::mgmt::mcp_oauth::envelope::{self, AuthzRequest, ResumeDecision};
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    let now = envelope::now_unix().unwrap();
+    let wire = envelope::seal(
+        &cfg,
+        &AuthzRequest {
+            client_id: "https://claude.ai/oauth/claude-code-client-metadata".into(),
+            redirect_uri: "http://localhost:5/callback".into(),
+            state: None,
+            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".into(),
+            resource: None,
+        },
+        now,
+    )
+    .unwrap();
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(
+        axum::http::header::COOKIE,
+        format!("{}={wire}", envelope::RESUME_COOKIE).parse().unwrap(),
+    );
+    assert_eq!(
+        envelope::resume_target(&cfg, &h, now),
+        ResumeDecision::Resume("/oauth/consent".into())
+    );
+}
+
+#[test]
+fn empty_base_consent_cookies_use_root_path() {
+    drust::base_path::set("");
+    let set = drust::mgmt::mcp_oauth::consent::build_csrf_cookie("x");
+    let clear = drust::mgmt::mcp_oauth::consent::clear_csrf_cookie();
+    assert!(set.starts_with("drust_mcp_oauth_csrf=x; Path=/;"), "{set}");
+    assert!(clear.starts_with("drust_mcp_oauth_csrf=; Path=/;"), "{clear}");
+    assert!(clear.contains("Max-Age=0"), "{clear}");
+}

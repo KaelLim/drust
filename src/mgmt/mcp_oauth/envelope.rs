@@ -269,6 +269,46 @@ pub fn now_unix() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// Where a successful admin login goes next (MA0-6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResumeDecision {
+    /// No in-flight MCP authorization: the usual landing page.
+    None,
+    /// A resume cookie that opens: go to this fixed consent path.
+    Resume(String),
+    /// A resume cookie that no longer opens: usual landing page, and clear it.
+    ClearStale,
+}
+
+/// `login_submit` (303) and `oauth_callback` (302) ask this after the session
+/// is created. Pass `now_unix().unwrap_or(u64::MAX)`: a clock failure makes
+/// every cookie `ClearStale`. The client and redirect are NOT re-validated
+/// here; that is the consent page's job, which therefore clears the cookie on
+/// `ClientChanged` itself.
+pub fn resume_target(
+    cfg: &McpOauthConfig,
+    headers: &axum::http::HeaderMap,
+    now_unix: u64,
+) -> ResumeDecision {
+    // MUST stay the first statement: disabled == byte-identical login, never
+    // reads the cookie (pinned by a source test).
+    if !cfg.enabled() {
+        return ResumeDecision::None;
+    }
+    let Some(wire) = read_resume_cookie(headers) else {
+        return ResumeDecision::None;
+    };
+    // Empty = already cleared; do not answer it with Max-Age=0 on every login.
+    if wire.is_empty() {
+        return ResumeDecision::None;
+    }
+    match open(cfg, &wire, now_unix) {
+        // A fixed string, never a URL taken from the cookie: no open redirect.
+        Ok(_) => ResumeDecision::Resume(crate::base_path::base("/oauth/consent")),
+        Err(_) => ResumeDecision::ClearStale,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +638,122 @@ mod tests {
         assert_eq!(r(&["xdrust_mcp_oauth_resume=x"]), None);
         assert_eq!(r(&["a=1; b=2"]), None);
         assert_eq!(r(&[]), None);
+    }
+
+    fn resume(c: &McpOauthConfig, cookie: &[&str], now: u64) -> ResumeDecision {
+        resume_target(c, &headers(cookie), now)
+    }
+
+    #[test]
+    fn disabled_config_never_resumes() {
+        let w = sealed(&full());
+        let line = format!("{RESUME_COOKIE}={w}");
+        assert_eq!(
+            resume(&McpOauthConfig::disabled(), &[&line], T),
+            ResumeDecision::None
+        );
+        assert_eq!(
+            resume(
+                &McpOauthConfig::disabled(),
+                &[&format!("{RESUME_COOKIE}=junk")],
+                T
+            ),
+            ResumeDecision::None
+        );
+    }
+
+    #[test]
+    fn no_cookie_or_empty_cookie_is_none() {
+        assert_eq!(resume(&cfg(), &[], T), ResumeDecision::None);
+        assert_eq!(resume(&cfg(), &["a=1"], T), ResumeDecision::None);
+        assert_eq!(
+            resume(&cfg(), &[&format!("{RESUME_COOKIE}=")], T),
+            ResumeDecision::None
+        );
+    }
+
+    #[test]
+    fn valid_cookie_resumes_to_the_fixed_consent_path() {
+        // Lib tests run with the default "/drust" base.
+        for req in [
+            full(),
+            AuthzRequest {
+                redirect_uri: "http://127.0.0.1:1/elsewhere".into(),
+                ..minimal()
+            },
+        ] {
+            let line = format!("{RESUME_COOKIE}={}", sealed(&req));
+            assert_eq!(
+                resume(&cfg(), &[&line], T + 10),
+                ResumeDecision::Resume("/drust/oauth/consent".into())
+            );
+        }
+    }
+
+    #[test]
+    fn expired_bad_mac_and_garbage_clear_stale() {
+        let w = sealed(&full());
+        let expired = format!("{RESUME_COOKIE}={w}");
+        assert_eq!(
+            resume(&cfg(), &[&expired], T + 700),
+            ResumeDecision::ClearStale
+        );
+        let mut raw = decode(&w);
+        raw[12] ^= 0x01; // inside the nonce
+        let bad_mac = format!("{RESUME_COOKIE}={}", encode(&raw));
+        assert_eq!(resume(&cfg(), &[&bad_mac], T), ResumeDecision::ClearStale);
+        let garbage = format!("{RESUME_COOKIE}=!!");
+        assert_eq!(resume(&cfg(), &[&garbage], T), ResumeDecision::ClearStale);
+    }
+
+    #[test]
+    fn first_same_name_cookie_wins() {
+        let w = sealed(&full());
+        let line = format!("{RESUME_COOKIE}={w}; {RESUME_COOKIE}=junk");
+        assert_eq!(
+            resume(&cfg(), &[&line], T),
+            ResumeDecision::Resume("/drust/oauth/consent".into())
+        );
+        let line = format!("{RESUME_COOKIE}=junk; {RESUME_COOKIE}={w}");
+        assert_eq!(resume(&cfg(), &[&line], T), ResumeDecision::ClearStale);
+    }
+
+    /// Structural guarantee that a disabled host never reads the cookie (a
+    /// behavioural test cannot tell "read but ignored" from "not read").
+    #[test]
+    fn resume_target_checks_enabled_before_reading_the_cookie() {
+        let prod = include_str!("envelope.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let start = prod.find("pub fn resume_target").unwrap();
+        let body = &prod[start..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let enabled = body.find("cfg.enabled()").unwrap();
+        let read = body.find("read_resume_cookie(").unwrap();
+        assert!(enabled < read);
+        let first_stmt = body[body.find('{').unwrap() + 1..]
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("//"))
+            .unwrap();
+        assert_eq!(first_stmt, "if !cfg.enabled() {");
+    }
+
+    #[test]
+    fn now_unix_failure_value_fails_closed() {
+        let real_now = now_unix().unwrap();
+        let req = full();
+        let w = seal(&cfg(), &req, real_now).unwrap();
+        assert!(matches!(
+            open(&cfg(), &w, u64::MAX),
+            Err(EnvelopeError::Expired { .. })
+        ));
+        assert_eq!(seal(&cfg(), &req, u64::MAX), Err(EnvelopeError::Malformed));
+        let line = format!("{RESUME_COOKIE}={w}");
+        assert_eq!(
+            resume(&cfg(), &[&line], u64::MAX),
+            ResumeDecision::ClearStale
+        );
     }
 }

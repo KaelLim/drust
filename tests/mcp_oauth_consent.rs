@@ -1186,3 +1186,349 @@ async fn insert_grant_and_code_for_a_missing_admin_is_no_rows() {
     assert_eq!(count(&c, "SELECT COUNT(*) FROM _mcp_oauth_grants"), 0);
     assert_eq!(count(&c, "SELECT COUNT(*) FROM _mcp_oauth_codes"), 0);
 }
+
+// ─── A. login without (or with a dead) resume cookie ─────────────────────────
+
+const LANDING: &str = "/drust/admin/tenants";
+const CONSENT: &str = "/drust/oauth/consent";
+
+async fn password_login(
+    fx: &McpOauthFixture,
+    cookies: &[&str],
+    headers: &[(&str, &str)],
+) -> Response<Body> {
+    post_form(
+        &fx.app,
+        "/login",
+        &[("username", OWNER_USER), ("password", OWNER_PASS)],
+        cookies,
+        headers,
+    )
+    .await
+}
+
+/// `/admin/oauth/<provider>/start`, then its callback with the start's state
+/// and PKCE cookies plus `extra` (one callback of the fixture's budget of 5).
+async fn provider_login(fx: &McpOauthFixture, provider: &str, extra: &[&str]) -> Response<Body> {
+    let start = get(&fx.app, &format!("/admin/oauth/{provider}/start"), &[]).await;
+    let state = cookie_kv(&set_cookie(&start, "drust_oauth_state").expect("state cookie"));
+    let pkce = cookie_kv(&set_cookie(&start, "drust_oauth_pkce").expect("pkce cookie"));
+    let state_value = state.split_once('=').unwrap().1.to_string();
+    let mut cookies: Vec<&str> = vec![&state, &pkce];
+    cookies.extend_from_slice(extra);
+    get(
+        &fx.app,
+        &format!("/admin/oauth/{provider}/callback?code=C&state={state_value}"),
+        &cookies,
+    )
+    .await
+}
+
+/// Set-Cookie lines with the session and OAuth state/PKCE values masked.
+fn masked_cookies(resp: &Response<Body>) -> Vec<String> {
+    set_cookie_lines(resp)
+        .into_iter()
+        .map(|l| {
+            let (kv, rest) = l.split_once(';').unwrap_or((l.as_str(), ""));
+            let name = kv.split('=').next().unwrap_or("");
+            format!("{name}=<v>;{rest}")
+        })
+        .collect()
+}
+
+fn no_mcp_cookie(resp: &Response<Body>) -> bool {
+    !set_cookie_lines(resp)
+        .iter()
+        .any(|l| l.starts_with("drust_mcp_oauth_"))
+}
+
+#[tokio::test]
+async fn password_login_location_is_unchanged_without_resume_cookie() {
+    let mut shapes = Vec::new();
+    for enabled in [true, false] {
+        let fx = fixture(enabled).await;
+        let resp = password_login(&fx, &[], &[]).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "enabled={enabled}");
+        assert_eq!(location(&resp), LANDING, "enabled={enabled}");
+        assert!(set_cookie(&resp, "drust_session").is_some());
+        assert!(no_mcp_cookie(&resp), "enabled={enabled}");
+        shapes.push(masked_cookies(&resp));
+    }
+    assert_eq!(shapes[0], shapes[1]);
+}
+
+async fn callback_location_is_unchanged(provider: &str) {
+    use crate::common::oauth_helpers::{spawn_fake_github, spawn_fake_google};
+    let mut shapes = Vec::new();
+    for enabled in [true, false] {
+        let fake = if provider == "google" {
+            spawn_fake_google().await
+        } else {
+            spawn_fake_github().await
+        };
+        let fx = fixture_with_provider(enabled, provider, &fake, "kael@example.com").await;
+        let resp = provider_login(&fx, provider, &[]).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FOUND,
+            "{provider} enabled={enabled}"
+        );
+        assert_eq!(location(&resp), LANDING, "{provider} enabled={enabled}");
+        assert!(set_cookie(&resp, "drust_session").is_some());
+        assert!(no_mcp_cookie(&resp));
+        shapes.push(masked_cookies(&resp));
+    }
+    assert_eq!(shapes[0], shapes[1]);
+}
+
+#[tokio::test]
+async fn google_callback_location_is_unchanged_without_resume_cookie() {
+    callback_location_is_unchanged("google").await;
+}
+
+#[tokio::test]
+async fn github_callback_location_is_unchanged_without_resume_cookie() {
+    callback_location_is_unchanged("github").await;
+}
+
+#[tokio::test]
+async fn disabled_mode_ignores_a_valid_resume_cookie() {
+    let fake = crate::common::oauth_helpers::spawn_fake_google().await;
+    let fx = fixture_with_provider(false, "google", &fake, "kael@example.com").await;
+    let resume = format!(
+        "{RESUME_COOKIE}={}",
+        sealed_envelope(&cfg(), &loopback_redirect(5), Some("s"), now())
+    );
+    let base = password_login(&fx, &[], &[]).await;
+    let with = password_login(&fx, &[&resume], &[]).await;
+    assert_eq!(location(&with), LANDING);
+    assert_eq!(masked_cookies(&with), masked_cookies(&base));
+    let base = provider_login(&fx, "google", &[]).await;
+    let with = provider_login(&fx, "google", &[&resume]).await;
+    assert_eq!(with.status(), StatusCode::FOUND);
+    assert_eq!(location(&with), LANDING);
+    assert_eq!(masked_cookies(&with), masked_cookies(&base));
+}
+
+#[tokio::test]
+async fn stale_resume_cookie_falls_back_and_is_cleared() {
+    let fake = crate::common::oauth_helpers::spawn_fake_google().await;
+    let fx = fixture_with_provider(true, "google", &fake, "kael@example.com").await;
+    let live = sealed_envelope(&cfg(), &loopback_redirect(5), Some("s"), now());
+    let stale = [
+        sealed_envelope(&cfg(), &loopback_redirect(5), Some("s"), now() - 700),
+        tamper(&live),
+        "garbage".to_string(),
+    ];
+    for wire in &stale {
+        let resume = format!("{RESUME_COOKIE}={wire}");
+        for resp in [
+            password_login(&fx, &[&resume], &[]).await,
+            provider_login(&fx, "google", &[&resume]).await,
+        ] {
+            assert!(resp.status().is_redirection());
+            assert_eq!(location(&resp), LANDING, "{wire}");
+            assert!(set_cookie(&resp, "drust_session").is_some(), "session kept");
+            let clear = set_cookie_lines(&resp)
+                .into_iter()
+                .find(|l| l.starts_with(&format!("{RESUME_COOKIE}=;")))
+                .unwrap_or_else(|| panic!("resume cookie not cleared for {wire}"));
+            assert!(
+                clear.contains("Max-Age=0") && clear.contains("Path=/drust"),
+                "{clear}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn consent_routes_are_not_mounted_when_disabled() {
+    let fx = fixture(false).await;
+    let session = session_for(&fx, fx.owner_id).await;
+    let reference = get(&fx.app, "/oauth/nonexistent", &[&session]).await;
+    let ref_status = reference.status();
+    let ref_body = body_text(reference).await;
+    for (method, uri) in [
+        ("GET", "/oauth/consent"),
+        ("POST", "/oauth/consent/approve"),
+        ("POST", "/oauth/consent/deny"),
+    ] {
+        let resp = send_with(&fx, method, uri, &[&session], &[], "").await;
+        assert_eq!(resp.status(), ref_status, "{method} {uri}");
+        assert_eq!(body_text(resp).await, ref_body, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn cross_site_login_with_a_valid_resume_cookie_is_still_refused() {
+    let fx = fixture(true).await;
+    let resume = format!(
+        "{RESUME_COOKIE}={}",
+        sealed_envelope(&cfg(), &loopback_redirect(5), Some("s"), now())
+    );
+    let resp = password_login(&fx, &[&resume], &[("sec-fetch-site", "cross-site")]).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        set_cookie_lines(&resp).is_empty(),
+        "resume cookie neither used nor cleared"
+    );
+    assert!(hdr(&resp, header::LOCATION).is_none());
+    assert_eq!(body_json(resp).await["error_code"], "LOGIN_CROSS_SITE");
+    let resp = password_login(&fx, &[&resume], &[]).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&resp), CONSENT);
+}
+
+// ─── B. login resumes the flow ───────────────────────────────────────────────
+
+async fn insert_live_tenant(fx: &McpOauthFixture) {
+    insert_tenant(fx, "t-one", Some(fx.owner_id), false).await;
+}
+
+#[tokio::test]
+async fn password_login_resumes_to_consent_and_approve_returns_a_code() {
+    let fx = fixture(true).await;
+    insert_live_tenant(&fx).await;
+    let a = authorize_as(
+        &fx,
+        None,
+        &loopback_redirect(53682),
+        Some("st-1"),
+        Some(RESOURCE),
+    )
+    .await;
+    assert!(a.consent_uri.starts_with("/oauth/consent?req="));
+    let resp = get(&fx.app, &a.consent_uri, &[&a.resume]).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&resp), "/drust/login");
+    let resp = password_login(&fx, &[&a.resume], &[]).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&resp), CONSENT);
+    assert!(
+        set_cookie_lines(&resp)
+            .iter()
+            .all(|l| !l.starts_with(RESUME_COOKIE))
+    );
+    let session = cookie_kv(&set_cookie(&resp, "drust_session").unwrap());
+    let resp = get(&fx.app, "/oauth/consent", &[&session, &a.resume]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csrf_cookie = cookie_kv(&set_cookie(&resp, CSRF_COOKIE).unwrap());
+    let html = body_text(resp).await;
+    assert!(html.contains("<strong>root</strong> (owner)"));
+    assert!(html.contains("Currently 1."));
+    assert!(html.contains("localhost:53682"));
+    let req = hidden_field(&html, "req").unwrap();
+    assert_eq!(req, a.wire);
+    let csrf = hidden_field(&html, "csrf").unwrap();
+    let resp = approve(
+        &fx,
+        &[("req", &req), ("csrf", &csrf)],
+        &[&session, &a.resume, &csrf_cookie],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let loc = location(&resp);
+    assert!(loc.starts_with("http://localhost:53682/callback?"), "{loc}");
+    assert_eq!(query_param(&loc, "code").unwrap().len(), 43);
+    assert_eq!(query_param(&loc, "state").as_deref(), Some("st-1"));
+    assert_eq!(query_param(&loc, "iss").as_deref(), Some(ISSUER));
+    assert_eq!(query_keys(&loc), ["code", "state", "iss"]);
+    assert!(clears(&resp, RESUME_COOKIE));
+    assert!(clears(&resp, CSRF_COOKIE));
+    assert_eq!(grants(&fx).await, 1);
+    assert_eq!(codes(&fx).await, 1);
+}
+
+#[tokio::test]
+async fn google_login_resumes_to_consent_exactly_once() {
+    let fake = crate::common::oauth_helpers::spawn_fake_google().await;
+    let fx = fixture_with_provider(true, "google", &fake, "kael@example.com").await;
+    let a = authorize_as(&fx, None, &loopback_redirect(5), Some("g"), None).await;
+    let resp = provider_login(&fx, "google", &[&a.resume]).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(location(&resp), CONSENT);
+    let session = cookie_kv(&set_cookie(&resp, "drust_session").unwrap());
+    let resp = get(&fx.app, "/oauth/consent", &[&session, &a.resume]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csrf_cookie = cookie_kv(&set_cookie(&resp, CSRF_COOKIE).unwrap());
+    let html = body_text(resp).await;
+    assert!(html.contains("<strong>kael@example.com</strong> (owner)"));
+    let req = hidden_field(&html, "req").unwrap();
+    let csrf = hidden_field(&html, "csrf").unwrap();
+    let resp = approve(
+        &fx,
+        &[("req", &req), ("csrf", &csrf)],
+        &[&session, &a.resume, &csrf_cookie],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(clears(&resp, RESUME_COOKIE));
+    // The browser dropped the resume cookie, so the next login lands normally.
+    let resp = provider_login(&fx, "google", &[]).await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(location(&resp), LANDING);
+}
+
+#[tokio::test]
+async fn signed_in_authorize_goes_straight_to_consent() {
+    let (fx, session) = signed_in().await;
+    let a = authorize_as(&fx, Some(&session), &loopback_redirect(5), None, None).await;
+    let resp = get(&fx.app, &a.consent_uri, &[&session, &a.resume]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn not_you_logout_then_own_login_returns_to_consent() {
+    let (fx, session) = signed_in().await;
+    let m2 = add_admin(&fx, "m2", "pw-m2-test", "member").await;
+    let c = open_consent(&fx, &session).await;
+    let resp = post_form(&fx.app, "/logout", &[], &[&session, &c.resume], &[]).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&resp), "/drust/login");
+    let resp = post_form(
+        &fx.app,
+        "/login",
+        &[("username", "m2"), ("password", "pw-m2-test")],
+        &[&c.resume],
+        &[],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&resp), CONSENT);
+    let m2_session = cookie_kv(&set_cookie(&resp, "drust_session").unwrap());
+    let resp = get(&fx.app, "/oauth/consent", &[&m2_session, &c.resume]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let new_csrf_cookie = cookie_kv(&set_cookie(&resp, CSRF_COOKIE).unwrap());
+    let html = body_text(resp).await;
+    assert!(html.contains("<strong>m2@example.test</strong> (member)"));
+    let new_csrf = hidden_field(&html, "csrf").unwrap();
+    // The first admin's token does not work for the second admin.
+    let resp = approve(&fx, &c.form(), &[&m2_session, &c.resume, &c.csrf_cookie]).await;
+    error_page(resp, StatusCode::FORBIDDEN, "consent_csrf").await;
+    let resp = approve(
+        &fx,
+        &[("req", &c.req), ("csrf", &new_csrf)],
+        &[&m2_session, &c.resume, &new_csrf_cookie],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let owner: i64 = fx
+        .meta
+        .lock()
+        .await
+        .query_row("SELECT admin_id FROM _mcp_oauth_grants", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(owner, m2);
+}
+
+#[tokio::test]
+async fn each_authorization_shows_consent_and_creates_a_new_grant() {
+    let (fx, session) = signed_in().await;
+    let g1 = obtain_code(&fx, &session, 5, Some("a")).await;
+    let g2 = obtain_code(&fx, &session, 5, Some("b")).await;
+    assert_ne!(g1.code, g2.code);
+    assert_eq!(g1.state.as_deref(), Some("a"));
+    assert_eq!(g2.iss, ISSUER);
+    assert_eq!(grants(&fx).await, 2);
+    assert_eq!(codes(&fx).await, 2);
+}

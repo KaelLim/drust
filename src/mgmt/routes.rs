@@ -589,7 +589,20 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let mut resp = Redirect::to(&crate::base_path::base("/admin/tenants")).into_response();
+    // MA0-6: an in-flight MCP authorization resumes at the consent page. Read
+    // only here, after the cross-site refusal and the password check. Disabled
+    // (`DRUST_MCP` not on) => ResumeDecision::None without reading any cookie,
+    // so this response stays byte-identical.
+    let resume = crate::mgmt::mcp_oauth::envelope::resume_target(
+        &state.mcp_oauth,
+        &headers,
+        crate::mgmt::mcp_oauth::envelope::now_unix().unwrap_or(u64::MAX),
+    );
+    let location = match &resume {
+        crate::mgmt::mcp_oauth::envelope::ResumeDecision::Resume(loc) => loc.clone(),
+        _ => crate::base_path::base("/admin/tenants"),
+    };
+    let mut resp = Redirect::to(&location).into_response(); // still 303
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
@@ -627,6 +640,15 @@ async fn login_submit(
         let theme_cookie = crate::mgmt::theme::build_theme_cookie(t);
         resp.headers_mut()
             .append(header::SET_COOKIE, theme_cookie.parse().unwrap());
+    }
+    if resume == crate::mgmt::mcp_oauth::envelope::ResumeDecision::ClearStale {
+        // `append`, never `insert`: insert would drop the session cookie.
+        resp.headers_mut().append(
+            header::SET_COOKIE,
+            crate::mgmt::mcp_oauth::envelope::clear_resume_cookie()
+                .parse()
+                .unwrap(),
+        );
     }
     resp
 }
