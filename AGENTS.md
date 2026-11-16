@@ -338,6 +338,25 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `OAuthErrorMark`) to a bare `invalid_request` / `server_error`. Passing "anything that is
   already JSON" would let an internal error string reach an unauthenticated caller.
 
+**Deliberate — MCP OAuth authorize (MA0):**
+
+- `/oauth/*` ignores unknown parameters (OAuth 2.1 MUST). The "reject unknown top-level
+  arguments" decision (design §9 #6) applies only to the MA1 account endpoint's tool
+  arguments; applying it here breaks conforming clients.
+- `prompt` is always ignored, including `prompt=none`: drust is not an OpenID provider and
+  Claude Code only sends `prompt=consent`. Consent is shown every time regardless.
+- `redirect_uri_allowed` deliberately does **not** call `url::Url::parse`. WHATWG parsing
+  normalises host case, dot-segments, numeric IPv4 and an explicit default port (`:80`,
+  `:080`), so a parse-then-compare check would accept spellings that are not the pinned
+  string, and the token endpoint must later compare the same raw bytes. "Use the url crate"
+  is a regression, not a cleanup. Corollary: an explicit `:80` is accepted and kept verbatim
+  in `RedirectTarget.raw` (OAuth 2.1 requires any loopback port); do not normalise it away
+  and do not reject it to make a canonical-form test pass.
+- authorize has no rate limit and writes no audit row: it touches no database and no lock,
+  so a budget would protect nothing (the per-IP buckets elsewhere count only misses on
+  endpoints that do work). Pinned by `authorize_writes_nothing` and
+  `authorize_never_takes_the_meta_lock`.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

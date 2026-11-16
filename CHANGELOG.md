@@ -108,6 +108,24 @@ No new route, page or environment variable; no response changes.
   (`/.well-known/oauth-authorization-server/drust`) needs a root proxy rule that ships later
   (MA1c). Docker serves the routes at the root. No deploy file changes.
 
+### MCP OAuth authorization server — authorize (MA0-5)
+
+- **`GET /oauth/authorize` (MA0-5; mounted only when `DRUST_MCP=on`).** Accepts exactly one
+  client, Claude Code, from a copy of its Client ID Metadata Document pinned on 2026-11-14;
+  the document is not fetched at runtime. `redirect_uri` must be
+  `http://localhost[:port]/callback` or `http://127.0.0.1[:port]/callback`, compared on the
+  raw string (no URL normalisation), at most 64 bytes. An unknown client or a rejected
+  redirect shows an HTML error page and never redirects; every later error returns to the
+  client with `error`, `state` (only when sent) and `iss`. PKCE `S256` only; `scope` may be
+  `mcp` and/or `offline_access`; `resource` is optional and must be this server's MCP URL.
+  `prompt` and unknown parameters are ignored, as OAuth requires. A successful request sets
+  a 10-minute `drust_mcp_oauth_resume` cookie (HMAC envelope, per-process key) and goes to
+  the consent page, which ships in MA0-6 (until then it answers 404, so do not set `on` on a
+  host anyone relies on). The endpoint writes nothing to the database and is not
+  rate-limited. With `DRUST_MCP` unset, `off` or `auto`, nothing changes. No new environment
+  variable, no schema change, no deploy file change: both active targets already forward
+  `/oauth/*` to drust.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,

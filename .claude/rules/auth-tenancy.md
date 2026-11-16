@@ -269,6 +269,59 @@ exactly like a path that never existed.
   are not in the auth cache and cannot open SSE or rooms; a cache added for MCP tokens later
   makes every `revoke_mcp_grant` caller responsible for evicting it.
 
+### Authorize (`GET /oauth/authorize`)
+
+`mcp_oauth::authorize` sits in `public_routes` **outside** the token/revoke sub-router's
+`route_layer`s: its answers are an HTML page or a 303, and `oauth_error_layer` would rewrite
+both to OAuth JSON (pinned by `error_page_is_html_not_oauth_json`).
+
+- **Check order and the error split.** The whole query (≤ 4 KiB) is form-decoded once by
+  `params::parse_pairs`; then `client_id` (missing, repeated, not in `KNOWN_CLIENTS`), then
+  `redirect_uri` (missing, repeated, `redirect_uri_allowed` refuses). Every failure up to
+  here is a 400 HTML page (`mcp_oauth_error.html`, standalone, no script, no `Location`,
+  no `Set-Cookie`) — an unvalidated redirect is never followed, and an unknown `client_id`
+  is never echoed. Every later failure is a 303 to the validated redirect with `error`,
+  `error_description`, `state` (only when sent, first value verbatim) and `iss`
+  (`cfg.issuer()`, byte-identical to the metadata `issuer`): `response_type` (missing or
+  repeated `invalid_request`, another value `unsupported_response_type`), PKCE (`S256`
+  only, a 43-character challenge), `scope` (only `mcp` / `offline_access`, else
+  `invalid_scope`), `resource` (none, or exactly one that `is_our_resource`, else
+  `invalid_target`), `state` (≤ 512 bytes). `prompt` and unknown parameters are never read.
+- **Redirect: raw string, never re-parsed.** Accepted language:
+  `http://` + `localhost` | `127.0.0.1` + optional `:` 1–65535 (ASCII digits, no leading
+  zero) + a path that must equal a pinned `redirect_uris` entry byte for byte; ≤ 64 bytes.
+  `RedirectTarget.raw` is the input itself (an explicit `:80` is kept), and every later
+  redirect uses only it. `[::1]` is not accepted: the pinned document does not list it.
+- **Pinned client.** `KNOWN_CLIENTS` holds only Claude Code, copied from its CIMD on
+  `pinned_on`; there is no runtime fetch (invariant 6 untouched). Re-fetch and compare at
+  every release (`.claude/rules/build-deploy.md` per-release checklist).
+- **Envelope.** `envelope::seal` packs version, `exp` (+600 s), a 16-byte nonce and five
+  length-prefixed fields (`client_id`, `redirect_uri`, `state`, `code_challenge`,
+  `resource`; `scope` is never stored — a grant is always `mcp`) under HMAC-SHA256 with a
+  domain tag and the per-process `envelope_key`; `open` checks structure, then the MAC in
+  constant time, then expiry, so a tampered expired envelope is `BadMac` and `Expired`
+  carries a trustworthy request. Both keys are per process: a restart invalidates in-flight
+  consents. The whole envelope rides both the consent `req` query value and the
+  `drust_mcp_oauth_resume` cookie (`Path=cookie_path("")`, `HttpOnly`, `SameSite=Lax`,
+  `Max-Age=600`, `Secure` unless `DRUST_DEV_NO_SECURE_COOKIES`).
+- **No database, no lock, no limiter, no audit.** The handler reads `MgmtState.mcp_oauth`
+  only (pinned by `authorize_writes_nothing` and `authorize_never_takes_the_meta_lock`).
+  `error_description` values are English ASCII constants, never i18n or caller input.
+- **Log hygiene**: authorize and consent logs may carry only the reason, `client_id`,
+  `pinned_on` and the `display_received` form of a rejected `redirect_uri`. Never log
+  `state`, `code_challenge`, `resource`, the raw query or an envelope.
+- **`SameSite=Lax` is required**: the resume cookie must survive the cross-site top-level
+  return from Google/GitHub login; `Strict` breaks the consent flow after sign-in. Do not
+  "harden" it to `Strict` (same reason as the session cookie, `src/auth/middleware.rs`
+  `session_cookie_is_samesite_lax`).
+- **The resume cookie is login continuation, not a CSRF or browser-binding defence**:
+  anyone who can steer a browser into the consent page with a given `req` can first steer it
+  through authorize. Forged approvals are stopped by the consent CSRF token, which must
+  never be dropped on the strength of the cookie.
+- **Clock failure fails closed**: `envelope::now_unix()` returns `Option`; authorize
+  answers `server_error` on `None`, and every `open` caller passes
+  `now_unix().unwrap_or(u64::MAX)`. Never map a clock failure to 0.
+
 ## Tenant creation cap and quota tier
 
 Both are **admin-plane only**, deliberately: a tenant's own service key must never be able

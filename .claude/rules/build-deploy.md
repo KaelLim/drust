@@ -106,6 +106,11 @@ Per-release checklist — run it before tagging, not after. It covers the two ac
 4. New route or route prefix? Check `deploy/compose.Caddyfile`, not just the host Caddyfile.
 5. Migration or first-boot behaviour change? It runs on every boot on both targets, and containers restart far more often than this host does.
 6. Storage or `/public/*` change? Run the smoke on both stores: `deploy/smoke/up.sh` (RustFS) and `SMOKE_STORE=garage deploy/smoke/up.sh` (the host's store).
+7. MCP OAuth enabled anywhere? Re-fetch `https://claude.ai/oauth/claude-code-client-metadata`
+   and compare it with `KNOWN_CLIENTS` in `src/mgmt/mcp_oauth/clients.rs`. On any difference
+   in `client_id` or `redirect_uris`, update the pinned copy and `pinned_on` in the same
+   release. Claude Code has changed its redirect host before, and a stale pin shows up only as
+   users stuck on the authorize error page.
 
 Resuming k3s — the chart-side work the hold skips, all of it, before the chart counts as a target again:
 
