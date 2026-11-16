@@ -664,9 +664,7 @@ fn origin_with_resource_len(len: usize) -> String {
         let n = if left > 63 && left - n == 1 { 62 } else { n };
         labels.push("a".repeat(n));
         left -= n;
-        if left > 0 {
-            left -= 1;
-        }
+        left = left.saturating_sub(1); // the dot before the next label
     }
     format!("https://{}", labels.join("."))
 }

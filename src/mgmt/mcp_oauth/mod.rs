@@ -243,13 +243,13 @@ mod source_pins {
                 let n = rest.bytes().take_while(|c| is_ident(*c)).count();
                 rest.as_bytes().get(n) == Some(&b'(')
             };
-            if call || helper {
-                if let Some(open) = rest.find(['(', '{']) {
-                    let end = close_of(rest.as_bytes(), open);
-                    out.push(&rest[..end]);
-                    i += end;
-                    continue;
-                }
+            if (call || helper)
+                && let Some(open) = rest.find(['(', '{'])
+            {
+                let end = close_of(rest.as_bytes(), open);
+                out.push(&rest[..end]);
+                i += end;
+                continue;
             }
             if b[i] == b'.' {
                 let n = rest[1..].bytes().take_while(|c| is_ident(*c)).count();
