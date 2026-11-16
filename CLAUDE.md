@@ -84,7 +84,7 @@ Three SQLite files, three lifetimes:
 
 | File | Holds | Notes |
 |---|---|---|
-| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs | tokens stored hashed **and** plaintext, so `whoami` and the admin UI can echo the key |
+| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs, MCP OAuth grants and token hashes (`_mcp_*`, hashed only) | tokens stored hashed **and** plaintext, so `whoami` and the admin UI can echo the key |
 | `tenants/<id>/data.sqlite` | one per tenant: user collections + `_system_*` tables | reads via `SQLITE_OPEN_READONLY` connections under `sqlite3_set_authorizer`; writes serialize on a per-tenant writer mutex (`pool.with_writer`) |
 | `meta_logs.sqlite` | the host-wide audit log | written by a single batching task; lossy under backpressure by design |
 
@@ -154,9 +154,10 @@ file prefix policies, audit toggle) are **service-only** on every face. Storage 
 
 > [!CAUTION]
 > **Backup snapshots contain live plaintext credentials.** `backups/*.tar.zst` carries
-> `tokens.plaintext` and `_admin_tokens.plaintext` verbatim, so a snapshot grants full
-> data-plane access to every tenant and cross-tenant admin access until those tokens are
-> rerolled. Same filesystem perms as `.env`; never copy off-host unencrypted.
+> `tokens.plaintext` and `_admin_tokens.plaintext` verbatim, and admin session cookies in
+> `sessions.token` (dual-write period), so a snapshot grants full data-plane access to every
+> tenant and cross-tenant admin access until those tokens are rerolled. Same filesystem
+> perms as `.env`; never copy off-host unencrypted.
 
 The following are enforced by **enumeration across parallel sites**, not by one abstraction.
 That is what makes them fragile: a new code path that forgets one is a real hole and will
@@ -458,7 +459,7 @@ the glob fires, just read the file.
 |---|---|---|
 | `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**`, `docker-compose*.yml` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
-| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
+| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/mgmt/mcp_oauth/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
 | `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
 | `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | object-store integration (S3 client, bucket probe), upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |

@@ -9,6 +9,7 @@ paths:
   - "src/mgmt/quota_admin.rs"
   - "src/mgmt/tenant_cap.rs"
   - "src/mgmt/tenants/**"
+  - "src/mgmt/mcp_oauth/**"
   - "src/tenant/auth_cache.rs"
   - "src/tenant/oauth_routes.rs"
   - "src/tenant/admin_user_routes.rs"

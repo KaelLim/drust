@@ -4,6 +4,9 @@ One admin-plane change: a browser-declared cross-site `POST /login` is refused w
 `403 LOGIN_CROSS_SITE` (MA0-1, below); every other login — the drust login form, scripts,
 the eval harness — is unchanged.
 
+The MCP OAuth foundation (MA0-2, below) adds five empty `meta.sqlite` tables and five
+optional environment variables; none of them changes any HTTP response in this release.
+
 ### Fixed
 
 - **`POST /login` refuses a browser-declared cross-site submission (MA0-1).** The admin
@@ -25,6 +28,38 @@ the eval harness — is unchanged.
   without that variable the session cookie is `Secure` and a plain-HTTP login yields no
   usable session anyway). No new environment variable, no schema change; not gated on
   `DRUST_MCP`.
+
+### MCP OAuth authorization server — foundation (MA0-2)
+
+Groundwork only: no route, page or response changes. Nothing reads the new state yet.
+
+- **Five new, empty tables in `meta.sqlite`** — `_mcp_oauth_grants`, `_mcp_oauth_codes`,
+  `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets` — created by both the
+  fresh-install path and the boot migration (`CREATE … IF NOT EXISTS` only; nothing is minted,
+  revoked or deleted on boot). They will hold token **hashes only**, never plaintext.
+- **New optional environment variables**: `DRUST_MCP` (`auto` | `on` | `off`, default
+  `auto`), `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` (3600, clamped 900–86400),
+  `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` (60, 0–300), `DRUST_MCP_OAUTH_IDLE_DAYS` (30,
+  1–MAX_DAYS), `DRUST_MCP_OAUTH_MAX_DAYS` (90, 1–365). **In this release `auto` means off**;
+  do not set `on` outside development. An unrecognised `DRUST_MCP` value, or an unusable
+  `DRUST_PUBLIC_URL` with `on`, leaves MCP off and logs an error — boot continues.
+- **Access-token lifetime vs. refresh grace** (takes effect once the token endpoint ships):
+  a refresh presented again within `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` of its rotation is
+  treated as a client retry and gets a sibling token pair instead of revoking the grant; the
+  access tokens those siblings already received stay valid until their own expiry, which is
+  `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` (up to 24 h if raised). For the strictest reuse
+  detection set the grace to `0`. Revoking a grant from the admin UI is immediate either way.
+- **Per-IP budget for failed token lookups** (takes effect once the token endpoint ships):
+  it keys on the same client address as the other per-IP limiters (`DRUST_TRUSTED_PROXIES`
+  and the TCP peer). If that proxy count is wrong for a deployment, every client shares one
+  budget. Valid credentials never touch it; a client presenting a stale token may then
+  briefly get `429` with `Retry-After` instead of `invalid_grant`.
+- One new boot log line reports the MCP OAuth state (and never prints `DRUST_PUBLIC_URL`
+  when it is rejected).
+- **Deploy**: `deploy/drust.service`, `docker-compose.yml` and `.env.example` list the new
+  variables, commented out; no target needs to set any of them.
+- **Rollback**: reverting leaves the five empty tables in place; older binaries ignore them.
+  Their shape is fixed from the first boot on any host.
 
 ## v1.67.0 — 2026-11-15
 

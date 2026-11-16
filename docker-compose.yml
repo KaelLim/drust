@@ -104,6 +104,14 @@ services:
       # MAX_CONCURRENCY so one tenant's fan-out can't occupy the whole pool and
       # starve other tenants' webhooks (cross-tenant head-of-line blocking).
       # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
+      # --- MCP OAuth authorization server (leave unset in this release) ---
+      # `auto` (default) means off until the account-level /mcp endpoint ships.
+      # Needs DRUST_PUBLIC_URL (above) to be an https:// origin.
+      # DRUST_MCP: "auto"
+      # DRUST_MCP_OAUTH_ACCESS_TTL_SECS: "3600"
+      # DRUST_MCP_OAUTH_REFRESH_GRACE_SECS: "60"
+      # DRUST_MCP_OAUTH_IDLE_DAYS: "30"
+      # DRUST_MCP_OAUTH_MAX_DAYS: "90"
       # --- object storage (file features) ---
       # Not set here. docker-compose.storage.yml adds GARAGE_S3_ENDPOINT and
       # drust's own bucket-scoped key when storage is on (deploy/compose-storage-env.sh).

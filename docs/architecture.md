@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-11-15
+updated: 2026-11-16
 generated_by: docs/gen-architecture.py
 ---
 
@@ -22,18 +22,18 @@ generated_by: docs/gen-architecture.py
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
 | [`(root)/`](#srcroot) | 6 | 34 | 3 | 30 |
-| [`auth/`](#srcauth) | 10 | 53 | 3 | 47 |
+| [`auth/`](#srcauth) | 10 | 53 | 3 | 50 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
-| [`db/`](#srcdb) | 2 | 19 | 1 | 0 |
+| [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
 | [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 44 | 383 | 120 | 55 |
+| [`mgmt/`](#srcmgmt) | 48 | 415 | 126 | 56 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
-| [`safety/`](#srcsafety) | 8 | 51 | 2 | 14 |
+| [`safety/`](#srcsafety) | 8 | 51 | 2 | 16 |
 | [`storage/`](#srcstorage) | 18 | 192 | 24 | 109 |
 | [`tenant/`](#srctenant) | 39 | 297 | 124 | 77 |
 
@@ -163,7 +163,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/db/`
 
-- [`migrations.rs`](../src/db/migrations.rs) — 18 pub
+- [`migrations.rs`](../src/db/migrations.rs) — 19 pub
 - [`mod.rs`](../src/db/mod.rs) — 1 pub
 
 <a id="srcfunctions"></a>
@@ -233,8 +233,12 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
+- [`mcp_oauth/config.rs`](../src/mgmt/mcp_oauth/config.rs) — `McpOauthConfig`: whether the MCP OAuth authorization server is on, the public · 10 pub
+- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 3 pub
+- [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for `/oauth/token` and `/oauth/revoke`, and the limiter · 11 pub
+- [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
 - [`metrics.rs`](../src/mgmt/metrics.rs) — v1.32 C1 — Prometheus metrics endpoint. · 3 pub
-- [`mod.rs`](../src/mgmt/mod.rs) — 36 pub
+- [`mod.rs`](../src/mgmt/mod.rs) — 37 pub
 - [`oauth_login.rs`](../src/mgmt/oauth_login.rs) — Admin-specific OAuth glue. Calls into src/oauth/ (provider-agnostic · 4 pub
 - [`pat_evict.rs`](../src/mgmt/pat_evict.rs) — #975 — the eviction SET for an admin-PAT revocation, and the one place that · 3 pub
 - [`pat_evict_pin.rs`](../src/mgmt/pat_evict_pin.rs) — Test-only STRUCTURAL PIN (#975): at every admin-PAT revocation site, the

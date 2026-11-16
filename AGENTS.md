@@ -285,6 +285,16 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   addressed here; and same-origin active content, which is invariant 14's job
   (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's.
 
+**Deliberate — MCP OAuth AS (not the PAT family):**
+
+- `_mcp_upload_tickets.tenant_id` has **no FK to `tenants`** — deliberate. The tenant
+  id-recycle branch hard-`DELETE`s the `tenants` row (`mgmt::tenants::crud`); a non-CASCADE
+  FK would make that recycle fail on any leftover ticket. Tickets are deleted explicitly in
+  that branch from MA1b on. Do not "add the missing FK".
+- An unrecognised `DRUST_MCP`, or an unusable `DRUST_PUBLIC_URL` with `DRUST_MCP=on`,
+  **boots with MCP off and an `error` line**, never a boot failure — fail closed for the new
+  surface without taking the trusted planes down. Do not turn it into a startup error.
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |
