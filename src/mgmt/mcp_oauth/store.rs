@@ -219,6 +219,13 @@ SELECT g.id, g.admin_id, COALESCE(ad.email, ad.username) \
    AND g.revoked_at IS NULL \
    AND g.idle_expires_at > datetime('now') AND g.absolute_expires_at > datetime('now')";
 
+// The same 60 s throttle the admin PAT bump uses (tenant/router.rs). Inside the
+// window it matches 0 rows and writes no page.
+const TOUCH_GRANT_THROTTLED: &str = "\
+UPDATE _mcp_oauth_grants SET last_used_at = datetime('now') \
+ WHERE id = ?1 \
+   AND (last_used_at IS NULL OR last_used_at < datetime('now', '-60 seconds'))";
+
 const SQL_FIND_BY_REFRESH: &str = "\
 SELECT g.id, g.admin_id \
   FROM _mcp_oauth_refresh r \
@@ -315,6 +322,19 @@ pub fn find_grant_by_access(
         })
     })
     .optional()
+}
+
+/// Marks the grant as used, at most once per 60 s (the throttle is in the SQL;
+/// inside the window it matches 0 rows and writes no page). Takes the
+/// `AccessGrant` itself, so only a request that just passed
+/// `find_grant_by_access` can make a grant look recently used on the settings
+/// card. Called in the same locked block and on the same connection as that
+/// lookup, never from a background task. A failure never changes the
+/// authorization decision: callers warn and continue.
+///
+/// Returns rows written: 1 at most once per 60 s per grant, else 0.
+pub fn touch_grant_last_used(conn: &Connection, g: &AccessGrant) -> rusqlite::Result<usize> {
+    conn.execute(TOUCH_GRANT_THROTTLED, params![g.grant_id()])
 }
 
 pub fn find_grant_by_refresh(conn: &Connection, token: &str) -> rusqlite::Result<Option<GrantRef>> {
@@ -1230,5 +1250,66 @@ mod tests {
         assert_eq!(find.matches("AccessGrant {").count(), 1, "{WHY}");
         let methods = prod_fn_body(&stripped, "impl AccessGrant {");
         assert!(!methods.contains("Self"), "{WHY}");
+    }
+
+    #[test]
+    fn touch_grant_last_used_is_throttled_to_60_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let other = second_grant(&conn);
+        let t = issue(&conn, g, None);
+        let a = find_grant_by_access(&conn, &t.access_token)
+            .unwrap()
+            .expect("a live access token authorizes");
+        let last = |c: &Connection, id: i64| -> Option<String> {
+            c.query_row(
+                "SELECT last_used_at FROM _mcp_oauth_grants WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let set = |c: &Connection, m: &str| {
+            c.execute(
+                "UPDATE _mcp_oauth_grants SET last_used_at = datetime('now', ?2) WHERE id = ?1",
+                params![g, m],
+            )
+            .unwrap();
+        };
+        // issue_token_pair stamps last_used_at; start from a never-used grant.
+        conn.execute(
+            "UPDATE _mcp_oauth_grants SET last_used_at = NULL WHERE id = ?1",
+            params![g],
+        )
+        .unwrap();
+        assert_eq!(last(&conn, g), None);
+        assert_eq!(
+            touch_grant_last_used(&conn, &a).unwrap(),
+            1,
+            "first use writes"
+        );
+        assert!(last(&conn, g).is_some());
+        assert_eq!(
+            touch_grant_last_used(&conn, &a).unwrap(),
+            0,
+            "again at once: no write"
+        );
+        set(&conn, "-59 seconds");
+        assert_eq!(
+            touch_grant_last_used(&conn, &a).unwrap(),
+            0,
+            "59 s ago: inside the window"
+        );
+        set(&conn, "-61 seconds");
+        assert_eq!(
+            touch_grant_last_used(&conn, &a).unwrap(),
+            1,
+            "61 s ago: writes again"
+        );
+        assert_eq!(
+            last(&conn, other),
+            None,
+            "only the authorized grant is touched"
+        );
     }
 }
