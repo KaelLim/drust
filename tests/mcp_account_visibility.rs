@@ -177,21 +177,6 @@ async fn a_deleted_admin_is_refused_on_the_next_call() {
 }
 
 #[tokio::test]
-async fn tools_list_names_only_list_tenants() {
-    let h = helpers::spin_up_account_mcp("blog").await;
-    let (status, _, msgs) = helpers::mcp_rpc(
-        &h.app,
-        Some(&h.access),
-        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let tools = msgs[0]["result"]["tools"].as_array().unwrap();
-    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["list_tenants"]);
-}
-
-#[tokio::test]
 async fn tools_list_entry_for_list_tenants_carries_its_annotations() {
     let h = helpers::spin_up_account_mcp("blog").await;
     let (_, _, msgs) = helpers::mcp_rpc(

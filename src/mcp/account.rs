@@ -21,7 +21,7 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-use crate::mcp::handler::{INSTRUCTIONS_MAX_CHARS, server_capabilities};
+use crate::mcp::handler::{DrustMcpService, INSTRUCTIONS_MAX_CHARS, server_capabilities};
 use crate::mcp::server::{DrustMcp, McpRegistry};
 use crate::mgmt::mcp_oauth::caller::McpCaller;
 use crate::mgmt::mcp_oauth::config::McpOauthConfig;
@@ -193,6 +193,167 @@ fn internal() -> McpError {
     )
 }
 
+/// What every inner tool's injected `tenant` property says.
+pub(crate) const TENANT_PROPERTY_DESCRIPTION: &str = "Tenant id (from list_tenants).";
+
+/// `schema` with a required `tenant` string first in `properties` and first in
+/// `required`, each created when absent. Only the top level changes: the key
+/// order, `$schema`, `$defs` and every nested schema are kept as they are. The
+/// map is rebuilt rather than inserted into, so `tenant` really comes first
+/// under `preserve_order`.
+pub(crate) fn inject_tenant(schema: &JsonObject) -> JsonObject {
+    let tenant = serde_json::json!({"type": "string", "description": TENANT_PROPERTY_DESCRIPTION});
+    let mut out = JsonObject::new();
+    let (mut has_props, mut has_required) = (false, false);
+    for (k, v) in schema {
+        match k.as_str() {
+            "properties" => {
+                has_props = true;
+                let mut props = JsonObject::new();
+                props.insert("tenant".into(), tenant.clone());
+                if let Some(old) = v.as_object() {
+                    for (pk, pv) in old {
+                        props.insert(pk.clone(), pv.clone());
+                    }
+                }
+                out.insert(k.clone(), serde_json::Value::Object(props));
+            }
+            "required" => {
+                has_required = true;
+                let mut req = vec![serde_json::json!("tenant")];
+                if let Some(old) = v.as_array() {
+                    req.extend(old.iter().cloned());
+                }
+                out.insert(k.clone(), serde_json::Value::Array(req));
+            }
+            _ => {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    if !has_props {
+        out.insert("properties".into(), serde_json::json!({"tenant": tenant}));
+    }
+    if !has_required {
+        out.insert("required".into(), serde_json::json!(["tenant"]));
+    }
+    out
+}
+
+/// Account-level wording for inner tools whose description tells the model to
+/// fetch or send a tenant key, or names a per-tenant REST path: `(tool,
+/// fragment that occurs exactly once in the inner description, replacement)`.
+/// The inner descriptions stay as the per-tenant endpoint serves them;
+/// `tool_surface_tests` fails when a fragment drifts.
+pub(crate) const DESCRIPTION_OVERRIDES: &[(&str, &str, &str)] = &[
+    (
+        "whoami",
+        "both bearer tokens (anon + service, plaintext), the relative REST/MCP/files/rpc endpoint paths,",
+        "its anon token (plaintext: it is the public browser key), a REDACTED reference to its service key (id, created_at, and how_to_get: the admin UI page where the user can copy it; the key itself never appears here), `caller` (this OAuth grant), the account-level MCP URL, the relative REST/files/rpc endpoint paths,",
+    ),
+    (
+        "whoami",
+        "Use this to surface credentials needed for surfaces with no MCP tool — most importantly the multipart file upload endpoint. Tokens minted before v1.1c only stored the hash; their `plaintext` field is null and require an admin reroll to recover. ",
+        "",
+    ),
+    (
+        "get_schema_overview",
+        "Service-key only.",
+        "Needs service rights, which this connection has.",
+    ),
+    (
+        "set_description",
+        "Service-key only.",
+        "Needs service rights, which this connection has.",
+    ),
+    (
+        "insert_records",
+        "Service-key only.",
+        "Needs service rights, which this connection has.",
+    ),
+    (
+        "upsert_records",
+        "Service-key only.",
+        "Needs service rights, which this connection has.",
+    ),
+    (
+        "list_oauth_providers",
+        "Service-key-only;",
+        "Needs service rights;",
+    ),
+    (
+        "broadcast",
+        "Service-key only (MCP dispatch already gates this). Fans out to every WebSocket subscriber currently connected to /t/<tenant>/realtime on the same room name.",
+        "Needs service rights, which this connection has. Fans out to every WebSocket subscriber currently connected to this tenant's realtime endpoint on the same room name.",
+    ),
+    (
+        "call_rpc",
+        "MCP is service-only, so anon_callable is not consulted on this surface — a service-key holder may call any RPC,",
+        "This connection has service rights, so anon_callable is not consulted here — you may call any RPC,",
+    ),
+    (
+        "create_rpc",
+        "write RPCs run via REST POST /t/<tenant>/rpc/<name>, the admin playground, or cron.",
+        "write RPCs run in the admin UI's RPC playground, from cron, or over REST with a tenant key the user holds (this connection carries none).",
+    ),
+    (
+        "list_functions",
+        "There is NO MCP upload tool by design — POST the .wasm to /t/<tenant>/functions (multipart: name, wasm, triggers, description) with the service bearer, at whoami's `endpoints.rest_base` + `functions`.",
+        "There is NO MCP upload tool, and this connection carries no tenant key: ask the user to upload the .wasm on the tenant's functions page in the admin UI, which shows the upload command.",
+    ),
+    (
+        "invoke_function",
+        "For synchronous test runs use REST POST /t/<tenant>/functions/<name>/invoke.",
+        "For a synchronous test run, ask the user to use the test-invoke form on the tenant's functions page in the admin UI.",
+    ),
+    (
+        "list_cron_jobs",
+        "Per-job run history has no MCP tool — read the last 20 outcomes via REST GET /t/<tenant>/cron/<name>/runs with the service bearer.",
+        "Per-job run history has no MCP tool — the tenant's cron page in the admin UI shows recent runs for each job.",
+    ),
+];
+
+/// The tools only the account-level endpoint has; they run here, not in a
+/// tenant's tool router.
+pub(crate) const OUTER_TOOLS: &[&str] = &[LIST_TENANTS];
+
+/// Every tool `tools/list` advertises on the account-level endpoint, built
+/// once: the outer tools in `OUTER_TOOLS` order, then the per-tenant tools in
+/// the router's (name) order, each with `tenant` injected into its inputSchema
+/// and its description passed through `DESCRIPTION_OVERRIDES`. Annotations,
+/// `_meta` and execution are the inner tool's own. Only this list is cached;
+/// the tool router itself is rebuilt for every call.
+pub(crate) fn account_tools() -> &'static [Tool] {
+    static TOOLS: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    TOOLS.get_or_init(|| {
+        let mut out: Vec<Tool> = OUTER_TOOLS
+            .iter()
+            .map(|n| match *n {
+                LIST_TENANTS => list_tenants_tool(),
+                other => unreachable!("outer tool {other} has no definition"),
+            })
+            .collect();
+        for mut t in DrustMcpService::tool_router().list_all() {
+            t.input_schema = Arc::new(inject_tenant(&t.input_schema));
+            for (_, old, new) in DESCRIPTION_OVERRIDES
+                .iter()
+                .filter(|(n, _, _)| *n == t.name)
+            {
+                if let Some(d) = t.description.as_mut() {
+                    *d = d.replacen(old, new, 1).into();
+                }
+            }
+            out.push(t);
+        }
+        out
+    })
+}
+
+/// One tool of [`account_tools`] by name.
+pub(crate) fn account_tool(name: &str) -> Option<&'static Tool> {
+    account_tools().iter().find(|t| t.name == name)
+}
+
 impl AccountMcp {
     pub(crate) fn new(
         registry: Arc<McpRegistry>,
@@ -210,6 +371,12 @@ impl AccountMcp {
                 log_dir,
             }),
         }
+    }
+
+    /// How many tools `tools/list` advertises: the per-tenant tools plus the
+    /// outer ones.
+    pub fn tool_count() -> usize {
+        account_tools().len()
     }
 
     /// The fixed instructions every `initialize` answer carries.
@@ -407,11 +574,13 @@ impl ServerHandler for AccountMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(vec![list_tenants_tool()]))
+        Ok(ListToolsResult::with_all_items(account_tools().to_vec()))
     }
 
+    /// The same list `tools/list` answers with; rmcp asks it before a
+    /// task-augmented call to check the tool's task support.
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        (name == LIST_TENANTS).then(list_tenants_tool)
+        account_tool(name).cloned()
     }
 
     /// Dispatches on the caller from the request parts and the tool name; an
@@ -1014,7 +1183,7 @@ mod resolve_tests {
     }
 
     #[tokio::test]
-    async fn get_tool_knows_only_list_tenants() {
+    async fn get_tool_answers_from_the_account_list() {
         use rmcp::ServerHandler as _; // get_tool is a trait method
         let f = fx().await;
         assert_eq!(
@@ -1024,7 +1193,9 @@ mod resolve_tests {
                 .as_deref(),
             Some("list_tenants")
         );
-        assert!(f.acct.get_tool("whoami").is_none());
+        let w = f.acct.get_tool("whoami").expect("inner tools are listed");
+        assert_eq!(w.input_schema["required"][0], "tenant");
+        assert!(f.acct.get_tool("nope").is_none());
     }
 
     #[tokio::test]
@@ -1276,13 +1447,7 @@ mod instructions_tests {
         "Only delete_record, drop_collection and drop_index accept `dry_run: true`";
 
     fn all_tool_names() -> Vec<String> {
-        let mut v: Vec<String> = DrustMcpService::tool_router()
-            .list_all()
-            .into_iter()
-            .map(|t| t.name.to_string())
-            .collect();
-        v.push("list_tenants".to_string());
-        v
+        account_tools().iter().map(|t| t.name.to_string()).collect()
     }
     fn pos(s: &str, n: &str) -> usize {
         s.find(n).unwrap_or_else(|| panic!("missing {n:?}"))
@@ -1391,6 +1556,287 @@ mod instructions_tests {
         );
         for line in s.lines().filter(|l| l.contains("whoami")) {
             assert!(!line.contains("token") && !line.contains("key"), "{line}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tool_surface_tests {
+    use super::*;
+    use crate::mcp::handler::DrustMcpService;
+    use serde_json::{Value, json};
+
+    /// (tool, readOnly, destructive, idempotent, openWorld) for each OUTER tool;
+    /// inner tools are pinned by handler.rs annotation_tests.
+    const OUTER_ANNOTATIONS: &[(&str, Option<bool>, Option<bool>, Option<bool>, Option<bool>)] =
+        &[("list_tenants", Some(true), None, None, Some(false))];
+    const FORBIDDEN: &[&str] = &[
+        "the service bearer",
+        "service-key holder",
+        "Service-key",
+        "both bearer tokens",
+        "/t/<tenant>/",
+    ];
+    /// recent_writes keeps the inner text until this endpoint writes audit rows.
+    const FORBIDDEN_EXEMPT: &[(&str, &str)] = &[("recent_writes", "Service-key")];
+
+    fn obj(v: Value) -> rmcp::model::JsonObject {
+        v.as_object().unwrap().clone()
+    }
+    fn keys(v: &Value) -> Vec<String> {
+        v.as_object().unwrap().keys().cloned().collect()
+    }
+    fn tp() -> Value {
+        json!({"type":"string","description":"Tenant id (from list_tenants)."})
+    }
+
+    #[test]
+    fn inject_tenant_puts_tenant_first_and_leaves_keywords_alone() {
+        let out = Value::Object(inject_tenant(&obj(json!({"$schema":"S","type":"object",
+            "properties":{"a":{"type":"string"}},"required":["a"],"$defs":{"X":{"type":"object"}}}))));
+        assert_eq!(keys(&out["properties"]), ["tenant", "a"]);
+        assert_eq!(out["properties"]["tenant"], tp());
+        assert_eq!(out["required"], json!(["tenant", "a"]));
+        assert_eq!(
+            (&out["$defs"], &out["$schema"]),
+            (&json!({"X":{"type":"object"}}), &json!("S"))
+        );
+        for input in [
+            json!({"type":"object"}),
+            json!({"type":"object","properties":{}}),
+        ] {
+            let o = Value::Object(inject_tenant(&obj(input)));
+            assert_eq!(
+                (o["properties"].clone(), o["required"].clone()),
+                (json!({"tenant": tp()}), json!(["tenant"]))
+            );
+        }
+    }
+
+    #[test]
+    fn every_inner_schema_is_injected_and_flat() {
+        let inner = DrustMcpService::tool_router().list_all();
+        assert_eq!(inner.len(), 76);
+        for t in &inner {
+            assert!(
+                t.input_schema
+                    .get("properties")
+                    .and_then(|p| p.get("tenant"))
+                    .is_none(),
+                "{}",
+                t.name
+            );
+            let s = &account_tool(&t.name).unwrap().input_schema;
+            for kw in ["allOf", "anyOf", "oneOf", "$ref"] {
+                assert!(!s.contains_key(kw), "{}: {kw}", t.name);
+            }
+            assert_eq!(
+                s["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .next()
+                    .map(String::as_str),
+                Some("tenant")
+            );
+            let req: Vec<&str> = s["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let mut d = req.clone();
+            d.sort();
+            d.dedup();
+            assert_eq!((req[0], d.len()), ("tenant", req.len()), "{}", t.name);
+        }
+        // EmptyParams and no Parameters
+        for n in ["whoami", "list_collections"] {
+            let s = Value::Object((*account_tool(n).unwrap().input_schema).clone());
+            assert_eq!(
+                (keys(&s["properties"]), s["required"].clone()),
+                (vec!["tenant".to_string()], json!(["tenant"])),
+                "{n}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_tools_are_the_outer_tools_then_the_inner_ones() {
+        let names: Vec<String> = account_tools().iter().map(|t| t.name.to_string()).collect();
+        let mut want: Vec<String> = OUTER_TOOLS.iter().map(|s| s.to_string()).collect();
+        want.extend(
+            DrustMcpService::tool_router()
+                .list_all()
+                .into_iter()
+                .map(|t| t.name.to_string()),
+        );
+        assert_eq!(names, want);
+        let mut uniq = names.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            names.len(),
+            "an outer tool name must not shadow an inner one"
+        );
+        assert_eq!(
+            AccountMcp::tool_count(),
+            DrustMcpService::tool_count() + OUTER_TOOLS.len()
+        );
+        assert_eq!(AccountMcp::tool_count(), 77);
+    }
+
+    #[test]
+    fn inner_annotations_and_unlisted_descriptions_are_unchanged() {
+        for t in DrustMcpService::tool_router().list_all() {
+            let a = account_tool(&t.name).unwrap();
+            assert_eq!(
+                (&a.annotations, &a.meta, &a.execution),
+                (&t.annotations, &t.meta, &t.execution),
+                "{}",
+                t.name
+            );
+            if !DESCRIPTION_OVERRIDES.iter().any(|(n, _, _)| *n == t.name) {
+                assert_eq!(a.description, t.description, "{}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn outer_tools_match_the_annotation_table() {
+        assert_eq!(OUTER_ANNOTATIONS.len(), OUTER_TOOLS.len());
+        for (name, ro, de, id, ow) in OUTER_ANNOTATIONS {
+            let a = account_tool(name)
+                .unwrap()
+                .annotations
+                .clone()
+                .expect("annotations");
+            assert_eq!(
+                (
+                    a.read_only_hint,
+                    a.destructive_hint,
+                    a.idempotent_hint,
+                    a.open_world_hint
+                ),
+                (*ro, *de, *id, *ow)
+            );
+        }
+        let lt = account_tool("list_tenants").unwrap();
+        assert_eq!(
+            Value::Object((*lt.input_schema).clone()),
+            json!({"type":"object","properties":{}})
+        );
+        assert_eq!(
+            lt.meta.as_ref().unwrap().get("anthropic/alwaysLoad"),
+            Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn each_description_override_matches_exactly_once() {
+        let inner = DrustMcpService::tool_router().list_all();
+        for (name, old, _) in DESCRIPTION_OVERRIDES {
+            let d = inner
+                .iter()
+                .find(|t| t.name == *name)
+                .expect("inner tool")
+                .description
+                .clone()
+                .unwrap();
+            assert_eq!(
+                d.matches(old).count(),
+                1,
+                "{name}: fragment drifted: {old:?}"
+            );
+        }
+        let mut set: Vec<&str> = DESCRIPTION_OVERRIDES.iter().map(|(n, _, _)| *n).collect();
+        set.sort();
+        set.dedup();
+        assert_eq!(
+            set,
+            [
+                "broadcast",
+                "call_rpc",
+                "create_rpc",
+                "get_schema_overview",
+                "insert_records",
+                "invoke_function",
+                "list_cron_jobs",
+                "list_functions",
+                "list_oauth_providers",
+                "set_description",
+                "upsert_records",
+                "whoami"
+            ]
+        );
+    }
+
+    #[test]
+    fn account_descriptions_carry_no_key_guidance() {
+        for t in account_tools() {
+            let d = t.description.as_deref().unwrap_or("");
+            for f in FORBIDDEN
+                .iter()
+                .filter(|f| !FORBIDDEN_EXEMPT.contains(&(t.name.as_ref(), **f)))
+            {
+                assert!(!d.contains(f), "{}: contains {f:?}", t.name);
+            }
+        }
+    }
+
+    /// precheck step 5 is sound only while every key serde accepts is listed in `properties`.
+    #[test]
+    fn strict_argument_check_rests_on_plain_serde_fields() {
+        fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out)
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p)
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = vec![root.join("src/mcp/handler.rs")];
+        walk(&root.join("src/mcp/tools"), &mut files);
+        // (attribute, keywords that let serde and the published inputSchema disagree, minimum seen)
+        let checks = [
+            (
+                r"(?s)#\[serde\(([^\]]*)\]",
+                r"\b(alias|flatten|untagged|skip|skip_deserializing)\b",
+                80,
+            ),
+            (
+                r"(?s)#\[schemars\(([^\]]*)\]",
+                r"\b(skip|rename|flatten)\b",
+                10,
+            ),
+        ];
+        for (attr, bad, min) in checks {
+            let attr = regex_lite::Regex::new(attr).unwrap();
+            let bad = regex_lite::Regex::new(bad).unwrap();
+            let mut seen = 0;
+            for f in &files {
+                let code: String = std::fs::read_to_string(f)
+                    .unwrap()
+                    .lines()
+                    .map(|l| l.split("//").next().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for c in attr.captures_iter(&code) {
+                    seen += 1;
+                    assert!(
+                        !bad.is_match(&c[1]),
+                        "{}: ({}) lets serde accept a key the inputSchema \
+                        does not list, so the account endpoint's unknown-argument check would reject it",
+                        f.display(),
+                        &c[1]
+                    );
+                }
+            }
+            assert!(seen >= min, "scan saw only {seen} attributes for {attr}");
         }
     }
 }

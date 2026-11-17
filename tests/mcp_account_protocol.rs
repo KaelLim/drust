@@ -111,7 +111,7 @@ async fn future_revision_in_header_and_body_still_gets_the_fallback() {
 }
 
 #[tokio::test]
-async fn shell_lists_only_list_tenants_and_knows_no_method_beyond_the_spec() {
+async fn shell_lists_the_account_tools_and_knows_no_method_beyond_the_spec() {
     let h = helpers::spin_up_account_mcp("t1").await;
     for (method, key) in [
         ("resources/list", "resources"),
@@ -131,7 +131,13 @@ async fn shell_lists_only_list_tenants_and_knows_no_method_beyond_the_spec() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["list_tenants"]);
+    assert_eq!(
+        (names.first().copied(), names.len()),
+        (
+            Some("list_tenants"),
+            drust::mcp::account::AccountMcp::tool_count()
+        )
+    );
     let r = helpers::mcp_call(&h.app, &h.access, &h.tid, "no_such_tool", json!({})).await;
     assert_eq!(r["error"]["code"], -32602);
     assert_eq!(r["error"]["message"], "tool not found");

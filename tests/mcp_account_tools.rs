@@ -18,3 +18,42 @@ async fn initialize_returns_the_account_instructions() {
     assert!(s.chars().count() <= 4096 && s.encode_utf16().count() <= 4096);
     assert!(!s.contains("acct-tools") && !s.contains("/t/"));
 }
+
+#[tokio::test]
+async fn tools_list_is_the_inner_tools_plus_list_tenants() {
+    let h = spin_up_account_mcp("acct-tools").await;
+    let (st, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let tools = msgs[0]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 77);
+    for t in tools {
+        let name = t["name"].as_str().unwrap();
+        if name == "list_tenants" {
+            assert!(
+                t["inputSchema"]["required"]
+                    .as_array()
+                    .is_none_or(|r| r.is_empty())
+            );
+            assert_eq!(t["inputSchema"]["properties"], json!({}));
+        } else {
+            assert_eq!(t["inputSchema"]["required"][0], "tenant", "{name}");
+            assert_eq!(
+                t["inputSchema"]["properties"]["tenant"]["type"], "string",
+                "{name}"
+            );
+        }
+    }
+    let who = tools.iter().find(|t| t["name"] == "whoami").unwrap();
+    assert!(
+        !who["description"]
+            .as_str()
+            .unwrap()
+            .contains("both bearer tokens")
+    );
+    assert_eq!(drust::mcp::handler::DrustMcpService::tool_count(), 76);
+}
