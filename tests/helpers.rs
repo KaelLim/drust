@@ -1329,3 +1329,344 @@ pub async fn auth_state_with_seeded_user(
     let state = TenantAuthState::test_default(meta, tenants);
     (state, dir, uid)
 }
+
+// ─── account-level MCP endpoint (`/mcp`) ─────────────────────────────────────
+
+/// The public URL the account MCP harness configures (`DRUST_PUBLIC_URL`).
+pub const MCP_PUBLIC_URL: &str = "https://drust.test";
+
+/// One admin with one live MCP OAuth grant. No `Debug`: carries a live token.
+pub struct McpAccess {
+    pub admin_id: i64,
+    pub grant_id: i64,
+    pub access: String,
+}
+
+/// One tenant's id and its service and anon keys. No `Debug`: carries keys.
+pub struct TenantKeys {
+    pub id: String,
+    pub svc: String,
+    pub anon: String,
+}
+
+/// What [`spin_up_account_mcp_with`] builds.
+pub struct AccountMcpOpts {
+    /// `(username, role)`, in order.
+    pub admins: Vec<(&'static str, &'static str)>,
+    /// `(id, owner)`, the owner an index into `admins`; `None` is an orphan.
+    pub tenants: Vec<(&'static str, Option<usize>)>,
+    /// Mount the files router on an in-memory object store.
+    pub files: bool,
+    /// `DRUST_MCP` resolves to enabled.
+    pub mcp_enabled: bool,
+}
+
+/// The management router and the tenant router over ONE meta connection,
+/// merged the way `main` merges them. `tid`/`svc`/`anon` are `tenant_keys[0]`,
+/// `access`/`admin_id`/`grant_id` are `accesses[0]`. No `Debug`: carries
+/// tokens.
+pub struct AccountMcpHarness {
+    pub app: Router,
+    pub tid: String,
+    pub svc: String,
+    pub anon: String,
+    pub access: String,
+    pub admin_id: i64,
+    pub grant_id: i64,
+    pub accesses: Vec<McpAccess>,
+    pub tenant_keys: Vec<TenantKeys>,
+    pub meta: Arc<Mutex<rusqlite::Connection>>,
+    pub tenants: Arc<TenantRegistry>,
+    pub dir: tempfile::TempDir,
+}
+
+/// Insert an OAuth-only admin and one live grant with an access token. Call it
+/// before `conn` is wrapped in its `Arc<Mutex<_>>`.
+pub fn seed_mcp_access(conn: &rusqlite::Connection, role: &str, username: &str) -> McpAccess {
+    conn.execute(
+        "INSERT INTO admins (username, password_hash, email, role) \
+         VALUES (?1, '$oauth-only$', ?1 || '@example.test', ?2)",
+        rusqlite::params![username, role],
+    )
+    .unwrap();
+    let admin_id = conn.last_insert_rowid();
+    let s = drust::mgmt::mcp_oauth::store::seed_access_for_tests(conn, admin_id).unwrap();
+    McpAccess {
+        admin_id,
+        grant_id: s.grant_id,
+        access: s.access,
+    }
+}
+
+/// An `initialize` request for protocol revision `version`.
+pub fn mcp_init(version: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"}
+        }
+    })
+}
+
+/// One request through `app`. Defaults: `Host: 127.0.0.1`,
+/// `Accept: application/json, text/event-stream`,
+/// `Content-Type: application/json`. A `headers` entry (lowercase name)
+/// replaces the default of that name; an empty value sends no such header.
+/// The body must end within 10 s.
+pub async fn http_raw(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<serde_json::Value>,
+) -> (axum::http::StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    use tower::ServiceExt;
+    let mut all: Vec<(&str, &str)> = vec![
+        ("host", "127.0.0.1"),
+        ("accept", "application/json, text/event-stream"),
+        ("content-type", "application/json"),
+    ];
+    for (k, v) in headers {
+        all.retain(|(d, _)| d != k);
+        all.push((k, v));
+    }
+    let mut b = axum::http::Request::builder().method(method).uri(uri);
+    for (k, v) in all {
+        if !v.is_empty() {
+            b = b.header(k, v);
+        }
+    }
+    let body = match body {
+        Some(v) => axum::body::Body::from(v.to_string()),
+        None => axum::body::Body::empty(),
+    };
+    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let hs = resp.headers().clone();
+    let bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024),
+    )
+    .await
+    .expect("response body did not end")
+    .unwrap();
+    (status, hs, bytes.to_vec())
+}
+
+/// [`http_raw`] on `/mcp`.
+pub async fn mcp_raw(
+    app: &Router,
+    method: &str,
+    headers: &[(&str, &str)],
+    body: Option<serde_json::Value>,
+) -> (axum::http::StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    http_raw(app, method, "/mcp", headers, body).await
+}
+
+/// POST one JSON-RPC message to `/mcp`, with `Authorization: Bearer <token>`
+/// when `token` is set. Returns the messages of the answer: every non-empty
+/// `data:` line of an event stream, the whole body of a JSON answer, none
+/// otherwise.
+pub async fn mcp_rpc(
+    app: &Router,
+    token: Option<&str>,
+    body: serde_json::Value,
+) -> (
+    axum::http::StatusCode,
+    axum::http::HeaderMap,
+    Vec<serde_json::Value>,
+) {
+    let auth = token.map(|t| format!("Bearer {t}"));
+    let hs: Vec<(&str, &str)> = auth
+        .as_deref()
+        .map(|a| vec![("authorization", a)])
+        .unwrap_or_default();
+    let (status, headers, bytes) = mcp_raw(app, "POST", &hs, Some(body)).await;
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let messages = if ct.starts_with("text/event-stream") {
+        String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.strip_prefix("data:"))
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| serde_json::from_str(d).unwrap())
+            .collect()
+    } else if ct.starts_with("application/json") {
+        vec![serde_json::from_slice(&bytes).unwrap()]
+    } else {
+        Vec::new()
+    };
+    (status, headers, messages)
+}
+
+/// `tools/call` of `tool` with `args` plus `"tenant": tenant`; returns the
+/// first message of the answer.
+pub async fn mcp_call(
+    app: &Router,
+    token: &str,
+    tenant: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let mut args = args;
+    args.as_object_mut()
+        .expect("tool arguments are an object")
+        .insert("tenant".into(), serde_json::json!(tenant));
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": args}
+    });
+    let (_, _, mut m) = mcp_rpc(app, Some(token), body).await;
+    assert!(!m.is_empty(), "tools/call {tool}: no message in the answer");
+    m.swap_remove(0)
+}
+
+/// The first content text of a `tools/call` result.
+pub async fn mcp_tool_text(
+    app: &Router,
+    token: &str,
+    tenant: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> String {
+    let m = mcp_call(app, token, tenant, tool, args).await;
+    m["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tools/call {tool}: no content text"))
+        .to_string()
+}
+
+/// One owner (`mcp-owner`) owning `tenant`, MCP enabled, no files router.
+pub async fn spin_up_account_mcp(tenant: &'static str) -> AccountMcpHarness {
+    spin_up_account_mcp_with(AccountMcpOpts {
+        admins: vec![("mcp-owner", "owner")],
+        tenants: vec![(tenant, Some(0))],
+        files: false,
+        mcp_enabled: true,
+    })
+    .await
+}
+
+/// See [`AccountMcpOpts`]. `run_migrations` runs a second time after the
+/// seeding (it is idempotent), which also backfills each admin's unlabeled UI
+/// PAT.
+pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness {
+    use drust::mgmt::mcp_oauth::config::McpOauthConfig;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let accesses: Vec<McpAccess> = opts
+        .admins
+        .iter()
+        .map(|(username, role)| seed_mcp_access(&conn, role, username))
+        .collect();
+    let mut tenant_keys = Vec::new();
+    for (id, owner) in &opts.tenants {
+        conn.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, ?1, ?2)",
+            rusqlite::params![id, owner.map(|i| accesses[i].admin_id)],
+        )
+        .unwrap();
+        let svc = generate_token();
+        let anon = generate_token();
+        for (tok, role) in [(&svc, "service"), (&anon, "anon")] {
+            conn.execute(
+                "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, hash_token(tok), role],
+            )
+            .unwrap();
+        }
+        let _ = drust::storage::tenant_db::open_write(&data, id).unwrap();
+        tenant_keys.push(TenantKeys {
+            id: id.to_string(),
+            svc,
+            anon,
+        });
+    }
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let meta = Arc::new(Mutex::new(conn));
+    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
+    let bus = EventBus::new();
+    let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
+    let bus_rooms = shared_bus_rooms(&mut state);
+    let mcp = test_mcp_http(tenants.clone(), bus.clone(), bus_rooms.clone());
+    let webhooks = WebhookDispatcher::new(tenants.clone(), None);
+    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
+    let (garage, files_state) = if opts.files {
+        let garage = Some(Arc::new(drust::storage::garage::GarageClient::from_store(
+            Arc::new(object_store::memory::InMemory::new()),
+            "unused",
+        )));
+        let mut fs = drust::mgmt::tenant_files::TenantFilesState::test_default(
+            garage.clone(),
+            data.clone(),
+            tenants.clone(),
+        );
+        fs.disk_min_free_pct = 0;
+        (garage, Some(fs))
+    } else {
+        (None, None)
+    };
+    let stack = TenantStack {
+        auth: state,
+        bus: bus.clone(),
+        bus_rooms: bus_rooms.clone(),
+        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
+        mcp: mcp.clone(),
+        files: files_state,
+        webhooks,
+        functions,
+        functions_exec,
+        fn_cfg,
+        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
+        cors_origins: Vec::new(),
+    };
+    let mut mgmt = drust::mgmt::routes::MgmtState::test_default(
+        meta.clone(),
+        data.clone(),
+        tenants.clone(),
+        mcp,
+        bus,
+        bus_rooms,
+    );
+    mgmt.log_dir = data.join("audit");
+    std::fs::create_dir_all(&mgmt.log_dir).unwrap();
+    mgmt.mcp_oauth = Arc::new(if opts.mcp_enabled {
+        McpOauthConfig::for_tests(MCP_PUBLIC_URL)
+    } else {
+        McpOauthConfig::disabled()
+    });
+    mgmt.garage = garage;
+    let app = Router::new()
+        .merge(mgmt.with_data_dir(data.clone()))
+        .merge(build_tenant_router(stack));
+    let first = &accesses[0];
+    let keys = &tenant_keys[0];
+    AccountMcpHarness {
+        app,
+        tid: keys.id.clone(),
+        svc: keys.svc.clone(),
+        anon: keys.anon.clone(),
+        access: first.access.clone(),
+        admin_id: first.admin_id,
+        grant_id: first.grant_id,
+        accesses,
+        tenant_keys,
+        meta,
+        tenants,
+        dir,
+    }
+}
