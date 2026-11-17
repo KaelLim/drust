@@ -231,10 +231,12 @@ decision alone; no exchange or authorization is ever gated on `find_grant_by_ref
 `find_grant_for_revocation` is revocation strength, for `/oauth/revoke` only: the access or
 refresh row merely has to exist (revoked, expired, rotated or superseded all count) and its
 grant must be unrevoked with a matching admin — so a client revoking with a just-expired
-access token really ends the grant instead of getting a 200 that changed nothing. **Only a
-`GrantRef` from `find_grant_by_access` may authorize an MCP call**; every other `GrantRef`
-(revocation lookup, refresh probe, code replay, refresh reuse) may only feed
-`GrantOwner::holder`. A wrong prefix or length answers `None` without touching SQL.
+access token really ends the grant instead of getting a 200 that changed nothing.
+**`find_grant_by_access` returns an `AccessGrant`, not a `GrantRef`, and an `AccessGrant` is
+the only value an MCP call may be authorized from**; only that function builds one (a source
+pin holds it). Every `GrantRef` (revocation lookup, refresh probe, code replay, refresh
+reuse) may only feed `GrantOwner::holder`. A wrong prefix or length answers `None` without
+touching SQL.
 
 **Sweep.** `mcp_oauth::sweep::sweep_mcp_oauth` runs in the hourly device-code reaper loop
 in `main.rs`, unconditionally (whether or not `DRUST_MCP` is on), in one transaction:

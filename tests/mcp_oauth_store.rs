@@ -6,7 +6,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use drust::auth::middleware::AdminId;
-use drust::mgmt::mcp_oauth::store::{self, GrantOwner, GrantRef, RevokeReason, RevokedGrant};
+use drust::mgmt::mcp_oauth::store::{self, GrantOwner, RevokeReason, RevokedGrant};
 use drust::mgmt::mcp_oauth::sweep::{SweepCounts, sweep_mcp_oauth};
 use drust::mgmt::mcp_oauth::tokens::{self, TokenKind};
 use rusqlite::params;
@@ -17,7 +17,19 @@ use crate::common::mcp_oauth::*;
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const REDIRECT: &str = "http://localhost:4567/callback";
 
-type Find = fn(&rusqlite::Connection, &str) -> rusqlite::Result<Option<GrantRef>>;
+type Find = fn(&rusqlite::Connection, &str) -> rusqlite::Result<Option<i64>>;
+
+fn access_grant_id(c: &rusqlite::Connection, t: &str) -> rusqlite::Result<Option<i64>> {
+    store::find_grant_by_access(c, t).map(|o| o.map(|g| g.grant_id()))
+}
+
+fn refresh_grant_id(c: &rusqlite::Connection, t: &str) -> rusqlite::Result<Option<i64>> {
+    store::find_grant_by_refresh(c, t).map(|o| o.map(|g| g.grant_id()))
+}
+
+fn revocation_grant_id(c: &rusqlite::Connection, t: &str) -> rusqlite::Result<Option<i64>> {
+    store::find_grant_for_revocation(c, t).map(|o| o.map(|g| g.grant_id()))
+}
 
 // ─── file-private helpers ────────────────────────────────────────────────────
 
@@ -496,9 +508,9 @@ async fn revoke_by_holder_from_a_token_lookup() {
         (g, seed_tokens(&c, g))
     };
     let out = with_tx(&fx, |tx| {
-        let r = store::find_grant_by_access(tx, &t.access)
+        let r = store::find_grant_for_revocation(tx, &t.access)
             .unwrap()
-            .expect("a live access token finds its grant");
+            .expect("a live access token proves its grant");
         assert_eq!(r.grant_id(), g);
         assert_eq!(r.admin_id(), fx.owner_id);
         revoke(
@@ -581,9 +593,9 @@ async fn holder_cannot_revoke_a_sibling_grant_of_the_same_admin() {
         (g1, g2, t1)
     };
     with_tx(&fx, |tx| {
-        let r = store::find_grant_by_access(tx, &t1.access)
+        let r = store::find_grant_for_revocation(tx, &t1.access)
             .unwrap()
-            .expect("G1's access token finds G1");
+            .expect("G1's access token proves G1");
         assert_eq!(r.grant_id(), g1);
         let holder = GrantOwner::holder(&r);
         assert_eq!(
@@ -617,9 +629,9 @@ async fn find_with_wrong_prefix_or_length_touches_no_sql() {
     // No tables at all: any query that reached SQLite would be an Err.
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     let finds: [(&str, Find); 3] = [
-        ("by_access", store::find_grant_by_access),
-        ("by_refresh", store::find_grant_by_refresh),
-        ("for_revocation", store::find_grant_for_revocation),
+        ("by_access", access_grant_id),
+        ("by_refresh", refresh_grant_id),
+        ("for_revocation", revocation_grant_id),
     ];
     let bad = [
         drust::auth::admin_token::generate_token(),
@@ -660,13 +672,18 @@ async fn find_live_tokens_return_the_grant() {
     let c = fx.meta.lock().await;
     let g = live_grant(&c, fx.owner_id);
     let t = seed_tokens(&c, g);
-    for r in [
-        store::find_grant_by_access(&c, &t.access).unwrap(),
-        store::find_grant_by_refresh(&c, &t.refresh).unwrap(),
+    let access = store::find_grant_by_access(&c, &t.access)
+        .unwrap()
+        .expect("live token finds its grant");
+    let refresh = store::find_grant_by_refresh(&c, &t.refresh)
+        .unwrap()
+        .expect("live token finds its grant");
+    for (grant_id, admin_id) in [
+        (access.grant_id(), access.admin_id()),
+        (refresh.grant_id(), refresh.admin_id()),
     ] {
-        let r = r.expect("live token finds its grant");
-        assert_eq!(r.grant_id(), g);
-        assert_eq!(r.admin_id(), fx.owner_id);
+        assert_eq!(grant_id, g);
+        assert_eq!(admin_id, fx.owner_id);
     }
 }
 
@@ -936,15 +953,12 @@ async fn revocation_lookup_accepts_any_genuine_token_of_an_unrevoked_grant() {
             )
         };
         let out = with_tx(&fx, |tx| {
-            let authz = if kind == TokenKind::Access {
-                store::find_grant_by_access(tx, &token).unwrap()
+            let authz_found = if kind == TokenKind::Access {
+                store::find_grant_by_access(tx, &token).unwrap().is_some()
             } else {
-                store::find_grant_by_refresh(tx, &token).unwrap()
+                store::find_grant_by_refresh(tx, &token).unwrap().is_some()
             };
-            assert!(
-                authz.is_none(),
-                "{label}: authorization strength stays strict"
-            );
+            assert!(!authz_found, "{label}: authorization strength stays strict");
             let r = store::find_grant_for_revocation(tx, &token)
                 .unwrap()
                 .unwrap_or_else(|| panic!("{label}: revocation strength finds the grant"));

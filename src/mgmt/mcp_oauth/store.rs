@@ -24,10 +24,10 @@
 //! invariants 4 / 5.
 //!
 //! Two lookup strengths. `find_grant_by_access` is AUTHORIZATION strength and
-//! is the only lookup whose `GrantRef` may authorize an MCP call.
+//! returns an `AccessGrant`, the only value an MCP call may be authorized from.
 //! `find_grant_for_revocation` is REVOCATION strength (any genuine token of an
-//! unrevoked grant); its `GrantRef` — like every `GrantRef` other than
-//! `find_grant_by_access`'s — may only feed `GrantOwner::holder`.
+//! unrevoked grant); its `GrantRef` — like every `GrantRef` — may only feed
+//! `GrantOwner::holder`.
 //!
 //! Every read of a child table (codes, refresh, access, upload tickets) that
 //! decides validity INNER JOINs `_mcp_oauth_grants` AND `admins` on id +
@@ -115,10 +115,10 @@ impl GrantOwner {
 
 /// Only `store.rs` constructs this (private fields). It proves the caller
 /// presented a genuine token of this grant; how strong that proof is depends
-/// on the lookup that built it. Only a `GrantRef` from `find_grant_by_access`
-/// may authorize an MCP call (once an endpoint accepts MCP access tokens). Every
-/// other one — from `find_grant_for_revocation`, `find_grant_by_refresh`, a code
-/// replay or refresh reuse — may only feed `GrantOwner::holder`. Refresh
+/// on the lookup that built it. A `GrantRef` never authorizes an MCP call (that
+/// is `AccessGrant`). Every one — from `find_grant_for_revocation`,
+/// `find_grant_by_refresh`, a code replay or refresh reuse — may only feed
+/// `GrantOwner::holder`. Refresh
 /// reuse's (`RefreshState::holder`) exists only for a
 /// genuine, unrevoked, already-rotated refresh of a live grant whose admin
 /// still matches.
@@ -135,6 +135,31 @@ impl GrantRef {
 
     pub fn admin_id(&self) -> i64 {
         self.admin_id
+    }
+}
+
+/// AUTHORIZATION strength: the only value an MCP call may be authorized from.
+/// Built in exactly one place, `find_grant_by_access` (pinned by
+/// `access_grant_is_built_only_by_find_grant_by_access`). No `Clone`, no
+/// `Default`, no `Debug`: it carries the account's email.
+pub struct AccessGrant {
+    grant_id: i64,
+    admin_id: i64,
+    admin_label: String,
+}
+
+impl AccessGrant {
+    pub fn grant_id(&self) -> i64 {
+        self.grant_id
+    }
+
+    pub fn admin_id(&self) -> i64 {
+        self.admin_id
+    }
+
+    /// `COALESCE(email, username)` of the grant's admin.
+    pub fn admin_label(&self) -> &str {
+        &self.admin_label
     }
 }
 
@@ -182,8 +207,10 @@ SELECT id FROM _mcp_oauth_grants WHERE admin_id = ?1 AND revoked_at IS NULL ORDE
 // Rotation state is NOT checked on refresh: that decision (with its grace
 // window) belongs to refresh::rotate alone; find_grant_by_refresh is a
 // validity probe and never decides whether to issue tokens.
+// Also returns the account label (COALESCE(email, username)), the value consent
+// and the audit rows use.
 const SQL_FIND_BY_ACCESS: &str = "\
-SELECT g.id, g.admin_id \
+SELECT g.id, g.admin_id, COALESCE(ad.email, ad.username) \
   FROM _mcp_oauth_access a \
   JOIN _mcp_oauth_grants g ON g.id = a.grant_id \
   JOIN admins ad ON ad.id = g.admin_id AND ad.created_at = g.admin_created_at \
@@ -271,8 +298,23 @@ pub fn revoke_all_mcp_grants(
     Ok(n)
 }
 
-pub fn find_grant_by_access(conn: &Connection, token: &str) -> rusqlite::Result<Option<GrantRef>> {
-    find(conn, TokenKind::Access, SQL_FIND_BY_ACCESS, token)
+pub fn find_grant_by_access(
+    conn: &Connection,
+    token: &str,
+) -> rusqlite::Result<Option<AccessGrant>> {
+    // Wrong prefix or length: answer without touching SQL.
+    if !tokens::looks_like(TokenKind::Access, token) {
+        return Ok(None);
+    }
+    let h = tokens::hash(TokenKind::Access, token);
+    conn.query_row(SQL_FIND_BY_ACCESS, params![h], |r| {
+        Ok(AccessGrant {
+            grant_id: r.get(0)?,
+            admin_id: r.get(1)?,
+            admin_label: r.get(2)?,
+        })
+    })
+    .optional()
 }
 
 pub fn find_grant_by_refresh(conn: &Connection, token: &str) -> rusqlite::Result<Option<GrantRef>> {
@@ -547,7 +589,7 @@ pub struct CodeRedeemRequest<'a> {
 
 /// `Issued` / `Replay` carry a `GrantRef` (the audit row names the owner): a
 /// request that passed every check presented the code AND its verifier. Like
-/// every `GrantRef` but `find_grant_by_access`'s, it may only feed
+/// every `GrantRef`, it may only feed
 /// `GrantOwner::holder` and audit attribution.
 ///
 /// `Miss` / `Invalid`: the caller MUST NOT commit. Every CHECK fails before any
@@ -1112,5 +1154,81 @@ mod tests {
                 "{name} must not implement Debug"
             );
         }
+    }
+
+    // ─── authorization strength: AccessGrant ─────────────────────────────────
+
+    /// The label is what consent and the existing audit rows use: email, else username.
+    #[test]
+    fn find_grant_by_access_carries_the_admin_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        let admin: i64 = conn
+            .query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let t = issue(&conn, g, None);
+        let a = find_grant_by_access(&conn, &t.access_token)
+            .unwrap()
+            .expect("a live access token authorizes");
+        assert_eq!((a.grant_id(), a.admin_id()), (g, admin));
+        assert_eq!(a.admin_label(), "root", "no email: the username");
+        conn.execute(
+            "UPDATE admins SET email = 'root@example.test' WHERE id = ?1",
+            params![admin],
+        )
+        .unwrap();
+        let a = find_grant_by_access(&conn, &t.access_token)
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.admin_label(), "root@example.test");
+    }
+
+    /// No Clone (an authorization proof is not copied around), no Default (no
+    /// placeholder grant), no Debug (it carries the account's email).
+    #[test]
+    fn access_grant_derives_nothing() {
+        use crate::tenant::rooms::srcpin::{code_only, production_half};
+        let stripped = code_only(include_str!("store.rs"));
+        let prod = production_half(&stripped);
+        assert!(
+            !attrs_before(prod, "pub struct AccessGrant").contains("derive"),
+            "AccessGrant must derive nothing"
+        );
+        for t in ["Clone", "Default", "Debug"] {
+            assert!(
+                !prod.contains(&format!("impl {t} for AccessGrant")),
+                "AccessGrant must not implement {t}"
+            );
+        }
+    }
+
+    /// Field privacy only stops construction OUTSIDE this file; this pin stops
+    /// a second construction inside it (a refresh, revocation or code path
+    /// handing out an AccessGrant).
+    #[test]
+    fn access_grant_is_built_only_by_find_grant_by_access() {
+        use crate::tenant::rooms::srcpin::{code_only, prod_fn_body, production_half};
+        const WHY: &str = "an AccessGrant built outside find_grant_by_access bypasses the \
+                           authorization-strength lookup";
+        let stripped = code_only(include_str!("store.rs"));
+        let prod = production_half(&stripped);
+        // The three legitimate occurrences: the struct, its impl, the one literal.
+        assert_eq!(
+            prod.matches("pub struct AccessGrant {").count(),
+            1,
+            "anti-vacuous"
+        );
+        assert_eq!(
+            prod.matches("impl AccessGrant {").count(),
+            1,
+            "anti-vacuous"
+        );
+        assert_eq!(prod.matches("AccessGrant {").count(), 3, "{WHY}");
+        let find = prod_fn_body(&stripped, "pub fn find_grant_by_access(");
+        assert_eq!(find.matches("AccessGrant {").count(), 1, "{WHY}");
+        let methods = prod_fn_body(&stripped, "impl AccessGrant {");
+        assert!(!methods.contains("Self"), "{WHY}");
     }
 }
