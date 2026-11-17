@@ -14,6 +14,9 @@ pub mod metadata;
 pub mod oauth_error_layer;
 pub mod params;
 pub mod pkce;
+// No production caller until the account-level MCP router mounts it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod prm;
 pub mod redirect;
 pub mod refresh;
 pub mod revoke;
