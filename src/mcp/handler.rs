@@ -705,6 +705,18 @@ impl DrustMcpService {
             ToolCaller::Account(c) => Some(c.admin_id),
         }
     }
+
+    /// How much `whoami` may reveal to this caller.
+    fn whoami_view(&self) -> crate::mcp::tools::exploration::WhoamiView {
+        match &self.caller {
+            ToolCaller::TenantKey => crate::mcp::tools::exploration::WhoamiView::Full,
+            ToolCaller::Account(c) => crate::mcp::tools::exploration::WhoamiView::Account {
+                mcp_url: c.mcp_url.to_string(),
+                api_keys_url: c.api_keys_url.to_string(),
+                grant_id: c.grant_id,
+            },
+        }
+    }
 }
 
 fn json_content(v: Value) -> Result<CallToolResult, McpError> {
@@ -1237,7 +1249,7 @@ impl DrustMcpService {
         &self,
         Parameters(_): Parameters<EmptyParams>,
     ) -> Result<CallToolResult, McpError> {
-        match exploration::whoami(&self.state).await {
+        match exploration::whoami(&self.state, self.whoami_view()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -5973,6 +5985,23 @@ mod caller_tests {
         );
     }
 
+    #[tokio::test]
+    async fn whoami_view_follows_the_caller() {
+        use crate::mcp::tools::exploration::WhoamiView;
+        let (k, _mcp, _d) = svc("caller-view", false).await;
+        assert_eq!(k.whoami_view(), WhoamiView::Full);
+        let (a, _amcp, _ad) = account_svc("caller-view-acct").await;
+        let cfg = test_cfg();
+        assert_eq!(
+            a.whoami_view(),
+            WhoamiView::Account {
+                mcp_url: cfg.resource_url(),
+                api_keys_url: cfg.endpoint_url("/admin/tenants/caller-view-acct/_api_keys"),
+                grant_id: 7,
+            }
+        );
+    }
+
     /// Every attribution site in the tool bodies takes its value from the
     /// caller. The scan covers the `#[tool_router]` impl only (the tool
     /// bodies; the accessors live in a separate impl above it). Comments are
@@ -6015,6 +6044,7 @@ mod caller_tests {
             ("service_ctx", 1),
             ("audit_hint", 3),
             ("audit_admin_id", 2),
+            ("whoami_view", 1),
         ] {
             let call = format!("self.{accessor}()");
             assert_eq!(

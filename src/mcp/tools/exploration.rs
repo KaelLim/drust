@@ -25,14 +25,42 @@ pub async fn describe_collection(s: &DrustMcp, name: &str) -> anyhow::Result<ser
     }
 }
 
-/// Return the calling tenant's identity, both bearer tokens (plaintext),
+/// What `whoami` may reveal to its caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WhoamiView {
+    /// What the per-tenant service-key endpoint returns: both bearer tokens in
+    /// plaintext.
+    Full,
+    /// An account-level caller: the service key is never read in plaintext,
+    /// only its id, creation time and where an admin can copy it.
+    Account {
+        mcp_url: String,
+        api_keys_url: String,
+        grant_id: i64,
+    },
+}
+
+/// The account view's service-token lookup. It deliberately does not select
+/// `plaintext`, so the key never leaves meta on that path. Same WHERE and
+/// ORDER BY as the full view's lookup, so both pick the same row.
+const ACCOUNT_SERVICE_TOKEN_SQL: &str = "SELECT id, created_at FROM tokens \
+     WHERE tenant_id = ?1 AND role = 'service' AND revoked_at IS NULL \
+     ORDER BY created_at DESC LIMIT 1";
+
+/// Return the calling tenant's identity, its bearer tokens as the view allows,
 /// the relative REST/MCP endpoint paths, and the upload size limit.
 ///
-/// MCP is service-only at the auth layer, so the caller already holds
-/// the service token; surfacing it here lets a model that's wired only
-/// to MCP construct curl/HTTP requests for non-MCP-exposed surfaces
-/// (chiefly the multipart file upload endpoint, which deliberately has
-/// no MCP tool).
+/// In the `Full` view (the per-tenant endpoint), MCP is service-only at the
+/// auth layer, so the caller already holds the service token; surfacing it
+/// here lets a model that's wired only to MCP construct curl/HTTP requests
+/// for non-MCP-exposed surfaces (chiefly the multipart file upload endpoint,
+/// which deliberately has no MCP tool).
+///
+/// The `Account` view never returns the service key: an account-level caller
+/// signs in with a short-lived OAuth token, and handing it the never-expiring
+/// service key would turn that sign-in into a permanent credential. It gets
+/// the key's id, creation time and the admin page where it can be copied, the
+/// account-level MCP URL, and a `caller` block naming its OAuth grant.
 ///
 /// Tokens minted before v1.1c stored only the hash; the corresponding
 /// `plaintext` field is `null` and the operator must reroll via the
@@ -45,7 +73,7 @@ pub async fn describe_collection(s: &DrustMcp, name: &str) -> anyhow::Result<ser
 /// `[]`) when the registry could not be read: "nobody may publish" and "I could
 /// not find out" are different facts, and the second one also means every
 /// non-service file READ is currently denied.
-pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
+pub async fn whoami(s: &DrustMcp, view: WhoamiView) -> anyhow::Result<serde_json::Value> {
     let inner = s.inner();
     let tenant_id = inner.tenant_id.clone();
     let max_upload_bytes = inner.max_upload_bytes;
@@ -92,7 +120,24 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
             })
         };
         let anon = read_token("anon");
-        let service = read_token("service");
+        let service = match &view {
+            WhoamiView::Full => read_token("service"),
+            WhoamiView::Account { api_keys_url, .. } => conn
+                .query_row(
+                    ACCOUNT_SERVICE_TOKEN_SQL,
+                    rusqlite::params![&tenant_id],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .ok()
+                .map(|(id, created_at)| {
+                    json!({
+                        "redacted": true,
+                        "id": id,
+                        "created_at": created_at,
+                        "how_to_get": api_keys_url,
+                    })
+                }),
+        };
         (tenant_name, tenant_created_at, anon, service)
     };
 
@@ -121,7 +166,7 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
         Err(_) => serde_json::Value::Null,
     };
 
-    Ok(json!({
+    let mut out = json!({
         "tenant_id": tenant_id,
         "tenant_name": tenant_name,
         "tenant_created_at": tenant_created_at,
@@ -154,7 +199,20 @@ pub async fn whoami(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
                      (service-only). Subscribe via WS upgrade at realtime_ws + send \
                      {\"op\":\"subscribe\",\"room\":\"<name>\"} on the multiplex socket.",
         },
-    }))
+    });
+    if let WhoamiView::Account {
+        mcp_url, grant_id, ..
+    } = view
+    {
+        out["endpoints"]["mcp"] = serde_json::Value::String(mcp_url);
+        if let Some(o) = out.as_object_mut() {
+            o.insert(
+                "caller".into(),
+                json!({"kind": "oauth", "grant_id": grant_id}),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// MCP impl: one-shot schema bootstrap. Returns every collection's
@@ -236,4 +294,43 @@ pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Val
         "collections": collections_enriched,
         "rpcs": rpcs_enriched,
     }))
+}
+
+#[cfg(test)]
+mod whoami_account_sql_tests {
+    use super::ACCOUNT_SERVICE_TOKEN_SQL;
+
+    // The account view never reads the service plaintext out of meta, so it
+    // cannot leak it later through a log or a refactor.
+    #[test]
+    fn account_service_token_sql_never_selects_plaintext() {
+        assert_eq!(
+            ACCOUNT_SERVICE_TOKEN_SQL,
+            "SELECT id, created_at FROM tokens WHERE tenant_id = ?1 AND role = 'service' \
+             AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1"
+        );
+        assert!(!ACCOUNT_SERVICE_TOKEN_SQL.contains("plaintext"));
+    }
+
+    // The plaintext-reading query runs for the service role exactly once (the
+    // Full arm), and the account arm uses the constant. Comments are skipped;
+    // the needles are assembled at runtime.
+    #[test]
+    fn whoami_reads_the_service_plaintext_only_in_the_full_view() {
+        let src = include_str!("exploration.rs");
+        let prod = src.split(&format!("#[cfg({})]", "test")).next().unwrap();
+        let code: String = prod
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let full_read = format!("read_token(\"{}\")", "service");
+        assert_eq!(code.matches(full_read.as_str()).count(), 1, "{full_read}");
+        let constant = format!("{}_SERVICE_TOKEN_SQL", "ACCOUNT");
+        assert_eq!(
+            code.matches(constant.as_str()).count(),
+            2,
+            "declared once, used once"
+        );
+    }
 }

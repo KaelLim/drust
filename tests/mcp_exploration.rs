@@ -1,7 +1,7 @@
 mod helpers;
 use drust::mcp::server::McpRegistry;
 use drust::mcp::tools::exploration::{
-    describe_collection, get_schema_overview, list_collections, whoami,
+    WhoamiView, describe_collection, get_schema_overview, list_collections, whoami,
 };
 use drust::storage::pool::TenantRegistry;
 use helpers::seed_tenant_fs;
@@ -54,13 +54,19 @@ async fn describe() {
     );
 }
 
-#[tokio::test]
-async fn whoami_returns_tenant_tokens_and_endpoints() {
+/// A tenant `blog` with a meta connection holding one service and one anon
+/// token, so `whoami` has both to report. Returns the meta handle too, so a
+/// test can change the token rows.
+async fn whoami_fixture(
+    d: &tempfile::TempDir,
+) -> (
+    drust::mcp::server::DrustMcp,
+    Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) {
     use drust::storage::meta::open_meta;
     use drust::tenant::events::EventBus;
     use tokio::sync::Mutex;
 
-    let d = tempfile::tempdir().unwrap();
     let data = d.path().to_path_buf();
 
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -92,7 +98,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         None,
         String::new(),
         Arc::new([0u8; 32]),
-        Some(meta),
+        Some(meta.clone()),
         12_345,
         1_000_000,
         Arc::new(Mutex::new(
@@ -112,6 +118,13 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         ),
     );
     let svc = reg.get_or_create("blog").await.unwrap();
+    (svc, meta)
+}
+
+#[tokio::test]
+async fn whoami_returns_tenant_tokens_and_endpoints() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, _meta) = whoami_fixture(&d).await;
 
     // v1.64 (#974): one granted prefix, so the `file_upload` block has something
     // live to report.
@@ -129,7 +142,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         .await
         .unwrap();
 
-    let v = whoami(&svc).await.unwrap();
+    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
     assert_eq!(v["tenant_id"], "blog");
     assert_eq!(v["tenant_name"], "Blog Tenant");
     assert_eq!(v["tokens"]["service"]["plaintext"], "drust_svc_plain");
@@ -180,7 +193,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
         .await
         .unwrap();
-    let v = whoami(&svc).await.unwrap();
+    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
     assert!(
         v["file_upload"]["granted_prefixes"].is_null(),
         "an unreadable registry must not render as the empty (healthy) list: {v}"
@@ -200,10 +213,168 @@ async fn whoami_bails_when_meta_unavailable() {
     let d = tempfile::tempdir().unwrap();
     seed_tenant_fs(&d, "blog");
     let s = svc(&d).await; // built via McpRegistry::new (meta is None)
-    let err = whoami(&s).await.unwrap_err();
+    let err = whoami(&s, WhoamiView::Full).await.unwrap_err();
     assert!(
         err.to_string().contains("META_UNAVAILABLE"),
         "expected META_UNAVAILABLE error, got: {err}"
+    );
+}
+
+const MCP_URL: &str = "https://mcp.example.test/drust/mcp";
+const KEYS_URL: &str = "https://mcp.example.test/drust/admin/tenants/blog/_api_keys";
+
+fn account_view() -> WhoamiView {
+    WhoamiView::Account {
+        mcp_url: MCP_URL.into(),
+        api_keys_url: KEYS_URL.into(),
+        grant_id: 7,
+    }
+}
+
+#[tokio::test]
+async fn whoami_full_key_order_is_unchanged() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, _meta) = whoami_fixture(&d).await;
+    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let keys = |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        keys(&v),
+        [
+            "tenant_id",
+            "tenant_name",
+            "tenant_created_at",
+            "tokens",
+            "endpoints",
+            "limits",
+            "file_upload",
+            "broadcast"
+        ]
+    );
+    assert_eq!(
+        keys(&v["tokens"]["service"]),
+        ["id", "created_at", "plaintext"]
+    );
+    assert!(v.get("caller").is_none());
+}
+
+#[tokio::test]
+async fn whoami_account_masks_the_service_key() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, _meta) = whoami_fixture(&d).await;
+    let full = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
+    // The exact-equality assertions below are the masking guarantee: they fail
+    // on any extra field and on any partial character of the key. The
+    // `contains` checks only give a readable failure message; never replace
+    // the equality checks with them.
+    let s = &v["tokens"]["service"];
+    assert_eq!(
+        s,
+        &serde_json::json!({
+            "redacted": true,
+            "id": full["tokens"]["service"]["id"],
+            "created_at": full["tokens"]["service"]["created_at"],
+            "how_to_get": KEYS_URL,
+        })
+    );
+    assert!(
+        !v.to_string().contains("drust_svc_plain"),
+        "service plaintext leaked"
+    );
+    assert!(
+        !s.to_string().contains("drust_"),
+        "no character of the service key may appear: {s}"
+    );
+    assert_eq!(v["tokens"]["anon"]["plaintext"], "drust_anon_plain");
+    assert_eq!(
+        v["caller"],
+        serde_json::json!({"kind": "oauth", "grant_id": 7})
+    );
+    assert_eq!(v["endpoints"]["mcp"], MCP_URL);
+    assert_eq!(
+        v.as_object()
+            .unwrap()
+            .keys()
+            .next_back()
+            .map(String::as_str),
+        Some("caller")
+    );
+
+    // Everything else is the Full view's, value for value. `assert!` rather
+    // than `assert_eq!`: a failure must not print the Full view.
+    let mut rest = v.clone();
+    rest.as_object_mut().unwrap().remove("caller");
+    rest["tokens"]["service"] = full["tokens"]["service"].clone();
+    rest["endpoints"]["mcp"] = full["endpoints"]["mcp"].clone();
+    assert!(
+        rest == full,
+        "the account view differs from Full outside caller, tokens.service and endpoints.mcp"
+    );
+}
+
+#[tokio::test]
+async fn whoami_account_without_a_live_service_key_reports_null() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, meta) = whoami_fixture(&d).await;
+    meta.lock()
+        .await
+        .execute(
+            "UPDATE tokens SET revoked_at = datetime('now') WHERE role = 'service'",
+            [],
+        )
+        .unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
+    assert!(
+        v["tokens"]["service"].is_null(),
+        "{}",
+        v["tokens"]["service"]
+    );
+    assert_eq!(v["caller"]["grant_id"], 7);
+    assert!(whoami(&svc, WhoamiView::Full).await.unwrap()["tokens"]["service"].is_null());
+}
+
+#[tokio::test]
+async fn whoami_account_legacy_null_plaintext_keeps_the_same_shape() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, meta) = whoami_fixture(&d).await;
+    meta.lock()
+        .await
+        .execute(
+            "UPDATE tokens SET plaintext = NULL WHERE role = 'service'",
+            [],
+        )
+        .unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
+    let keys: Vec<&String> = v["tokens"]["service"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["redacted", "id", "created_at", "how_to_get"]);
+}
+
+#[tokio::test]
+async fn whoami_account_reports_the_same_token_row_as_full() {
+    let d = tempfile::tempdir().unwrap();
+    let (svc, meta) = whoami_fixture(&d).await;
+    meta.lock()
+        .await
+        .execute(
+            "INSERT INTO tokens (tenant_id, token_hash, role, plaintext, created_at) \
+             VALUES ('blog', 'hash-svc-2', 'service', 'drust_svc_plain_second', '2099-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+    let full = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
+    assert_eq!(
+        full["tokens"]["service"]["plaintext"],
+        "drust_svc_plain_second"
+    );
+    assert_eq!(
+        v["tokens"]["service"]["id"],
+        full["tokens"]["service"]["id"]
+    );
+    let text = v.to_string();
+    assert!(
+        !text.contains("drust_svc_plain"),
+        "neither service plaintext may appear"
     );
 }
 
