@@ -50,10 +50,13 @@ pub(crate) fn code_only(src: &str) -> String {
     let mut i = 0usize;
 
     while i < b.len() {
-        // Raw string `r"…"` / `r#"…"#` — checked before the bare-`"` arm so
-        // the hashes are consumed with it.
+        // Raw string `r"…"` / `r#"…"#`, and the byte forms `br"…"` /
+        // `br#"…"#` — checked before the bare-`"` arm so the hashes are
+        // consumed with it. Missing the `br` form put the scanner out of phase
+        // for the rest of the file: the `"#` closer opened a phantom string,
+        // and a later `"http://…"` then read as a comment and was blanked.
         if b[i] == b'r'
-            && !is_ident_byte(b, i.wrapping_sub(1))
+            && raw_prefix_ok(b, i)
             && let Some(end) = raw_string_end(b, i)
         {
             out.extend_from_slice(&b[i..end]);
@@ -137,6 +140,210 @@ pub(crate) fn production_half(stripped: &str) -> &str {
         .expect("split always yields at least one segment")
 }
 
+/// The attribute that makes an item test-only, exactly as rustfmt writes it.
+const TEST_GATE: &str = "#[cfg(test)]";
+
+/// The first top-level item that follows a stripped file's first
+/// `#[cfg(test)]` and is NOT itself gated by `#[cfg(test)]`, as
+/// `(1-based line, line text)`; `None` when the file is fine.
+///
+/// [`production_half`] is "the production code of this file" only while no
+/// production item follows a test-only one: an early `#[cfg(test)] const`
+/// silently hides everything below it from every pin that scans the file.
+/// This is the check that keeps that true. A file with no `#[cfg(test)]` is
+/// fine, and so is any number of trailing test-only items.
+///
+/// Input is [`code_only`] output of a rustfmt-formatted file: top-level items
+/// start at column 0 and end at the `;` or the closing `}` that brings the
+/// bracket depth back to zero, so a column-0 `where` or `{` line and every
+/// attribute line belong to the item they precede. String and char literals
+/// are skipped, so a column-0 line inside a test's multi-line string is body
+/// text, not an item. Fails CLOSED: a first `#[cfg(test)]` that is not a
+/// top-level item attribute (inside a function, a string or an `impl`), an
+/// item after it that does not start at column 0, unbalanced brackets and an
+/// unterminated item are all reported, never passed.
+pub(crate) fn production_after_test_gate(stripped: &str) -> Option<(usize, String)> {
+    let gate = stripped.find(TEST_GATE)?;
+    let items = match top_level_items(stripped) {
+        Ok(items) => items,
+        Err(at) => return Some(line_at(stripped, at)),
+    };
+    let Some(first) = items
+        .iter()
+        .position(|it| it.attrs.iter().any(|&(start, _)| start == gate))
+    else {
+        // The first gate is not a top-level attribute, yet `production_half`
+        // still cuts there.
+        return Some(line_at(stripped, gate));
+    };
+    for it in &items[first..] {
+        if it.start != 0 && stripped.as_bytes()[it.start - 1] != b'\n' {
+            return Some(line_at(stripped, it.start));
+        }
+        if !it.attrs.iter().any(|&(s, e)| is_test_gate(&stripped[s..e])) {
+            return Some(line_at(stripped, it.body));
+        }
+    }
+    None
+}
+
+/// One top-level item: where it starts (its first attribute, if any), its
+/// attributes as byte ranges, and where its first non-attribute token is.
+struct TopItem {
+    start: usize,
+    attrs: Vec<(usize, usize)>,
+    body: usize,
+}
+
+fn is_test_gate(attr: &str) -> bool {
+    attr.split_whitespace().collect::<String>() == TEST_GATE
+}
+
+fn line_at(s: &str, at: usize) -> (usize, String) {
+    let line_start = s[..at].rfind('\n').map_or(0, |nl| nl + 1);
+    let line_end = s[at..].find('\n').map_or(s.len(), |nl| at + nl);
+    (
+        s[..at].matches('\n').count() + 1,
+        s[line_start..line_end].trim_end().to_string(),
+    )
+}
+
+/// Split stripped source into its top-level items, or `Err(offset)` at the
+/// first place the shape cannot be classified.
+fn top_level_items(s: &str) -> Result<Vec<TopItem>, usize> {
+    let b = s.as_bytes();
+    let skip_ws = |mut i: usize| {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let mut items = Vec::new();
+    let mut i = skip_ws(0);
+    while i < b.len() {
+        let start = i;
+        let mut attrs = Vec::new();
+        while b[i] == b'#' {
+            let open = if b.get(i + 1) == Some(&b'!') {
+                i + 2
+            } else {
+                i + 1
+            };
+            if b.get(open) != Some(&b'[') {
+                return Err(i);
+            }
+            let end = bracket_group_end(s, open)?;
+            attrs.push((i, end));
+            i = skip_ws(end);
+            if i >= b.len() {
+                return Err(start); // an attribute with no item under it
+            }
+        }
+        let body = i;
+        i = item_end(s, body)?;
+        items.push(TopItem { start, attrs, body });
+        i = skip_ws(i);
+    }
+    Ok(items)
+}
+
+/// One past the bracket that closes the group opened at `open`.
+fn bracket_group_end(s: &str, open: usize) -> Result<usize, usize> {
+    let b = s.as_bytes();
+    let mut stack: Vec<u8> = Vec::new();
+    let mut i = open;
+    while i < b.len() {
+        if let Some(end) = literal_end(s, i) {
+            i = end;
+            continue;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => stack.push(b[i]),
+            c @ (b')' | b']' | b'}') => {
+                if stack.pop() != Some(opener_of(c)) {
+                    return Err(i);
+                }
+                if stack.is_empty() {
+                    return Ok(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Err(open)
+}
+
+/// One past the end of the item whose first token is at `body`: the `;` at
+/// depth zero, or the `}` that brings the depth back to zero (plus a `;`
+/// directly after it, as in `use a::{b, c};` or `const X: S = S { .. };`).
+fn item_end(s: &str, body: usize) -> Result<usize, usize> {
+    let b = s.as_bytes();
+    let mut stack: Vec<u8> = Vec::new();
+    let mut i = body;
+    while i < b.len() {
+        if let Some(end) = literal_end(s, i) {
+            i = end;
+            continue;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => stack.push(b[i]),
+            c @ (b')' | b']' | b'}') => {
+                if stack.pop() != Some(opener_of(c)) {
+                    return Err(i);
+                }
+                if c == b'}' && stack.is_empty() {
+                    let mut k = i + 1;
+                    while k < b.len() && (b[k] == b' ' || b[k] == b'\t') {
+                        k += 1;
+                    }
+                    return Ok(if b.get(k) == Some(&b';') {
+                        k + 1
+                    } else {
+                        i + 1
+                    });
+                }
+            }
+            b';' if stack.is_empty() => return Ok(i + 1),
+            _ => {}
+        }
+        i += 1;
+    }
+    Err(body)
+}
+
+fn opener_of(close: u8) -> u8 {
+    match close {
+        b')' => b'(',
+        b']' => b'[',
+        _ => b'{',
+    }
+}
+
+/// One past the string, raw string, byte string or char literal starting at
+/// `i`, or `None` when no literal starts there (a lifetime is not one).
+fn literal_end(s: &str, i: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    match b[i] {
+        b'"' => Some(string_end(b, i)),
+        b'r' if raw_prefix_ok(b, i) => raw_string_end(b, i),
+        b'\'' => {
+            let rest = &s[i + 1..];
+            let inner = if let Some(esc) = rest.strip_prefix('\\') {
+                if let Some(unicode) = esc.strip_prefix("u{") {
+                    3 + unicode.find('}')? + 1
+                } else {
+                    1 + esc.chars().next()?.len_utf8()
+                }
+            } else {
+                rest.chars().next()?.len_utf8()
+            };
+            (b.get(i + 1 + inner) == Some(&b'\'')).then_some(i + 2 + inner)
+        }
+        _ => None,
+    }
+}
+
 /// Slice out ONE PRODUCTION function's comment-stripped body text.
 ///
 /// `head` is matched against [`production_half`] and must be UNIQUE there —
@@ -178,6 +385,16 @@ pub(crate) fn prod_fn_body<'a>(stripped: &'a str, head: &str) -> &'a str {
         .find(&terminator)
         .unwrap_or_else(|| panic!("could not find the end of the body of `{head}`"));
     &rest[..end]
+}
+
+/// Whether the `r` at `i` can open a raw string: not the tail of an
+/// identifier, except for the `b` of a raw byte string (`br"…"`).
+fn raw_prefix_ok(b: &[u8], i: usize) -> bool {
+    match i.checked_sub(1) {
+        None => true,
+        Some(p) if b[p] == b'b' => !is_ident_byte(b, p.wrapping_sub(1)),
+        Some(p) => !is_ident_byte(b, p),
+    }
 }
 
 fn is_ident_byte(b: &[u8], i: usize) -> bool {
@@ -313,6 +530,177 @@ fn f() {
             out.contains("let d = 2;"),
             "the nested comment must end at the OUTER close: {out}"
         );
+    }
+
+    fn after_gate(src: &str) -> Option<(usize, String)> {
+        super::production_after_test_gate(&code_only(src))
+    }
+
+    #[test]
+    fn a_gated_const_above_an_ungated_fn_is_reported() {
+        let src = "\
+const A: u8 = 1;
+#[cfg(test)]
+const ALL: &[u8] = &[
+    A,
+];
+
+/// Doc.
+pub fn later(x: u8) -> u8 {
+    x
+}
+";
+        assert_eq!(
+            after_gate(src),
+            Some((8, "pub fn later(x: u8) -> u8 {".to_string()))
+        );
+    }
+
+    #[test]
+    fn production_then_a_gated_impl_then_gated_modules_is_fine() {
+        let src = "\
+pub struct S;
+
+impl S {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(test)]
+impl S {
+    fn probe(&self) -> u8 {
+        1
+    }
+}
+
+#[cfg(test)]
+const ORACLE: &str = \"x\";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t() {
+        let src = \"
+fn f() {
+    #[cfg(test)]
+}
+\";
+        let q = '\"';
+        let _ = (src, q, '{', '\\u{FFFD}');
+    }
+}
+
+#[cfg(test)]
+mod more_tests {}
+";
+        assert_eq!(after_gate(src), None);
+    }
+
+    #[test]
+    fn a_file_without_a_test_gate_is_fine() {
+        assert_eq!(after_gate("pub fn f() {}\n\nconst X: u8 = 1;\n"), None);
+        assert_eq!(after_gate(""), None);
+    }
+
+    #[test]
+    fn a_gated_one_line_item_then_an_ungated_multi_line_item_is_reported() {
+        let src = "\
+pub fn f() {}
+
+#[cfg(test)]
+const X: u8 = 1;
+#[allow(dead_code)]
+pub(crate) struct Later {
+    a: u8,
+}
+";
+        assert_eq!(
+            after_gate(src),
+            Some((6, "pub(crate) struct Later {".to_string()))
+        );
+    }
+
+    #[test]
+    fn where_clauses_and_multi_line_signatures_are_one_item() {
+        let src = "\
+pub fn f() {}
+
+#[cfg(test)]
+impl<T> From<T> for Wrapper
+where
+    T: Clone,
+{
+    fn from(t: T) -> Self {
+        Wrapper
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn helper(
+    a: u8,
+    b: u8,
+) -> u8
+where
+    u8: Copy,
+{
+    a + b
+}
+
+#[cfg(test)]
+mod tests {}
+";
+        assert_eq!(after_gate(src), None);
+        // The same shape with the second item ungated is still caught, at the
+        // line of its `fn`, not at a column-0 `where` or `{`.
+        let ungated = src.replacen(
+            "#[cfg(test)]\n#[allow(clippy::too_many_arguments)]",
+            "#[allow(clippy::too_many_arguments)]",
+            1,
+        );
+        assert_eq!(after_gate(&ungated), Some((14, "fn helper(".to_string())));
+    }
+
+    /// Fails closed on every shape it cannot classify.
+    #[test]
+    fn unclassifiable_shapes_are_reported_not_passed() {
+        // A first gate inside a function: `production_half` still cuts there.
+        let nested = "fn f() {\n    #[cfg(test)]\n    let x = 1;\n}\n\nfn g() {}\n";
+        assert_eq!(
+            after_gate(nested),
+            Some((2, "    #[cfg(test)]".to_string()))
+        );
+        // A first gate that is only text in a production string literal.
+        let in_string = "const S: &str = \"#[cfg(test)]\";\nfn g() {}\n";
+        assert_eq!(after_gate(in_string).map(|(l, _)| l), Some(1));
+        // `cfg(any(test, ..))` is not test-only.
+        let any = "#[cfg(test)]\nfn a() {}\n#[cfg(any(test, unix))]\nfn b() {}\n";
+        assert_eq!(after_gate(any), Some((4, "fn b() {}".to_string())));
+        // An item after the gate that does not start at column 0.
+        let indented = "#[cfg(test)]\nfn a() {} fn b() {}\n";
+        assert_eq!(after_gate(indented).map(|(l, _)| l), Some(2));
+        // Unbalanced brackets and an unterminated item.
+        assert!(after_gate("#[cfg(test)]\nmod tests {\n    fn a() {}\n").is_some());
+        assert!(after_gate("#[cfg(test)]\nmod tests {\n    )\n}\n").is_some());
+        assert!(after_gate("fn f() {}\n#[cfg(test)]\n").is_some());
+    }
+
+    /// A raw BYTE string must not put the scanner out of phase: its `"#`
+    /// closer used to open a phantom string, after which a URL in a real
+    /// string read as a comment and was blanked.
+    #[test]
+    fn code_only_keeps_raw_byte_strings_whole() {
+        let src = "const H: &[u8] = br#\"{\"a\":\"b\"}\"#;\nlet u = \"http://x\"; // gone\n";
+        let out = code_only(src);
+        assert!(out.contains("br#\"{\"a\":\"b\"}\"#;"), "{out}");
+        assert!(out.contains("\"http://x\";"), "{out}");
+        assert!(!out.contains("gone"), "{out}");
+        // An identifier ending in `br` is not a raw-string prefix.
+        let ident = "let abr = 1; // c\n";
+        assert!(!code_only(ident).contains("// c"));
     }
 
     /// A lifetime is not a char literal — mis-treating `'a` as one would eat

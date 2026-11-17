@@ -501,6 +501,11 @@ fn f() {
                 "pub fn admin_label(",
             ),
             (
+                "store.rs",
+                include_str!("store.rs"),
+                "pub fn seed_tokens_for_tests(",
+            ),
+            (
                 "account_routes.rs",
                 include_str!("account_routes.rs"),
                 "pub fn account_routes(",
@@ -542,6 +547,40 @@ fn f() {
                     !production_half(&code).contains(n),
                     "{} names {n}",
                     f.display()
+                );
+            }
+        }
+    }
+
+    /// `production_half` stops at a file's first `#[cfg(test)]`, so a
+    /// test-only item above production code would silently shorten every pin
+    /// over that file; every test-only item here must trail the production
+    /// code.
+    #[test]
+    fn test_only_items_trail_production_code() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        crate::tenant::rooms::srcpin::collect_rs_files(
+            &manifest.join("src/mgmt/mcp_oauth"),
+            &mut files,
+        );
+        files.push(manifest.join("src/mcp/account.rs"));
+        assert!(
+            files.len() > 20,
+            "scan found too few files: {}",
+            files.len()
+        );
+        for f in &files {
+            let code = code_only(&std::fs::read_to_string(f).unwrap());
+            if let Some((line, text)) =
+                crate::tenant::rooms::srcpin::production_after_test_gate(&code)
+            {
+                panic!(
+                    "{}:{line}: `{}` follows the file's first #[cfg(test)] and is not a \
+                     test-only item (or its shape cannot be classified); move test-only items \
+                     below the last production item",
+                    f.display(),
+                    text.trim()
                 );
             }
         }

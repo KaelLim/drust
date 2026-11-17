@@ -73,18 +73,6 @@ const D_SCOPE: &str = "scope may contain only mcp and offline_access";
 const D_RESOURCE: &str = "resource must be this server's MCP endpoint, sent at most once";
 const D_STATE: &str = "state must not exceed 512 bytes";
 const D_SERVER: &str = "the request could not be sealed";
-#[cfg(test)]
-const ALL_DESCRIPTIONS: &[&str] = &[
-    D_DUPLICATE,
-    D_RESPONSE_TYPE_MISSING,
-    D_RESPONSE_TYPE,
-    D_PKCE_METHOD,
-    D_PKCE_CHALLENGE,
-    D_SCOPE,
-    D_RESOURCE,
-    D_STATE,
-    D_SERVER,
-];
 
 /// `target_raw` MUST be a `RedirectTarget.raw` (or the `redirect_uri` of a
 /// MAC-verified envelope that was re-validated). Pair order: `error`,
@@ -599,6 +587,21 @@ fn display_received(raw: &str) -> String {
     }
     out
 }
+
+// Below every production item on purpose: source pins scan only the text
+// above a file's first `#[cfg(test)]`.
+#[cfg(test)]
+const ALL_DESCRIPTIONS: &[&str] = &[
+    D_DUPLICATE,
+    D_RESPONSE_TYPE_MISSING,
+    D_RESPONSE_TYPE,
+    D_PKCE_METHOD,
+    D_PKCE_CHALLENGE,
+    D_SCOPE,
+    D_RESOURCE,
+    D_STATE,
+    D_SERVER,
+];
 
 #[cfg(test)]
 mod tests {

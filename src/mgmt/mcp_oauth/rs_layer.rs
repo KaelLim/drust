@@ -350,6 +350,14 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             www
         );
+        // Only a 429 tells the client to wait; a Retry-After on a 401 would
+        // read as a budget on this path, which it must not have.
+        if status != StatusCode::TOO_MANY_REQUESTS {
+            assert!(
+                got.1.get(header::RETRY_AFTER).is_none(),
+                "{status} carries Retry-After"
+            );
+        }
     }
 
     fn h5_www() -> String {
