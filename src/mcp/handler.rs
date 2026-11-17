@@ -630,8 +630,9 @@ enum ToolCaller {
     Account(AccountCall),
 }
 
-/// The account-level caller's identity and the URLs its answers point at,
-/// both derived from the service's own tenant.
+/// The account-level caller's identity and the URLs its answers point at:
+/// the account MCP URL from the OAuth config, and the API Keys page of the
+/// service's own tenant.
 #[derive(Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 struct AccountCall {
