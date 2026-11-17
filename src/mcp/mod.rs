@@ -1,3 +1,4 @@
+pub mod account;
 pub mod error_code;
 pub mod handler;
 pub mod http_registry;

@@ -51,6 +51,14 @@ impl McpHttpRegistry {
         }
     }
 
+    /// The shared inner registry, for the account-level MCP router: one
+    /// `McpRegistry` serves both endpoints.
+    // Allowed until the account-level MCP router calls it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn registry(&self) -> &Arc<McpRegistry> {
+        &self.mcp
+    }
+
     /// Return (or lazily construct) the MCP Streamable HTTP service for
     /// a given tenant. The inner `McpRegistry` owns the authoritative
     /// `DrustMcp` per tenant; this registry holds the rmcp-side wrapper
@@ -198,5 +206,11 @@ mod tests {
             Arc::ptr_eq(&before, &after),
             "evicting t1 must not touch t2"
         );
+    }
+
+    #[test]
+    fn registry_is_the_inner_registry() {
+        let (_d, _tenants, inner, http) = fixture();
+        assert!(Arc::ptr_eq(http.registry(), &inner));
     }
 }
