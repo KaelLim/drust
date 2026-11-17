@@ -100,6 +100,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Named index does not exist on this collection. Call `describe_collection` to see existing indexes.",
     ),
     (
+        "INVALID_ARGUMENTS",
+        "remove arguments that are not in this tool's inputSchema",
+    ),
+    (
         "INVALID_PARAMS",
         "Required parameter missing or malformed. Re-read the tool's input schema.",
     ),
@@ -202,6 +206,10 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
     (
         "TENANT_QUOTA_EXCEEDED",
         "This tenant has reached its storage quota (db + files share one cap of quota_tier × 10 GiB). Deletes and reads still work; free space by deleting rows/files, or contact the tenant owner to request a quota tier upgrade.",
+    ),
+    (
+        "TENANT_REQUIRED",
+        "call list_tenants, then pass its id as tenant",
     ),
     (
         "TX_COMMIT_FAILED",
@@ -449,6 +457,24 @@ mod tests {
     #[test]
     fn type_mismatch_stays_uncatalogued() {
         assert!(lookup("TYPE_MISMATCH").is_none());
+    }
+
+    /// Account-level MCP codes. Only the account-level endpoint emits them; a REST
+    /// or per-tenant site that starts emitting either code must not inherit this fix.
+    #[test]
+    fn lookup_finds_account_mcp_codes() {
+        assert_eq!(
+            lookup("TENANT_REQUIRED"),
+            Some("call list_tenants, then pass its id as tenant")
+        );
+        assert_eq!(
+            lookup("INVALID_ARGUMENTS"),
+            Some("remove arguments that are not in this tool's inputSchema")
+        );
+        assert!(
+            lookup("INTERNAL").is_none(),
+            "INTERNAL stays uncatalogued: its isError body has no fix"
+        );
     }
 
     #[test]

@@ -821,11 +821,11 @@ fn with_error_code(mut e: McpError, code: &str) -> McpError {
 /// `{"error_code", "message", "suggested_fix"?}` — the keys `bail_mcp` puts in
 /// JSON-RPC `data`, plus the message. The per-tenant `call_tool`
 /// (`finish_tool_call`) converts rmcp's argument errors through THIS function,
-/// and MA1's account-level `call_tool` (design §3.8) extends that to every
+/// and the account-level `call_tool` (`crate::mcp::account`) extends that to every
 /// protocol error, so every isError body has one shape; do not fork it. `fix`: pass the fix the error already carries
 /// (`mcp_error_from_response` forwards REST's possibly CONTEXTUAL fix); `None`
 /// falls back to the catalogue, and an uncatalogued code simply has no fix.
-fn tool_error(
+pub(crate) fn tool_error(
     code: &str,
     message: String,
     fix: Option<String>,
@@ -864,7 +864,9 @@ const RMCP_ARG_ERROR_PREFIX: &str = "failed to deserialize parameters:";
 /// 4. Any other JSON-RPC error gains a `data.error_code` if it has none
 ///    ([`ensure_error_code`]).
 /// 5. Everything else passes through untouched.
-fn finish_tool_call(r: Result<CallToolResult, McpError>) -> Result<CallToolResult, McpError> {
+pub(crate) fn finish_tool_call(
+    r: Result<CallToolResult, McpError>,
+) -> Result<CallToolResult, McpError> {
     match r {
         Ok(res) => {
             if res.is_error == Some(true)
@@ -5331,7 +5333,7 @@ mod is_error_tests {
     }
 
     /// A caller-supplied fix wins over the catalogue; `None` falls back to it.
-    /// (MA1's outer conversion passes REST's contextual `suggested_fix` through.)
+    /// (The account-level endpoint's outer conversion passes REST's contextual `suggested_fix` through.)
     #[test]
     fn tool_error_prefers_the_supplied_fix_over_the_catalogue() {
         let code = "SYSTEM_FIELD_READONLY";

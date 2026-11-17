@@ -21,7 +21,10 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-use crate::mcp::handler::{DrustMcpService, INSTRUCTIONS_MAX_CHARS, server_capabilities};
+use crate::mcp::error_code::mcp_error_code;
+use crate::mcp::handler::{
+    DrustMcpService, INSTRUCTIONS_MAX_CHARS, finish_tool_call, server_capabilities, tool_error,
+};
 use crate::mcp::server::{DrustMcp, McpRegistry};
 use crate::mgmt::mcp_oauth::caller::McpCaller;
 use crate::mgmt::mcp_oauth::config::McpOauthConfig;
@@ -352,6 +355,142 @@ pub(crate) fn account_tools() -> &'static [Tool] {
 /// One tool of [`account_tools`] by name.
 pub(crate) fn account_tool(name: &str) -> Option<&'static Tool> {
     account_tools().iter().find(|t| t.name == name)
+}
+
+/// Where a `tools/call` that passed [`precheck`] goes next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum Precheck {
+    /// One of `OUTER_TOOLS`, run by this endpoint itself.
+    Outer(&'static str),
+    /// A per-tenant tool: resolve the tenant, then forward.
+    Inner,
+}
+
+/// Why an account-level `tools/call` was refused before it ran. Carries only
+/// the kind and the caller's own argument names, never a credential.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum ToolDenied {
+    Internal,
+    UnknownTool,
+    TenantRequired,
+    /// The unknown top-level keys, at most five, each cut to 32 characters.
+    InvalidArguments(Vec<String>),
+    TenantNotFound,
+}
+
+impl From<Denied> for ToolDenied {
+    fn from(d: Denied) -> Self {
+        match d {
+            Denied::Required => ToolDenied::TenantRequired,
+            Denied::NotFound => ToolDenied::TenantNotFound,
+            Denied::Internal => ToolDenied::Internal,
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ToolDenied {
+    /// The answer on the wire: an unknown tool is rmcp's own JSON-RPC
+    /// "tool not found"; every other refusal is the one isError body.
+    pub(crate) fn into_call_result(self) -> Result<CallToolResult, McpError> {
+        match self {
+            ToolDenied::UnknownTool => Err(McpError::invalid_params("tool not found", None)),
+            ToolDenied::Internal => tool_error("INTERNAL", "internal error".to_string(), None),
+            ToolDenied::TenantRequired => tool_error(
+                "TENANT_REQUIRED",
+                "every tool except list_tenants needs a \"tenant\" string argument".to_string(),
+                None,
+            ),
+            // The catalogued TENANT_NOT_FOUND fix is REST's wording.
+            ToolDenied::TenantNotFound => tool_error(
+                "TENANT_NOT_FOUND",
+                "tenant not found".to_string(),
+                Some("call list_tenants".to_string()),
+            ),
+            ToolDenied::InvalidArguments(keys) => tool_error(
+                "INVALID_ARGUMENTS",
+                format!("unknown argument(s): {}", keys.join(", ")),
+                None,
+            ),
+        }
+    }
+}
+
+/// The steps of an account-level `tools/call` that need no meta read, in
+/// order: a caller, a listed tool name, a non-empty string `tenant` when the
+/// injected schema requires one (no trimming, no format check: resolution
+/// answers TENANT_NOT_FOUND for a malformed id), and no top-level key outside
+/// the injected `properties`. Depends only on the static schema, never on
+/// which tenants exist or are visible, so an argument error can never tell
+/// them apart.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn precheck(
+    caller: Option<&McpCaller>,
+    name: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Precheck, ToolDenied> {
+    if caller.is_none() {
+        return Err(ToolDenied::Internal);
+    }
+    let Some(tool) = account_tool(name) else {
+        return Err(ToolDenied::UnknownTool);
+    };
+    let kind = match OUTER_TOOLS.iter().find(|n| **n == name) {
+        Some(n) => Precheck::Outer(n),
+        None => Precheck::Inner,
+    };
+    let schema = &tool.input_schema;
+    let needs_tenant = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|r| r.iter().any(|v| v == "tenant"));
+    if needs_tenant
+        && !matches!(args.get("tenant"), Some(serde_json::Value::String(s)) if !s.is_empty())
+    {
+        return Err(ToolDenied::TenantRequired);
+    }
+    let props = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object);
+    let unknown: Vec<String> = args
+        .keys()
+        .filter(|k| !props.is_some_and(|p| p.contains_key(*k)))
+        .take(5)
+        .map(|k| k.chars().take(32).collect())
+        .collect();
+    if !unknown.is_empty() {
+        return Err(ToolDenied::InvalidArguments(unknown));
+    }
+    Ok(kind)
+}
+
+/// Every account-level tool result on its way out: the per-tenant
+/// `finish_tool_call` first, then every JSON-RPC error left except "tool not
+/// found" becomes the one isError body, keeping its `error_code` and
+/// `suggested_fix` (a code is classified from the message when the error
+/// carries none).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn finish_account_call(
+    r: Result<CallToolResult, McpError>,
+) -> Result<CallToolResult, McpError> {
+    match finish_tool_call(r) {
+        Err(e) if e.message != "tool not found" => {
+            let data = e.data.as_ref().and_then(serde_json::Value::as_object);
+            let code = data
+                .and_then(|d| d.get("error_code"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| mcp_error_code(&e.message, e.code).into_owned());
+            let fix = data
+                .and_then(|d| d.get("suggested_fix"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            tool_error(&code, e.message.into_owned(), fix)
+        }
+        other => other,
+    }
 }
 
 impl AccountMcp {
@@ -1838,5 +1977,222 @@ mod tool_surface_tests {
             }
             assert!(seen >= min, "scan saw only {seen} attributes for {attr}");
         }
+    }
+}
+
+#[cfg(test)]
+mod precheck_tests {
+    use super::*;
+    use rmcp::model::{CallToolResult, Content, ErrorCode};
+    use serde_json::{Map, Value, json};
+
+    fn c() -> McpCaller {
+        McpCaller::for_tests(7, 70)
+    }
+    fn a(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+    fn body(r: &CallToolResult) -> Value {
+        assert_eq!(r.is_error, Some(true));
+        serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap()
+    }
+    fn bad(keys: &[&str]) -> Result<Precheck, ToolDenied> {
+        Err(ToolDenied::InvalidArguments(
+            keys.iter().map(|s| s.to_string()).collect(),
+        ))
+    }
+
+    #[test]
+    fn precheck_without_caller_is_internal() {
+        assert_eq!(
+            precheck(None, "list_collections", &a(json!({"tenant":"blog"}))),
+            Err(ToolDenied::Internal)
+        );
+        assert_eq!(
+            precheck(None, "list_tenants", &Map::new()),
+            Err(ToolDenied::Internal)
+        );
+    }
+
+    #[test]
+    fn precheck_unknown_tool_is_unknown_whatever_the_arguments() {
+        for n in ["no_such_tool", "List_Tenants", ""] {
+            assert_eq!(
+                precheck(Some(&c()), n, &a(json!({"tenant":"blog"}))),
+                Err(ToolDenied::UnknownTool)
+            );
+        }
+    }
+
+    #[test]
+    fn precheck_requires_a_nonempty_string_tenant() {
+        for v in [
+            json!({}),
+            json!({"tenant":null}),
+            json!({"tenant":5}),
+            json!({"tenant":""}),
+            json!({"tenant":["blog"]}),
+            json!({"tenant":{"id":"blog"}}),
+        ] {
+            assert_eq!(
+                precheck(Some(&c()), "list_collections", &a(v.clone())),
+                Err(ToolDenied::TenantRequired),
+                "{v}"
+            );
+        }
+        // The id's format is resolution's business: TENANT_NOT_FOUND there.
+        for ok in [" blog ", "Blog", "a/b"] {
+            assert_eq!(
+                precheck(Some(&c()), "list_collections", &a(json!({"tenant": ok}))),
+                Ok(Precheck::Inner)
+            );
+        }
+        // The tenant check runs before the unknown-key check.
+        assert_eq!(
+            precheck(Some(&c()), "insert_record", &a(json!({"dry_run":true}))),
+            Err(ToolDenied::TenantRequired)
+        );
+    }
+
+    #[test]
+    fn precheck_rejects_unknown_top_level_keys_only() {
+        let x = a(json!({"tenant":"blog","collection":"posts","data":{"x":1},"dry_run":true}));
+        assert_eq!(precheck(Some(&c()), "insert_record", &x), bad(&["dry_run"]));
+        let nested = a(json!({"tenant":"blog","collection":"posts","filter":{"zzz":1}}));
+        assert_eq!(
+            precheck(Some(&c()), "list_records", &nested),
+            Ok(Precheck::Inner)
+        );
+        assert_eq!(
+            precheck(Some(&c()), "list_collections", &a(json!({"tenant":"blog"}))),
+            Ok(Precheck::Inner)
+        );
+    }
+
+    #[test]
+    fn precheck_schema_keywords_are_not_arguments() {
+        let x = a(json!({"tenant":"blog","collection":"p","$schema":1,"$defs":{},"properties":{}}));
+        assert_eq!(
+            precheck(Some(&c()), "list_records", &x),
+            bad(&["$schema", "$defs", "properties"])
+        );
+    }
+
+    #[test]
+    fn precheck_bounds_the_listed_keys() {
+        let mut m = Map::new();
+        m.insert("tenant".into(), json!("blog"));
+        m.insert("鍵".repeat(40), json!(1));
+        for i in 1..=6 {
+            m.insert(format!("a{i}"), json!(i));
+        }
+        let k32 = "鍵".repeat(32);
+        assert_eq!(
+            precheck(Some(&c()), "list_collections", &m),
+            bad(&[&k32, "a1", "a2", "a3", "a4"])
+        );
+    }
+
+    #[test]
+    fn precheck_list_tenants_takes_no_arguments() {
+        assert_eq!(
+            precheck(Some(&c()), "list_tenants", &Map::new()),
+            Ok(Precheck::Outer("list_tenants"))
+        );
+        assert_eq!(
+            precheck(Some(&c()), "list_tenants", &a(json!({"tenant":"blog"}))),
+            bad(&["tenant"])
+        );
+    }
+
+    #[test]
+    fn denials_render_the_catalogued_bodies() {
+        let r = |d: ToolDenied| body(&d.into_call_result().unwrap());
+        assert_eq!(
+            r(ToolDenied::TenantRequired),
+            json!({"error_code":"TENANT_REQUIRED",
+            "message":"every tool except list_tenants needs a \"tenant\" string argument",
+            "suggested_fix":"call list_tenants, then pass its id as tenant"})
+        );
+        assert_eq!(
+            r(ToolDenied::TenantNotFound),
+            json!({"error_code":"TENANT_NOT_FOUND","message":"tenant not found","suggested_fix":"call list_tenants"})
+        );
+        assert_eq!(
+            r(ToolDenied::Internal),
+            json!({"error_code":"INTERNAL","message":"internal error"})
+        );
+        assert_eq!(
+            r(ToolDenied::InvalidArguments(vec!["a".into(), "b".into()])),
+            json!({
+            "error_code":"INVALID_ARGUMENTS","message":"unknown argument(s): a, b",
+            "suggested_fix":"remove arguments that are not in this tool's inputSchema"})
+        );
+        let e = ToolDenied::UnknownTool.into_call_result().unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_ref(), e.data.is_none()),
+            (ErrorCode::INVALID_PARAMS, "tool not found", true)
+        );
+        assert_eq!(
+            ToolDenied::from(Denied::Required),
+            ToolDenied::TenantRequired
+        );
+        assert_eq!(
+            ToolDenied::from(Denied::NotFound),
+            ToolDenied::TenantNotFound
+        );
+        assert_eq!(ToolDenied::from(Denied::Internal), ToolDenied::Internal);
+    }
+
+    #[test]
+    fn finish_account_call_turns_protocol_errors_into_is_error() {
+        let with = McpError::invalid_params(
+            "x",
+            Some(json!({"error_code":"X","suggested_fix":"contextual"})),
+        );
+        assert_eq!(
+            body(&finish_account_call(Err(with)).unwrap()),
+            json!({"error_code":"X","message":"x","suggested_fix":"contextual"})
+        );
+        let meta = McpError::internal_error("meta connection not available in this context", None);
+        assert_eq!(
+            body(&finish_account_call(Err(meta)).unwrap())["error_code"],
+            "META_UNAVAILABLE"
+        );
+        let odd = McpError::invalid_params("y", Some(json!("not an object")));
+        assert_eq!(
+            body(&finish_account_call(Err(odd)).unwrap())["error_code"],
+            "INVALID_PARAMS"
+        );
+        let arg = CallToolResult::error(vec![Content::text(
+            "failed to deserialize parameters: missing field `x`",
+        )]);
+        assert_eq!(
+            body(&finish_account_call(Ok(arg)).unwrap())["error_code"],
+            "INVALID_PARAMS"
+        );
+        let internal =
+            McpError::internal_error("internal error", Some(json!({"error_code":"INTERNAL"})));
+        assert_eq!(
+            body(&finish_account_call(Err(internal)).unwrap()),
+            json!({"error_code":"INTERNAL","message":"internal error"}),
+            "same body as ToolDenied::Internal"
+        );
+    }
+
+    #[test]
+    fn finish_account_call_keeps_tool_not_found_and_successes() {
+        let e =
+            finish_account_call(Err(McpError::invalid_params("tool not found", None))).unwrap_err();
+        assert_eq!(
+            (e.message.as_ref(), e.data.is_none()),
+            ("tool not found", true)
+        );
+        let ok = CallToolResult::success(vec![Content::text("{\"a\":1}")]);
+        let before = serde_json::to_string(&ok).unwrap();
+        assert_eq!(
+            serde_json::to_string(&finish_account_call(Ok(ok)).unwrap()).unwrap(),
+            before
+        );
     }
 }
