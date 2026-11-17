@@ -671,7 +671,6 @@ impl DrustMcpService {
     }
 
     /// Record-history actor for a write made by this caller.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn actor(&self) -> crate::storage::record_history::AuditActor {
         match &self.caller {
             ToolCaller::TenantKey => crate::storage::record_history::AuditActor::service(),
@@ -682,7 +681,6 @@ impl DrustMcpService {
     }
 
     /// The service `AuthCtx` this caller acts as.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn service_ctx(&self) -> crate::auth::middleware::AuthCtx {
         match &self.caller {
             ToolCaller::TenantKey => crate::auth::middleware::AuthCtx::Service { admin_id: None },
@@ -693,7 +691,6 @@ impl DrustMcpService {
     }
 
     /// `token_hint` for an audit row written by a tool.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn audit_hint(&self) -> &'static str {
         match &self.caller {
             ToolCaller::TenantKey => "service",
@@ -702,7 +699,6 @@ impl DrustMcpService {
     }
 
     /// `actor_admin_id` for an audit row written by a tool.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn audit_admin_id(&self) -> Option<i64> {
         match &self.caller {
             ToolCaller::TenantKey => None,
@@ -2041,7 +2037,7 @@ impl DrustMcpService {
         Parameters(InsertRecordArgs { collection, data }): Parameters<InsertRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
         let data = Value::Object(data.into_iter().collect());
-        match write_tools::insert_record(&self.state, &collection, data).await {
+        match write_tools::insert_record_as(&self.state, &collection, data, self.actor()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -2071,14 +2067,7 @@ impl DrustMcpService {
             records,
         }): Parameters<batch::InsertRecordsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match batch::batch_insert(
-            &self.state,
-            &collection,
-            records,
-            crate::storage::record_history::AuditActor::service(),
-        )
-        .await
-        {
+        match batch::batch_insert(&self.state, &collection, records, self.actor()).await {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -2111,14 +2100,8 @@ impl DrustMcpService {
             on_conflict,
         }): Parameters<batch::UpsertRecordsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        match batch::batch_upsert(
-            &self.state,
-            &collection,
-            records,
-            on_conflict,
-            crate::storage::record_history::AuditActor::service(),
-        )
-        .await
+        match batch::batch_upsert(&self.state, &collection, records, on_conflict, self.actor())
+            .await
         {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
@@ -2144,7 +2127,18 @@ impl DrustMcpService {
         }): Parameters<UpdateRecordArgs>,
     ) -> Result<CallToolResult, McpError> {
         let data = Value::Object(data.into_iter().collect());
-        match write_tools::update_record(&self.state, &collection, id, data).await {
+        match write_tools::update_record_checked(
+            &self.state,
+            &collection,
+            id,
+            data,
+            None,
+            None,
+            None,
+            self.actor(),
+        )
+        .await
+        {
             Ok(v) => json_content(v),
             Err(e) => bail_mcp(e),
         }
@@ -2189,7 +2183,16 @@ impl DrustMcpService {
                 Err(e) => return bail_mcp(e),
             }
         }
-        match write_tools::delete_record(&self.state, &collection, id).await {
+        match write_tools::delete_record_filtered(
+            &self.state,
+            &collection,
+            id,
+            None,
+            None,
+            self.actor(),
+        )
+        .await
+        {
             Ok(v) => sentinel_or_json(v),
             Err(e) => bail_mcp(e),
         }
@@ -2877,7 +2880,7 @@ impl DrustMcpService {
         // shape. `page`/`per_page` are not MCP params, so the default window
         // applies.
         if stored.kind == crate::rpc::registry::RpcKind::Query {
-            let ctx = crate::auth::middleware::AuthCtx::Service { admin_id: None };
+            let ctx = self.service_ctx();
             let page = match crate::rpc::exec_query::run_query_rpc(
                 &pool, &ctx, &stored, body_map, None, None,
             )
@@ -3062,7 +3065,14 @@ impl DrustMcpService {
         // v1.35 hook 8-MCP — pass the shared auth cache so the tool fn can
         // drop the deleted user's cached session entries synchronously.
         let inner = self.state.inner();
-        match user_tools::delete_user(&inner.pool, user_id, inner.auth_cache.as_deref()).await {
+        match user_tools::delete_user_as(
+            &inner.pool,
+            user_id,
+            inner.auth_cache.as_deref(),
+            self.actor(),
+        )
+        .await
+        {
             Ok(v) => {
                 // #952 — the cascade revoked the deleted user's sessions; drop
                 // the tenant's in-flight WS room subscribers so the revoked
@@ -3344,8 +3354,13 @@ impl DrustMcpService {
             }
         };
         let tenant_id = self.state.tenant_id().to_string();
-        match crate::tenant::egress_config::set_allowlist(&meta, &tenant_id, entries, "service")
-            .await
+        match crate::tenant::egress_config::set_allowlist(
+            &meta,
+            &tenant_id,
+            entries,
+            self.audit_hint(),
+        )
+        .await
         {
             Ok(Ok(stored)) => {
                 let entries: Value =
@@ -3709,13 +3724,13 @@ impl DrustMcpService {
                 let ms = started.elapsed().as_millis() as u64;
                 write_publish_audit(
                     &tenant,
-                    "service",
+                    self.audit_hint(),
                     ms,
                     &room,
                     byte_count,
                     "mcp",
                     delivered_to,
-                    None,
+                    self.audit_admin_id(),
                 );
                 json_content(serde_json::json!({
                     "room": room,
@@ -3750,7 +3765,14 @@ impl DrustMcpService {
                 };
                 let ms = started.elapsed().as_millis() as u64;
                 write_publish_audit_failure(
-                    &tenant, "service", ms, &room, byte_count, "mcp", code, None,
+                    &tenant,
+                    self.audit_hint(),
+                    ms,
+                    &room,
+                    byte_count,
+                    "mcp",
+                    code,
+                    self.audit_admin_id(),
                 );
                 bail_mcp(anyhow::anyhow!("{code}: {msg}"))
             }
@@ -5617,7 +5639,7 @@ mod is_error_tests {
 /// bare service identity; an account-level caller carries its admin id.
 #[cfg(test)]
 mod caller_tests {
-    use super::is_error_tests::svc;
+    use super::is_error_tests::{body, posts, svc};
     use super::*;
     use crate::mgmt::mcp_oauth::{caller::McpCaller, config::McpOauthConfig};
 
@@ -5746,5 +5768,260 @@ mod caller_tests {
             ],
             "only the per-tenant registry (and the lib fixture) may build the service-key identity"
         );
+    }
+
+    fn title(t: &str) -> std::collections::HashMap<String, Value> {
+        std::collections::HashMap::from([("title".to_string(), serde_json::json!(t))])
+    }
+
+    /// (op, actor_kind, actor_id) of every history row of `coll`, oldest first.
+    async fn history(mcp: &DrustMcp, coll: &'static str) -> Vec<(String, String, Option<String>)> {
+        mcp.inner()
+            .pool
+            .with_reader(move |c| {
+                let mut st = c.prepare(
+                    "SELECT op, actor_kind, actor_id FROM _system_record_history \
+                     WHERE collection = ?1 ORDER BY id",
+                )?;
+                let rows = st
+                    .query_map([coll], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+            .unwrap()
+    }
+
+    fn row(op: &str, id: Option<&str>) -> (String, String, Option<String>) {
+        (
+            op.to_string(),
+            "service".to_string(),
+            id.map(str::to_string),
+        )
+    }
+
+    async fn insert_update_delete(s: &DrustMcpService) {
+        let ins = s
+            .insert_record(Parameters(InsertRecordArgs {
+                collection: "posts".into(),
+                data: title("a"),
+            }))
+            .await
+            .unwrap();
+        let id = body(&ins)["id"].as_i64().expect("inserted id");
+        s.update_record(Parameters(UpdateRecordArgs {
+            collection: "posts".into(),
+            id,
+            data: title("b"),
+        }))
+        .await
+        .unwrap();
+        let del = s
+            .delete_record(Parameters(DeleteRecordArgs {
+                collection: "posts".into(),
+                id,
+                dry_run: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(del.is_error, Some(false), "{}", body(&del));
+    }
+
+    #[tokio::test]
+    async fn account_single_record_writes_attribute_the_admin() {
+        let (s, mcp, _d) = account_svc("caller-rec").await;
+        posts(&mcp).await;
+        insert_update_delete(&s).await;
+        assert_eq!(
+            history(&mcp, "posts").await,
+            vec![
+                row("insert", Some("42")),
+                row("update", Some("42")),
+                row("delete", Some("42"))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_key_single_record_writes_stay_unattributed() {
+        let (s, mcp, _d) = svc("caller-rec-tk", false).await;
+        posts(&mcp).await;
+        insert_update_delete(&s).await;
+        assert_eq!(
+            history(&mcp, "posts").await,
+            vec![
+                row("insert", None),
+                row("update", None),
+                row("delete", None)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn account_insert_record_keeps_resource_link() {
+        let (s, mcp, _d) = account_svc("caller-link").await;
+        posts(&mcp).await;
+        let b = body(
+            &s.insert_record(Parameters(InsertRecordArgs {
+                collection: "posts".into(),
+                data: title("a"),
+            }))
+            .await
+            .unwrap(),
+        );
+        let id = b["id"].as_i64().expect("inserted id");
+        assert_eq!(
+            b["resource_link"],
+            format!("drust://caller-link/collections/posts/records/{id}")
+        );
+
+        let (k, kmcp, _d2) = svc("caller-link-tk", false).await;
+        posts(&kmcp).await;
+        let kb = body(
+            &k.insert_record(Parameters(InsertRecordArgs {
+                collection: "posts".into(),
+                data: title("a"),
+            }))
+            .await
+            .unwrap(),
+        );
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys(&b),
+            keys(&kb),
+            "same top-level keys, in the same order, as the per-tenant path"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_batch_writes_attribute_every_history_row() {
+        let (s, mcp, _d) = account_svc("caller-batch").await;
+        posts(&mcp).await;
+        let r = s
+            .insert_records(Parameters(batch::InsertRecordsArgs {
+                collection: "posts".into(),
+                records: vec![
+                    serde_json::json!({"title": "a"}),
+                    serde_json::json!({"title": "b"}),
+                ],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(body(&r)["count"], 2, "{}", body(&r));
+        // A fresh AUTOINCREMENT table: the first row is id 1. Upsert on the
+        // primary key: id 1 collides (UPDATE branch), id 1000 does not
+        // (INSERT branch).
+        let r = s
+            .upsert_records(Parameters(batch::UpsertRecordsArgs {
+                collection: "posts".into(),
+                records: vec![
+                    serde_json::json!({"id": 1, "title": "z"}),
+                    serde_json::json!({"id": 1000, "title": "n"}),
+                ],
+                on_conflict: vec!["id".into()],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(body(&r)["count"], 2, "{}", body(&r));
+        let h = history(&mcp, "posts").await;
+        let mut ops: Vec<&str> = h.iter().map(|r| r.0.as_str()).collect();
+        ops.sort_unstable();
+        assert_eq!(ops, ["insert", "insert", "insert", "update"], "{h:?}");
+        assert!(
+            h.iter()
+                .all(|r| r.1 == "service" && r.2.as_deref() == Some("42")),
+            "{h:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_delete_user_cascade_attributes_the_admin() {
+        let (s, mcp, _d) = account_svc("caller-cascade").await;
+        mcp.inner()
+            .pool
+            .with_writer(|c| {
+                c.execute_batch(
+                    "CREATE TABLE tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        body TEXT,
+                        owner TEXT,
+                        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );",
+                )?;
+                crate::storage::schema::set_owner_field(c, "tasks", Some("owner"), Some("own"))?;
+                c.execute(
+                    "INSERT INTO _system_users (id, email, password_hash, created_at, updated_at) \
+                     VALUES ('u1', 'u@x', 'h', datetime('now'), datetime('now'))",
+                    [],
+                )?;
+                c.execute("INSERT INTO tasks (body, owner) VALUES ('a', 'u1')", [])?;
+                Ok::<_, rusqlite::Error>(())
+            })
+            .await
+            .unwrap();
+        let r = s
+            .delete_user(Parameters(UserIdArgs {
+                user_id: "u1".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(body(&r)["deleted_records"]["tasks"], 1, "{}", body(&r));
+        assert_eq!(
+            history(&mcp, "tasks").await,
+            vec![row("delete", Some("42"))]
+        );
+    }
+
+    /// Every attribution site in the tool bodies takes its value from the
+    /// caller. The scan covers the `#[tool_router]` impl only (the tool
+    /// bodies; the accessors live in a separate impl above it). Comments are
+    /// skipped and the needles are assembled at runtime so this test does not
+    /// match itself. A new tool that writes record history or an audit row
+    /// must use one of these accessors and bump its count here.
+    #[test]
+    fn tool_bodies_take_identity_from_the_caller() {
+        let src = include_str!("handler.rs");
+        let start = src
+            .find(&format!("#[{}]", "tool_router"))
+            .expect("tool router impl");
+        let end = src
+            .find(&format!("impl {} for DrustMcpService", "ServerHandler"))
+            .expect("ServerHandler impl");
+        let code: String = src[start..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let forbidden = [
+            format!("{}{}", "AuditActor::", "service()"),
+            format!("{}{}", "admin_id: ", "None"),
+            format!("\"{}\"", "service"),
+            format!("{}{}", "write_tools::insert_", "record("),
+            format!("{}{}", "write_tools::update_", "record("),
+            format!("{}{}", "write_tools::delete_", "record("),
+            format!("{}{}", "user_tools::delete_", "user("),
+        ];
+        let hits: Vec<&String> = forbidden
+            .iter()
+            .filter(|n| code.contains(n.as_str()))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "a tool body hard-codes the caller identity: {hits:?}"
+        );
+        for (accessor, want) in [
+            ("actor", 6),
+            ("service_ctx", 1),
+            ("audit_hint", 3),
+            ("audit_admin_id", 2),
+        ] {
+            let call = format!("self.{accessor}()");
+            assert_eq!(
+                code.matches(call.as_str()).count(),
+                want,
+                "call sites of {call}"
+            );
+        }
     }
 }

@@ -10,9 +10,9 @@ use crate::safety::audit::AuditEntry;
 /// `source` ∈ {"ws", "rest", "mcp"}.
 /// `actor_admin_id` is `Some(id)` when the publish came from an admin PAT
 /// (v1.29+ admin tokens carry the admin id on `AuthCtx::Service`).
-/// `None` for the shared per-tenant service token and for MCP (where
-/// AuthCtx isn't threaded through rmcp's tool layer in v1.31.3 — see
-/// CHANGELOG known limitation).
+/// `None` for the shared per-tenant service token, including the per-tenant
+/// MCP endpoint; the account-level MCP endpoint passes the signed-in admin's
+/// id.
 pub fn write_publish_audit(
     tenant: &str,
     token_hint: &str,

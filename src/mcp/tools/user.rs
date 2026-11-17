@@ -218,6 +218,23 @@ pub async fn delete_user(
     user_id: String,
     auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
 ) -> anyhow::Result<serde_json::Value> {
+    delete_user_as(
+        pool,
+        user_id,
+        auth_cache,
+        crate::storage::record_history::AuditActor::service(),
+    )
+    .await
+}
+
+/// `delete_user` with the record-history actor of the owner cascade supplied
+/// by the caller.
+pub async fn delete_user_as(
+    pool: &SharedTenantPool,
+    user_id: String,
+    auth_cache: Option<&crate::tenant::auth_cache::AuthCache>,
+    actor: crate::storage::record_history::AuditActor,
+) -> anyhow::Result<serde_json::Value> {
     let uid2 = user_id.clone();
     let res = pool
         .with_writer(move |c| {
@@ -235,9 +252,9 @@ pub async fn delete_user(
             // 2. Cascade-delete user's records from each collection.
             // v1.46 — per-row history capture BEFORE each bulk DELETE, inside
             // the same tx (spec §4: bulk-delete paths iterate and capture).
-            // Deliberately a bare service actor (id=None): MCP is
-            // service-key-only with no per-request admin identity to thread.
-            let actor = crate::storage::record_history::AuditActor::service();
+            // The actor comes from the caller: the per-tenant service key
+            // passes a bare service actor (id = None); the account-level
+            // endpoint passes the signed-in admin's id.
             let mut deleted_records = serde_json::Map::new();
             for (coll, field) in &owner_cols {
                 crate::storage::record_history::capture_owner_cascade(

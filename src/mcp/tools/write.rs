@@ -239,14 +239,25 @@ pub async fn insert_record(
     collection: &str,
     data: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut out = insert_record_checked(
+    insert_record_as(
         s,
         collection,
         data,
-        None,
         crate::storage::record_history::AuditActor::service(),
     )
-    .await?;
+    .await
+}
+
+/// `insert_record` with the record-history actor supplied by the caller: the
+/// per-tenant service key passes a bare service actor, the account-level MCP
+/// endpoint the signed-in admin's.
+pub async fn insert_record_as(
+    s: &DrustMcp,
+    collection: &str,
+    data: serde_json::Value,
+    actor: crate::storage::record_history::AuditActor,
+) -> anyhow::Result<serde_json::Value> {
+    let mut out = insert_record_checked(s, collection, data, None, actor).await?;
     // v1.56 M4 resource_link: a CONCRETE, top-level link to the new row (the
     // response already carries its `id`). Injected in the single-insert wrapper
     // only, so the shared `insert_record_checked` core (also used by the batch
