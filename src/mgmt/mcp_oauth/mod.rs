@@ -21,6 +21,9 @@ pub mod rl;
 // No production caller until the account-level MCP router mounts it.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod route_layer;
+// No production caller until the account-level MCP router mounts it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod rs_layer;
 pub mod store;
 pub mod sweep;
 pub mod token;
@@ -334,7 +337,7 @@ mod source_pins {
     /// therefore use the words.
     #[test]
     fn plaintext_code_never_reaches_logs_or_audit() {
-        let files: [(&str, &str, &[&str], usize); 4] = [
+        let files: [(&str, &str, &[&str], usize); 5] = [
             (
                 "consent.rs",
                 include_str!("consent.rs"),
@@ -377,6 +380,25 @@ mod source_pins {
                 include_str!("revoke.rs"),
                 &["presented", "p", "body", "token"],
                 4,
+            ),
+            (
+                "rs_layer.rs",
+                include_str!("rs_layer.rs"),
+                &[
+                    "token",
+                    "raw",
+                    "req",
+                    "parts",
+                    "headers",
+                    "access",
+                    "bearer",
+                    "auth",
+                    "authorization",
+                    "value",
+                    "hv",
+                    "cookie",
+                ],
+                7,
             ),
         ];
         for (name, src, banned, min) in files {
