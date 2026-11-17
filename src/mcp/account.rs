@@ -31,13 +31,6 @@ use crate::mgmt::mcp_oauth::config::McpOauthConfig;
 pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
     ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
-/// The revision a client asking for an unsupported one is answered with. The
-/// fallback branch of `AccountMcp::negotiate` returns
-/// `ProtocolVersion::V_2025_11_25` (its field is private, so it cannot be
-/// built from this string); this is that branch's test oracle.
-#[cfg(test)]
-pub(crate) const FALLBACK_PROTOCOL_VERSION: &str = "2025-11-25";
-
 /// The large-upload limits a ticket-bound upload is issued under, copied from
 /// the management state when the router is built. Plain numbers, no
 /// credential.
@@ -71,8 +64,6 @@ pub struct AccountMcp {
 }
 
 impl AccountMcp {
-    // Allowed until the account-level MCP router calls it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         registry: Arc<McpRegistry>,
         meta: Arc<Mutex<Connection>>,
@@ -132,6 +123,15 @@ impl ServerHandler for AccountMcp {
         Err(McpError::invalid_params("tool not found", None))
     }
 }
+
+/// The revision a client asking for an unsupported one is answered with. The
+/// fallback branch of `AccountMcp::negotiate` returns
+/// `ProtocolVersion::V_2025_11_25` (its field is private, so it cannot be
+/// built from this string); this is that branch's test oracle.
+// Below every production item on purpose: source pins scan only the text
+// above a file's first `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) const FALLBACK_PROTOCOL_VERSION: &str = "2025-11-25";
 
 #[cfg(test)]
 mod tests {

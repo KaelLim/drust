@@ -1677,7 +1677,7 @@ impl MgmtState {
                 .merge(admin_signed_router)
                 .merge(protected),
         );
-        guarded
+        let app = guarded
             .merge(tenant_signed_router)
             // v1.22 i18n — outermost layer so unauthenticated routes
             // (`/login`, `/admin/oauth/<provider>/callback`) also resolve
@@ -1688,7 +1688,20 @@ impl MgmtState {
             .layer(axum::middleware::from_fn_with_state(
                 outer_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
+            ));
+        // The account-level MCP endpoint is not an admin page: it is merged
+        // outside the locale, theme and frame-guard layers. The merge makes
+        // its router's default fallback this router's fallback; the one it
+        // replaces is the default fallback wrapped only by the locale and
+        // theme layers, which write request extensions and nothing else, so
+        // an unmatched path answers byte for byte as before.
+        if self.mcp_oauth.enabled() {
+            app.merge(crate::mgmt::mcp_oauth::account_routes::account_routes(
+                &self,
             ))
+        } else {
+            app
+        }
     }
 }
 

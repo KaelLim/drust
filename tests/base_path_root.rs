@@ -161,3 +161,65 @@ fn mcp_oauth_prm_url_and_allowed_hosts_under_empty_base() {
         cfg.boot_log_lines()
     );
 }
+
+#[tokio::test]
+async fn account_mcp_urls_drop_the_prefix() {
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    assert_eq!(
+        cfg.prm_url(),
+        "https://drust.test/.well-known/oauth-protected-resource/mcp"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let conn = drust::storage::meta::open_meta(&data.join("meta.sqlite")).unwrap();
+    drust::db::migrations::run_migrations(&conn, &data).unwrap();
+    let tenants = Arc::new(drust::storage::pool::TenantRegistry::new(data.clone(), 2));
+    let mcp = Arc::new(drust::mcp::http_registry::McpHttpRegistry::new(Arc::new(
+        drust::mcp::server::McpRegistry::new(tenants.clone()),
+    )));
+    let mut state = drust::mgmt::routes::MgmtState::test_default(
+        Arc::new(tokio::sync::Mutex::new(conn)),
+        data.clone(),
+        tenants,
+        mcp,
+        drust::tenant::events::EventBus::new(),
+        drust::tenant::rooms::RoomBus::new(),
+    );
+    state.mcp_oauth = Arc::new(cfg);
+    let app = state.with_data_dir(data);
+    let r = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("host", "127.0.0.1")
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    assert_eq!(
+        r.headers()["www-authenticate"],
+        r#"Bearer resource_metadata="https://drust.test/.well-known/oauth-protected-resource/mcp", scope="mcp""#
+    );
+    let r = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/.well-known/oauth-protected-resource/mcp")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+    let prm: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(prm["resource"], "https://drust.test/mcp");
+    assert_eq!(prm["authorization_servers"][0], "https://drust.test");
+}

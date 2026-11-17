@@ -22,8 +22,6 @@ pub struct McpCaller {
 }
 
 impl McpCaller {
-    // Allowed until the resource-server layer calls it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_access(g: &AccessGrant) -> Self {
         McpCaller {
             admin_id: g.admin_id(),

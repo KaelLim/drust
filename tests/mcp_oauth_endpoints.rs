@@ -213,6 +213,8 @@ async fn assert_nothing_mounted(app: &axum::Router) {
         META_PATH,
         "/oauth/authorize",
         "/.well-known/openid-configuration",
+        "/mcp",
+        "/.well-known/oauth-protected-resource/mcp",
     ] {
         assert_eq!(
             snapshot(get(app, uri, &[]).await).await,
@@ -225,6 +227,7 @@ async fn assert_nothing_mounted(app: &axum::Router) {
     for (uri, body) in [
         ("/oauth/token", "grant_type=password"),
         ("/oauth/revoke", "token=abc"),
+        ("/mcp", r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
     ] {
         assert_eq!(
             snapshot(post_raw(app, uri, body).await).await,

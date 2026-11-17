@@ -4,6 +4,7 @@
 //! notes, the `admin.team.remove` audit row gains `revoked_mcp_grants` (0), and
 //! `login_submit`'s cross-site refusal is always on. Tables:
 //! `db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`. Release notes: CHANGELOG.md.
+pub mod account_routes;
 pub mod authorize;
 pub mod caller;
 pub mod clients;
@@ -14,18 +15,12 @@ pub mod metadata;
 pub mod oauth_error_layer;
 pub mod params;
 pub mod pkce;
-// No production caller until the account-level MCP router mounts it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod prm;
 pub mod redirect;
 pub mod refresh;
 pub mod revoke;
 pub mod rl;
-// No production caller until the account-level MCP router mounts it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod route_layer;
-// No production caller until the account-level MCP router mounts it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod rs_layer;
 pub mod store;
 pub mod sweep;
@@ -485,5 +480,70 @@ fn f() {
             }
         }
         assert!(seen >= 4, "only {seen} AdminId( sites found");
+    }
+
+    /// The no-post-commit-step claim for MCP OAuth revocation holds only while
+    /// no MCP token is cached: a cache added here makes every revoke_mcp_grant
+    /// caller responsible for evicting it. Each file's last production item is
+    /// an anchor: a `#[cfg(test)]` item placed above production code would cut
+    /// the scanned half short and hide what follows it.
+    #[test]
+    fn mcp_tokens_never_enter_a_cache() {
+        let files = [
+            (
+                "rs_layer.rs",
+                include_str!("rs_layer.rs"),
+                "async fn mcp_oauth_auth_layer(",
+            ),
+            (
+                "caller.rs",
+                include_str!("caller.rs"),
+                "pub fn admin_label(",
+            ),
+            (
+                "account_routes.rs",
+                include_str!("account_routes.rs"),
+                "pub fn account_routes(",
+            ),
+            (
+                "../../mcp/account.rs",
+                include_str!("../../mcp/account.rs"),
+                "async fn call_tool(",
+            ),
+        ];
+        for (name, src, anchor) in files {
+            let code = code_only(src);
+            let prod = production_half(&code);
+            assert!(prod.contains(anchor), "{name}: scan stops before {anchor}");
+            for needle in ["DashMap", "auth_cache", "moka"] {
+                assert!(!prod.contains(needle), "{name} names {needle}");
+            }
+        }
+    }
+
+    /// rmcp handlers hold a RequestContext that can reach the peer; the push
+    /// scan (mcp::handler capabilities_tests) covers src/mcp only, so no
+    /// handler may live in this directory.
+    #[test]
+    fn no_mcp_handler_lives_under_mcp_oauth() {
+        let needles = [concat!("Server", "Handler"), concat!("Request", "Context")];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mgmt/mcp_oauth");
+        let mut files = Vec::new();
+        crate::tenant::rooms::srcpin::collect_rs_files(&root, &mut files);
+        assert!(
+            files.len() > 20,
+            "scan found too few files: {}",
+            files.len()
+        );
+        for f in &files {
+            let code = code_only(&std::fs::read_to_string(f).unwrap());
+            for n in needles {
+                assert!(
+                    !production_half(&code).contains(n),
+                    "{} names {n}",
+                    f.display()
+                );
+            }
+        }
     }
 }

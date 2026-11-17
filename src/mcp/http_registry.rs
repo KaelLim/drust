@@ -53,8 +53,6 @@ impl McpHttpRegistry {
 
     /// The shared inner registry, for the account-level MCP router: one
     /// `McpRegistry` serves both endpoints.
-    // Allowed until the account-level MCP router calls it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn registry(&self) -> &Arc<McpRegistry> {
         &self.mcp
     }
