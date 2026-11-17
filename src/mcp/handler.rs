@@ -1204,7 +1204,7 @@ mod finish_tool_call_tests {
     }
 }
 
-#[tool_router]
+#[tool_router(vis = "pub(crate)")]
 impl DrustMcpService {
     pub fn new(state: DrustMcp) -> Self {
         Self {
@@ -4029,10 +4029,9 @@ impl DrustMcpService {
 /// each tool's description / inputSchema (`tools/list` is canonical), the
 /// `files-guide.md` resource, and the prompts. `instructions_tests` pins the cap,
 /// the tool-name index, and the `dry_run` set against the real inputSchemas.
-/// Budget: 3,963 chars at a 52-char tenant id. The account-level endpoint (MA1)
-/// drops the three `{tenant_id}` slots (up to -156) but adds `list_tenants`, the
-/// per-call `tenant` rule and `create_upload_url` (about +250), so it must be
-/// written tersely — a sentence-per-bullet rewrite measured 4,103.
+/// Budget: 3,963 chars at a 52-char tenant id. The account-level endpoint serves
+/// its own fixed text (`crate::mcp::account::ACCOUNT_INSTRUCTIONS`), pinned under the
+/// same cap by `account::instructions_tests`.
 pub(crate) const INSTRUCTIONS_MAX_CHARS: usize = 4096;
 
 fn build_instructions(tenant_id: &str) -> String {
@@ -4282,10 +4281,10 @@ mod description_tests {
     use super::DrustMcpService;
     use rmcp::model::Tool;
 
-    /// Pull one tool's description text out of the live macro-generated
-    /// router. `tool_router()` has inherited (private) visibility, so this
-    /// MUST live in-file (like `tool_count_tests`); an external
-    /// `tests/*.rs` file cannot reach it.
+    /// Pull one tool's description text out of the live macro-generated router.
+    /// `tool_router()` is `pub(crate)` (the account-level endpoint in `crate::mcp::account`
+    /// builds its tool list from it), so an external `tests/*.rs` file still cannot
+    /// reach it and this lives in-file.
     fn desc_of(name: &str) -> String {
         let tools: Vec<Tool> = DrustMcpService::tool_router().list_all();
         let t = tools
@@ -6013,7 +6012,7 @@ mod caller_tests {
     fn tool_bodies_take_identity_from_the_caller() {
         let src = include_str!("handler.rs");
         let start = src
-            .find(&format!("#[{}]", "tool_router"))
+            .find(&format!("#[{}(", "tool_router"))
             .expect("tool router impl");
         let end = src
             .find(&format!("impl {} for DrustMcpService", "ServerHandler"))

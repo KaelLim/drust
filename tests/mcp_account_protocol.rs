@@ -58,7 +58,11 @@ async fn initialize_negotiates_the_protocol_version() {
             json!({"prompts": {}, "resources": {}, "tools": {}})
         );
         assert_eq!(m[0]["result"]["serverInfo"]["name"], "drust");
-        assert!(m[0]["result"].get("instructions").is_none());
+        assert!(
+            m[0]["result"]["instructions"].as_str().is_some_and(|s| s
+                .starts_with("drust — one MCP endpoint for every tenant your account can see.")),
+            "{asked}"
+        );
     }
 }
 
