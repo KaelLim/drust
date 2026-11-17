@@ -309,6 +309,82 @@ impl McpOauthConfig {
             && path == crate::base_path::base("/mcp")
     }
 
+    /// The host of `DRUST_PUBLIC_URL`: lowercase, no port, an IPv6 literal
+    /// without its brackets. `None` while disabled.
+    pub fn public_host(&self) -> Option<&str> {
+        if !self.enabled() {
+            return None;
+        }
+        let (_, authority) = self.origin.split_once("://")?;
+        let (host, _) = split_authority(authority)?;
+        let host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host);
+        (!host.is_empty()).then_some(host)
+    }
+
+    /// The hosts a request to the resource server may name: `localhost`,
+    /// `127.0.0.1`, `::1`, in that order, then `public_host()` unless it is one
+    /// of those three. One list for the Host check in front of the resource
+    /// server and for rmcp's own guard. Never empty: an empty list disables
+    /// rmcp's Host guard entirely.
+    pub fn allowed_hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = ["localhost", "127.0.0.1", "::1"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        if let Some(h) = self.public_host()
+            && !hosts.iter().any(|l| l == h)
+        {
+            hosts.push(h.to_string());
+        }
+        hosts
+    }
+
+    /// The protected-resource metadata URL for `/mcp`, under the base path.
+    /// Meaningless while disabled — callers check `enabled()` first.
+    pub fn prm_url(&self) -> String {
+        self.endpoint_url("/.well-known/oauth-protected-resource/mcp")
+    }
+
+    /// Whether a browser `Origin` header may reach the resource server: this
+    /// server's own origin (scheme and host case-insensitive, the default port
+    /// optional) or a loopback origin (`localhost`, `127.0.0.1`, `::1`) on any
+    /// port. `false` while disabled, for `null`, and for anything that is not a
+    /// bare http(s) origin.
+    ///
+    /// Asked only when a request carries Origin; a request without one never
+    /// reaches it (MCP clients send none). Loopback origins are accepted on any
+    /// port only because /mcp reads no cookie or other ambient credential; if it
+    /// ever does, drop the loopback arm.
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let Ok(u) = Url::parse(origin) else {
+            return false;
+        };
+        if !matches!(u.scheme(), "http" | "https")
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.path() != "/"
+            || u.query().is_some()
+            || u.fragment().is_some()
+        {
+            return false;
+        }
+        if u.origin().ascii_serialization() == self.origin {
+            return true;
+        }
+        match u.host() {
+            Some(Host::Domain(d)) => d == "localhost",
+            Some(Host::Ipv4(a)) => a == std::net::Ipv4Addr::LOCALHOST,
+            Some(Host::Ipv6(a)) => a == std::net::Ipv6Addr::LOCALHOST,
+            None => false,
+        }
+    }
+
     pub fn access_ttl_secs(&self) -> u32 {
         self.access_ttl_secs
     }
@@ -350,13 +426,14 @@ impl McpOauthConfig {
         let status = match &self.disabled {
             None => format!(
                 "MCP OAuth AS enabled (DRUST_MCP=on): issuer={} resource={} access_ttl={}s \
-                 refresh_grace={}s idle={}d max={}d",
+                 refresh_grace={}s idle={}d max={}d allowed_hosts=[{}]",
                 self.issuer(),
                 self.resource_url(),
                 self.access_ttl_secs,
                 self.refresh_grace_secs,
                 self.idle_days,
-                self.max_days
+                self.max_days,
+                self.allowed_hosts().join(",")
             ),
             Some(DisabledReason::ModeOff) => "MCP OAuth AS disabled: DRUST_MCP=off".to_string(),
             Some(DisabledReason::AutoBeforeMa1d) => "MCP OAuth AS disabled: DRUST_MCP=auto \
@@ -1114,5 +1191,187 @@ mod tests {
         let lines = c.boot_log_lines();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines[1].contains(ACCESS_TTL_VAR));
+    }
+
+    // ---- allowed hosts, PRM URL, Origin ----
+
+    #[test]
+    fn public_host_is_lowercase_and_portless() {
+        for (raw, want) in [
+            ("https://drust.test", "drust.test"),
+            ("https://DRUST.Test:443", "drust.test"),
+            ("https://drust.test:8443", "drust.test"),
+            ("http://[::1]:8080", "::1"),
+            ("https://[2001:db8::1]", "2001:db8::1"),
+        ] {
+            assert_eq!(with_url(Some(raw)).public_host(), Some(want), "{raw}");
+        }
+        assert_eq!(McpOauthConfig::disabled().public_host(), None);
+        assert_eq!(
+            with_url(Some("http://drust.test")).public_host(),
+            None,
+            "refused URL"
+        );
+    }
+
+    #[test]
+    fn allowed_hosts_are_loopback_plus_the_public_host() {
+        let three = ["localhost", "127.0.0.1", "::1"];
+        let cases: [(&str, &[&str]); 7] = [
+            (
+                "https://drust.test",
+                &["localhost", "127.0.0.1", "::1", "drust.test"],
+            ),
+            (
+                "https://DRUST.Test:8443",
+                &["localhost", "127.0.0.1", "::1", "drust.test"],
+            ),
+            ("http://127.0.0.1:47826", &three),
+            ("http://localhost:8080", &three),
+            ("https://localhost", &three),
+            ("http://[::1]:8080", &three),
+            (
+                "https://[2001:db8::1]",
+                &["localhost", "127.0.0.1", "::1", "2001:db8::1"],
+            ),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(with_url(Some(raw)).allowed_hosts(), want, "{raw}");
+        }
+        assert_eq!(McpOauthConfig::disabled().allowed_hosts(), three);
+        assert_eq!(with_mode(Some("auto")).allowed_hosts(), three);
+    }
+
+    /// rmcp allows every host when the list is empty and silently drops an
+    /// empty entry (tower.rs host_is_allowed / parse_allowed_authority), so
+    /// both would turn its Host guard off.
+    #[test]
+    fn allowed_hosts_are_never_empty_and_well_formed() {
+        let mut configs = vec![
+            McpOauthConfig::disabled(),
+            with_mode(None),
+            with_mode(Some("off")),
+            with_mode(Some("auto")),
+            with_mode(Some("yes")),
+            with_url(None),
+            with_url(Some("http://drust.test")),
+        ];
+        for raw in [
+            "https://drust.test",
+            "https://DRUST.Test:443",
+            "https://drust.test:8443",
+            "http://127.0.0.1:47826",
+            "http://localhost:8080",
+            "https://localhost",
+            "http://[::1]:8080",
+            "https://[2001:db8::1]",
+        ] {
+            configs.push(with_url(Some(raw)));
+        }
+        for c in &configs {
+            let hosts = c.allowed_hosts();
+            assert!(hosts.len() >= 3, "{hosts:?}");
+            for h in &hosts {
+                assert!(!h.is_empty(), "{hosts:?}");
+                assert!(
+                    !h.chars()
+                        .any(|ch| "/@[]".contains(ch) || ch.is_whitespace()),
+                    "{h:?}"
+                );
+                assert!(
+                    !h.contains(':') || h.parse::<std::net::Ipv6Addr>().is_ok(),
+                    "a ':' is only allowed inside an unbracketed IPv6 address: {h:?}"
+                );
+                assert_eq!(h, &h.to_ascii_lowercase(), "{h:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn prm_url_carries_the_base_path() {
+        // Lib tests run on the default base path, "/drust".
+        let c = McpOauthConfig::for_tests("https://drust.test");
+        assert_eq!(
+            c.prm_url(),
+            "https://drust.test/drust/.well-known/oauth-protected-resource/mcp"
+        );
+        assert_eq!(
+            c.prm_url(),
+            c.endpoint_url("/.well-known/oauth-protected-resource/mcp")
+        );
+    }
+
+    #[test]
+    fn origin_allowed_cases() {
+        let c = McpOauthConfig::for_tests("https://drust.test");
+        for yes in [
+            "https://drust.test",
+            "HTTPS://DRUST.TEST",
+            "https://drust.test:443",
+            "https://drust.test/",
+            "http://localhost",
+            "http://localhost:3000",
+            "https://127.0.0.1:8443",
+            "http://[::1]:5173",
+        ] {
+            assert!(c.origin_allowed(yes), "{yes}");
+        }
+        for no in [
+            "https://evil.example",
+            "null",
+            "",
+            "http://drust.test",
+            "https://drust.test:8443",
+            "https://drust.test.evil.example",
+            "http://localhost.evil.example",
+            "http://127.0.0.2",
+            "ftp://localhost",
+            "https://drust.test/x",
+            "https://drust.test?x=1",
+            "https://u@drust.test",
+            // IPv4-mapped is not Ipv6Addr::LOCALHOST; a trailing dot is another name.
+            "http://[::ffff:127.0.0.1]",
+            "https://drust.test.",
+            "http://localhost.:3000",
+        ] {
+            assert!(!c.origin_allowed(no), "{no}");
+        }
+        let off = McpOauthConfig::disabled();
+        assert!(!off.origin_allowed("http://localhost"));
+        assert!(!off.origin_allowed(""));
+    }
+
+    // ---- boot log: allowed hosts ----
+
+    #[test]
+    fn boot_log_enabled_line_lists_allowed_hosts() {
+        let c = McpOauthConfig::for_tests("https://drust.test");
+        assert_eq!(
+            c.boot_log_lines()[0],
+            "MCP OAuth AS enabled (DRUST_MCP=on): issuer=https://drust.test/drust \
+             resource=https://drust.test/drust/mcp access_ttl=3600s refresh_grace=60s \
+             idle=30d max=90d allowed_hosts=[localhost,127.0.0.1,::1,drust.test]"
+        );
+        let dev = McpOauthConfig::for_tests("http://127.0.0.1:47826");
+        assert!(
+            dev.boot_log_lines()[0].ends_with(" allowed_hosts=[localhost,127.0.0.1,::1]"),
+            "{:?}",
+            dev.boot_log_lines()
+        );
+    }
+
+    #[test]
+    fn boot_log_disabled_lines_do_not_list_hosts() {
+        for c in [
+            with_mode(None),
+            with_mode(Some("off")),
+            with_mode(Some("yes")),
+            with_url(None),
+            with_url(Some("http://drust.test")),
+        ] {
+            for l in c.boot_log_lines() {
+                assert!(!l.contains("allowed_hosts"), "{l}");
+            }
+        }
     }
 }

@@ -141,3 +141,23 @@ fn empty_base_consent_cookies_use_root_path() {
     );
     assert!(clear.contains("Max-Age=0"), "{clear}");
 }
+
+#[test]
+fn mcp_oauth_prm_url_and_allowed_hosts_under_empty_base() {
+    // First-write-wins OnceLock: every #[test] in this binary sets "".
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    assert_eq!(
+        cfg.prm_url(),
+        "https://drust.test/.well-known/oauth-protected-resource/mcp"
+    );
+    assert_eq!(
+        cfg.allowed_hosts(),
+        ["localhost", "127.0.0.1", "::1", "drust.test"]
+    );
+    assert!(
+        cfg.boot_log_lines()[0].ends_with(" allowed_hosts=[localhost,127.0.0.1,::1,drust.test]"),
+        "{:?}",
+        cfg.boot_log_lines()
+    );
+}
