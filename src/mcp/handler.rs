@@ -615,9 +615,100 @@ pub struct SetCronJobActiveArgs {
 
 // --- Handler -----------------------------------------------------------
 
+/// Who is calling the tool layer. Deliberately no `Default`: every
+/// construction site picks one. Private to this module, so nothing outside
+/// it can assemble an account identity field by field.
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum ToolCaller {
+    /// The per-tenant service key on `/t/<id>/mcp`, the only identity that
+    /// path has.
+    TenantKey,
+    /// A signed-in admin on the account-level endpoint. Built only through
+    /// `DrustMcpService::for_account`, and only after that admin's tenant
+    /// check allowed the call.
+    Account(AccountCall),
+}
+
+/// The account-level caller's identity and the URLs its answers point at,
+/// both derived from the service's own tenant.
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct AccountCall {
+    admin_id: i64,
+    grant_id: i64,
+    mcp_url: std::sync::Arc<str>,
+    api_keys_url: std::sync::Arc<str>,
+}
+
 #[derive(Clone)]
 pub struct DrustMcpService {
     state: DrustMcp,
+    caller: ToolCaller,
+}
+
+impl DrustMcpService {
+    /// An account-level caller's service for one tenant. The caller of this
+    /// constructor must have run the tenant check for exactly this `state`;
+    /// the URLs are derived from `state`'s own tenant id.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn for_account(
+        state: DrustMcp,
+        caller: &crate::mgmt::mcp_oauth::caller::McpCaller,
+        cfg: &crate::mgmt::mcp_oauth::config::McpOauthConfig,
+    ) -> Self {
+        let api_keys_url =
+            cfg.endpoint_url(&format!("/admin/tenants/{}/_api_keys", state.tenant_id()));
+        Self {
+            caller: ToolCaller::Account(AccountCall {
+                admin_id: caller.admin_id(),
+                grant_id: caller.grant_id(),
+                mcp_url: cfg.resource_url().into(),
+                api_keys_url: api_keys_url.into(),
+            }),
+            state,
+        }
+    }
+
+    /// Record-history actor for a write made by this caller.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn actor(&self) -> crate::storage::record_history::AuditActor {
+        match &self.caller {
+            ToolCaller::TenantKey => crate::storage::record_history::AuditActor::service(),
+            ToolCaller::Account(_) => {
+                crate::storage::record_history::AuditActor::from_auth_ctx(&self.service_ctx())
+            }
+        }
+    }
+
+    /// The service `AuthCtx` this caller acts as.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn service_ctx(&self) -> crate::auth::middleware::AuthCtx {
+        match &self.caller {
+            ToolCaller::TenantKey => crate::auth::middleware::AuthCtx::Service { admin_id: None },
+            ToolCaller::Account(c) => crate::auth::middleware::AuthCtx::Service {
+                admin_id: Some(c.admin_id),
+            },
+        }
+    }
+
+    /// `token_hint` for an audit row written by a tool.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn audit_hint(&self) -> &'static str {
+        match &self.caller {
+            ToolCaller::TenantKey => "service",
+            ToolCaller::Account(_) => "-",
+        }
+    }
+
+    /// `actor_admin_id` for an audit row written by a tool.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn audit_admin_id(&self) -> Option<i64> {
+        match &self.caller {
+            ToolCaller::TenantKey => None,
+            ToolCaller::Account(c) => Some(c.admin_id),
+        }
+    }
 }
 
 fn json_content(v: Value) -> Result<CallToolResult, McpError> {
@@ -1107,7 +1198,10 @@ mod finish_tool_call_tests {
 #[tool_router]
 impl DrustMcpService {
     pub fn new(state: DrustMcp) -> Self {
-        Self { state }
+        Self {
+            state,
+            caller: ToolCaller::TenantKey,
+        }
     }
 
     /// Number of MCP tools this service exposes, derived from the
@@ -5162,7 +5256,7 @@ mod is_error_tests {
 
     /// Mirrors `functions::enforce`'s private `mcp_with_garage`. `functions:
     /// None` is deliberate (invariant 13): these tests need no dispatcher.
-    async fn svc(
+    pub(super) async fn svc(
         tenant: &str,
         with_garage: bool,
     ) -> (DrustMcpService, DrustMcp, tempfile::TempDir) {
@@ -5221,7 +5315,7 @@ mod is_error_tests {
     }
 
     /// `content[0].text` parsed as JSON.
-    fn body(r: &CallToolResult) -> Value {
+    pub(super) fn body(r: &CallToolResult) -> Value {
         let c = serde_json::to_value(&r.content[0]).unwrap();
         let text = c["text"].as_str().expect("text content");
         serde_json::from_str(text).expect("content text is JSON")
@@ -5250,7 +5344,7 @@ mod is_error_tests {
         );
     }
 
-    async fn posts(mcp: &DrustMcp) {
+    pub(super) async fn posts(mcp: &DrustMcp) {
         schema_tools::create_collection(
             mcp,
             "posts",
@@ -5516,5 +5610,141 @@ mod is_error_tests {
                 "visibility {v:?}: an undecodable row must fail the list, got {out:?}"
             );
         }
+    }
+}
+
+/// Caller identity on `DrustMcpService`: the per-tenant service key keeps the
+/// bare service identity; an account-level caller carries its admin id.
+#[cfg(test)]
+mod caller_tests {
+    use super::is_error_tests::svc;
+    use super::*;
+    use crate::mgmt::mcp_oauth::{caller::McpCaller, config::McpOauthConfig};
+
+    fn test_cfg() -> McpOauthConfig {
+        McpOauthConfig::for_tests("https://mcp.example.test")
+    }
+
+    async fn account_svc(tenant: &str) -> (DrustMcpService, DrustMcp, tempfile::TempDir) {
+        let (_, mcp, d) = svc(tenant, false).await;
+        let who = McpCaller::for_tests(42, 7);
+        (
+            DrustMcpService::for_account(mcp.clone(), &who, &test_cfg()),
+            mcp,
+            d,
+        )
+    }
+
+    #[tokio::test]
+    async fn tenant_key_identity_is_the_bare_service_key() {
+        let (s, _mcp, _d) = svc("caller-tk", false).await;
+        assert!(matches!(s.caller, ToolCaller::TenantKey));
+        let a = s.actor();
+        assert_eq!(
+            (a.kind, a.id.as_deref(), a.hint.as_deref()),
+            ("service", None, None)
+        );
+        assert!(matches!(
+            s.service_ctx(),
+            crate::auth::middleware::AuthCtx::Service { admin_id: None }
+        ));
+        assert_eq!(s.audit_hint(), "service");
+        assert_eq!(s.audit_admin_id(), None);
+    }
+
+    #[tokio::test]
+    async fn account_identity_carries_the_admin_id() {
+        let (s, _mcp, _d) = account_svc("caller-acct").await;
+        let a = s.actor();
+        assert_eq!(
+            (a.kind, a.id.as_deref(), a.hint.as_deref()),
+            ("service", Some("42"), None)
+        );
+        assert!(matches!(
+            s.service_ctx(),
+            crate::auth::middleware::AuthCtx::Service { admin_id: Some(42) }
+        ));
+        assert_eq!(s.audit_hint(), "-");
+        assert_eq!(s.audit_admin_id(), Some(42));
+    }
+
+    // The URLs come from the config and from the service's own tenant, so an
+    // account identity cannot point at another tenant's page.
+    #[tokio::test]
+    async fn for_account_builds_both_urls_from_the_config_and_the_state_tenant() {
+        let (s, _mcp, _d) = account_svc("caller-urls").await;
+        let ToolCaller::Account(c) = &s.caller else {
+            panic!("for_account must build an account caller");
+        };
+        let cfg = test_cfg();
+        assert_eq!((c.admin_id, c.grant_id), (42, 7));
+        assert_eq!(&*c.mcp_url, cfg.resource_url());
+        assert_eq!(
+            &*c.api_keys_url,
+            cfg.endpoint_url("/admin/tenants/caller-urls/_api_keys")
+        );
+        assert!(
+            c.api_keys_url.starts_with("https://mcp.example.test"),
+            "{}",
+            c.api_keys_url
+        );
+        assert!(
+            c.api_keys_url
+                .ends_with("/admin/tenants/caller-urls/_api_keys"),
+            "{}",
+            c.api_keys_url
+        );
+    }
+
+    // Production code builds the bare service-key identity only in the
+    // per-tenant registry; the one other hit is this module's fixture.
+    // Comments are skipped; the needle is assembled at runtime.
+    #[test]
+    fn service_new_is_built_only_by_the_per_tenant_registry() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let needle = format!("{}{}", "DrustMcpService::", "new(");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        let mut hits: Vec<(String, usize)> = files
+            .iter()
+            .filter_map(|f| {
+                let src = std::fs::read_to_string(f).unwrap();
+                let n: usize = src
+                    .lines()
+                    .map(|l| {
+                        l.split("//")
+                            .next()
+                            .unwrap_or("")
+                            .matches(needle.as_str())
+                            .count()
+                    })
+                    .sum();
+                let rel = f
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (n > 0).then_some((rel, n))
+            })
+            .collect();
+        hits.sort();
+        assert_eq!(
+            hits,
+            vec![
+                ("src/mcp/handler.rs".to_string(), 1),
+                ("src/mcp/http_registry.rs".to_string(), 1)
+            ],
+            "only the per-tenant registry (and the lib fixture) may build the service-key identity"
+        );
     }
 }
