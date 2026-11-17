@@ -217,14 +217,12 @@ pub(crate) const GRANT_LIVE_CLAUSES: [&str; 5] = [
 /// Which incarnation of a tenant a check admitted: its owner and its
 /// `created_at`, so a later check can tell a soft delete or an id recycle by
 /// another owner from the tenant it first saw.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TenantIncarnation {
     pub owner: Option<i64>,
     pub created_at: String,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AdminTenantAccess {
     Allow(TenantIncarnation),
@@ -237,7 +235,6 @@ pub(crate) enum AdminTenantAccess {
 /// `Deny`, and a query error is returned as `Err` for the caller to map to an
 /// internal error — never to Allow, and never through `read_pat_reach`, whose
 /// failure direction is host-wide.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn tenant_access_for_admin(
     conn: &rusqlite::Connection,
     grant_id: i64,

@@ -364,7 +364,6 @@ impl McpRegistry {
     /// skip the meta-backed checks of the tools. `functions` comes from the registry
     /// exactly as in `get_or_create` (CLAUDE.md invariant 13), and the shared cron
     /// state is applied the same way.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn build_live(
         &self,
         tenant_id: &str,
