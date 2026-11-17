@@ -18,6 +18,9 @@ pub mod redirect;
 pub mod refresh;
 pub mod revoke;
 pub mod rl;
+// No production caller until the account-level MCP router mounts it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod route_layer;
 pub mod store;
 pub mod sweep;
 pub mod token;
