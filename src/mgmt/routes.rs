@@ -106,6 +106,15 @@ pub struct MgmtState {
     /// `soft_delete_tenant` can invalidate the tenant's schedule-index entry
     /// (and the admin `⏰ _cron` page can reach the ops cores).
     pub cron: Arc<crate::cron::CronState>,
+    /// MCP OAuth AS configuration (`DRUST_MCP`, `DRUST_PUBLIC_URL`, four TTL knobs).
+    /// Every reader checks `enabled()` first; while disabled nothing reads it and no
+    /// route is mounted, which is why a DRUST_MCP-unset host gains no route or page
+    /// (the exceptions are listed in the `mcp_oauth` module doc).
+    pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
+    /// In-memory limiters for `/oauth/token` (miss-only per-IP, per-code,
+    /// per-grant); `/oauth/revoke` reads no budget. Cleanup task spawned by main.rs
+    /// only when enabled.
+    pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
 }
 
 #[derive(Template)]
@@ -195,6 +204,17 @@ struct SettingsPage {
     /// v1.44 (T7) — caller's active labeled CLI PATs (device-flow / `drust auth
     /// login`), listed with a per-row revoke form.
     cli_tokens: Vec<CliTokenRow>,
+    /// `McpOauthConfig::enabled()`. False ⇒ the "MCP connections"
+    /// card and its script (both `{% if mcp_enabled %}` partials) emit nothing,
+    /// so the page is byte-identical to a build without MCP OAuth.
+    mcp_enabled: bool,
+    /// The caller's live MCP OAuth grants; always empty when disabled
+    /// (`settings_page` does not even query the table then).
+    mcp_grants: Vec<crate::mgmt::mcp_oauth::ui::McpGrantRow>,
+    /// The list query failed. The card then says so and STILL offers
+    /// "Revoke all" (which finds live ids itself), instead of an "empty" card
+    /// that reads as "nothing to revoke" during an incident.
+    mcp_grants_error: bool,
 }
 
 async fn settings_page(
@@ -246,6 +266,22 @@ async fn settings_page(
         .unwrap_or_default()
     };
 
+    // Read the grants only when MCP OAuth is on; off ⇒ no query, no new
+    // bytes (the page stays byte-identical with MCP off).
+    let mcp_enabled = state.mcp_oauth.enabled();
+    let (mcp_grants, mcp_grants_error) = if mcp_enabled {
+        let conn = state.meta.lock().await;
+        match crate::mgmt::mcp_oauth::ui::list_grants_for_settings(&conn, caller_id) {
+            Ok(v) => (v, false),
+            Err(e) => {
+                tracing::warn!(error = %e, "settings: listing MCP grants failed");
+                (Vec::new(), true)
+            }
+        }
+    } else {
+        (Vec::new(), false)
+    };
+
     let trc = crate::mgmt::theme::ThemeRenderCtx::build(theme);
     Html(
         SettingsPage {
@@ -266,6 +302,9 @@ async fn settings_page(
             pat_hash_prefix,
             pat_last_used_at,
             cli_tokens,
+            mcp_enabled,
+            mcp_grants,
+            mcp_grants_error,
         }
         .render()
         .unwrap_or_default(),
@@ -446,14 +485,83 @@ async fn login_page(
     )
 }
 
+/// Login CSRF guard (W3C Fetch Metadata). True only when a browser
+/// has declared this request `Sec-Fetch-Site: cross-site`.
+///
+/// Why this shape and not a CSRF field or an Origin check:
+/// - The session cookie is `SameSite=Lax`, and Lax does not stop a cross-site
+///   top-level POST from *setting* a cookie, so without this a third-party page
+///   can sign the victim's browser in as an account whose credentials the page
+///   author holds (any admin or member on this host).
+/// - A required form field would break the trusted automation that POSTs
+///   `/login` directly (eval harness, dozens of test files). Those clients send no
+///   Fetch Metadata, so they are untouched here.
+/// - `Origin` vs `DRUST_PUBLIC_URL` would refuse operators who browse the admin
+///   UI by an internal hostname, and the proxy rewrites `Host`.
+///
+/// Fail direction: only a browser can carry a login CSRF. Browsers send one of
+/// `cross-site` / `same-site` / `same-origin` / `none` (Fetch Metadata §2.3),
+/// and `Sec-`-prefixed headers cannot be set or removed by page script (§4.2).
+/// The spec says servers SHOULD ignore an invalid value (§2.1), so a value that
+/// is not visible ASCII, or an unknown token, is treated as absent (allowed).
+/// Any one `cross-site` among repeated headers refuses. A redirect chain with
+/// any cross-site hop is already reported as `cross-site` by the browser (§4.1).
+///
+/// Deliberately NOT applied to the admin OAuth callback: that request is a
+/// cross-site top-level GET by construction, and its login-CSRF defence is the
+/// state + PKCE cookie pair (`oauth_login.rs`). See AGENTS.md.
+fn is_browser_cross_site(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all("sec-fetch-site")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.trim().eq_ignore_ascii_case("cross-site"))
+}
+
+/// The `LOGIN_CROSS_SITE` audit row. Takes no form input BY SIGNATURE, so the
+/// refused request's `username` / `password` can never reach the audit log.
+fn cross_site_refusal_entry(op: &str) -> crate::safety::audit::AuditEntry {
+    let mut entry = crate::safety::audit::AuditEntry::failure(
+        "-",
+        "-",
+        op,
+        0,
+        "LOGIN_CROSS_SITE",
+        "cross-site login refused",
+    );
+    entry.auth_method = Some("password".to_string());
+    entry.with_extra(serde_json::json!({ "auth_kind": "admin" }))
+}
+
 async fn login_submit(
     State(state): State<MgmtState>,
     LocaleHint(locale): LocaleHint,
     crate::mgmt::theme::ThemeHint(theme): crate::mgmt::theme::ThemeHint,
     crate::safety::ip::ClientIp(ip): crate::safety::ip::ClientIp,
+    headers: axum::http::HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let op = "POST /login";
+    // Refuse a browser-declared cross-site POST FIRST: before the
+    // per-IP limiter (a cross-site page must not spend the victim IP's 5/min
+    // login budget), before the meta lock, before argon2. Nothing below this
+    // line runs for such a request, so no session row, no cookie.
+    // The audit row is built by `cross_site_refusal_entry`, which takes no
+    // form input, so `form.username` / `form.password` cannot reach it.
+    // Anything that reads request state to shape this login's outcome (e.g. a
+    // post-login redirect cookie) must be read AFTER this `if`, so a refused
+    // request neither consumes nor clears it.
+    if is_browser_cross_site(&headers) {
+        let entry = cross_site_refusal_entry(op);
+        crate::safety::audit::write_entry(&state.log_dir, &entry).await;
+        let mut resp = axum::Json(serde_json::json!({
+            "error_code": "LOGIN_CROSS_SITE",
+            "message": "cross-site login refused",
+        }))
+        .into_response();
+        *resp.status_mut() = StatusCode::FORBIDDEN;
+        return resp;
+    }
     // v1.19.2 — per-IP rate limit. Same shape as tenant login_handler.
     if !state.admin_login_rl.check(ip) {
         let mut entry =
@@ -513,7 +621,20 @@ async fn login_submit(
     entry.auth_method = Some("password".to_string());
     crate::safety::audit::write_entry(&state.log_dir, &entry).await;
     let cookie = build_session_cookie(&token, state.session_ttl_days * 86_400);
-    let mut resp = Redirect::to(&crate::base_path::base("/admin/tenants")).into_response();
+    // An in-flight MCP authorization resumes at the consent page. Read
+    // only here, after the cross-site refusal and the password check. Disabled
+    // (`DRUST_MCP` not on) => ResumeDecision::None without reading any cookie,
+    // so this response stays byte-identical.
+    let resume = crate::mgmt::mcp_oauth::envelope::resume_target(
+        &state.mcp_oauth,
+        &headers,
+        crate::mgmt::mcp_oauth::envelope::now_unix().unwrap_or(u64::MAX),
+    );
+    let location = match &resume {
+        crate::mgmt::mcp_oauth::envelope::ResumeDecision::Resume(loc) => loc.clone(),
+        _ => crate::base_path::base("/admin/tenants"),
+    };
+    let mut resp = Redirect::to(&location).into_response(); // still 303
     resp.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     // v1.28.1: expire any pre-v1.28.1 cookies that login wrote with `Path=/`.
@@ -551,6 +672,15 @@ async fn login_submit(
         let theme_cookie = crate::mgmt::theme::build_theme_cookie(t);
         resp.headers_mut()
             .append(header::SET_COOKIE, theme_cookie.parse().unwrap());
+    }
+    if resume == crate::mgmt::mcp_oauth::envelope::ResumeDecision::ClearStale {
+        // `append`, never `insert`: insert would drop the session cookie.
+        resp.headers_mut().append(
+            header::SET_COOKIE,
+            crate::mgmt::mcp_oauth::envelope::clear_resume_cookie()
+                .parse()
+                .unwrap(),
+        );
     }
     resp
 }
@@ -739,6 +869,8 @@ impl MgmtState {
             functions_exec,
             fn_data_root: data_dir,
             cron: Arc::new(crate::cron::CronState::test_default()),
+            mcp_oauth: Arc::new(crate::mgmt::mcp_oauth::config::McpOauthConfig::disabled()),
+            mcp_oauth_rl: Arc::new(crate::mgmt::mcp_oauth::rl::McpOauthLimiters::new()),
         }
     }
 }
@@ -871,6 +1003,17 @@ impl MgmtState {
                 axum::routing::delete(crate::mgmt::admin_pat::cli_token_logout),
             )
             .with_state(self.clone());
+        // MCP OAuth AS, unauthenticated half: metadata, authorize, token,
+        // revoke (`mcp_oauth::public_routes`). The consent half (`/oauth/consent`,
+        // `/oauth/consent/approve`, `/oauth/consent/deny`) needs a session and is
+        // merged into `protected` below. Both merge ONLY when DRUST_MCP resolves to
+        // enabled, so a disabled host answers these paths exactly like a path that
+        // never existed. Inside `frame_guard_layers` below like the rest of `public`.
+        let public = if self.mcp_oauth.enabled() {
+            public.merge(crate::mgmt::mcp_oauth::public_routes(&self))
+        } else {
+            public
+        };
 
         // Legacy redirects (back-compat v1.4.0) — 301 to the new paths. These don't require
         // authentication since they're just static redirects.
@@ -1390,6 +1533,12 @@ impl MgmtState {
                 axum::routing::post(super::admin_pat::cli_token_revoke),
             )
             .with_state(settings_state);
+        // MCP grant revoke routes, mounted only when MCP OAuth is on.
+        let settings_router = if self.mcp_oauth.enabled() {
+            settings_router.merge(crate::mgmt::mcp_oauth::settings_routes(&self))
+        } else {
+            settings_router
+        };
 
         // v1.29.0 — admin team management CRUD.
         let team_router = Router::new()
@@ -1426,6 +1575,15 @@ impl MgmtState {
                 crate::mgmt::tenant_authz::require_sees_team_layer,
             ))
             .with_state(self.clone());
+        // "Revoke this admin's MCP connections", mounted only when MCP
+        // OAuth is on. Merged after `.with_state` (a `with_state` router cannot
+        // join a `Router<MgmtState>`); `require_sees_team_layer` gates only GET
+        // (tenant_authz.rs), and the handler carries the remove_admin matrix.
+        let team_router = if self.mcp_oauth.enabled() {
+            team_router.merge(crate::mgmt::mcp_oauth::team_routes(&self))
+        } else {
+            team_router
+        };
 
         // v1.44 (CLI Phase 2, T3) — device-flow approval pages. Ride inside
         // `protected` (session-gated): a no-cookie browser request 302s to
@@ -1467,7 +1625,7 @@ impl MgmtState {
         // applied FIRST. Previous order (session first, theme last) had
         // profile_layer always seeing an empty extensions map and falling
         // back to `placeholder()` → "??" + "admin" in the sidebar.
-        let protected = tenants_router
+        let protected_routes = tenants_router
             .merge(public_files_router)
             .merge(admin_tenant_files_router)
             .merge(backups_router)
@@ -1477,7 +1635,15 @@ impl MgmtState {
             .merge(metrics_router)
             .merge(settings_router)
             .merge(team_router)
-            .merge(cli_device_router)
+            .merge(cli_device_router);
+        // Consent needs AdminId + AuthMethod + the inner theme layer, so it
+        // rides `protected`; not merged at all when MCP OAuth is disabled.
+        let protected_routes = if self.mcp_oauth.enabled() {
+            protected_routes.merge(crate::mgmt::mcp_oauth::session_routes(&self))
+        } else {
+            protected_routes
+        };
+        let protected = protected_routes
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
@@ -1523,5 +1689,86 @@ impl MgmtState {
                 outer_theme_state,
                 crate::mgmt::theme_layer::theme_layer,
             ))
+    }
+}
+
+#[cfg(test)]
+mod login_cross_site_tests {
+    use super::{cross_site_refusal_entry, is_browser_cross_site};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    fn hm(values: &[&[u8]]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for v in values {
+            h.append("sec-fetch-site", HeaderValue::from_bytes(v).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn cross_site_values_refuse() {
+        for v in [
+            &b"cross-site"[..],
+            b"Cross-Site",
+            b"CROSS-SITE",
+            b" cross-site ",
+            b"\tcross-site",
+        ] {
+            assert!(
+                is_browser_cross_site(&hm(&[v])),
+                "{:?} must refuse",
+                String::from_utf8_lossy(v)
+            );
+        }
+    }
+
+    #[test]
+    fn other_tokens_and_absence_pass() {
+        assert!(!is_browser_cross_site(&HeaderMap::new()));
+        for v in [
+            &b"same-origin"[..],
+            b"same-site",
+            b"none",
+            b"",
+            b"cross-sitex",
+            b"cross site",
+        ] {
+            assert!(
+                !is_browser_cross_site(&hm(&[v])),
+                "{:?} must pass",
+                String::from_utf8_lossy(v)
+            );
+        }
+    }
+
+    #[test]
+    fn any_repeated_cross_site_refuses() {
+        assert!(is_browser_cross_site(&hm(&[b"same-origin", b"cross-site"])));
+        assert!(is_browser_cross_site(&hm(&[b"cross-site", b"same-origin"])));
+    }
+
+    #[test]
+    fn non_visible_ascii_is_treated_as_absent() {
+        // `to_str()` fails on obs-text; Fetch Metadata §2.1: ignore invalid values.
+        assert!(!is_browser_cross_site(&hm(&[b"cross-site\xff"])));
+    }
+
+    /// The refusal row is host-level and carries no credential: sentinel
+    /// tenant and token_hint, the fixed code, and only `auth_kind` in extra.
+    #[test]
+    fn cross_site_refusal_entry_carries_only_sentinels() {
+        let e = cross_site_refusal_entry("POST /login");
+        assert_eq!(e.tenant, "-");
+        assert_eq!(e.token_hint, "-");
+        assert_eq!(e.op, "POST /login");
+        assert_eq!(e.status, "error");
+        assert_eq!(e.error_code.as_deref(), Some("LOGIN_CROSS_SITE"));
+        assert_eq!(e.error_message.as_deref(), Some("cross-site login refused"));
+        assert_eq!(e.auth_method.as_deref(), Some("password"));
+        assert_eq!(e.oauth_email, None);
+        assert_eq!(e.actor_admin_id, None);
+        let keys: Vec<&str> = e.extra.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["auth_kind"]);
+        assert_eq!(e.extra["auth_kind"], "admin");
     }
 }

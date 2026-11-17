@@ -259,6 +259,193 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   deliberate step (`.claude/rules/build-deploy.md` §Deployment targets, "Resuming k3s"); a
   diff that edits `deploy/helm/**` outside such a resume is itself the finding.
 
+**Deliberate — admin login CSRF (not the PAT family):**
+
+- `Sec-Fetch-Site: cross-site` is checked in `login_submit` **only**. Threat: a third-party
+  page signs a visitor's browser in as an account whose credentials the page author holds
+  (any admin or member on the same host). The admin OAuth callback (`mgmt/oauth_login.rs`)
+  is a cross-site top-level GET from the IdP by construction — adding the check there
+  refuses every Google / GitHub login. Its login-CSRF defence is the state + PKCE cookie
+  pair verified at callback; `tests/admin_login_cross_site.rs` drives the full callback
+  success path with `cross-site` to pin that it stays unchecked.
+- `/login` deliberately has **no required CSRF field** and no `Origin` / `Host` comparison.
+  The eval harness and dozens of test files POST `/login` directly; a required field would block
+  that trusted automation, operators who browse the admin UI by an internal hostname send an
+  `Origin` that is not `DRUST_PUBLIC_URL`, and the proxy rewrites `Host`. Requests with no
+  Fetch Metadata (non-browser clients) pass by design — only a browser can carry a login
+  CSRF, and page script cannot set or strip a `Sec-` header. Unknown or unparseable values
+  also pass: the Fetch Metadata spec says servers SHOULD ignore an invalid value.
+- The check runs **before** the per-IP login limiter. Moving it after would let a
+  cross-site page spend the victim IP's 5/min login budget — a test pins the order
+  (`tests/admin_login_cross_site.rs`).
+- Not covered, accepted: browsers that send no Fetch Metadata; plain-HTTP non-localhost
+  deployments with `DRUST_DEV_NO_SECURE_COOKIES` set (Fetch Metadata is sent only to HTTPS
+  or localhost; otherwise the `Secure` session cookie cannot be set over HTTP at all); a
+  sibling-subdomain (`same-site`) attacker — the pre-existing cookie-tossing residual, not
+  addressed here; and same-origin active content, which is invariant 14's job
+  (`SANDBOX_CSP`, the Caddy `/public/*` `@markup` matcher), not this check's. The consent
+  page names the signed-in account next to its buttons, which is the only mitigation for
+  the same-site residual there.
+
+**Deliberate — MCP OAuth AS (not the PAT family):**
+
+- `_mcp_upload_tickets.tenant_id` has **no FK to `tenants`** — deliberate. The tenant
+  id-recycle branch hard-`DELETE`s the `tenants` row (`mgmt::tenants::crud`); a non-CASCADE
+  FK would make that recycle fail on any leftover ticket. Nothing issues or reads tickets
+  yet. What keeps a recycled id safe once tickets ship is `tenant_created_at`, copied in SQL
+  from `tenants.created_at` at issue, plus a read that joins `tenants` on `id`, `created_at`
+  and `deleted_at IS NULL` (the contract above the DDL in `db/migrations.rs`), the way
+  `admin_created_at` guards against `admins` rowid recycling. Do not "add the missing FK".
+  Accepted residual: a ticket carries `grant_id` only, so cutting one refresh branch does
+  not reach a ticket minted through that branch; a nullable column for the minting branch
+  can be added through `add_column_if_missing` when tickets ship.
+- An unrecognised `DRUST_MCP`, or an unusable `DRUST_PUBLIC_URL` with `DRUST_MCP=on`,
+  **boots with MCP off and an `error` line**, never a boot failure — fail closed for the new
+  surface without taking the trusted planes down. Do not turn it into a startup error.
+- `remove_admin` deletes `_mcp_oauth_grants` **explicitly** although the FK cascades: the
+  cascade needs `PRAGMA foreign_keys = ON` on the deleting connection, and the
+  `admin_created_at` check that backs both up fails on a same-second rowid recycle
+  (`admins.created_at` is second precision). The explicit DELETE is layer 1
+  (`.claude/rules/auth-tenancy.md` §MCP OAuth). Pinned by
+  `remove_admin_deletes_grants_even_without_fk_cascade`.
+- `revoke_mcp_grant` and the MCP sweep do **not** clear the auth cache or evict any bus:
+  MCP OAuth tokens are never cached and open no SSE or rooms stream. That is also why no
+  MCP revoke site appears in `pat_evict_pin`'s `SITES`.
+- The MCP OAuth sweep runs **even when `DRUST_MCP` is off** — a host that was once `on`
+  keeps rows. It is not a boot step (invariant 1).
+- `find_grant_for_revocation` accepts an expired, revoked, rotated or superseded token
+  of an unrevoked grant: revoking the grant is the narrowing direction (RFC 7009 §2.1),
+  and requiring a live token made `/oauth/revoke` answer 200 while the grant stayed
+  alive. Its `GrantRef` may only feed `GrantOwner::holder`; only `find_grant_by_access`
+  authorizes. `find_grant_by_refresh` likewise ignores rotation state on purpose:
+  rotation, grace and reuse are `refresh::rotate`'s decision alone.
+- `GrantOwner::holder` is pinned to the grant its `GrantRef` proves: a token of G1 can
+  never revoke G2, even of the same admin. `caller` is not pinned and is only ever fed
+  the request's `Extension<AdminId>`.
+- `remove_admin` does **not** also delete the four MCP child tables: the production meta
+  connection is FK ON, and a child row orphaned on an FK-OFF connection is dead because
+  every validity read INNER JOINs grants and admins (`.claude/rules/auth-tenancy.md`
+  §MCP OAuth, "Child rows never vouch for themselves").
+- `/oauth/token`, `/oauth/revoke` and the AS metadata are in the unauthenticated `public`
+  router and **not** behind `require_owner_layer` (invariant 8): they are OAuth protocol
+  endpoints whose credential is the token in the body, and the caller (Claude Code) has no
+  admin session. Gating them would stop every member from revoking.
+- `/oauth/revoke` answers **200** for an unknown or foreign-prefix token and for a token
+  whose grant is already revoked (RFC 7009 §2.2), revokes **the whole grant** for either
+  token type (§2.1 allows it) — including when the presented token itself is expired,
+  revoked or rotated, as long as its grant is not — ignores `token_type_hint`, and accepts a
+  request **without** `client_id` (public client; the token is a 256-bit secret). It is
+  **not rate-limited**: the lookup runs before any budget could be checked, so a budget
+  saves no work, and a pre-lookup per-IP gate would, under a wrong
+  `DRUST_TRUSTED_PROXIES`, put every revoke on the host behind one shared bucket. Adding a
+  miss budget here is not a hardening.
+- `oauth_error_layer` and the 16 KiB body limit are mounted with `route_layer`, not `layer`:
+  `layer` would wrap the sub-router's default 404 and, through `merge`, risk turning unmatched
+  admin-plane paths into OAuth JSON. Pinned by `public_routes_alone_keeps_a_plain_404`.
+- `oauth_error_layer` rewrites a JSON error body that did not come from `OAuthError` (no
+  `OAuthErrorMark`) to a bare `invalid_request` / `server_error`. Passing "anything that is
+  already JSON" would let an internal error string reach an unauthenticated caller.
+
+**Deliberate — MCP OAuth authorize:**
+
+- `/oauth/*` ignores unknown parameters (OAuth 2.1 MUST). The "reject unknown top-level
+  arguments" rule planned for the tool arguments of the future account-level MCP endpoint
+  does not apply here; applying it would break conforming clients.
+- `prompt` is always ignored, including `prompt=none`: drust is not an OpenID provider and
+  Claude Code only sends `prompt=consent`. Consent is shown every time regardless.
+- `redirect_uri_allowed` deliberately does **not** call `url::Url::parse`. WHATWG parsing
+  normalises host case, dot-segments, numeric IPv4 and an explicit default port (`:80`,
+  `:080`), so a parse-then-compare check would accept spellings that are not the pinned
+  string, and the token endpoint must later compare the same raw bytes. "Use the url crate"
+  is a regression, not a cleanup. Corollary: an explicit `:80` is accepted and kept verbatim
+  in `RedirectTarget.raw` (OAuth 2.1 requires any loopback port); do not normalise it away
+  and do not reject it to make a canonical-form test pass.
+- authorize has no rate limit and writes no audit row: it touches no database and no lock,
+  so a budget would protect nothing (the per-IP buckets elsewhere count only misses on
+  endpoints that do work). Writing nothing and taking no lock are pinned by
+  `authorize_writes_nothing` and `authorize_never_takes_the_meta_lock`; no limiter and no
+  audit row hold by reading the handler.
+
+**Deliberate — MCP OAuth consent:**
+
+- The consent page sets **no Content-Security-Policy**, and the admin plane must **not** gain
+  a `form-action` directive. `frame_guard_layers` adds `frame-ancestors 'none'` only when a
+  response has no CSP of its own, so a page-level CSP would silently drop the framing guard;
+  and approve is a POST answered by a 303 to `http://localhost:<port>`, which `form-action`
+  would block in browsers that apply it to redirects — no test would notice.
+- consent / approve / deny are **not rate-limited**, and approve's PAT refusal is **not** an
+  `admin_session_layer` regression: the layer still accepts PATs everywhere else; only these
+  three handlers refuse anything but the cookie arm (`AuthMethod`).
+- Known residual, accepted: UI-redress lures (a popup steering a signed-in admin to press
+  Authorize) get no extra defence such as a delayed-enable button. `frame-ancestors` / XFO
+  stop framing only; the consequence is bounded because the code goes only to the victim's
+  own loopback and the attacker would also need the PKCE verifier of that request.
+
+**Deliberate — MCP OAuth code exchange:**
+
+- A wrong `code_verifier` does **not** consume the code, and failed attempts on one code
+  have **no "N strikes and the code is void" limit**. Voiding would let anyone who only saw
+  the loopback callback URL turn the real client's exchange into a replay and revoke its
+  whole grant. This follows the spec rather than relaxing it: OAuth 2.1 §7.5.3 says the AS
+  SHOULD NOT revoke issued tokens on a replayed code that carries invalid parameters, for
+  exactly this denial-of-service reason, and §4.1.3 revokes on a second *valid* token
+  request. A verifier generated as RFC 7636 §7.1 recommends carries ≥ 256 bits of entropy,
+  so guessing is not the threat. Compensating: `store::redeem_code`'s fixed check order with
+  every failure returning before any write (`an_invalid_redemption_writes_nothing`,
+  `total_changes`), and the replay-only-after-every-check rule
+  (`a_failed_second_redemption_does_not_revoke`).
+- The per-code budget is charged **only when a check fails**; a valid exchange of the same
+  code never reads it (`eleven_wrong_verifiers_on_one_code_reach_the_per_code_budget` ends
+  with a 200). Moving the charge before verification looks "cheaper" but lets whoever holds
+  a code without its verifier lock the real client out of its exchange (OAuth 2.1 §7.5.3).
+  Likewise the per-IP miss budget counts unknown codes only.
+- A missing `redirect_uri` or `code_verifier` answers `invalid_grant`, not
+  `invalid_request`: every "known code, incomplete or mismatched request" gets one answer.
+  Requiring `redirect_uri` is a compatibility choice (the SDK sends it), not a security
+  boundary — PKCE stops code injection.
+
+**Deliberate — MCP OAuth refresh rotation:**
+
+- An MCP refresh token presented within the grace window after its rotation gets a SIBLING
+  pair instead of triggering reuse detection, and a superseded sibling, when presented,
+  revokes only its own branch (`store::revoke_mcp_refresh_branch`), not the grant. This
+  deviates from the strict reading of OAuth 2.1 §4.3.1 on purpose (owner decision,
+  2026-11-14; do not tighten it without re-asking the owner): one machine's Claude Code
+  processes share one credential and race refreshes, and a grant revoke would log every
+  session out. Reuse detection is intact OUTSIDE the grace (`refresh::rotate` branch e
+  revokes the grant, `refresh_reuse`), and a full per-grant bucket cannot suppress it
+  (`a_dead_siblings_flood_cannot_suppress_reuse_detection`). The grace counts from the
+  parent's first rotation, so issuing siblings cannot extend it
+  (`a_sibling_issued_in_grace_does_not_extend_the_grace`). Known cost: a thief who wins the
+  in-grace race keeps a branch until the grant's idle/absolute deadline; the settings card
+  shows `sibling_rejected_at` for manual revocation. Compensating
+  module: `src/mgmt/mcp_oauth/refresh.rs` (branch order b before c is load-bearing — a
+  superseded row has `rotated_at IS NULL` — and is pinned by
+  `the_first_sibling_used_wins_and_the_loser_is_cut_alone` and
+  `mark_rotated_refuses_a_superseded_row`).
+- The refresh branch revoke takes no `GrantOwner`: it is `pub(crate)`, its only caller passes
+  the `(grant_id, refresh_id)` pair read from the presented token's own row in the same
+  transaction, and every UPDATE also binds `grant_id`. It is not an IDOR surface.
+
+**Deliberate — MCP OAuth revoke UI:**
+
+- MCP grant revoke surfaces carry no `require_owner_layer`, no CSRF field, no rate limit and
+  no cache or bus eviction. `/admin/settings/mcp-grants/*` acts only on the caller's own
+  grants (owner bound in SQL through `GrantOwner::caller`, fed only from
+  `Extension<AdminId>`), and `DELETE /admin/team/{id}/mcp-grants` applies `remove_admin`'s
+  matrix in the handler (`ui::team_authority`) — neither is a host-wide surface, so
+  invariant 8 does not apply. Revocation narrows access, so like `cli-tokens/{id}/revoke` it
+  relies on the `SameSite=Lax` session cookie alone, and a forced revoke costs only a
+  re-authorization. MCP grants are not in the auth cache and MCP tokens cannot open SSE or
+  rooms, so there is nothing to evict. Compensating module:
+  `mcp_oauth::store::revoke_mcp_grant`. Revisit if MCP tokens are ever cached.
+- An `admin`-role account revoking its OWN connections from the team page gets
+  `403 PRIVILEGED_ROLE_REQUIRED`, the same answer `remove_admin` gives it on its own row;
+  the settings page's Revoke all is its way. An owner may act on its own row there, as
+  `remove_admin` lets it. Do not special-case "self".
+- `DRUST_MCP` off pauses grants and revokes nothing (owner decision): no boot-time revoke
+  (that would be a credential revocation on the boot path, invariant 1).
+
 ## Canonical sources — do not hand-verify against prose
 
 | Fact | Authority |

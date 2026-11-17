@@ -66,6 +66,18 @@ impl AuthCtx {
 #[derive(Clone, Debug)]
 pub struct AdminId(pub i64);
 
+/// How `admin_session_layer` authenticated this request. Inserted next to
+/// `AdminId` on BOTH arms, so a handler can tell a browser session from an admin PAT.
+///
+/// Deliberately has NO `Default`: the MCP consent handlers read
+/// `Option<Extension<AuthMethod>>` and refuse `None` exactly like `Pat`, so a route
+/// mounted outside this layer can never be treated as a browser session (fail closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMethod {
+    Cookie,
+    Pat,
+}
+
 pub const SESSION_COOKIE: &str = "drust_session";
 
 pub async fn admin_session_layer(
@@ -83,6 +95,7 @@ pub async fn admin_session_layer(
     };
     if let Some(id) = admin_id {
         req.extensions_mut().insert(AdminId(id));
+        req.extensions_mut().insert(AuthMethod::Cookie);
         return next.run(req).await;
     }
     // 2. Admin-PAT fallback (T5). A PRESENT bearer is always a credential
@@ -95,6 +108,7 @@ pub async fn admin_session_layer(
             };
             if let Some(h) = hit {
                 req.extensions_mut().insert(AdminId(h.admin_id));
+                req.extensions_mut().insert(AuthMethod::Pat);
                 return next.run(req).await;
             }
         }
@@ -303,5 +317,110 @@ mod ctx_tests {
         assert!(!set.contains("SameSite=Strict"), "got: {set}");
         let clear = clear_session_cookie();
         assert!(clear.contains("SameSite=Lax"), "got: {clear}");
+    }
+
+    // ─── AuthMethod: which arm of admin_session_layer let a request in.
+
+    /// meta with the bootstrap admin (id 1), one live session and one active
+    /// UI PAT. Returns (state, "drust_session=<v>", pat, tempdir).
+    fn auth_method_fixture() -> (AdminSessionState, String, String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = crate::storage::meta::open_meta(&dir.path().join("meta.sqlite")).unwrap();
+        crate::storage::meta::bootstrap_admin(&mut conn, "root", "pw").unwrap();
+        crate::db::migrations::run_migrations(&conn, dir.path()).unwrap();
+        let session = crate::auth::session::create_session(&mut conn, 1, 3600).unwrap();
+        conn.execute(
+            "UPDATE _admin_tokens SET revoked_at = datetime('now') \
+             WHERE admin_id = 1 AND revoked_at IS NULL",
+            [],
+        )
+        .unwrap();
+        let pat = admin_token::generate_token();
+        conn.execute(
+            "INSERT INTO _admin_tokens (admin_id, token_hash) VALUES (1, ?1)",
+            rusqlite::params![admin_token::hash_token(&pat)],
+        )
+        .unwrap();
+        let state = AdminSessionState {
+            meta: Arc::new(Mutex::new(conn)),
+        };
+        (state, format!("{SESSION_COOKIE}={session}"), pat, dir)
+    }
+
+    /// What the handler behind admin_session_layer saw as its AuthMethod.
+    async fn seen_auth_method(
+        state: AdminSessionState,
+        cookie: Option<&str>,
+        bearer: Option<&str>,
+    ) -> String {
+        use tower::ServiceExt;
+        async fn echo(m: Option<axum::Extension<AuthMethod>>) -> String {
+            format!("{:?}", m.map(|axum::Extension(m)| m))
+        }
+        let app = axum::Router::new()
+            .route("/probe", axum::routing::get(echo))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                admin_session_layer,
+            ));
+        let mut b = Request::builder().uri("/probe");
+        if let Some(c) = cookie {
+            b = b.header(header::COOKIE, c);
+        }
+        if let Some(t) = bearer {
+            b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let resp = app
+            .oneshot(b.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn cookie_arm_tags_auth_method_cookie() {
+        let (state, cookie, _pat, _dir) = auth_method_fixture();
+        assert_eq!(
+            seen_auth_method(state, Some(&cookie), None).await,
+            "Some(Cookie)"
+        );
+    }
+
+    #[tokio::test]
+    async fn pat_arm_tags_auth_method_pat() {
+        let (state, _cookie, pat, _dir) = auth_method_fixture();
+        assert_eq!(seen_auth_method(state, None, Some(&pat)).await, "Some(Pat)");
+    }
+
+    #[tokio::test]
+    async fn cookie_wins_when_cookie_and_pat_are_both_present() {
+        let (state, cookie, pat, _dir) = auth_method_fixture();
+        assert_eq!(
+            seen_auth_method(state, Some(&cookie), Some(&pat)).await,
+            "Some(Cookie)"
+        );
+    }
+
+    /// Source pin: `AuthMethod` must never gain a `Default` (the consent
+    /// handlers rely on `None` failing closed like `Pat`). Only the production
+    /// part of this file is scanned — the strings below live in the test module.
+    #[test]
+    fn auth_method_has_no_default() {
+        let prod = include_str!("middleware.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let at = prod
+            .find("pub enum AuthMethod")
+            .expect("AuthMethod is declared in the production part");
+        let derive_line = prod[..at]
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with("#[derive("))
+            .expect("AuthMethod has a derive line");
+        assert!(!derive_line.contains("Default"), "{derive_line}");
+        assert!(!prod.contains("impl Default for AuthMethod"));
     }
 }

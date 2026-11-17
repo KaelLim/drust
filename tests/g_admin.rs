@@ -1,4 +1,4 @@
-//! #925 — merged harness for the admin test group (28 of 30 members).
+//! #925 — merged harness for the admin test group (36 of 38 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
 //! `admin_pat_bearer` and `admin_pat_reroll` are NOT here: they keep their own
@@ -11,9 +11,9 @@
 //! luck. `admin_oauth` only needs *a* writer to exist and asserts nothing about
 //! it, so it stays. Backing the losers out is the only permitted fix (鐵律 1).
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: every member still
-//! carries its own `#[path = "helpers.rs"] mod helpers;`, and once they share a
-//! crate clippy sees helpers.rs loaded 28 times. Deduping it would mean editing
+//! `duplicate_mod` is inherent to the merge, not a defect: every member that
+//! uses it carries its own `#[path = "helpers.rs"] mod helpers;`, and once they share a
+//! crate clippy sees helpers.rs loaded 4 times. Deduping it would mean editing
 //! test bodies (spec 鐵律 1 forbids that) for no gain — rustc compiles the file
 //! once per module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -47,6 +47,8 @@ mod admin_files_upgrade;
 mod admin_frame_guard;
 #[path = "admin_index_routes.rs"]
 mod admin_index_routes;
+#[path = "admin_login_cross_site.rs"]
+mod admin_login_cross_site;
 #[path = "admin_login_rate_limit.rs"]
 mod admin_login_rate_limit;
 #[path = "admin_login_timing.rs"]
@@ -79,3 +81,17 @@ mod admin_team_invariants;
 mod admin_users;
 #[path = "admin_webhook_handlers.rs"]
 mod admin_webhook_handlers;
+#[path = "mcp_oauth_admin_ui.rs"]
+mod mcp_oauth_admin_ui;
+#[path = "mcp_oauth_authorize.rs"]
+mod mcp_oauth_authorize;
+#[path = "mcp_oauth_consent.rs"]
+mod mcp_oauth_consent;
+#[path = "mcp_oauth_endpoints.rs"]
+mod mcp_oauth_endpoints;
+#[path = "mcp_oauth_refresh.rs"]
+mod mcp_oauth_refresh;
+#[path = "mcp_oauth_store.rs"]
+mod mcp_oauth_store;
+#[path = "mcp_oauth_token_code.rs"]
+mod mcp_oauth_token_code;

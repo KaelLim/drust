@@ -234,6 +234,14 @@ result_skipped = "已略過"
 result_none = "無"
 reason_invalid = "email 格式錯誤"
 reason_exists = "已是 admin"
+
+[admin_team.mcp]
+revoke = "撤銷 MCP"
+revoke_title = "撤銷 MCP 連線"
+revoke_body = "要撤銷 {email} 授權的所有 MCP 連線嗎？他們的 Claude Code 連線會在下一次請求時停止，帳號本身保留。"
+revoke_ok = "撤銷"
+revoked_n = "已撤銷 {n} 條 MCP 連線。"
+
 [audit_body.aria]
 # REVIEW (low confidence): aria-label with template var, please verify wording
 show_details_for = "顯示 {op} 的詳細資訊"
@@ -781,6 +789,63 @@ welcome = "歡迎回來。"
 meta_description = "登入 drust — 慈濟基金會的多租戶 SQLite BaaS 管理主控台。"
 title = "drust — 登入"
 
+[mcp_oauth.error]
+page_title = "授權已停止 · drust"
+heading = "這個授權請求已停止"
+sub = "沒有任何資料送回開啟這一頁的程式。"
+request_invalid_title = "請求格式不正確"
+request_invalid_body = "缺少必要參數、參數重複或過長。請從 Claude Code 重新開始登入（/mcp 選 Authenticate，或執行 claude mcp login）。"
+client_unknown_title = "無法辨識的應用程式"
+client_unknown_body = "此伺服器目前只接受 Claude Code。"
+redirect_rejected_title = "未登記的回傳位址"
+redirect_rejected_body = "這個請求要求導回的位址不是 Claude Code 登記的位址。如果 Claude Code 最近更新過，本伺服器保存的登記副本可能已過時，請通知伺服器管理者。"
+label_received = "收到的 redirect_uri："
+label_accepted = "接受的位址（任意 port）："
+label_pinned_on = "登記副本的抓取日期："
+back_to_client = "返回 Claude Code"
+close_hint = "可以關閉這個分頁。"
+
+[mcp_oauth.consent]
+page_title = "授權 MCP client"
+heading = "允許 {client} 使用你的 drust 帳號？"
+client_unverified = "這個名稱由 client 自行宣告，未經驗證。"
+scope_title = "授權範圍"
+scope_all = "此授權<strong>等同你的帳號能看到的全部 tenant</strong>。你的角色是{role}，這代表本主機上所有 tenant，包括日後新建的與沒有擁有者的 tenant。目前是 {n} 個。"
+scope_owned = "此授權<strong>等同你的帳號能看到的全部 tenant</strong>：你擁有的 tenant，包括日後指派給你的。目前是 {n} 個。"
+scope_live = "範圍跟著你的帳號即時變動：角色被調降或 tenant 被轉出時，下一次呼叫就失去存取。"
+perm_title = "權限"
+perm_body = "在上述每個 tenant 上等同管理員金鑰（service 等級）：可讀寫所有資料、改 schema、改設定、執行 RPC、管理檔案與排程。不能用於管理後台、REST API 或即時連線（SSE、rooms）。"
+revoke_title = "撤銷"
+revoke_body = "撤銷只停止這條 MCP 連線。透過它建立的排程、webhook、edge function、egress 設定會以 service 身分繼續執行，要到 tenant 上另外檢查。"
+lifetime_title = "有效期"
+lifetime_body = "access token 有效 {minutes} 分鐘並自動續期；閒置 {idle} 天或滿 {max} 天需要重新授權；可隨時在「設定 → MCP 連線」撤銷。"
+lifetime_logout_note = "登出管理後台不會中斷 MCP 連線。"
+return_title = "授權碼送往哪裡"
+return_body = "授權碼會送回 <strong>{hostport}</strong>，也就是你這台電腦上的程式。只有在你剛剛在自己電腦上的 Claude Code 按下登入時才繼續。"
+return_warn = "瀏覽器最後停留的 localhost 網址含一次性授權碼，只能貼到你自己剛執行 claude mcp login 的終端，不要貼給任何人。"
+signed_in_as = "你正以 <strong>{email}</strong>（{role}）登入。"
+approve = "授權"
+deny = "拒絕"
+not_you = "不是你？登出並改用自己的帳號"
+skip = "略過，前往管理後台"
+
+[mcp_oauth.consent.role]
+owner = "擁有者"
+admin = "管理員"
+member = "成員"
+
+[mcp_oauth.consent_error]
+title = "無法完成這次授權同意"
+no_request = "目前沒有進行中的授權，請從 Claude Code 重新開始。"
+malformed = "這個授權請求格式錯誤。"
+invalid = "這個授權請求無效，請從 Claude Code 重新開始。"
+expired = "這個授權請求已過期，請從 Claude Code 重新開始。"
+mismatch = "這個授權是在別的瀏覽器或分頁開始的，請在 Claude Code 開啟的那個瀏覽器完成。"
+client_changed = "此伺服器已不再接受這個 client 或回傳位址。"
+csrf = "無法驗證這份表單，請回上一頁、重新整理同意頁後再試一次。"
+admin_missing = "你的帳號已不存在於此伺服器。"
+internal = "發生錯誤，沒有授權任何東西。"
+
 [settings.page]
 title = "drust 管理 — 設定"
 meta_description = "drust 管理 — 個別管理員偏好設定（語言等）。"
@@ -825,6 +890,28 @@ col_expires = "過期時間"
 btn_revoke = "撤銷"
 empty = "尚無 CLI token。執行 `drust auth login` 來產生一個。"
 never = "從未使用"
+
+[settings.mcp_grants]
+card_title = "MCP 連線"
+desc = "你在瀏覽器裡授權過的 Claude Code 連線。每一條都能操作你的帳號能看到的每個 tenant，權限與該 tenant 的 service 金鑰相同。撤銷後，那條連線在下一次請求時停止。這與上方的 PAT、CLI token 無關；登出不會撤銷這些連線。"
+empty = "沒有 MCP 連線。"
+load_failed = "無法載入你的 MCP 連線。你仍可嘗試下方的「全部撤銷」。"
+col_kind = "類型"
+col_host = "回傳主機"
+col_created = "授權時間（UTC）"
+col_last_used = "最後使用（UTC）"
+col_sibling_rejected = "最近一次重複 refresh（UTC）"
+never = "從未使用"
+kind_authorization_code = "瀏覽器登入"
+flag_expired = "已過期"
+flag_sibling_rejected = "重複的 refresh"
+flag_sibling_rejected_hint = "這條連線已被取代的 refresh token 又被出示了一次，最近一次的時間顯示在列中。同一台機器上多個 Claude Code 工作階段同時 refresh 時，這是正常現象。如果「最後使用」顯示你不認得的活動，請撤銷這條連線。"
+btn_revoke = "撤銷"
+btn_revoke_all = "全部撤銷"
+
+[settings.mcp_grants.confirm]
+revoke_all_title = "撤銷全部 MCP 連線"
+revoke_all_body = "用你的帳號授權的每一條 Claude Code 連線，都會在下一次請求時停止，之後要重新授權。要繼續嗎？"
 
 [tenant_api_keys.alert]
 update_failed_title = "更新失敗"

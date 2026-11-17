@@ -35,6 +35,20 @@ UMask=0077
 # Client-IP derivation (working Rust default; the image and Compose set their own):
 #   DRUST_TRUSTED_PROXIES    appending proxies in front of drust (default 2 =
 #                            nginx -> Caddy on this host; range 0-8, 0 = TCP peer)
+# MCP OAuth authorization server (all optional, working Rust defaults —
+# Compose carries the same set; the on-hold Helm chart is not kept in step). In
+# this release `auto` (the default) means off: the account-level /mcp endpoint
+# has not shipped yet, so do NOT set DRUST_MCP=on outside development.
+#   DRUST_MCP                          auto | on | off (default auto)
+#   DRUST_MCP_OAUTH_ACCESS_TTL_SECS    access token lifetime (default 3600; 900..=86400)
+#   DRUST_MCP_OAUTH_REFRESH_GRACE_SECS refresh retry grace (default 60; 0..=300)
+#   DRUST_MCP_OAUTH_IDLE_DAYS          grant idle expiry (default 30; 1..=MAX_DAYS)
+#   DRUST_MCP_OAUTH_MAX_DAYS           grant absolute expiry (default 90; 1..=365)
+# DRUST_MCP governs only the account-level OAuth authorization server, never
+# the per-tenant /t/<id>/mcp endpoint. With `on`, DRUST_PUBLIC_URL must be the
+# public https origin (no path; a loopback http:// origin is accepted with a
+# warning, for development); an unusable DRUST_PUBLIC_URL or DRUST_BASE_PATH
+# leaves MCP off with one error line.
 # The semaphore bounds concurrent deliveries; this NOFILE floor keeps FD
 # headroom for SQLite handles + SSE/WS alongside those sockets.
 LimitNOFILE=65536

@@ -228,6 +228,14 @@ result_skipped = "Skipped"
 result_none = "none"
 reason_invalid = "invalid email"
 reason_exists = "already an admin"
+
+[admin_team.mcp]
+revoke = "Revoke MCP"
+revoke_title = "Revoke MCP connections"
+revoke_body = "Revoke every MCP connection authorized by {email}? Their Claude Code sessions stop at the next request. The account itself is kept."
+revoke_ok = "Revoke"
+revoked_n = "Revoked {n} MCP connection(s)."
+
 [audit_body.aria]
 show_details_for = "show details for {op}"
 
@@ -761,6 +769,63 @@ welcome = "Welcome back."
 meta_description = "Sign in to drust — multi-tenant SQLite BaaS admin console for the Tzu Chi Foundation."
 title = "drust — sign in"
 
+[mcp_oauth.error]
+page_title = "Authorization stopped · drust"
+heading = "This authorization request was stopped"
+sub = "Nothing was sent back to the application that opened this page."
+request_invalid_title = "The request is malformed"
+request_invalid_body = "A required parameter is missing, repeated, or too long. Start the sign-in again from Claude Code (/mcp, then Authenticate, or claude mcp login)."
+client_unknown_title = "Unknown application"
+client_unknown_body = "This server currently accepts only Claude Code."
+redirect_rejected_title = "Unregistered return address"
+redirect_rejected_body = "The address this request asked to return to is not one that Claude Code registered. If Claude Code was updated recently, the copy of its registration pinned on this server may be out of date. Tell the server operator."
+label_received = "Received redirect_uri:"
+label_accepted = "Accepted addresses (any port):"
+label_pinned_on = "Registration copy pinned on:"
+back_to_client = "Return to Claude Code"
+close_hint = "You can close this tab."
+
+[mcp_oauth.consent]
+page_title = "Authorize an MCP client"
+heading = "Allow {client} to use your drust account?"
+client_unverified = "The client declares this name itself; it has not been verified."
+scope_title = "What this covers"
+scope_all = "This authorization covers <strong>every tenant your account can see</strong>. As {role}, that is every tenant on this host, including tenants created later and tenants with no owner. Currently {n}."
+scope_owned = "This authorization covers <strong>every tenant your account can see</strong>: the tenants you own, including tenants assigned to you later. Currently {n}."
+scope_live = "The scope follows your account live: if your role is lowered or a tenant is transferred away, the next call loses access."
+perm_title = "Permissions"
+perm_body = "On each of those tenants it acts like the admin (service) key: read and write all data, change schema and settings, run RPCs, manage files and schedules. It cannot be used for the admin console, the REST API or realtime connections (SSE, rooms)."
+revoke_title = "Revoking"
+revoke_body = "Revoking stops only this MCP connection. Schedules, webhooks, edge functions and egress settings created through it keep running as the service identity; check each tenant separately."
+lifetime_title = "How long it lasts"
+lifetime_body = "Access tokens last {minutes} minutes and renew automatically. After {idle} days without use, or {max} days in total, you need to authorize again. You can revoke it at any time under Settings, MCP connections."
+lifetime_logout_note = "Signing out of the admin console does not disconnect MCP."
+return_title = "Where the code goes"
+return_body = "The authorization code is sent back to <strong>{hostport}</strong>, a program on this computer. Continue only if you just pressed sign-in in Claude Code on your own computer."
+return_warn = "The localhost address your browser ends on contains a one-time authorization code. Paste it only into the terminal where you yourself just ran claude mcp login, and never give it to anyone."
+signed_in_as = "You are signed in as <strong>{email}</strong> ({role})."
+approve = "Authorize"
+deny = "Deny"
+not_you = "Not you? Sign out and use your own account"
+skip = "Skip and go to the admin console"
+
+[mcp_oauth.consent.role]
+owner = "owner"
+admin = "admin"
+member = "member"
+
+[mcp_oauth.consent_error]
+title = "This consent could not be completed"
+no_request = "There is no authorization in progress. Start again from Claude Code."
+malformed = "This authorization request is malformed."
+invalid = "This authorization request is not valid. Start again from Claude Code."
+expired = "This authorization request has expired. Start again from Claude Code."
+mismatch = "This authorization was started in a different browser or tab. Finish it in the browser that Claude Code opened."
+client_changed = "This client or return address is no longer accepted by this server."
+csrf = "The form could not be verified. Go back, reload the consent page, and try again."
+admin_missing = "Your account no longer exists on this server."
+internal = "Something went wrong. Nothing was authorized."
+
 [settings.page]
 title = "drust admin — settings"
 meta_description = "drust admin — per-admin preferences (language, etc)."
@@ -805,6 +870,28 @@ col_expires = "Expires"
 btn_revoke = "Revoke"
 empty = "No CLI tokens. Run `drust auth login` to mint one."
 never = "never"
+
+[settings.mcp_grants]
+card_title = "MCP connections"
+desc = "Claude Code sessions you authorized in the browser. Each one can act on every tenant your account can see, with the same permissions as the service key of that tenant. Revoking one stops it at its next request. This is separate from the PAT and CLI tokens above, and signing out does not revoke these."
+empty = "No MCP connections."
+load_failed = "Could not load your MCP connections. You can still try Revoke all below."
+col_kind = "Type"
+col_host = "Callback host"
+col_created = "Authorized (UTC)"
+col_last_used = "Last used (UTC)"
+col_sibling_rejected = "Last duplicate refresh (UTC)"
+never = "never"
+kind_authorization_code = "browser sign-in"
+flag_expired = "expired"
+flag_sibling_rejected = "duplicate refresh"
+flag_sibling_rejected_hint = "A refresh token this connection had already replaced was presented; the latest time is shown in the row. This is normal when several Claude Code sessions on one machine refresh at the same moment. If Last used shows activity you do not recognize, revoke this connection."
+btn_revoke = "Revoke"
+btn_revoke_all = "Revoke all"
+
+[settings.mcp_grants.confirm]
+revoke_all_title = "Revoke all MCP connections"
+revoke_all_body = "Every Claude Code session authorized with your account stops at its next request and must be authorized again. Continue?"
 
 [tenant_api_keys.alert]
 update_failed_title = "Update failed"

@@ -243,7 +243,7 @@
               {% endfor %}
             {% endif %}
           </div>
-        </div>
+        </div>{% if mcp_enabled %}{% include "_settings_mcp_grants.html" %}{% endif %}
 
     </div>
 {% endblock %}
@@ -294,5 +294,5 @@
       });
     });
   });
-</script>
+</script>{% if mcp_enabled %}{% include "_settings_mcp_grants_js.html" %}{% endif %}
 {% endblock %}

@@ -14,6 +14,9 @@ Fires on `src/db/` (migrations), `src/main.rs` (boot), `src/storage/meta.rs` (fr
 
 The same discipline elsewhere:
 
+- **MCP OAuth cleanup is not a migration.** Expired and orphaned `_mcp_oauth_*` rows are
+  deleted by the hourly `mcp_oauth::sweep` in the device-code reaper loop, never by
+  `run_migrations` — the boot path creates those tables and deletes nothing.
 - **T4 (CLI multi-PAT)**: legacy-revoke + backfill probe qualified `AND label IS NULL`, index relax guarded on `sqlite_master.sql NOT LIKE '%label%'`, reroll revokes only the unlabeled UI PAT.
 - **One-shot backfills that must NEVER re-run.** `tenants.owner_admin_id`: the boot backfill (assigns legacy live tenants to the lowest-id owner; soft-deleted stay NULL) **runs exactly once** — inside the `owner_admin_id` column-create branch, NOT every boot — so a later deliberate NULL (orphan / transfer-to-null) is never re-owned. The **egress allowlist** seed from each tenant's existing `_system_webhooks` origins is guarded by a marker — the "never resurrect a removed entry every boot" idempotency invariant.
 - **`strict_rebuild_tenant`**: boot-time **idempotent** migration (gated on `pragma_table_list.strict`) rebuilding pre-STRICT collections via per-table copy-then-swap, reconstructing DDL verbatim from `sqlite_master.sql` (temp table `_system_strict_tmp_<name>`, collision-proof; the pre-commit `foreign_key_check` is scoped to the rebuilt table so one orphan can't block clean siblings).
@@ -23,7 +26,8 @@ The same discipline elsewhere:
 
 ## Three databases
 
-- **`meta.sqlite`** — admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy, so `whoami` / the admin UI can echo the key).
+- **`meta.sqlite`** — admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy, so `whoami` / the admin UI can echo the key), and the MCP OAuth AS tables:
+  - **`_mcp_*` tables in `meta.sqlite`** — `_mcp_oauth_grants`, `_mcp_oauth_codes`, `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets`, one shared const `SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS` run by both `open_meta` and `run_migrations`. **Never name a meta table `_oauth_*`**: `run_migrations` DROPs four such tables on every boot (the v1.29.2 AS retraction), so a table under that prefix is silently emptied on each restart. Every `*_at` column is SQLite `datetime()` text written and compared **in SQL** — never bind a Rust `to_rfc3339()` string, which compares wrong against `datetime()` text for up to a day. The DDL — including the `--` comments inside each `CREATE TABLE` body, which `sqlite_master` stores verbatim — is frozen from the first deploy, because `IF NOT EXISTS` never reshapes a table a host already has; new columns only through `add_column_if_missing`, appended last. The exact `sqlite_master.sql` text is pinned by `mcp_oauth_ddl_text_is_frozen`. These tables store hashes only; a backup's plaintext credentials remain `tokens.plaintext`, `_admin_tokens.plaintext`, and the dual-write `sessions.token`.
 - **`tenants/<id>/data.sqlite`** — one per tenant.
 - **`meta_logs.sqlite`** — audit rows.
 

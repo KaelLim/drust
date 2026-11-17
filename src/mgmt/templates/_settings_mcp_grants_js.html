@@ -1,0 +1,14 @@
+{# Confirm for "revoke all". Included after _modal.html (settings.html extra_scripts). #}
+<script>
+  document.querySelectorAll('form[data-mcp-grant-revoke-all]').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+      e.preventDefault();
+      drustUI.confirm({
+        title:  '{{ t.s("settings.mcp_grants.confirm.revoke_all_title")|safe }}',
+        body:   '{{ t.s("settings.mcp_grants.confirm.revoke_all_body")|safe }}',
+        okText: '{{ t.s("settings.mcp_grants.btn_revoke_all")|safe }}',
+        danger: true,
+      }).then(function (ok) { if (ok) f.submit(); });
+    });
+  });
+</script>

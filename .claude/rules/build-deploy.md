@@ -67,6 +67,21 @@ The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executi
 - Caddy 2.6.2's response-matcher allowlist has **no regex or case-insensitive option**, only a plain glob on `header`. The matcher's exact shape, and the fact that it must stay in lockstep with `storage::files::is_unsafe_inline_type`, are documented once in `.claude/rules/storage-files.md` — read that before editing the `@markup` matcher.
 - **An S3-API upstream needs the query string dropped** (`rewrite * /public{path}?`). RustFS honours `?response-content-type=` on anonymous GETs, and a case-variant type slips past the case-sensitive matcher. Garage's website endpoint is not an S3 API, but the strip costs nothing there.
 
+**Do not log the `Location` of `/oauth/consent/approve` responses** in a proxy access log:
+it carries a one-time MCP authorization code (compensated by PKCE, a 300-second lifetime
+and single use, but a log is not where it belongs). Default Caddy access logs do not record
+response headers; keep it that way for that path.
+
+**The RFC 8414 root rule for a path-mounted issuer is not configured on bare metal yet.**
+The host's `/drust/*` block serves the MCP OAuth AS metadata at
+`/drust/.well-known/oauth-authorization-server`; the root location
+`/.well-known/oauth-authorization-server/drust` has no proxy rule, so the metadata is
+reachable only under the base path (Compose serves drust at the root and needs no rule).
+To check whether the AS is enabled on a host: the boot log has one line beginning
+`MCP OAuth AS enabled` or `MCP OAuth AS disabled`, and `GET <DRUST_PUBLIC_URL><base
+path>/.well-known/oauth-authorization-server` answers 200 only when it is enabled (404
+otherwise).
+
 The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. The on-hold k3s chart's `deploy/helm/drust/files/public-proxy.Caddyfile` carries a byte copy of the Compose `handle_path /public/*` block as of the chart's freeze; while the hold lasts it is not a lockstep partner, so edit the Compose block alone (§Tests). Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
 ## Deployment targets
@@ -106,6 +121,11 @@ Per-release checklist — run it before tagging, not after. It covers the two ac
 4. New route or route prefix? Check `deploy/compose.Caddyfile`, not just the host Caddyfile.
 5. Migration or first-boot behaviour change? It runs on every boot on both targets, and containers restart far more often than this host does.
 6. Storage or `/public/*` change? Run the smoke on both stores: `deploy/smoke/up.sh` (RustFS) and `SMOKE_STORE=garage deploy/smoke/up.sh` (the host's store).
+7. MCP OAuth enabled anywhere? Re-fetch `https://claude.ai/oauth/claude-code-client-metadata`
+   and compare it with `KNOWN_CLIENTS` in `src/mgmt/mcp_oauth/clients.rs`. On any difference
+   in `client_id` or `redirect_uris`, update the pinned copy and `pinned_on` in the same
+   release. Claude Code has changed its redirect host before, and a stale pin shows up only as
+   users stuck on the authorize error page.
 
 Resuming k3s — the chart-side work the hold skips, all of it, before the chart counts as a target again:
 
