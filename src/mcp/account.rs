@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, InitializeRequestParams,
-    InitializeResult, ProtocolVersion, ServerInfo,
+    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeRequestParams,
+    InitializeResult, JsonObject, ListToolsResult, Meta, PaginatedRequestParams, ProtocolVersion,
+    ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -24,7 +25,9 @@ use crate::mcp::handler::server_capabilities;
 use crate::mcp::server::{DrustMcp, McpRegistry};
 use crate::mgmt::mcp_oauth::caller::McpCaller;
 use crate::mgmt::mcp_oauth::config::McpOauthConfig;
-use crate::mgmt::tenant_authz::{AdminTenantAccess, TenantIncarnation, tenant_access_for_admin};
+use crate::mgmt::tenant_authz::{
+    AdminTenantAccess, TenantIncarnation, tenant_access_for_admin, visible_tenants_for_admin,
+};
 
 /// The protocol revisions drust implements, oldest first. `initialize` echoes
 /// a requested revision found here and answers the newest one otherwise. Never
@@ -60,8 +63,6 @@ pub(crate) struct AccountState {
 /// the body buffer in front of it.
 #[derive(Clone)]
 pub struct AccountMcp {
-    // Allowed until a tool reads the shared state.
-    #[cfg_attr(not(test), allow(dead_code))]
     inner: Arc<AccountState>,
 }
 
@@ -90,12 +91,64 @@ pub(crate) struct Resolved {
 /// handler the request's `Parts` inside its own extensions; a `McpCaller`
 /// anywhere else (for instance at the top level of those extensions) does not
 /// count.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn caller_from_extensions(ext: &rmcp::model::Extensions) -> Option<McpCaller> {
     ext.get::<axum::http::request::Parts>()?
         .extensions
         .get::<McpCaller>()
         .cloned()
+}
+
+/// The one outer tool: it needs no tenant and lists the ones the caller can
+/// pass to every other tool.
+pub(crate) const LIST_TENANTS: &str = "list_tenants";
+
+const LIST_TENANTS_DESCRIPTION: &str = "List the tenants this account can see (id, name, created_at), \
+with the signed-in account (id, label, role) and this server's MCP URL. Takes no arguments. \
+Every other tool needs one of these ids as its `tenant` argument.";
+
+/// `list_tenants` as `tools/list` advertises it: no arguments, read-only,
+/// closed-world, and always loaded so a client never has to search for it.
+pub(crate) fn list_tenants_tool() -> Tool {
+    let mut schema = JsonObject::new();
+    schema.insert("type".into(), serde_json::json!("object"));
+    schema.insert("properties".into(), serde_json::json!({}));
+    let mut meta = Meta::new();
+    meta.insert("anthropic/alwaysLoad".into(), serde_json::json!(true));
+    Tool::new(LIST_TENANTS, LIST_TENANTS_DESCRIPTION, Arc::new(schema))
+        .with_annotations(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(meta)
+}
+
+/// The body of a `list_tenants` answer: the signed-in account, the tenants it
+/// can see (sorted by id) and this server's MCP URL. `None` = the grant or its
+/// admin is no longer valid.
+fn list_tenants_value(
+    conn: &Connection,
+    caller: &McpCaller,
+    mcp_url: &str,
+) -> rusqlite::Result<Option<serde_json::Value>> {
+    let Some(v) = visible_tenants_for_admin(conn, caller.grant_id(), caller.admin_id())? else {
+        return Ok(None);
+    };
+    let tenants: Vec<serde_json::Value> = v
+        .tenants
+        .iter()
+        .map(|t| serde_json::json!({"id": t.id, "name": t.name, "created_at": t.created_at}))
+        .collect();
+    Ok(Some(serde_json::json!({
+        "admin": {"id": caller.admin_id(), "label": caller.admin_label(), "role": v.role},
+        "tenants": tenants,
+        "mcp_url": mcp_url,
+    })))
+}
+
+/// The JSON-RPC internal error every account-level failure that is not the
+/// caller's own maps to.
+fn internal() -> McpError {
+    McpError::internal_error(
+        "internal error",
+        Some(serde_json::json!({"error_code": "INTERNAL"})),
+    )
 }
 
 impl AccountMcp {
@@ -128,7 +181,6 @@ impl AccountMcp {
 
     /// The request's caller (see [`caller_from_extensions`]). Reads only the
     /// context's extensions.
-    #[allow(dead_code)]
     pub(crate) fn caller(ctx: &RequestContext<RoleServer>) -> Option<McpCaller> {
         caller_from_extensions(&ctx.extensions)
     }
@@ -223,6 +275,61 @@ impl AccountMcp {
             }
         }
     }
+
+    /// `list_tenants` for `caller`, read from meta on this call. A grant or
+    /// admin that is no longer valid, and a meta error, are both an internal
+    /// error, never an empty list. Writes no audit row: the answer belongs to
+    /// no tenant.
+    pub(crate) async fn list_tenants_result(
+        &self,
+        caller: &McpCaller,
+    ) -> Result<CallToolResult, McpError> {
+        let mcp_url = self.inner.cfg.resource_url();
+        let out = {
+            let c = self.inner.meta.lock().await;
+            list_tenants_value(&c, caller, &mcp_url)
+        };
+        match out {
+            Ok(Some(v)) => Ok(CallToolResult::success(vec![Content::text(v.to_string())])),
+            Ok(None) => {
+                tracing::warn!(
+                    stage = "list_tenants",
+                    grant_id = caller.grant_id(),
+                    admin_id = caller.admin_id(),
+                    "grant or admin no longer valid"
+                );
+                Err(internal())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    stage = "list_tenants",
+                    grant_id = caller.grant_id(),
+                    admin_id = caller.admin_id(),
+                    error = %crate::error::sqlite_error_without_sql(&e),
+                    "tenant list failed"
+                );
+                Err(internal())
+            }
+        }
+    }
+
+    /// `tools/call` in order: a request without a caller is an internal error
+    /// before anything else (no meta read); an unknown name is rmcp's own
+    /// "tool not found" (no meta read); then the tool.
+    async fn call_outer(
+        &self,
+        caller: Option<McpCaller>,
+        name: &str,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(caller) = caller else {
+            tracing::warn!(stage = "call_tool", "no MCP caller on the request");
+            return Err(internal());
+        };
+        if name != LIST_TENANTS {
+            return Err(McpError::invalid_params("tool not found", None));
+        }
+        self.list_tenants_result(&caller).await
+    }
 }
 
 impl ServerHandler for AccountMcp {
@@ -246,14 +353,26 @@ impl ServerHandler for AccountMcp {
             .with_protocol_version(Self::negotiate(&request.protocol_version)))
     }
 
-    /// No tool exists yet: the same error rmcp's own tool router gives for an
-    /// unknown name.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::with_all_items(vec![list_tenants_tool()]))
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        (name == LIST_TENANTS).then(list_tenants_tool)
+    }
+
+    /// Dispatches on the caller from the request parts and the tool name; an
+    /// unknown name gets the same error rmcp's own tool router gives.
     async fn call_tool(
         &self,
-        _request: CallToolRequestParams,
-        _ctx: RequestContext<RoleServer>,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        Err(McpError::invalid_params("tool not found", None))
+        self.call_outer(Self::caller(&context), &request.name).await
     }
 }
 
@@ -831,6 +950,116 @@ mod resolve_tests {
         );
     }
 
+    fn rpc_error(r: Result<CallToolResult, McpError>) -> (i32, String, Option<serde_json::Value>) {
+        match r {
+            Err(e) => (e.code.0, e.message.to_string(), e.data),
+            Ok(_) => panic!("expected a JSON-RPC error"),
+        }
+    }
+    fn is_internal(r: Result<CallToolResult, McpError>) -> bool {
+        let (code, msg, data) = rpc_error(r);
+        code == -32603 && msg == "internal error" && data == Some(json!({"error_code": "INTERNAL"}))
+    }
+
+    #[tokio::test]
+    async fn get_tool_knows_only_list_tenants() {
+        use rmcp::ServerHandler as _; // get_tool is a trait method
+        let f = fx().await;
+        assert_eq!(
+            f.acct
+                .get_tool("list_tenants")
+                .map(|t| t.name.to_string())
+                .as_deref(),
+            Some("list_tenants")
+        );
+        assert!(f.acct.get_tool("whoami").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_tenants_result_is_the_value_as_text() {
+        let f = fx().await;
+        let r = match f.acct.list_tenants_result(&f.m).await {
+            Ok(r) => r,
+            Err(e) => panic!("{}", e.message),
+        };
+        assert_ne!(r.is_error, Some(true));
+        let v: serde_json::Value =
+            serde_json::from_str(&r.content[0].as_text().expect("text").text).unwrap();
+        let ids: Vec<&str> = v["tenants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["blog"], "member M sees only its own tenant");
+        assert_eq!(v["admin"]["id"], f.m_id);
+        assert_eq!(v["mcp_url"], f.acct.inner.cfg.resource_url());
+    }
+
+    #[tokio::test]
+    async fn list_tenants_result_is_internal_for_a_dead_grant_or_a_meta_error() {
+        let f = fx().await;
+        f.meta
+            .lock()
+            .await
+            .execute(
+                "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now') \
+            WHERE id = ?1",
+                params![f.m.grant_id()],
+            )
+            .unwrap();
+        assert!(
+            is_internal(f.acct.list_tenants_result(&f.m).await),
+            "dead grant: INTERNAL, no tenants"
+        );
+        let broken = AccountMcp::new(
+            f.acct.inner.registry.clone(),
+            Arc::new(Mutex::new(Connection::open_in_memory().unwrap())), // no tables
+            f.acct.inner.cfg.clone(),
+            f.acct.inner.uploads,
+            f.root.path().join("logs"),
+        );
+        assert!(
+            is_internal(broken.list_tenants_result(&f.o).await),
+            "meta error: INTERNAL"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), f.meta.lock())
+                .await
+                .is_ok(),
+            "lock released"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_outer_maps_a_missing_caller_to_internal_before_the_name() {
+        let f = fx().await;
+        let _held = f.meta.lock().await; // a missing caller must not read meta
+        for name in ["list_tenants", "no_such_tool"] {
+            let r = tokio::time::timeout(Duration::from_secs(1), f.acct.call_outer(None, name))
+                .await
+                .expect("no meta access");
+            assert!(
+                is_internal(r),
+                "{name}: a missing caller is INTERNAL, checked before the name"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn call_outer_answers_unknown_names_with_tool_not_found() {
+        let f = fx().await;
+        let _held = f.meta.lock().await; // an unknown name must not read meta
+        let r = tokio::time::timeout(
+            Duration::from_secs(1),
+            f.acct.call_outer(Some(f.m.clone()), "whoami"),
+        )
+        .await
+        .expect("no meta access");
+        let (code, msg, data) = rpc_error(r);
+        assert_eq!((code, msg.as_str(), data), (-32602, "tool not found", None));
+    }
+
     #[test]
     fn caller_comes_only_from_the_http_parts() {
         let mut ext = rmcp::model::Extensions::new();
@@ -850,5 +1079,138 @@ mod resolve_tests {
         ext.insert(parts);
         let c = caller_from_extensions(&ext).expect("caller in Parts");
         assert_eq!((c.admin_id(), c.grant_id()), (7, 9));
+    }
+}
+
+#[cfg(test)]
+mod list_tenants_tests {
+    use super::*;
+    use crate::mgmt::mcp_oauth::{caller::McpCaller, store};
+    use rusqlite::{Connection, params};
+
+    fn meta(dir: &std::path::Path) -> Connection {
+        let c = crate::storage::meta::open_meta(&dir.join("meta.sqlite")).unwrap();
+        crate::db::migrations::run_migrations(&c, dir).unwrap();
+        c
+    }
+    fn admin(c: &Connection, user: &str, email: Option<&str>, role: &str) -> i64 {
+        c.execute("INSERT INTO admins (username, password_hash, email, role) VALUES (?1, '$oauth-only$', ?2, ?3)",
+            params![user, email, role]).unwrap();
+        c.last_insert_rowid()
+    }
+    /// A caller built the production way: seeded access token -> AccessGrant -> McpCaller.
+    fn caller(c: &Connection, admin_id: i64) -> McpCaller {
+        let s = store::seed_access_for_tests(c, admin_id).unwrap();
+        McpCaller::from_access(&store::find_grant_by_access(c, &s.access).unwrap().unwrap())
+    }
+
+    #[test]
+    fn list_tenants_value_is_exact_for_a_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = meta(dir.path());
+        let m = admin(&c, "m", None, "member");
+        let o = admin(&c, "o", Some("o@example.test"), "owner");
+        for (t, owner) in [
+            ("zeta", Some(m)),
+            ("alpha", Some(m)),
+            ("foreign", Some(o)),
+            ("orphan", None),
+        ] {
+            c.execute(
+                "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, upper(?1), ?2)",
+                params![t, owner],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id, deleted_at) \
+                   VALUES ('gone', 'G', ?1, datetime('now'))",
+            params![m],
+        )
+        .unwrap();
+        let ca = |t: &str| -> String {
+            c.query_row("SELECT created_at FROM tenants WHERE id = ?1", [t], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let v = list_tenants_value(&c, &caller(&c, m), "https://drust.test/mcp")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            format!(
+                r#"{{"admin":{{"id":{m},"label":"m","role":"member"}},"tenants":[{{"id":"alpha","name":"ALPHA","created_at":"{}"}},{{"id":"zeta","name":"ZETA","created_at":"{}"}}],"mcp_url":"https://drust.test/mcp"}}"#,
+                ca("alpha"),
+                ca("zeta")
+            )
+        );
+        let ov = list_tenants_value(&c, &caller(&c, o), "u")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ov["admin"]["label"], "o@example.test");
+        let ids: Vec<&str> = ov["tenants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["alpha", "foreign", "orphan", "zeta"],
+            "sees-all: orphans in, soft-deleted out, sorted"
+        );
+        assert!(
+            ov["tenants"][0].get("resources").is_none(),
+            "no resources field yet"
+        );
+    }
+
+    #[test]
+    fn list_tenants_value_is_none_for_a_dead_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = meta(dir.path());
+        let m = admin(&c, "m", None, "member");
+        let who = caller(&c, m);
+        c.execute(
+            "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now') WHERE id = ?1",
+            params![who.grant_id()],
+        )
+        .unwrap();
+        assert!(list_tenants_value(&c, &who, "u").unwrap().is_none());
+        assert!(list_tenants_value(&Connection::open_in_memory().unwrap(), &who, "u").is_err());
+    }
+
+    #[test]
+    fn list_tenants_tool_definition() {
+        let t = list_tenants_tool();
+        assert_eq!(t.name, "list_tenants");
+        assert_eq!(
+            serde_json::Value::Object((*t.input_schema).clone()),
+            serde_json::json!({"type": "object", "properties": {}})
+        );
+        let a = t.annotations.as_ref().expect("annotations");
+        assert_eq!(
+            (a.read_only_hint, a.open_world_hint),
+            (Some(true), Some(false))
+        );
+        assert_eq!(
+            (a.destructive_hint, a.idempotent_hint),
+            (None, None),
+            "read rows leave these unset"
+        );
+        assert_eq!(
+            t.meta
+                .as_ref()
+                .expect("_meta")
+                .0
+                .get("anthropic/alwaysLoad"),
+            Some(&serde_json::json!(true))
+        );
+        assert!(
+            t.description
+                .as_deref()
+                .is_some_and(|d| d.contains("tenant"))
+        );
     }
 }

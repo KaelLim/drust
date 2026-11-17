@@ -268,7 +268,6 @@ pub(crate) fn tenant_access_for_admin(
 }
 
 /// One live tenant as an MCP OAuth caller's tenant list shows it.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TenantSummary {
     pub id: String,
@@ -277,7 +276,6 @@ pub(crate) struct TenantSummary {
 }
 
 /// The caller's role and the live tenants it can see, sorted by id.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VisibleTenants {
     pub role: String,
@@ -287,7 +285,6 @@ pub(crate) struct VisibleTenants {
 /// The tenant list an MCP OAuth caller can see, with the same predicate and
 /// the same grant anchor as `tenant_access_for_admin`. `None` means the grant
 /// or its admin is no longer valid.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn visible_tenants_for_admin(
     conn: &rusqlite::Connection,
     grant_id: i64,

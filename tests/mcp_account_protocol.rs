@@ -99,14 +99,17 @@ async fn future_revision_in_header_and_body_still_gets_the_fallback() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(String::from_utf8(b).unwrap().contains(r#""tools":[]"#));
+    assert!(
+        String::from_utf8(b)
+            .unwrap()
+            .contains(r#""name":"list_tenants""#)
+    );
 }
 
 #[tokio::test]
-async fn shell_lists_nothing_and_knows_no_method_beyond_the_spec() {
+async fn shell_lists_only_list_tenants_and_knows_no_method_beyond_the_spec() {
     let h = helpers::spin_up_account_mcp("t1").await;
     for (method, key) in [
-        ("tools/list", "tools"),
         ("resources/list", "resources"),
         ("resources/templates/list", "resourceTemplates"),
         ("prompts/list", "prompts"),
@@ -116,7 +119,16 @@ async fn shell_lists_nothing_and_knows_no_method_beyond_the_spec() {
         assert_eq!(s, StatusCode::OK, "{method}");
         assert_eq!(m[0]["result"][key], json!([]), "{method}");
     }
-    let r = helpers::mcp_call(&h.app, &h.access, &h.tid, "list_tenants", json!({})).await;
+    let (s, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(2, "tools/list")).await;
+    assert_eq!(s, StatusCode::OK);
+    let names: Vec<&str> = m[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["list_tenants"]);
+    let r = helpers::mcp_call(&h.app, &h.access, &h.tid, "no_such_tool", json!({})).await;
     assert_eq!(r["error"]["code"], -32602);
     assert_eq!(r["error"]["message"], "tool not found");
     let (_, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(3, "server/discover")).await;
