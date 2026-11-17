@@ -389,6 +389,14 @@ mod source_pins {
         }
     }
 
+    /// The entry gates read caller-controlled Host and Origin strings and
+    /// write no log line at all, so neither can reach a log.
+    #[test]
+    fn entry_gates_write_no_log_lines() {
+        let (n, _) = scan(include_str!("route_layer.rs"), &[]);
+        assert_eq!(n, 0, "route_layer.rs: {n} log/audit sites, want 0");
+    }
+
     /// The scanner itself can fail: each planted leak is caught, and the same
     /// text in a comment or as plain message words is not.
     #[test]
