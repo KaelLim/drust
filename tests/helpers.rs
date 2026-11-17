@@ -32,6 +32,44 @@ pub fn test_mcp_http(
     ))))
 }
 
+/// Like [`test_mcp_http`], but wired the way `main.rs` wires production: the
+/// stack's own meta handle and auth cache, so an MCP tool that revokes a
+/// session clears the cache REST authenticates from. Pass the bus returned by
+/// [`shared_bus_rooms`] as `bus_rooms`.
+pub fn test_mcp_http_live(
+    tenants: Arc<TenantRegistry>,
+    bus: EventBus,
+    bus_rooms: drust::tenant::rooms::RoomBus,
+    meta: Arc<Mutex<rusqlite::Connection>>,
+    auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
+) -> Arc<McpHttpRegistry> {
+    Arc::new(McpHttpRegistry::new(Arc::new(
+        McpRegistry::with_bus_and_storage(
+            tenants.clone(),
+            bus,
+            WebhookDispatcher::new(tenants.clone(), None),
+            None,
+            String::new(),
+            Arc::new([0u8; 32]),
+            Some(meta),
+            52_428_800,
+            1_000_000,
+            Arc::new(Mutex::new(
+                drust::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            bus_rooms,
+            drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
+            drust::tenant::rooms::RoomsConfig::test_defaults(),
+            auth_cache,
+            drust::functions::dispatcher::FunctionDispatcher::new(
+                tenants,
+                tokio::sync::mpsc::channel(8).0,
+                drust::functions::FnConfig::test_default(),
+            ),
+        ),
+    )))
+}
+
 /// #955 — mint the ONE `RoomBus` a test stack must share between its
 /// `TenantAuthState` and its `TenantStack`, and wire it into the state.
 ///
@@ -1377,6 +1415,8 @@ pub struct AccountMcpHarness {
     pub tenant_keys: Vec<TenantKeys>,
     pub meta: Arc<Mutex<rusqlite::Connection>>,
     pub tenants: Arc<TenantRegistry>,
+    /// The one rooms bus the stack, its auth state and its MCP registry share.
+    pub bus_rooms: drust::tenant::rooms::RoomBus,
     pub dir: tempfile::TempDir,
 }
 
@@ -1601,7 +1641,13 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     let bus = EventBus::new();
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
     let bus_rooms = shared_bus_rooms(&mut state);
-    let mcp = test_mcp_http(tenants.clone(), bus.clone(), bus_rooms.clone());
+    let mcp = test_mcp_http_live(
+        tenants.clone(),
+        bus.clone(),
+        bus_rooms.clone(),
+        meta.clone(),
+        state.auth_cache.clone(),
+    );
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
     let (garage, files_state) = if opts.files {
@@ -1640,7 +1686,7 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
         tenants.clone(),
         mcp,
         bus,
-        bus_rooms,
+        bus_rooms.clone(),
     );
     mgmt.log_dir = data.join("audit");
     std::fs::create_dir_all(&mgmt.log_dir).unwrap();
@@ -1667,6 +1713,7 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
         tenant_keys,
         meta,
         tenants,
+        bus_rooms,
         dir,
     }
 }

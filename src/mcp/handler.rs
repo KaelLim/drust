@@ -619,7 +619,6 @@ pub struct SetCronJobActiveArgs {
 /// construction site picks one. Private to this module, so nothing outside
 /// it can assemble an account identity field by field.
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 enum ToolCaller {
     /// The per-tenant service key on `/t/<id>/mcp`, the only identity that
     /// path has.
@@ -634,7 +633,6 @@ enum ToolCaller {
 /// the account MCP URL from the OAuth config, and the API Keys page of the
 /// service's own tenant.
 #[derive(Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 struct AccountCall {
     admin_id: i64,
     grant_id: i64,
@@ -652,7 +650,6 @@ impl DrustMcpService {
     /// An account-level caller's service for one tenant. The caller of this
     /// constructor must have run the tenant check for exactly this `state`;
     /// the URLs are derived from `state`'s own tenant id.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn for_account(
         state: DrustMcp,
         caller: &crate::mgmt::mcp_oauth::caller::McpCaller,

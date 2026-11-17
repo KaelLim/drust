@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, InitializeRequestParams,
     InitializeResult, JsonObject, ListToolsResult, Meta, PaginatedRequestParams, ProtocolVersion,
@@ -124,11 +125,14 @@ pub(crate) enum Denied {
 }
 
 /// Holds a DrustMcp, which carries the URL-signing secret: never derive Debug.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Resolved {
     pub mcp: DrustMcp,
+    // Read by tests only until per-call audit rows carry the tenant id.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub tenant_id: String,
     /// What the second visibility check saw.
+    // Read by tests only until the upload ticket binds to the incarnation.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub incarnation: TenantIncarnation,
 }
 
@@ -359,7 +363,6 @@ pub(crate) fn account_tool(name: &str) -> Option<&'static Tool> {
 
 /// Where a `tools/call` that passed [`precheck`] goes next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Precheck {
     /// One of `OUTER_TOOLS`, run by this endpoint itself.
     Outer(&'static str),
@@ -370,7 +373,6 @@ pub(crate) enum Precheck {
 /// Why an account-level `tools/call` was refused before it ran. Carries only
 /// the kind and the caller's own argument names, never a credential.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum ToolDenied {
     Internal,
     UnknownTool,
@@ -390,7 +392,6 @@ impl From<Denied> for ToolDenied {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl ToolDenied {
     /// The answer on the wire: an unknown tool is rmcp's own JSON-RPC
     /// "tool not found"; every other refusal is the one isError body.
@@ -425,7 +426,6 @@ impl ToolDenied {
 /// the injected `properties`. Depends only on the static schema, never on
 /// which tenants exist or are visible, so an argument error can never tell
 /// them apart.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn precheck(
     caller: Option<&McpCaller>,
     name: &str,
@@ -471,7 +471,6 @@ pub(crate) fn precheck(
 /// found" becomes the one isError body, keeping its `error_code` and
 /// `suggested_fix` (a code is classified from the message when the error
 /// carries none).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn finish_account_call(
     r: Result<CallToolResult, McpError>,
 ) -> Result<CallToolResult, McpError> {
@@ -548,7 +547,6 @@ impl AccountMcp {
     /// across an await. Not detectable here, by design: an old-incarnation pool
     /// still cached by the TenantRegistry (the residual window documented in
     /// .claude/rules/auth-tenancy.md).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn resolve_tenant(
         &self,
         caller: &McpCaller,
@@ -666,22 +664,14 @@ impl AccountMcp {
         }
     }
 
-    /// `tools/call` in order: a request without a caller is an internal error
-    /// before anything else (no meta read); an unknown name is rmcp's own
-    /// "tool not found" (no meta read); then the tool.
-    async fn call_outer(
-        &self,
-        caller: Option<McpCaller>,
-        name: &str,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(caller) = caller else {
-            tracing::warn!(stage = "call_tool", "no MCP caller on the request");
-            return Err(internal());
-        };
-        if name != LIST_TENANTS {
-            return Err(McpError::invalid_params("tool not found", None));
+    /// An outer tool: `list_tenants` through [`finish_account_call`], so its
+    /// failure is the isError `INTERNAL` body; any other name is rmcp's own
+    /// "tool not found", answered before meta is read.
+    async fn run_outer(&self, caller: &McpCaller, name: &str) -> Result<CallToolResult, McpError> {
+        match name {
+            LIST_TENANTS => finish_account_call(self.list_tenants_result(caller).await),
+            _ => ToolDenied::UnknownTool.into_call_result(),
         }
-        self.list_tenants_result(&caller).await
     }
 }
 
@@ -722,14 +712,45 @@ impl ServerHandler for AccountMcp {
         account_tool(name).cloned()
     }
 
-    /// Dispatches on the caller from the request parts and the tool name; an
-    /// unknown name gets the same error rmcp's own tool router gives.
+    /// One account-level `tools/call`: the caller from the request parts,
+    /// [`precheck`], then an outer tool runs here and an inner tool's tenant is
+    /// resolved, `tenant` is stripped and the call goes to that tenant's tool
+    /// router as the calling admin. Every result passes through
+    /// [`finish_account_call`]. No meta guard is held here: each lives inside
+    /// the function that takes it, never across the forwarded call.
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.call_outer(Self::caller(&context), &request.name).await
+        let Some(caller) = Self::caller(&context) else {
+            tracing::error!(
+                "account-level tools/call reached the handler without an authenticated caller; refused"
+            );
+            return ToolDenied::Internal.into_call_result();
+        };
+        // Omitted and `null` arguments are both an empty map.
+        let mut args = request.arguments.take().unwrap_or_default();
+        let kind = match precheck(Some(&caller), &request.name, &args) {
+            Ok(k) => k,
+            Err(d) => return d.into_call_result(),
+        };
+        if let Precheck::Outer(name) = kind {
+            return self.run_outer(&caller, name).await;
+        }
+        let resolved = match self.resolve_tenant(&caller, args.get("tenant")).await {
+            Ok(r) => r,
+            Err(d) => return ToolDenied::from(d).into_call_result(),
+        };
+        args.shift_remove("tenant");
+        request.arguments = Some(args);
+        let svc = DrustMcpService::for_account(resolved.mcp, &caller, &self.inner.cfg);
+        // The router is rebuilt for every call; only the tool list is cached.
+        finish_account_call(
+            DrustMcpService::tool_router()
+                .call(ToolCallContext::new(&svc, request, context))
+                .await,
+        )
     }
 }
 
@@ -1394,30 +1415,37 @@ mod resolve_tests {
     }
 
     #[tokio::test]
-    async fn call_outer_maps_a_missing_caller_to_internal_before_the_name() {
+    async fn run_outer_reports_a_list_tenants_failure_as_an_is_error_internal() {
         let f = fx().await;
-        let _held = f.meta.lock().await; // a missing caller must not read meta
-        for name in ["list_tenants", "no_such_tool"] {
-            let r = tokio::time::timeout(Duration::from_secs(1), f.acct.call_outer(None, name))
-                .await
-                .expect("no meta access");
-            assert!(
-                is_internal(r),
-                "{name}: a missing caller is INTERNAL, checked before the name"
-            );
-        }
+        f.meta
+            .lock()
+            .await
+            .execute(
+                "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now') \
+            WHERE id = ?1",
+                params![f.m.grant_id()],
+            )
+            .unwrap();
+        let r = match f.acct.run_outer(&f.m, LIST_TENANTS).await {
+            Ok(r) => r,
+            Err(e) => panic!("a JSON-RPC error reached the wire: {}", e.message),
+        };
+        assert_eq!(r.is_error, Some(true));
+        let v: serde_json::Value =
+            serde_json::from_str(&r.content[0].as_text().expect("text").text).unwrap();
+        assert_eq!(
+            v,
+            json!({"error_code":"INTERNAL","message":"internal error"})
+        );
     }
 
     #[tokio::test]
-    async fn call_outer_answers_unknown_names_with_tool_not_found() {
+    async fn run_outer_answers_an_unlisted_name_with_tool_not_found() {
         let f = fx().await;
-        let _held = f.meta.lock().await; // an unknown name must not read meta
-        let r = tokio::time::timeout(
-            Duration::from_secs(1),
-            f.acct.call_outer(Some(f.m.clone()), "whoami"),
-        )
-        .await
-        .expect("no meta access");
+        let _held = f.meta.lock().await; // an unlisted outer name must not read meta
+        let r = tokio::time::timeout(Duration::from_secs(1), f.acct.run_outer(&f.m, "whoami"))
+            .await
+            .expect("no meta access");
         let (code, msg, data) = rpc_error(r);
         assert_eq!((code, msg.as_str(), data), (-32602, "tool not found", None));
     }
