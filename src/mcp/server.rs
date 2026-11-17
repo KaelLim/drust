@@ -354,6 +354,45 @@ impl McpRegistry {
         self.services.insert(tenant_id.to_string(), svc.clone());
         Ok(svc)
     }
+    /// The account-level MCP endpoint's per-call builder: a fresh `DrustMcp` for a
+    /// LIVE tenant. Never reads or writes `services` (so an id recycle can never be
+    /// served from this cache) and never creates files (`get_if_live` only; `None` =
+    /// gone, which the caller maps to the same answer as "not visible"). Opening a
+    /// pool has side effects (schema catch-up, the pool cache), so callers must
+    /// decide visibility BEFORE calling this. `meta` is a required parameter on
+    /// purpose: the test-only registries carry `meta: None`, which would silently
+    /// skip the meta-backed checks of the tools. `functions` comes from the registry
+    /// exactly as in `get_or_create` (CLAUDE.md invariant 13), and the shared cron
+    /// state is applied the same way.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn build_live(
+        &self,
+        tenant_id: &str,
+        meta: Arc<Mutex<Connection>>,
+    ) -> Option<DrustMcp> {
+        let pool = self.tenants.get_if_live(tenant_id)?;
+        Some(
+            DrustMcp::new(
+                tenant_id,
+                pool,
+                self.bus.clone(),
+                self.webhooks.clone(),
+                self.garage.clone(),
+                self.public_base_url.clone(),
+                self.url_sign_secret.clone(),
+                Some(meta),
+                self.max_upload_bytes,
+                self.index_large_table_rows,
+                self.audit_meta_read.clone(),
+                self.bus_rooms.clone(),
+                self.bucket.clone(),
+                self.rooms_cfg.clone(),
+                self.auth_cache.clone(),
+                self.functions.clone(),
+            )
+            .with_cron(self.cron.clone()),
+        )
+    }
     pub fn evict(&self, tenant_id: &str) {
         self.services.remove(tenant_id);
     }
@@ -420,4 +459,100 @@ fn test_rooms_defaults() -> (RoomBus, Arc<PublishBucket>, RoomsConfig) {
         "McpRegistry::new / with_bus are test-only constructors; \
             release code must use with_bus_and_storage"
     );
+}
+
+#[cfg(test)]
+mod build_live_tests {
+    use super::*;
+
+    fn meta() -> Arc<Mutex<Connection>> {
+        Arc::new(Mutex::new(Connection::open_in_memory().unwrap()))
+    }
+
+    /// Production-shaped registry (functions: Some) plus the cron state it was given.
+    fn registry(
+        root: &std::path::Path,
+    ) -> (
+        McpRegistry,
+        Arc<TenantRegistry>,
+        Arc<crate::cron::CronState>,
+    ) {
+        let tr = Arc::new(TenantRegistry::new(root.to_path_buf(), 2));
+        let cron = fresh_cron_state();
+        let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
+        let reg = McpRegistry::with_bus_and_storage(
+            tr.clone(),
+            EventBus::new(),
+            WebhookDispatcher::new(tr.clone(), None),
+            None,
+            String::new(),
+            Arc::new([0u8; 32]),
+            None,
+            1,
+            1,
+            test_audit_conn(),
+            bus_rooms,
+            bucket,
+            rooms_cfg,
+            Arc::new(crate::tenant::auth_cache::AuthCache::new(
+                std::time::Duration::from_secs(10),
+                16,
+            )),
+            crate::functions::dispatcher::FunctionDispatcher::new(
+                tr.clone(),
+                tokio::sync::mpsc::channel(8).0,
+                crate::functions::FnConfig::test_default(),
+            ),
+        )
+        .with_cron(cron.clone());
+        (reg, tr, cron)
+    }
+
+    #[tokio::test]
+    async fn build_live_returns_none_for_a_tenant_without_a_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reg, _tr, _) = registry(dir.path());
+        assert!(reg.build_live("ghost", meta()).is_none());
+        assert!(
+            !crate::storage::tenant_db::tenant_dir(dir.path(), "ghost").exists(),
+            "build_live must never create a tenant directory"
+        );
+        assert_eq!(reg.cached_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn build_live_wires_the_same_state_as_get_or_create_but_bypasses_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let (reg, tr, cron) = registry(dir.path());
+        tr.get_or_create("blog").unwrap();
+        tr.evict("blog"); // force the create-free open path
+        let m = meta();
+        let live = reg.build_live("blog", m.clone()).expect("live tenant");
+        assert_eq!(
+            reg.cached_count(),
+            0,
+            "build_live must not write the services cache"
+        );
+        assert_eq!(live.tenant_id(), "blog");
+        assert!(Arc::ptr_eq(live.meta().expect("meta is always Some"), &m));
+        let inner = live.inner();
+        assert!(Arc::ptr_eq(&inner.cron, &cron), "with_cron must be applied");
+        let cached = reg.get_or_create("blog").await.unwrap();
+        let ci = cached.inner();
+        assert!(
+            Arc::ptr_eq(
+                inner.functions.as_ref().expect("functions: Some"),
+                ci.functions.as_ref().unwrap()
+            ),
+            "functions must come from the registry (invariant 13)"
+        );
+        assert!(
+            Arc::ptr_eq(&inner.pool, &ci.pool),
+            "same TenantRegistry pool"
+        );
+        // never reads the cache: a second build_live is a fresh DrustMcp, not the cached one
+        let again = reg.build_live("blog", m).unwrap();
+        assert!(!Arc::ptr_eq(&again.inner(), &cached.inner()));
+        assert_eq!(reg.cached_count(), 1);
+    }
 }
