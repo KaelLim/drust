@@ -5,6 +5,7 @@
 //! `login_submit`'s cross-site refusal is always on. Tables:
 //! `db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`. Release notes: CHANGELOG.md.
 pub mod authorize;
+pub mod caller;
 pub mod clients;
 pub mod config;
 pub mod consent;

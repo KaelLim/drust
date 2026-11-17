@@ -24,7 +24,8 @@
 //! invariants 4 / 5.
 //!
 //! Two lookup strengths. `find_grant_by_access` is AUTHORIZATION strength and
-//! returns an `AccessGrant`, the only value an MCP call may be authorized from.
+//! returns an `AccessGrant`, the only value an MCP call may be authorized from
+//! (the request identity, `caller::McpCaller`, is built only from one).
 //! `find_grant_for_revocation` is REVOCATION strength (any genuine token of an
 //! unrevoked grant); its `GrantRef` — like every `GrantRef` — may only feed
 //! `GrantOwner::holder`.
