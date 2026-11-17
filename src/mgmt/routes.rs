@@ -111,9 +111,9 @@ pub struct MgmtState {
     /// route is mounted, which is why a DRUST_MCP-unset host gains no route or page
     /// (the exceptions are listed in the `mcp_oauth` module doc).
     pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
-    /// In-memory limiters for `/oauth/token` (miss-only per-IP, per-code,
-    /// per-grant); `/oauth/revoke` reads no budget. Cleanup task spawned by main.rs
-    /// only when enabled.
+    /// In-memory limiters: `/oauth/token` (miss-only per-IP, per-code, per-grant),
+    /// the account-level MCP resource server (`rs_grant`) and upload tickets (`rs_miss_ip`);
+    /// `/oauth/revoke` reads no budget. Cleanup task spawned by main.rs only when enabled.
     pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
 }
 

@@ -1,8 +1,7 @@
-//! In-memory limiters for `/oauth/token`, and the limiter key shapes
-//! (`/oauth/revoke` reads no budget). Budgets are hardcoded (no env): failed
-//! lookups per client IP, failed checks per code, and refresh exchanges per
-//! grant. A request that presents a valid credential never touches the per-IP
-//! miss bucket.
+//! In-memory limiters for the MCP OAuth authorization server (`/oauth/token`;
+//! `/oauth/revoke` reads no budget) and for the account-level MCP resource
+//! server, and the limiter key shapes. Budgets are hardcoded (no env). A request
+//! that presents a valid credential never touches a per-IP miss bucket.
 
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
 use crate::safety::ip::ClientIp;
@@ -17,6 +16,10 @@ pub const PER_CODE_BUDGET: u32 = 10;
 pub const PER_CODE_WINDOW: Duration = Duration::from_secs(300);
 pub const PER_GRANT_BUDGET: u32 = 10;
 pub const PER_GRANT_WINDOW: Duration = Duration::from_secs(60);
+pub const RS_GRANT_BUDGET: u32 = 600;
+pub const RS_GRANT_WINDOW: Duration = Duration::from_secs(60);
+pub const RS_MISS_IP_BUDGET: u32 = 60;
+pub const RS_MISS_IP_WINDOW: Duration = Duration::from_secs(60);
 const CLEANUP_EVERY: Duration = Duration::from_secs(60);
 
 pub struct McpOauthLimiters {
@@ -28,6 +31,12 @@ pub struct McpOauthLimiters {
     /// read by `refresh::rotate` only on the branches it bounds (never on reuse
     /// detection or a losing sibling's branch cut).
     pub per_grant: Arc<RateLimiter>,
+    /// Account-level MCP requests of a valid access token, keyed by [`grant_key`].
+    /// Separate from `per_grant` (refresh only) so tool calls never turn a refresh
+    /// into a 429.
+    pub rs_grant: Arc<RateLimiter>,
+    /// 60 per 60 s per client IP. Upload tickets only: the account-level MCP bearer layer reads no per-IP bucket.
+    pub rs_miss_ip: Arc<RateLimiter>,
 }
 
 impl McpOauthLimiters {
@@ -36,14 +45,29 @@ impl McpOauthLimiters {
             miss_ip: Arc::new(RateLimiter::new(MISS_IP_BUDGET, MISS_IP_WINDOW)),
             per_code: Arc::new(RateLimiter::new(PER_CODE_BUDGET, PER_CODE_WINDOW)),
             per_grant: Arc::new(RateLimiter::new(PER_GRANT_BUDGET, PER_GRANT_WINDOW)),
+            rs_grant: Arc::new(RateLimiter::new(RS_GRANT_BUDGET, RS_GRANT_WINDOW)),
+            rs_miss_ip: Arc::new(RateLimiter::new(RS_MISS_IP_BUDGET, RS_MISS_IP_WINDOW)),
         }
+    }
+
+    /// Every bucket. The destructuring is exhaustive (no `..`), so a sixth bucket
+    /// does not compile until it is listed here, and therefore swept.
+    fn all(&self) -> [&Arc<RateLimiter>; 5] {
+        let Self {
+            miss_ip,
+            per_code,
+            per_grant,
+            rs_grant,
+            rs_miss_ip,
+        } = self;
+        [miss_ip, per_code, per_grant, rs_grant, rs_miss_ip]
     }
 
     /// main.rs only, and only when `McpOauthConfig::enabled()`: a disabled host
     /// mounts no route that could fill these, so it runs no sweeper either.
     /// Reuses `RateLimiter::spawn_cleanup`.
     pub fn spawn_cleanup(&self) {
-        for l in [&self.miss_ip, &self.per_code, &self.per_grant] {
+        for l in self.all() {
             // Named binding: `let _ =` on a JoinHandle reads as a dropped future.
             let _detached = l.clone().spawn_cleanup(CLEANUP_EVERY);
         }
@@ -112,6 +136,70 @@ mod tests {
         exhaust(&l.miss_ip, "ip:203.0.113.7", 30);
         exhaust(&l.per_code, "code:x", 10);
         exhaust(&l.per_grant, "grant:1", 10);
+    }
+
+    #[test]
+    fn resource_server_budgets_are_the_plan_numbers() {
+        assert_eq!(
+            (
+                RS_GRANT_BUDGET,
+                RS_GRANT_WINDOW,
+                RS_MISS_IP_BUDGET,
+                RS_MISS_IP_WINDOW
+            ),
+            (600, Duration::from_secs(60), 60, Duration::from_secs(60))
+        );
+        let l = McpOauthLimiters::new();
+        exhaust(&l.rs_grant, &grant_key(1), 600);
+        exhaust(&l.rs_miss_ip, "ip:203.0.113.7", 60);
+    }
+
+    /// Same keys, separate buckets: tool calls never spend a grant's refresh
+    /// budget, and upload-ticket misses never spend the token endpoint's
+    /// per-IP miss budget (and the reverse).
+    #[test]
+    fn resource_server_buckets_are_separate_from_the_token_endpoint_ones() {
+        let l = McpOauthLimiters::new();
+        exhaust(&l.rs_grant, &grant_key(7), 600);
+        assert!(l.per_grant.try_acquire(&grant_key(7)).is_ok());
+        exhaust(&l.per_grant, &grant_key(8), 10);
+        assert!(l.rs_grant.try_acquire(&grant_key(8)).is_ok());
+        exhaust(&l.rs_miss_ip, "ip:203.0.113.7", 60);
+        assert!(l.miss_ip.try_acquire("ip:203.0.113.7").is_ok());
+        exhaust(&l.miss_ip, "ip:203.0.113.8", 30);
+        assert!(l.rs_miss_ip.try_acquire("ip:203.0.113.8").is_ok());
+    }
+
+    #[test]
+    fn every_bucket_is_swept() {
+        let l = McpOauthLimiters::new();
+        let all = l.all();
+        assert_eq!(all.len(), 5);
+        for f in [
+            &l.miss_ip,
+            &l.per_code,
+            &l.per_grant,
+            &l.rs_grant,
+            &l.rs_miss_ip,
+        ] {
+            assert!(
+                all.iter().any(|a| Arc::ptr_eq(a, f)),
+                "a bucket is missing from all()"
+            );
+        }
+    }
+
+    /// The exhaustive destructuring makes all() complete; this makes the sweep
+    /// actually go through it (a literal list here would miss the next bucket).
+    #[test]
+    fn spawn_cleanup_sweeps_through_all() {
+        use crate::tenant::rooms::srcpin::{code_only, prod_fn_body};
+        let stripped = code_only(include_str!("rl.rs"));
+        let body = prod_fn_body(&stripped, "pub fn spawn_cleanup(&self) {");
+        assert!(
+            body.contains("self.all()"),
+            "spawn_cleanup must sweep every bucket through all()"
+        );
     }
 
     #[test]
