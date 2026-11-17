@@ -862,6 +862,84 @@ fn find(
     .optional()
 }
 
+// ─── test token minting (debug builds and tests only) ───────────────────────
+//
+// Integration tests are another crate and cannot see cfg(test); a debug build
+// can see debug_assertions, so these exist there too. Release builds do not
+// have them. No production code in src/ may call them (pinned by
+// seed_helpers_have_no_production_caller). Call them before `conn` is wrapped
+// in its `Arc<Mutex<_>>`, or while holding that lock.
+
+/// A seeded grant's id and its plaintext tokens. NO `Debug`: the fields are
+/// live plaintext credentials (pinned by `credential_types_do_not_derive_debug`).
+#[cfg(any(test, debug_assertions))]
+pub struct SeededAccess {
+    pub grant_id: i64,
+    pub access: String,
+    pub refresh: String,
+    pub refresh_id: i64,
+}
+
+/// One live grant for `admin_id` (the first known client, redirect host
+/// `localhost`, idle +30 days, absolute +90 days, `last_used_at` NULL) plus
+/// [`seed_tokens_for_tests`] on it. A missing admin is
+/// `Err(QueryReturnedNoRows)` with nothing written.
+#[cfg(any(test, debug_assertions))]
+pub fn seed_access_for_tests(conn: &Connection, admin_id: i64) -> rusqlite::Result<SeededAccess> {
+    let n = conn.execute(
+        "INSERT INTO _mcp_oauth_grants \
+           (admin_id, admin_created_at, client_id, redirect_host, \
+            idle_expires_at, absolute_expires_at) \
+         SELECT a.id, a.created_at, ?2, 'localhost', \
+                datetime('now', '+30 days'), datetime('now', '+90 days') \
+           FROM admins a WHERE a.id = ?1",
+        params![
+            admin_id,
+            crate::mgmt::mcp_oauth::clients::KNOWN_CLIENTS[0].client_id
+        ],
+    )?;
+    if n == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    seed_tokens_for_tests(conn, conn.last_insert_rowid())
+}
+
+/// One root refresh (`parent_id` NULL, `expires_at` = the grant's
+/// MIN(idle, absolute)) and one access pointing at it (+3600 s) for an EXISTING
+/// grant, whatever its state: tests mint tokens under revoked and expired
+/// grants on purpose. A missing grant is `Err(QueryReturnedNoRows)` with
+/// nothing written.
+#[cfg(any(test, debug_assertions))]
+pub fn seed_tokens_for_tests(conn: &Connection, grant_id: i64) -> rusqlite::Result<SeededAccess> {
+    let refresh = tokens::new_token(TokenKind::Refresh);
+    let access = tokens::new_token(TokenKind::Access);
+    let n = conn.execute(
+        "INSERT INTO _mcp_oauth_refresh (grant_id, parent_id, token_hash, expires_at) \
+         SELECT id, NULL, ?2, MIN(idle_expires_at, absolute_expires_at) \
+           FROM _mcp_oauth_grants WHERE id = ?1",
+        params![grant_id, tokens::hash(TokenKind::Refresh, &refresh)],
+    )?;
+    if n == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    let refresh_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO _mcp_oauth_access (token_hash, grant_id, refresh_id, expires_at) \
+         VALUES (?1, ?2, ?3, datetime('now', '+3600 seconds'))",
+        params![
+            tokens::hash(TokenKind::Access, &access),
+            grant_id,
+            refresh_id
+        ],
+    )?;
+    Ok(SeededAccess {
+        grant_id,
+        access,
+        refresh,
+        refresh_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1242,7 @@ mod tests {
             ("pub struct IssuedTokens", "IssuedTokens"),
             ("pub struct CodeRedeemRequest", "CodeRedeemRequest"),
             ("pub enum RedeemOutcome", "RedeemOutcome"),
+            ("pub struct SeededAccess", "SeededAccess"),
         ] {
             assert!(
                 !attrs_before(prod, head).contains("Debug"),
@@ -1311,5 +1390,131 @@ mod tests {
             None,
             "only the authorized grant is touched"
         );
+    }
+
+    // ─── test token minting ──────────────────────────────────────────────────
+
+    #[test]
+    fn seed_access_for_tests_yields_an_authorizing_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, _) = meta_with_grant(dir.path());
+        let admin: i64 = conn
+            .query_row("SELECT id FROM admins WHERE username = 'root'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let s = seed_access_for_tests(&conn, admin).unwrap();
+        let a = find_grant_by_access(&conn, &s.access)
+            .unwrap()
+            .expect("seeded access authorizes");
+        assert_eq!((a.grant_id(), a.admin_id()), (s.grant_id, admin));
+        let r = find_grant_by_refresh(&conn, &s.refresh)
+            .unwrap()
+            .expect("seeded refresh is live");
+        assert_eq!(r.grant_id(), s.grant_id);
+        let (rid, client, last): (i64, String, Option<String>) = conn
+            .query_row(
+                "SELECT a.refresh_id, g.client_id, g.last_used_at \
+                   FROM _mcp_oauth_access a JOIN _mcp_oauth_grants g ON g.id = a.grant_id \
+                  WHERE a.token_hash = ?1",
+                params![tokens::hash(TokenKind::Access, &s.access)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rid, s.refresh_id);
+        assert_eq!(
+            client,
+            crate::mgmt::mcp_oauth::clients::KNOWN_CLIENTS[0].client_id
+        );
+        assert_eq!(last, None, "a seeded grant was never used");
+    }
+
+    #[test]
+    fn seed_access_for_tests_refuses_a_missing_admin() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, _) = meta_with_grant(dir.path());
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _mcp_oauth_grants", [], |r| r.get(0))
+            .unwrap();
+        assert!(matches!(
+            seed_access_for_tests(&conn, 999_999),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _mcp_oauth_grants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after, "no grant bound to a missing admin");
+    }
+
+    /// Tests seed tokens under revoked and expired grants on purpose.
+    #[test]
+    fn seed_tokens_for_tests_does_not_check_liveness() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g) = meta_with_grant(dir.path());
+        conn.execute(
+            "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now'), revoke_reason = 'user'",
+            [],
+        )
+        .unwrap();
+        let s = seed_tokens_for_tests(&conn, g).unwrap();
+        assert_eq!(s.grant_id, g);
+        let minted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _mcp_oauth_access WHERE token_hash = ?1 AND grant_id = ?2",
+                params![tokens::hash(TokenKind::Access, &s.access), g],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(minted, 1, "minted under a revoked grant");
+        assert!(
+            find_grant_by_access(&conn, &s.access).unwrap().is_none(),
+            "dead grant"
+        );
+        assert!(matches!(
+            seed_tokens_for_tests(&conn, g + 1000),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
+    }
+
+    /// The seed helpers exist in debug builds too (integration tests are
+    /// another crate and cannot see cfg(test)); no production code path, in a
+    /// debug build or otherwise, may mint tokens through them.
+    #[test]
+    fn seed_helpers_have_no_production_caller() {
+        use crate::tenant::rooms::srcpin::{code_only, collect_rs_files, production_half};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs_files(&root, &mut files);
+        assert!(
+            files.len() > 100,
+            "the walk found only {} files",
+            files.len()
+        );
+        let mut defining = 0;
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
+            let stripped = code_only(&src);
+            let prod = production_half(&stripped);
+            if f.ends_with("mgmt/mcp_oauth/store.rs") {
+                defining += 1;
+                assert!(
+                    prod.contains("pub fn seed_access_for_tests("),
+                    "anti-vacuous"
+                );
+                assert!(
+                    prod.contains("pub fn seed_tokens_for_tests("),
+                    "anti-vacuous"
+                );
+                continue;
+            }
+            for needle in ["seed_access_for_tests", "seed_tokens_for_tests"] {
+                assert!(
+                    !prod.contains(needle),
+                    "{}: {needle} is test-only and must not be called from production code",
+                    f.display()
+                );
+            }
+        }
+        assert_eq!(defining, 1, "store.rs was not among the walked files");
     }
 }

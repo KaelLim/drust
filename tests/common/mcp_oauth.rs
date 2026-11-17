@@ -148,35 +148,14 @@ pub struct SeededTokens {
     pub refresh_id: i64,
 }
 
-/// One root refresh (parent_id NULL, expires_at = the grant's MIN(idle, absolute))
-/// and one access pointing at it (refresh_id = that refresh, +3600 s).
+/// One root refresh and one access for the grant, minted by the lib's seed_tokens_for_tests (the one copy of this SQL).
 pub fn seed_tokens(conn: &rusqlite::Connection, grant_id: i64) -> SeededTokens {
-    let refresh = tokens::new_token(TokenKind::Refresh);
-    let access = tokens::new_token(TokenKind::Access);
-    let n = conn
-        .execute(
-            "INSERT INTO _mcp_oauth_refresh (grant_id, parent_id, token_hash, expires_at) \
-             SELECT id, NULL, ?2, MIN(idle_expires_at, absolute_expires_at) \
-               FROM _mcp_oauth_grants WHERE id = ?1",
-            params![grant_id, tokens::hash(TokenKind::Refresh, &refresh)],
-        )
-        .unwrap();
-    assert_eq!(n, 1, "seed_tokens: grant {grant_id} does not exist");
-    let refresh_id = conn.last_insert_rowid();
-    conn.execute(
-        "INSERT INTO _mcp_oauth_access (token_hash, grant_id, refresh_id, expires_at) \
-         VALUES (?1, ?2, ?3, datetime('now', '+3600 seconds'))",
-        params![
-            tokens::hash(TokenKind::Access, &access),
-            grant_id,
-            refresh_id
-        ],
-    )
-    .unwrap();
+    let s = drust::mgmt::mcp_oauth::store::seed_tokens_for_tests(conn, grant_id)
+        .unwrap_or_else(|e| panic!("seed_tokens: grant {grant_id}: {e}"));
     SeededTokens {
-        access,
-        refresh,
-        refresh_id,
+        access: s.access,
+        refresh: s.refresh,
+        refresh_id: s.refresh_id,
     }
 }
 
