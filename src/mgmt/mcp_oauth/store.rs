@@ -210,7 +210,7 @@ SELECT id FROM _mcp_oauth_grants WHERE admin_id = ?1 AND revoked_at IS NULL ORDE
 // validity probe and never decides whether to issue tokens.
 // Also returns the account label (COALESCE(email, username)), the value consent
 // and the audit rows use.
-const SQL_FIND_BY_ACCESS: &str = "\
+pub(crate) const SQL_FIND_BY_ACCESS: &str = "\
 SELECT g.id, g.admin_id, COALESCE(ad.email, ad.username) \
   FROM _mcp_oauth_access a \
   JOIN _mcp_oauth_grants g ON g.id = a.grant_id \

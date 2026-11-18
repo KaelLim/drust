@@ -652,6 +652,10 @@ mod admin_access_tests {
         for (name, sql) in [
             ("tenant access", SQL_TENANT_ACCESS_FOR_ADMIN),
             ("role for grant", SQL_ROLE_FOR_GRANT),
+            (
+                "store access lookup",
+                crate::mgmt::mcp_oauth::store::SQL_FIND_BY_ACCESS,
+            ),
         ] {
             for clause in GRANT_LIVE_CLAUSES {
                 assert!(sql.contains(clause), "{name} query lacks `{clause}`");
