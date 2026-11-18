@@ -550,7 +550,7 @@ title = "外送 webhook 訂閱"
 
 [collections.empty]
 body = "當你的客戶端寫入第一筆記錄後，資料表會自動出現在此處。"
-hint = "透過 REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> 端點，或帳號層級的 MCP 端點寫入。"
+hint = "透過 REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> 端點寫入；伺服器啟用 MCP 時，也可從 MCP 用戶端寫入。"
 title = "此資料庫沒有任何資料表"
 
 [collections.head]

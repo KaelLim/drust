@@ -535,7 +535,7 @@ title = "outbound webhook subscriptions"
 
 [collections.empty]
 body = "Once your client writes its first record, collections will appear here automatically."
-hint = "Write via the REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> endpoint or with the account-level MCP endpoint."
+hint = "Write via the REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> endpoint, or from an MCP client when MCP is enabled on this server."
 title = "This database has no tables"
 
 [collections.head]
