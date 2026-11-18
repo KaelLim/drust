@@ -849,7 +849,7 @@ meta_description = "drust 管理 — 把 Claude Code 串接到帳號層級的 MC
 [mcp_connect.head]
 eyebrow = "管理 · MCP"
 title = "串接 Claude Code"
-sub = "一個 MCP 端點涵蓋你的帳號能看到的每個 tenant。你在這個瀏覽器裡登入；設定檔裡不放任何金鑰。"
+sub = "一個 MCP 端點涵蓋你的帳號能看到的每個租戶。你在這個瀏覽器裡登入；設定檔裡不放任何金鑰。"
 tools_pill = "{n} 個 tool"
 
 [mcp_connect.add]
@@ -861,10 +861,10 @@ ssh = "透過 SSH 時，在 ssh -t 裡執行登入指令，並加上 --no-browse
 json = "改用 JSON 寫這一筆？一定要帶 type http，否則 Claude Code 會把它當成本機指令而略過："
 
 [mcp_connect.migrate]
-title = "從每個 tenant 各自的伺服器搬過來"
-remove = "在當初加入的每個專案裡，移除每一筆名稱是 drust- 加 tenant id 的舊設定。設定裡寫了 Authorization header 的伺服器，Claude Code 會一直送那個 header、不會改走登入，所以舊設定不能原地升級。"
-rules = "權限規則改名，而且不能再依 tenant 分別核准 tool：現在一個伺服器服務所有 tenant。"
-reroll = "如果你曾把個人 access token 或 tenant 的 service 金鑰貼進 MCP 設定，請重新產生：個人 token 在「設定」頁，service 金鑰在該 tenant 的「API 金鑰」頁。drust 不會強制，但留在設定檔裡的金鑰在重新產生之前一直有效。"
+title = "從每個租戶各自的伺服器搬過來"
+remove = "在當初加入的每個專案裡，移除每一筆名稱是 drust- 加租戶 id 的舊設定。設定裡寫了 Authorization header 的伺服器，Claude Code 會一直送那個 header、不會改走登入，所以舊設定不能原地升級。"
+rules = "權限規則改名，而且不能再依租戶分別核准 tool：現在一個伺服器服務所有租戶。"
+reroll = "如果你曾把個人 access token 或租戶的 service 金鑰貼進 MCP 設定，請重抽：個人 token 在「設定」頁，service 金鑰在該租戶的「API 金鑰」頁。drust 不會強制，但留在設定檔裡的金鑰在重抽之前一直有效。"
 
 [mcp_connect.disconnect]
 title = "中斷連線"
@@ -883,10 +883,10 @@ note = "加入這一筆之前，先移除上面加入的 drust。"
 
 [mcp_connect.scope]
 title = "這條連線能做與不能做的事"
-rights = "在你的帳號能看到的每個 tenant 上，Claude 擁有 service 等級的權限。失去存取的 tenant，下一次呼叫就無法使用。"
+rights = "在你的帳號能看到的每個租戶上，Claude 擁有 service 等級的權限。失去存取的租戶，下一次呼叫就無法使用。"
 clients = "只支援 Claude Code。Codex、Cursor、Claude Desktop 與 Gemini 暫不支援。"
-ci = "CI 與全新的容器不能使用 MCP：登入需要瀏覽器。在那些地方請用 tenant 金鑰呼叫 REST API。"
-functions = "這條連線不能部署 edge function：它不帶任何 tenant 金鑰。要部署 .wasm，請到管理後台該 tenant 的「函式」頁，頁面上有上傳指令。"
+ci = "CI 與全新的容器不能使用 MCP：登入需要瀏覽器。在那些地方請用租戶金鑰呼叫 REST API。"
+functions = "這條連線不能部署 edge function：它不帶任何租戶金鑰。要部署 .wasm，請到管理後台該租戶的「函式」頁，頁面上有上傳指令。"
 uploads = "上傳檔案時對話裡不會出現租戶金鑰：Claude 會申請一張短時間有效、只能上傳一個檔案的票證（create_upload_url），再分塊上傳。"
 
 [mcp_connect.copy]
@@ -966,15 +966,15 @@ hint = "issuer 必須等於預期值。掛在路徑下的伺服器，每一層 p
 
 [mcp_diag.check.as_base]
 label = "base path 底下的 authorization-server metadata"
-hint = "只有連接頁上手動設定 authServerMetadataUrl 的退路會用到。"
+hint = "只有串接頁上手動設定 authServerMetadataUrl 的退路會用到。"
 
 [mcp_diag.check.token]
 label = "token 端點對空請求回 OAuth 錯誤（400）"
 hint = "這裡出現轉址代表有 proxy 在轉址，例如 http 轉 https 或補結尾斜線。Claude Code 遇到任何轉址都會停止登入。"
 
 [mcp_diag.check.old_endpoint]
-label = "舊的 per-tenant 端點回 410"
-hint = "對舊的 per-tenant 路徑 /t/ID/mcp 發 POST 應回 410 MCP_ENDPOINT_MOVED。若不是，代表反向代理仍把舊路徑送到別處，或伺服器跑的仍是舊版程式。"
+label = "舊的各租戶端點回 410"
+hint = "對舊的各租戶路徑 /t/ID/mcp 發 POST 應回 410 MCP_ENDPOINT_MOVED。若不是，代表反向代理仍把舊路徑送到別處，或伺服器跑的仍是舊版程式。"
 
 [mcp_diag.reason]
 mode_off = "DRUST_MCP 是 off。"
@@ -1007,7 +1007,7 @@ unsaved = "未儲存"
 
 [settings.tokens]
 card_title = "個人 API token（REST／admin API）"
-desc = "每位管理員一個 PAT，給 drust CLI、腳本與 admin API 使用。MCP 用戶端不使用它：它們在帳號 MCP 端點以 OAuth 登入。Reroll 會讓目前的 PAT 在所有貼過的地方失效。"
+desc = "每位管理員一個 PAT，給 drust CLI、腳本與 admin API 使用。MCP 用戶端不使用它：它們在帳號 MCP 端點以 OAuth 登入。重抽會讓目前的 PAT 在所有貼過的地方失效。"
 fingerprint = "指紋"
 last_used = "最後使用"
 last_used_never = "從未使用"
@@ -1018,7 +1018,7 @@ btn_reroll = "重抽"
 legacy_plaintext_unavailable = "舊版 PAT 沒有 plaintext —— 請按重抽產生新的。"
 
 [settings.tokens.confirm]
-reroll_text = "Reroll 會立即讓目前的 PAT 失效。所有使用它的腳本、環境變數或 CLI 登入都會收到 401，每台機器都要更新 token。要繼續嗎？"
+reroll_text = "重抽會立即讓目前的 PAT 失效。所有使用它的腳本、環境變數或 CLI 登入都會收到 401，每台機器都要更新 token。要繼續嗎？"
 reroll_title = "重抽 PAT"
 
 [settings.cli_tokens]
@@ -1084,8 +1084,8 @@ title = "API 金鑰"
 intro = "這個租戶有兩種金鑰，請依照要整合的介面挑一支用；重新產生會立刻作廢前一支 bearer。租戶 <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code>・建立於 {created_at}。"
 
 [tenant_api_keys.mcp_hint]
-body = "MCP 用戶端不再使用這個 tenant 的金鑰：每個帳號用 OAuth 連一次即可。"
-link = "連接 MCP 用戶端"
+body = "MCP 用戶端不再使用這個租戶的金鑰：每個帳號用 OAuth 串接一次即可。"
+link = "串接 MCP 用戶端"
 
 [tenant_api_keys.page]
 title = "drust 管理—{tenant_name} / _api_keys"
