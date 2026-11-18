@@ -1,0 +1,323 @@
+//! Account-level /mcp resources and prompts: tenant-first, checked on every call, one answer for every refusal.
+
+#[path = "helpers.rs"]
+mod helpers;
+
+use axum::http::StatusCode;
+use helpers::{AccountMcpHarness, McpAccess, mcp_rpc, seed_mcp_access, spin_up_account_mcp};
+use serde_json::{Value, json};
+
+fn rpc(method: &str, params: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+}
+
+/// member owns live "mine-r"; "gone-r" is member-owned and soft-deleted;
+/// "acct-res" is foreign to the member; "nope-r" does not exist.
+async fn member_world(h: &AccountMcpHarness) -> McpAccess {
+    let m = {
+        let g = h.meta.lock().await;
+        seed_mcp_access(&g, "member", "mallory-res")
+    };
+    h.tenants.get_or_create("mine-r").unwrap();
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES ('mine-r', 'Mine', ?1)",
+            [m.admin_id],
+        )
+        .unwrap();
+        g.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id, deleted_at) \
+             VALUES ('gone-r', 'Gone', ?1, datetime('now'))",
+            [m.admin_id],
+        )
+        .unwrap();
+    }
+    m
+}
+
+/// One `resources/read`: (HTTP status, content-type, first message).
+async fn read(h: &AccountMcpHarness, token: &str, uri: &str) -> (StatusCode, String, Value) {
+    let (s, hd, mut m) = mcp_rpc(
+        &h.app,
+        Some(token),
+        rpc("resources/read", json!({"uri": uri})),
+    )
+    .await;
+    let ct = hd
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(!m.is_empty(), "resources/read {uri}: no message");
+    (s, ct, m.swap_remove(0))
+}
+
+/// One `prompts/get`: (HTTP status, content-type, first message).
+async fn prompt(
+    h: &AccountMcpHarness,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> (StatusCode, String, Value) {
+    let (s, hd, mut m) = mcp_rpc(
+        &h.app,
+        Some(token),
+        rpc("prompts/get", json!({"name": name, "arguments": args})),
+    )
+    .await;
+    let ct = hd
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(!m.is_empty(), "prompts/get {name}: no message");
+    (s, ct, m.swap_remove(0))
+}
+
+fn not_found(uri: &str) -> Value {
+    json!({"code": -32002, "message": format!("no such resource: {uri}")})
+}
+
+fn prompt_text(m: &Value) -> String {
+    m["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no prompt text: {m}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn resources_list_is_empty_and_templates_are_fourteen() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let (_, _, m) = mcp_rpc(&h.app, Some(&h.access), rpc("resources/list", json!({}))).await;
+    assert_eq!(m[0]["result"]["resources"], json!([]));
+    let (_, _, m) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        rpc("resources/templates/list", json!({})),
+    )
+    .await;
+    let t = m[0]["result"]["resourceTemplates"].as_array().unwrap();
+    assert_eq!(t.len(), 14);
+    for x in t {
+        assert!(
+            x["uriTemplate"]
+                .as_str()
+                .unwrap()
+                .starts_with("drust://{tenant}/"),
+            "{x}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn denied_resource_reads_match_a_bad_uri() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let m = member_world(&h).await;
+    let mut uris: Vec<String> = ["acct-res", "gone-r", "nope-r", "Bad_Id"]
+        .iter()
+        .map(|t| format!("drust://{t}/schema.md"))
+        .collect();
+    uris.push("drust://mine-r/no-such-path".into());
+    let mut first: Option<(StatusCode, String)> = None;
+    for uri in &uris {
+        let (s, ct, msg) = read(&h, &m.access, uri).await;
+        assert_eq!(msg["error"], not_found(uri), "{uri}");
+        match &first {
+            None => first = Some((s, ct)),
+            Some(f) => assert_eq!(&(s, ct), f, "{uri}"),
+        }
+    }
+    let (_, _, ok) = read(&h, &m.access, "drust://mine-r/schema.md").await;
+    assert_eq!(
+        ok["result"]["contents"][0]["mimeType"], "text/markdown",
+        "{ok}"
+    );
+}
+
+#[tokio::test]
+async fn odd_resource_uris_are_plain_not_found() {
+    let h = spin_up_account_mcp("acct-res").await;
+    // nope-r does not exist; the harness owner sees every live tenant.
+    let mut first: Option<(StatusCode, String)> = None;
+    for uri in [
+        "drust://{tenant}/schema",
+        "drust://ACCT-RES/schema",
+        "drust://acct-res:1/schema",
+        "drust://u@acct-res/schema",
+        "drust://acct-res@nope-r/schema",
+        "drust://%61cct-res/schema",
+        "drust:schema",
+        "not a uri",
+    ] {
+        let (s, ct, msg) = read(&h, &h.access, uri).await;
+        assert_eq!(msg["error"], not_found(uri), "{uri}");
+        assert_eq!(s, StatusCode::OK, "{uri}");
+        match &first {
+            None => first = Some((s, ct)),
+            Some(f) => assert_eq!(&(s, ct), f, "{uri}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn account_files_guide_has_no_service_key_instructions() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let (_, _, msg) = read(&h, &h.access, "drust://acct-res/files-guide.md").await;
+    let text = msg["result"]["contents"][0]["text"].as_str().unwrap();
+    for gone in [
+        "DRUST_SERVICE_TOKEN",
+        "(service bearer)",
+        "whoami` tool for the service",
+    ] {
+        assert!(!text.contains(gone), "{gone:?}");
+    }
+    assert!(text.contains("## 5. Uploading from this connection"));
+    assert!(text.contains("## 6. This tenant's publish grants (live)"));
+}
+
+#[tokio::test]
+async fn prompts_take_tenant_first() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let (_, _, m) = mcp_rpc(&h.app, Some(&h.access), rpc("prompts/list", json!({}))).await;
+    let p = m[0]["result"]["prompts"].as_array().unwrap();
+    assert_eq!(p.len(), 6);
+    for x in p {
+        assert_eq!(
+            x["arguments"][0],
+            json!({"name": "tenant", "description": "Tenant id (from list_tenants).", "required": true}),
+            "{x}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn denied_prompts_are_identical() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let m = member_world(&h).await;
+    let mut first: Option<(StatusCode, String)> = None;
+    for t in ["acct-res", "gone-r", "nope-r", "Bad_Id"] {
+        let (s, ct, msg) = prompt(
+            &h,
+            &m.access,
+            "secure_collection",
+            json!({"tenant": t, "collection": "posts"}),
+        )
+        .await;
+        assert_eq!(
+            msg["error"],
+            json!({"code": -32602, "message": "tenant not found", "data": {"error_code": "TENANT_NOT_FOUND"}}),
+            "{t}"
+        );
+        match &first {
+            None => first = Some((s, ct)),
+            Some(f) => assert_eq!(&(s, ct), f, "{t}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn prompt_argument_errors_are_distinct() {
+    let h = spin_up_account_mcp("acct-res").await;
+    for args in [json!({"tenant": 7}), json!({})] {
+        let (_, _, msg) = prompt(&h, &h.access, "bootstrap", args.clone()).await;
+        assert_eq!(
+            msg["error"]["data"]["error_code"], "TENANT_REQUIRED",
+            "{args}"
+        );
+        assert_eq!(
+            msg["error"]["message"], "missing required argument: tenant",
+            "{args}"
+        );
+    }
+    let (_, _, msg) = prompt(
+        &h,
+        &h.access,
+        "secure_collection",
+        json!({"tenant": "acct-res"}),
+    )
+    .await;
+    assert_eq!(
+        msg["error"],
+        json!({"code": -32602, "message": "missing required argument: collection"})
+    );
+}
+
+#[tokio::test]
+async fn account_prompts_point_uploads_at_the_admin_ui() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let (_, _, msg) = prompt(
+        &h,
+        &h.access,
+        "write_edge_function",
+        json!({"tenant": "acct-res", "trigger": "record.created"}),
+    )
+    .await;
+    let t = prompt_text(&msg);
+    for gone in ["service-token", "whoami", "curl -X POST"] {
+        assert!(!t.contains(gone), "{gone:?}");
+    }
+    assert!(t.contains("Build it, then ask the user to upload the .wasm"));
+    assert!(t.contains("EGRESS_NOT_ALLOWLISTED"));
+    assert_eq!(t.matches("GOTCHA — the #1 first-run failure").count(), 1);
+    let (_, _, msg) = prompt(&h, &h.access, "bootstrap", json!({"tenant": "acct-res"})).await;
+    let t = prompt_text(&msg);
+    assert!(t.contains("`resources/templates/list`"));
+    assert!(!t.contains("`resources/list` +"));
+    assert!(t.contains("tenant `acct-res`"));
+}
+
+#[tokio::test]
+async fn list_tenants_schema_md_uris_are_readable() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let (_, _, m) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        rpc(
+            "tools/call",
+            json!({"name": "list_tenants", "arguments": {}}),
+        ),
+    )
+    .await;
+    let v: Value =
+        serde_json::from_str(m[0]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let tenants = v["tenants"].as_array().unwrap();
+    assert!(!tenants.is_empty());
+    for t in tenants {
+        let id = t["id"].as_str().unwrap();
+        let uri = t["resources"]["schema_md"].as_str().unwrap();
+        assert_eq!(uri, format!("drust://{id}/schema.md"));
+        let (_, _, msg) = read(&h, &h.access, uri).await;
+        assert!(
+            msg["result"]["contents"][0]["text"].is_string(),
+            "{uri}: {msg}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resources_and_prompts_follow_an_owner_transfer_on_the_next_call() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let m = member_world(&h).await;
+    let uri = "drust://mine-r/schema.md";
+    let (_, _, msg) = read(&h, &m.access, uri).await;
+    assert!(msg["result"]["contents"][0]["text"].is_string(), "{msg}");
+    let args = json!({"tenant": "mine-r", "collection": "posts"});
+    let (_, _, msg) = prompt(&h, &m.access, "secure_collection", args.clone()).await;
+    assert_eq!(
+        msg["error"]["message"], "no such collection: posts",
+        "{msg}"
+    );
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "UPDATE tenants SET owner_admin_id = ?1 WHERE id = 'mine-r'",
+            [h.admin_id],
+        )
+        .unwrap();
+    }
+    let (_, _, msg) = read(&h, &m.access, uri).await;
+    assert_eq!(msg["error"], not_found(uri));
+    let (_, _, msg) = prompt(&h, &m.access, "secure_collection", args).await;
+    assert_eq!(msg["error"]["message"], "tenant not found");
+}

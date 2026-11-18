@@ -36,6 +36,11 @@ pub fn files_guide_uri(tenant_id: &str) -> String {
     format!("drust://{tenant_id}/{FILES_GUIDE_PATH}")
 }
 
+/// The Markdown schema overview's URI for one tenant.
+pub fn schema_md_uri(tenant_id: &str) -> String {
+    format!("drust://{tenant_id}/schema.md")
+}
+
 /// The parsed, tenant-checked resource identity. The first ten are static
 /// (M2 + the v1.64 files handbook); the last four are the M4 templates (parsed
 /// + validated here so `render_resource` only ever sees an already-authorized
@@ -81,7 +86,7 @@ pub enum ResourceUri {
     Rpc { name: String },
 }
 
-fn not_found(uri: &str) -> McpError {
+pub(crate) fn not_found(uri: &str) -> McpError {
     McpError::resource_not_found(format!("no such resource: {uri}"), None)
 }
 
@@ -798,7 +803,13 @@ curl "{base}{bp}/t/{tenant_id}/file-policies" \
 /// debug a `FILE_PUBLIC_UPLOAD_DENIED` needs to see it. MCP is service-only, so
 /// the detail is not caller-facing disclosure.
 async fn render_files_guide(s: &DrustMcp) -> String {
-    let mut out = files_guide_static(s.tenant_id(), s.public_base_url());
+    render_files_guide_with(s, files_guide_static(s.tenant_id(), s.public_base_url())).await
+}
+
+/// [`render_files_guide`] over a given static half: `static_part`, then this
+/// tenant's live grant list.
+async fn render_files_guide_with(s: &DrustMcp, static_part: String) -> String {
+    let mut out = static_part;
     out.push_str("\n## 6. This tenant's publish grants (live)\n\n");
     match crate::mcp::tools::file_policy::public_upload_grants(s).await {
         Ok(grants) if grants.is_empty() => out.push_str(
@@ -828,6 +839,152 @@ async fn render_files_guide(s: &DrustMcp) -> String {
         )),
     }
     out
+}
+
+/// The host placeholder of the account-level resource templates: one server
+/// serves every tenant, so the tenant is the URI's host variable.
+pub(crate) const ACCOUNT_TENANT_VAR: &str = "{tenant}";
+
+/// The account-level description of `files-guide.md`: the per-tenant one
+/// points at `whoami` for tokens, which this connection does not hand out.
+pub(crate) const ACCOUNT_FILES_GUIDE_DESC: &str = "How this tenant's file storage works: the two upload endpoints, the public/private visibility model, the per-prefix publish grant (public_upload_roles) that decides which non-service roles may upload with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the tenant's live grant list. Carries no credentials.";
+
+/// What `resources/templates/list` answers on the account-level endpoint:
+/// the ten static resources as `drust://{tenant}/<path>` templates, then the
+/// four per-tenant templates, all with `{tenant}` as the host.
+pub(crate) fn account_resource_template_list() -> Vec<rmcp::model::ResourceTemplate> {
+    let mut out: Vec<rmcp::model::ResourceTemplate> = static_resource_list(ACCOUNT_TENANT_VAR)
+        .into_iter()
+        .map(|r| {
+            let r = r.raw;
+            let desc = if r.uri.ends_with(&format!("/{FILES_GUIDE_PATH}")) {
+                Some(ACCOUNT_FILES_GUIDE_DESC.to_string())
+            } else {
+                r.description
+            };
+            let mut t = rmcp::model::RawResourceTemplate::new(r.uri, r.name);
+            t.description = desc;
+            t.mime_type = r.mime_type;
+            t.no_annotation()
+        })
+        .collect();
+    out.extend(resource_template_list(ACCOUNT_TENANT_VAR));
+    out
+}
+
+/// `text` with `from` replaced by `to`, when `from` occurs exactly once;
+/// `Err("drifted")` otherwise.
+pub(crate) fn replace_once(text: &str, from: &str, to: &str) -> Result<String, &'static str> {
+    if text.matches(from).count() != 1 {
+        return Err("drifted");
+    }
+    Ok(text.replacen(from, to, 1))
+}
+
+/// `text` with one range replaced by `with`. The range starts at `start`,
+/// which must occur exactly once, and ends after the first `end_inclusive`
+/// that follows it (`Err("drifted")` when there is none), or at the end of
+/// the text when `end_inclusive` is `None`. Both markers are part of the
+/// replaced range.
+pub(crate) fn splice_once(
+    text: &str,
+    start: &str,
+    end_inclusive: Option<&str>,
+    with: &str,
+) -> Result<String, &'static str> {
+    if text.matches(start).count() != 1 {
+        return Err("drifted");
+    }
+    let i = text.find(start).ok_or("drifted")?;
+    let end = match end_inclusive {
+        Some(e) => {
+            let after = i + start.len();
+            after + text[after..].find(e).ok_or("drifted")? + e.len()
+        }
+        None => text.len(),
+    };
+    Ok(format!("{}{with}{}", &text[..i], &text[end..]))
+}
+
+/// Applies `f` only to the part of `text` from the LAST `anchor` on, keeping
+/// everything before it as it is; `Err("drifted")` when `anchor` is absent.
+/// The fixed template text sits after the anchor, tenant data and caller
+/// arguments before it, so neither can break a replacement's uniqueness.
+pub(crate) fn within_tail(
+    text: &str,
+    anchor: &str,
+    f: impl FnOnce(&str) -> Result<String, &'static str>,
+) -> Result<String, &'static str> {
+    let i = text.rfind(anchor).ok_or("drifted")?;
+    Ok(format!("{}{}", &text[..i], f(&text[i..])?))
+}
+
+/// The static half of the files handbook as the account-level endpoint
+/// serves it: no step that needs a tenant key this connection does not hold.
+///
+/// Derived from the per-tenant text by exact one-time replacements; a later
+/// change to the account-level wording adds a replacement step here instead
+/// of editing `files_guide_static`. Any replacement that no longer matches
+/// exactly once is `Err`, and the caller refuses the read.
+pub(crate) fn files_guide_account_static(
+    tenant_id: &str,
+    base: &str,
+) -> Result<String, &'static str> {
+    let t = files_guide_static(tenant_id, base);
+    let t = replace_once(
+        &t,
+        "Tokens are\nnot on this page: call the `whoami` tool for the service / anon bearer.",
+        "This\nconnection holds no tenant key, so it cannot upload by itself (see §5).",
+    )?;
+    let t = replace_once(
+        &t,
+        "MCP has no upload tool by design — uploads are HTTP.",
+        "Uploads are HTTP and need a tenant key, which this connection does not hold.",
+    )?;
+    let t = replace_once(
+        &t,
+        " (service bearer) reports `Tus-Max-Size`.",
+        " reports `Tus-Max-Size`.",
+    )?;
+    let t = splice_once(
+        &t,
+        "Grant it with the `set_file_policy` MCP tool, `PUT ",
+        Some("(service bearer), or the admin UI's folder-rule card."),
+        "Grant it with the `set_file_policy` MCP tool or the admin UI's folder-rule card.",
+    )?;
+    splice_once(
+        &t,
+        "## 5. curl\n",
+        None,
+        "## 5. Uploading from this connection\n\nThis MCP connection holds no tenant key and \
+         cannot upload by itself. Ask the user to upload the file through the tenant's Files \
+         page in the admin UI, or from a machine that holds the tenant's service key.\n",
+    )
+}
+
+/// [`render_resource`] as the account-level endpoint serves it: the files
+/// handbook comes from [`files_guide_account_static`] (and a drifted
+/// derivation is an internal error, never the per-tenant text); every other
+/// resource is the per-tenant one.
+pub(crate) async fn render_resource_account(
+    s: &DrustMcp,
+    uri: &ResourceUri,
+) -> Result<(String, &'static str), McpError> {
+    match uri {
+        ResourceUri::FilesGuide => {
+            match files_guide_account_static(s.tenant_id(), s.public_base_url()) {
+                Ok(st) => Ok((render_files_guide_with(s, st).await, "text/markdown")),
+                Err(_) => {
+                    tracing::warn!(
+                        tenant = %s.tenant_id(),
+                        "account-level files guide drifted from the per-tenant text; refused"
+                    );
+                    Err(McpError::internal_error("internal error", None))
+                }
+            }
+        }
+        other => render_resource(s, other).await,
+    }
 }
 
 /// Dedicated single-row reader for the `Record{c,id}` template. The `/list`
@@ -906,6 +1063,80 @@ pub(crate) fn audit_resource_read(s: &DrustMcp, uri: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_templates_are_the_fourteen_tenant_shapes() {
+        let got: Vec<String> = account_resource_template_list()
+            .into_iter()
+            .map(|t| t.raw.uri_template)
+            .collect();
+        let want = [
+            "schema",
+            "schema.md",
+            "collections",
+            "openapi.json",
+            "types.ts",
+            "zod.ts",
+            "functions",
+            "rpcs",
+            "cron",
+            "files-guide.md",
+            "collections/{collection}/schema",
+            "collections/{collection}/records{?page,per_page,sort,order}",
+            "collections/{collection}/records/{id}",
+            "rpcs/{name}",
+        ]
+        .map(|p| format!("drust://{{tenant}}/{p}"));
+        assert_eq!(got, want.to_vec());
+        let guide = account_resource_template_list()
+            .into_iter()
+            .find(|t| t.raw.name == "files guide")
+            .unwrap();
+        assert_eq!(
+            guide.raw.description.as_deref(),
+            Some(ACCOUNT_FILES_GUIDE_DESC)
+        );
+        assert!(!ACCOUNT_FILES_GUIDE_DESC.contains("whoami"));
+    }
+
+    #[test]
+    fn account_files_guide_drops_every_service_key_instruction() {
+        let tenant = files_guide_static("blog", "https://h.example");
+        let account = files_guide_account_static("blog", "https://h.example").unwrap();
+        for gone in [
+            "whoami` tool for the service",
+            "(service bearer)",
+            "DRUST_SERVICE_TOKEN",
+            "Authorization: Bearer",
+            "## 5. curl",
+        ] {
+            assert!(tenant.contains(gone), "fixture lost {gone:?}");
+            assert!(!account.contains(gone), "account guide still has {gone:?}");
+        }
+        assert!(account.contains("## 5. Uploading from this connection"));
+        assert!(account.contains("## 4. Fixing `FILE_PUBLIC_UPLOAD_DENIED`"));
+    }
+
+    #[test]
+    fn splice_helpers_fail_closed_on_drift() {
+        assert_eq!(replace_once("a b a", "a", "x"), Err("drifted"));
+        assert_eq!(replace_once("a b", "z", "x"), Err("drifted"));
+        assert_eq!(replace_once("a b", "b", "x").unwrap(), "a x");
+        assert_eq!(
+            splice_once("1 [x] 2", "[", Some("]"), "y").unwrap(),
+            "1 y 2"
+        );
+        assert_eq!(splice_once("1 [x 2", "[", Some("]"), "y"), Err("drifted"));
+        assert_eq!(splice_once("1 [x 2", "[", None, "y").unwrap(), "1 y");
+        assert_eq!(
+            within_tail("m a | m a", "| ", |t| replace_once(t, "a", "b")).unwrap(),
+            "m a | m b"
+        );
+        assert_eq!(
+            within_tail("no anchor", "| ", |t| Ok(t.to_string())),
+            Err("drifted")
+        );
+    }
 
     #[test]
     fn parses_schema_uri_for_own_tenant() {

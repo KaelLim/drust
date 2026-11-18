@@ -619,3 +619,103 @@ async fn legacy_endpoint_broadcast_and_egress_rows_keep_the_service_hint() {
         assert!(r[0]["actor_admin_id"].is_null());
     }
 }
+
+#[tokio::test]
+async fn resource_read_writes_one_row_with_the_uri() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-res").await;
+    let (_, _, m) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+               "params": {"uri": "drust://aud-res/schema.md"}}),
+    )
+    .await;
+    assert!(
+        m[0]["result"]["contents"][0]["text"].is_string(),
+        "{}",
+        m[0]
+    );
+    let q = format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'mcp.resource.read'");
+    let r = rows_eventually(&q, "aud-res", 1).await;
+    assert_eq!(r[0]["auth_method"], "mcp_oauth");
+    assert_eq!(r[0]["actor_admin_id"], json!(h.admin_id));
+    assert_eq!(
+        extra_of(&r[0]),
+        json!({"grant_id": h.grant_id, "uri": "drust://aud-res/schema.md"})
+    );
+    let (_, _, m) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "prompts/get",
+               "params": {"name": "bootstrap", "arguments": {"tenant": "aud-res"}}}),
+    )
+    .await;
+    assert!(m[0]["result"]["messages"].is_array(), "{}", m[0]);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        rows_now(
+            "SELECT op FROM audit WHERE tenant = ?1 AND op LIKE '%prompt%'",
+            "aud-res"
+        )
+        .is_empty()
+    );
+    assert_eq!(rows_now(&q, "aud-res").len(), 1);
+}
+
+#[tokio::test]
+async fn denied_resource_and_prompt_reads_are_host_rows() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-rdeny").await;
+    let m = {
+        let g = h.meta.lock().await;
+        seed_mcp_access(&g, "member", "mallory-rdeny")
+    };
+    let (_, _, r) = mcp_rpc(
+        &h.app,
+        Some(&m.access),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+               "params": {"uri": "drust://aud-rdeny/schema"}}),
+    )
+    .await;
+    assert_eq!(r[0]["error"]["code"], -32002);
+    let host = format!(
+        "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+         AND json_extract(extra, '$.requested_tenant') = ?1 AND json_extract(extra, '$.surface') = "
+    );
+    let d = rows_eventually(&format!("{host}'resource'"), "aud-rdeny", 1).await;
+    assert_eq!(d[0]["error_code"], "TENANT_NOT_FOUND");
+    assert_eq!(
+        extra_of(&d[0]),
+        json!({"surface": "resource", "name": "drust://aud-rdeny/schema",
+               "requested_tenant": "aud-rdeny", "grant_id": m.grant_id})
+    );
+    let (_, _, r) = mcp_rpc(
+        &h.app,
+        Some(&m.access),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "prompts/get",
+               "params": {"name": "secure_collection",
+                          "arguments": {"tenant": "aud-rdeny", "collection": "posts"}}}),
+    )
+    .await;
+    assert_eq!(r[0]["error"]["message"], "tenant not found");
+    let p = rows_eventually(&format!("{host}'prompt'"), "aud-rdeny", 1).await;
+    let x = extra_of(&p[0]);
+    assert_eq!(
+        (&x["surface"], &x["name"], &x["requested_tenant"]),
+        (
+            &json!("prompt"),
+            &json!("secure_collection"),
+            &json!("aud-rdeny")
+        )
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-rdeny").is_empty());
+    assert!(
+        rows_now(
+            "SELECT op FROM audit WHERE actor_admin_id = CAST(?1 AS INTEGER) AND tenant <> '-'",
+            &m.admin_id.to_string()
+        )
+        .is_empty()
+    );
+}

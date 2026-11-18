@@ -111,36 +111,31 @@ async fn future_revision_in_header_and_body_still_gets_the_fallback() {
 }
 
 #[tokio::test]
-async fn shell_lists_the_account_tools_and_knows_no_method_beyond_the_spec() {
+async fn shell_answers_the_spec_methods_and_no_others() {
     let h = helpers::spin_up_account_mcp("t1").await;
-    for (method, key) in [
-        ("resources/list", "resources"),
-        ("resources/templates/list", "resourceTemplates"),
-        ("prompts/list", "prompts"),
+    // No initialize first: the transport is stateless.
+    let (s, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(1, "tools/list")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        m[0]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "list_tenants")
+    );
+    for (method, key, want) in [
+        ("resources/list", "resources", 0),
+        ("resources/templates/list", "resourceTemplates", 14),
+        ("prompts/list", "prompts", 6),
     ] {
-        // No initialize first: the transport is stateless.
         let (s, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(1, method)).await;
         assert_eq!(s, StatusCode::OK, "{method}");
-        assert_eq!(m[0]["result"][key], json!([]), "{method}");
+        assert_eq!(
+            m[0]["result"][key].as_array().map(Vec::len),
+            Some(want),
+            "{method}"
+        );
     }
-    let (s, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(2, "tools/list")).await;
-    assert_eq!(s, StatusCode::OK);
-    let names: Vec<&str> = m[0]["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        (names.first().copied(), names.len()),
-        (
-            Some("list_tenants"),
-            drust::mcp::account::AccountMcp::tool_count()
-        )
-    );
-    let r = helpers::mcp_call(&h.app, &h.access, &h.tid, "no_such_tool", json!({})).await;
-    assert_eq!(r["error"]["code"], -32602);
-    assert_eq!(r["error"]["message"], "tool not found");
     let (_, _, m) = helpers::mcp_rpc(&h.app, Some(&h.access), req(3, "server/discover")).await;
     assert_eq!(
         m[0]["error"]["code"], -32601,

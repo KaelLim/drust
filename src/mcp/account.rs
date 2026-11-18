@@ -13,9 +13,11 @@ use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeRequestParams,
-    InitializeResult, JsonObject, ListToolsResult, Meta, PaginatedRequestParams, ProtocolVersion,
-    ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResult, Content, GetPromptRequestParams, GetPromptResult,
+    Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
+    ListResourceTemplatesResult, ListToolsResult, Meta, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerInfo, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -24,7 +26,7 @@ use tokio::sync::Mutex;
 
 use crate::mcp::account_audit::{
     DeniedSurface, audit_collection, audit_op, call_entry, denied_entry, requested_tenant,
-    result_error_code,
+    resource_read_entry, result_error_code,
 };
 use crate::mcp::error_code::mcp_error_code;
 use crate::mcp::handler::{
@@ -196,7 +198,14 @@ fn list_tenants_value(
     let tenants: Vec<serde_json::Value> = v
         .tenants
         .iter()
-        .map(|t| serde_json::json!({"id": t.id, "name": t.name, "created_at": t.created_at}))
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id,
+                "name": t.name,
+                "created_at": t.created_at,
+                "resources": {"schema_md": crate::mcp::resources::schema_md_uri(&t.id)},
+            })
+        })
         .collect();
     Ok(Some(serde_json::json!({
         "admin": {"id": caller.admin_id(), "label": caller.admin_label(), "role": v.role},
@@ -575,6 +584,33 @@ pub(crate) fn tool_call_entry(
     }
 }
 
+/// A refused `resources/read`: the same `-32002` a malformed URI gets for a
+/// missing, foreign, deleted or ill-formed tenant; a meta failure is an
+/// internal error (it says nothing about the tenant).
+pub(crate) fn resource_denied_error(d: &Denied, raw: &str) -> McpError {
+    match d {
+        Denied::Required | Denied::NotFound => crate::mcp::resources::not_found(raw),
+        Denied::Internal => internal(),
+    }
+}
+
+/// A refused `prompts/get`: one `-32602` for every tenant that cannot be
+/// used, another for a missing `tenant`, and an internal error for a meta
+/// failure.
+pub(crate) fn prompt_denied_error(d: &Denied) -> McpError {
+    match d {
+        Denied::Required => McpError::invalid_params(
+            "missing required argument: tenant",
+            Some(serde_json::json!({"error_code": "TENANT_REQUIRED"})),
+        ),
+        Denied::NotFound => McpError::invalid_params(
+            "tenant not found",
+            Some(serde_json::json!({"error_code": "TENANT_NOT_FOUND"})),
+        ),
+        Denied::Internal => internal(),
+    }
+}
+
 impl AccountMcp {
     pub(crate) fn new(
         registry: Arc<McpRegistry>,
@@ -799,6 +835,118 @@ impl ServerHandler for AccountMcp {
     /// task-augmented call to check the tool's task support.
     fn get_tool(&self, name: &str) -> Option<Tool> {
         account_tool(name).cloned()
+    }
+
+    /// Every resource as a `drust://{tenant}/…` template; `resources/list`
+    /// stays empty (rmcp's default), and `list_tenants` carries each tenant's
+    /// `schema.md` URI instead. Reads no tenant data.
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult::with_all_items(
+            crate::mcp::resources::account_resource_template_list(),
+        ))
+    }
+
+    /// One `resources/read`: the URI's host is the tenant, checked by
+    /// `resolve_tenant` before anything is parsed against it. Every refusal
+    /// is a host audit row; a successful read writes `mcp.resource.read` in
+    /// the tenant; a URI that fails to parse after the check writes nothing.
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let Some(caller) = Self::caller(&context) else {
+            tracing::warn!(
+                "account-level resources/read reached the handler without an authenticated caller; refused"
+            );
+            return Err(internal());
+        };
+        let uri = request.uri.as_str();
+        let host = url::Url::parse(uri)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned));
+        let Some(host) = host else {
+            let e = denied_entry(
+                Some(caller.admin_id()),
+                Some(caller.grant_id()),
+                DeniedSurface::Resource(uri),
+                None,
+                "TENANT_REQUIRED",
+            );
+            self.audit_row(e).await;
+            return Err(crate::mcp::resources::not_found(uri));
+        };
+        let raw = serde_json::Value::String(host);
+        let r = match self.resolve_tenant(&caller, Some(&raw)).await {
+            Ok(r) => r,
+            Err(d) => {
+                let e = denied_entry(
+                    Some(caller.admin_id()),
+                    Some(caller.grant_id()),
+                    DeniedSurface::Resource(uri),
+                    raw.as_str(),
+                    d.audit_code(),
+                );
+                self.audit_row(e).await;
+                return Err(resource_denied_error(&d, uri));
+            }
+        };
+        let t0 = std::time::Instant::now();
+        let parsed = crate::mcp::resources::parse_resource_uri(uri, &r.tenant_id)?;
+        let (body, mime) = crate::mcp::resources::render_resource_account(&r.mcp, &parsed).await?;
+        let e = resource_read_entry(&r.tenant_id, &caller, uri, t0.elapsed().as_millis() as u64);
+        self.audit_row(e).await;
+        let contents =
+            ResourceContents::text(crate::mcp::resources::cap_body(body), uri).with_mime_type(mime);
+        Ok(ReadResourceResult::new(vec![contents]))
+    }
+
+    /// The six prompts, each with a required `tenant` first. Reads no tenant
+    /// data.
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult::with_all_items(
+            crate::mcp::prompts::account_prompt_list(),
+        ))
+    }
+
+    /// One `prompts/get`: `tenant` passes `resolve_tenant` first (a refusal is
+    /// a host audit row), then the prompt renders for that tenant. A rendered
+    /// prompt writes no row: it only reads schema.
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        let Some(caller) = Self::caller(&context) else {
+            tracing::warn!(
+                "account-level prompts/get reached the handler without an authenticated caller; refused"
+            );
+            return Err(internal());
+        };
+        let raw = request.arguments.as_ref().and_then(|m| m.get("tenant"));
+        let r = match self.resolve_tenant(&caller, raw).await {
+            Ok(r) => r,
+            Err(d) => {
+                let e = denied_entry(
+                    Some(caller.admin_id()),
+                    Some(caller.grant_id()),
+                    DeniedSurface::Prompt(&request.name),
+                    raw.and_then(serde_json::Value::as_str),
+                    d.audit_code(),
+                );
+                self.audit_row(e).await;
+                return Err(prompt_denied_error(&d));
+            }
+        };
+        crate::mcp::prompts::render_prompt_account(&r.mcp, &request.name, &request.arguments).await
     }
 
     /// One account-level `tools/call`: the caller from the request parts,
@@ -1649,7 +1797,7 @@ mod list_tenants_tests {
         assert_eq!(
             serde_json::to_string(&v).unwrap(),
             format!(
-                r#"{{"admin":{{"id":{m},"label":"m","role":"member"}},"tenants":[{{"id":"alpha","name":"ALPHA","created_at":"{}"}},{{"id":"zeta","name":"ZETA","created_at":"{}"}}],"mcp_url":"https://drust.test/mcp"}}"#,
+                r#"{{"admin":{{"id":{m},"label":"m","role":"member"}},"tenants":[{{"id":"alpha","name":"ALPHA","created_at":"{}","resources":{{"schema_md":"drust://alpha/schema.md"}}}},{{"id":"zeta","name":"ZETA","created_at":"{}","resources":{{"schema_md":"drust://zeta/schema.md"}}}}],"mcp_url":"https://drust.test/mcp"}}"#,
                 ca("alpha"),
                 ca("zeta")
             )
@@ -1669,9 +1817,9 @@ mod list_tenants_tests {
             ["alpha", "foreign", "orphan", "zeta"],
             "sees-all: orphans in, soft-deleted out, sorted"
         );
-        assert!(
-            ov["tenants"][0].get("resources").is_none(),
-            "no resources field yet"
+        assert_eq!(
+            ov["tenants"][0]["resources"]["schema_md"],
+            "drust://alpha/schema.md"
         );
     }
 
@@ -2452,6 +2600,32 @@ mod precheck_tests {
         )
         .unwrap();
         assert_eq!(p.op, "delete_record.dry_run");
+    }
+
+    #[test]
+    fn denied_resource_and_prompt_errors() {
+        let nf = serde_json::to_value(resource_denied_error(&Denied::NotFound, "drust://x/schema"))
+            .unwrap();
+        assert_eq!(
+            nf,
+            json!({"code": -32002, "message": "no such resource: drust://x/schema"})
+        );
+        assert_eq!(
+            serde_json::to_value(resource_denied_error(&Denied::Required, "drust:schema")).unwrap(),
+            json!({"code": -32002, "message": "no such resource: drust:schema"})
+        );
+        assert_eq!(
+            serde_json::to_value(resource_denied_error(&Denied::Internal, "u")).unwrap(),
+            json!({"code": -32603, "message": "internal error", "data": {"error_code": "INTERNAL"}})
+        );
+        assert_eq!(
+            serde_json::to_value(prompt_denied_error(&Denied::NotFound)).unwrap(),
+            json!({"code": -32602, "message": "tenant not found", "data": {"error_code": "TENANT_NOT_FOUND"}})
+        );
+        assert_eq!(
+            serde_json::to_value(prompt_denied_error(&Denied::Required)).unwrap(),
+            json!({"code": -32602, "message": "missing required argument: tenant", "data": {"error_code": "TENANT_REQUIRED"}})
+        );
     }
 
     #[test]

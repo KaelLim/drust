@@ -244,3 +244,138 @@ pub async fn render_prompt(
         )),
     }
 }
+
+/// The prompts the account-level endpoint advertises: the same six, each
+/// taking a required `tenant` first, since one server serves every tenant.
+pub(crate) fn account_prompt_list() -> Vec<Prompt> {
+    prompt_list()
+        .into_iter()
+        .map(|mut p| {
+            let tenant = PromptArgument::new("tenant")
+                .with_description(crate::mcp::account::TENANT_PROPERTY_DESCRIPTION.to_string())
+                .with_required(true);
+            let mut args = vec![tenant];
+            args.extend(p.arguments.take().unwrap_or_default());
+            p.arguments = Some(args);
+            p
+        })
+        .collect()
+}
+
+/// A rendered prompt's text as the account-level endpoint serves it: no step
+/// that needs a tenant key this connection does not hold. Each rewrite is an
+/// exact one-time replacement inside the fixed template tail (after the last
+/// anchor, so the embedded schema and the caller's own arguments cannot
+/// break it); `Err` when the per-tenant text drifted. Prompts with nothing to
+/// rewrite pass through unchanged.
+pub(crate) fn account_prompt_text(name: &str, text: String) -> Result<String, &'static str> {
+    use crate::mcp::resources::{replace_once, splice_once, within_tail};
+    match name {
+        "bootstrap" => within_tail(&text, "Core rules for acting here:\n", |t| {
+            replace_once(
+                t,
+                "`resources/list` + `resources/templates/list`",
+                "`resources/templates/list`",
+            )
+        }),
+        "write_edge_function" => within_tail(&text, "---- Cargo.toml ----\n", |t| {
+            splice_once(
+                t,
+                "Build, then upload the .wasm via REST multipart",
+                Some("GOTCHA — the #1 first-run failure"),
+                "Build it, then ask the user to upload the .wasm: this connection holds no \
+                 tenant key and MCP has no function upload tool. The tenant's Functions page \
+                 in the admin UI shows the upload command, which needs the service key from \
+                 the tenant's API Keys page.\n\
+                 rustup target add wasm32-wasip2\n\
+                 cargo build --target wasm32-wasip2 --release\n\n\
+                 GOTCHA — the #1 first-run failure",
+            )
+        }),
+        _ => Ok(text),
+    }
+}
+
+/// [`render_prompt`] as the account-level endpoint serves it: the same
+/// prompt, its text passed through [`account_prompt_text`]. A drifted
+/// rewrite is an internal error, never the per-tenant text.
+pub(crate) async fn render_prompt_account(
+    s: &DrustMcp,
+    name: &str,
+    args: &Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<GetPromptResult, McpError> {
+    let mut r = render_prompt(s, name, args).await?;
+    if let Some(m) = r.messages.first_mut()
+        && let rmcp::model::PromptMessageContent::Text { text } = &mut m.content
+    {
+        match account_prompt_text(name, std::mem::take(text)) {
+            Ok(t) => *text = t,
+            Err(_) => {
+                tracing::warn!(prompt = %name, "account-level prompt text drifted; refused");
+                return Err(McpError::internal_error("internal error", None));
+            }
+        }
+    }
+    Ok(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_prompts_take_tenant_first() {
+        let list = account_prompt_list();
+        assert_eq!(list.len(), 6);
+        for p in &list {
+            let a = p.arguments.as_ref().unwrap();
+            assert_eq!(a[0].name, "tenant", "{}", p.name);
+            assert_eq!(a[0].required, Some(true));
+            assert_eq!(
+                a[0].description.as_deref(),
+                Some(crate::mcp::account::TENANT_PROPERTY_DESCRIPTION)
+            );
+            assert_eq!(
+                a.len(),
+                if p.name == "bootstrap" { 1 } else { 2 },
+                "{}",
+                p.name
+            );
+        }
+        assert!(
+            prompt_list()
+                .iter()
+                .all(|p| p.arguments.as_ref().is_none_or(|a| a[0].name != "tenant"))
+        );
+    }
+
+    #[test]
+    fn account_prompt_text_rewrites_only_the_fixed_tails() {
+        let marker = "`resources/list` + `resources/templates/list`";
+        // the embedded schema (tenant data) carries the marker too: only the fixed rule changes
+        let b = format!("desc {marker}\nCore rules for acting here:\n4. {marker}; y");
+        assert_eq!(
+            account_prompt_text("bootstrap", b).unwrap(),
+            format!("desc {marker}\nCore rules for acting here:\n4. `resources/templates/list`; y")
+        );
+        // the caller's trigger repeats the start marker before the template tail
+        let e = "trigger: Build, then upload the .wasm via REST multipart\n---- Cargo.toml ----\n[lib]\n\n\
+                 Build, then upload the .wasm via REST multipart — old\n\
+                 curl -X POST u -H 'Authorization: Bearer <service-token>'\n\n\
+                 GOTCHA — the #1 first-run failure: z"
+            .to_string();
+        let out = account_prompt_text("write_edge_function", e).unwrap();
+        assert!(out.starts_with(
+            "trigger: Build, then upload the .wasm via REST multipart\n---- Cargo.toml ----\n[lib]\n\n\
+             Build it, then ask the user to upload the .wasm"
+        ));
+        assert!(out.ends_with("GOTCHA — the #1 first-run failure: z"));
+        assert_eq!(out.matches("GOTCHA — the #1 first-run failure").count(), 1);
+        assert!(!out.contains("service-token") && !out.contains("curl"));
+        assert_eq!(account_prompt_text("debug_write", "q".into()).unwrap(), "q");
+        assert_eq!(
+            account_prompt_text("bootstrap", "no marker".into()),
+            Err("drifted")
+        );
+    }
+}
