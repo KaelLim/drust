@@ -1,10 +1,10 @@
-//! #925 — merged harness for the mcp test group (26 members).
+//! #925 — merged harness for the mcp test group (27 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
-//! `duplicate_mod` is inherent to the merge, not a defect: 18 of the members
-//! load tests/helpers.rs (17 as `mod helpers;`, mcp_dry_run as
+//! `duplicate_mod` is inherent to the merge, not a defect: 19 of the members
+//! load tests/helpers.rs (18 as `mod helpers;`, mcp_dry_run as
 //! `mod test_helpers;`), so once they share a crate clippy sees that one file
-//! loaded 18 times. Deduping it would mean editing
+//! loaded 19 times. Deduping it would mean editing
 //! test bodies (spec 鐵律 1 forbids that) for no gain — rustc compiles the file
 //! once per module path either way. Without this allow, CI's
 //! `cargo clippy --all-targets -- -D warnings` fails on every harness.
@@ -16,6 +16,8 @@ mod mcp_account_isolation;
 mod mcp_account_protocol;
 #[path = "mcp_account_resources.rs"]
 mod mcp_account_resources;
+#[path = "mcp_account_surface_snapshot.rs"]
+mod mcp_account_surface_snapshot;
 #[path = "mcp_account_tools.rs"]
 mod mcp_account_tools;
 #[path = "mcp_account_visibility.rs"]
