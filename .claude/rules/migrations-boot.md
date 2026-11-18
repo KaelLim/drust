@@ -26,7 +26,7 @@ The same discipline elsewhere:
 
 ## Three databases
 
-- **`meta.sqlite`** — admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy, so `whoami` / the admin UI can echo the key), and the MCP OAuth AS tables:
+- **`meta.sqlite`** — admins, sessions, tenants, bearer tokens (hashed **plus** a plaintext copy, so the admin UI can echo the key and MCP `whoami` the anon key), and the MCP OAuth AS tables:
   - **`_mcp_*` tables in `meta.sqlite`** — `_mcp_oauth_grants`, `_mcp_oauth_codes`, `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets`, one shared const `SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS` run by both `open_meta` and `run_migrations`. **Never name a meta table `_oauth_*`**: `run_migrations` DROPs four such tables on every boot (the v1.29.2 AS retraction), so a table under that prefix is silently emptied on each restart. Every `*_at` column is SQLite `datetime()` text written and compared **in SQL** — never bind a Rust `to_rfc3339()` string, which compares wrong against `datetime()` text for up to a day. The DDL — including the `--` comments inside each `CREATE TABLE` body, which `sqlite_master` stores verbatim — is frozen from the first deploy, because `IF NOT EXISTS` never reshapes a table a host already has; new columns only through `add_column_if_missing`, appended last. The exact `sqlite_master.sql` text is pinned by `mcp_oauth_ddl_text_is_frozen`. These tables store hashes only; a backup's plaintext credentials remain `tokens.plaintext`, `_admin_tokens.plaintext`, and the dual-write `sessions.token`.
 - **`tenants/<id>/data.sqlite`** — one per tenant.
 - **`meta_logs.sqlite`** — audit rows.
