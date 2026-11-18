@@ -11,15 +11,18 @@
 # First boot creates the admin from DRUST_INIT_ADMIN_*. Change them, then open
 # http://localhost/login (the bundled Caddy proxies the root path to drust; the
 # image runs at the root, DRUST_BASE_PATH=""). drust + Caddy speak plain HTTP —
-# terminate TLS at your edge proxy in production.
+# terminate TLS at your edge proxy in production. MCP needs that TLS edge and an
+# https:// DRUST_PUBLIC_URL (see the drust service below).
 
 services:
   # Reverse proxy. The image serves at the ROOT path (DRUST_BASE_PATH=""). Use
   # the admin UI through here so the rate limiter sees Caddy's normalized client
   # address; drust's own port is bound to loopback for debugging only. To mount
   # drust under a sub-path instead, set DRUST_BASE_PATH=/drust and switch the
-  # Caddyfile to `handle_path /drust/*`. Caddy also serves /public/* straight
-  # from the object store (deploy/compose.Caddyfile).
+  # Caddyfile to `handle_path /drust/*`; `auto` then never enables MCP.
+  # MCP then needs DRUST_MCP=on and the two root discovery rules from deploy/Caddyfile.
+  # Caddy also serves /public/* straight from the object store
+  # (deploy/compose.Caddyfile).
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -74,9 +77,12 @@ services:
       # passes a client's header through untouched. (The image alone defaults
       # to 0 = key on the TCP peer.)
       DRUST_TRUSTED_PROXIES: "1"
-      # --- public URL (required for OAuth redirect/callback links) ---
+      # --- public URL: OAuth redirect/callback links, and the OAuth issuer and MCP endpoint origin (https, no path) ---
+      # With DRUST_MCP unset (`auto`), setting this to a non-loopback https://
+      # origin TURNS MCP ON (/mcp, /oauth/* and the discovery documents appear),
+      # so put TLS in front of Caddy first. This is not DRUST_PUBLIC_BASE_URL.
       # DRUST_PUBLIC_URL: https://drust.example.com
-      # --- client-facing origin for file / signed / MCP-advertised URLs ---
+      # --- client-facing origin for file and signed URLs (MCP tool results included) ---
       # The origin clients reach the bundled Caddy at, with NO path (the image runs
       # at the root, DRUST_BASE_PATH=""). drust appends /public/<tenant>/<key>,
       # /s/t/... and /t/<id>/... itself. Change it when you change Caddy's port or
@@ -104,11 +110,15 @@ services:
       # MAX_CONCURRENCY so one tenant's fan-out can't occupy the whole pool and
       # starve other tenants' webhooks (cross-tenant head-of-line blocking).
       # DRUST_WEBHOOK_MAX_PER_TENANT_CONCURRENCY: "8"
-      # --- MCP OAuth authorization server (leave unset in this release) ---
-      # `auto` (default) means off until the account-level /mcp endpoint ships.
-      # Governs only the account-level OAuth authorization server, never the
-      # per-tenant /t/<id>/mcp endpoint. `on` needs DRUST_PUBLIC_URL (above) to be
-      # an https:// origin (a loopback http:// origin is accepted with a warning).
+      # --- MCP: the account-level endpoint and its OAuth authorization server ---
+      # `auto` (default) enables MCP when DRUST_PUBLIC_URL (above) is a
+      # non-loopback https:// origin; the endpoint is then <DRUST_PUBLIC_URL>/mcp.
+      # "off" keeps it off (/mcp then answers 404 MCP_DISABLED). "on" forces it
+      # (a loopback http:// origin is then accepted with a warning, for development
+      # only). The Caddy catch-all already forwards every MCP path
+      # (deploy/compose.Caddyfile), so the proxy needs no change. Never let
+      # RUST_LOG raise `rmcp` to debug or trace: it logs whole MCP requests and
+      # results, upload tickets included.
       # DRUST_MCP: "auto"
       # DRUST_MCP_OAUTH_ACCESS_TTL_SECS: "3600"
       # DRUST_MCP_OAUTH_REFRESH_GRACE_SECS: "60"
