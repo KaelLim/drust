@@ -639,6 +639,57 @@ mod build_live_tests {
         out
     }
 
+    /// Scans one file's production text: the number of `.get_or_create(`
+    /// calls in `prod`, and each one whose receiver chain ends in one of
+    /// `handles`, as `<receiver>.get_or_create(`. Whitespace between the
+    /// segments of a chain is skipped, so a rustfmt-wrapped chain (each
+    /// `.segment` on its own line) has the same receiver as a one-line one.
+    fn registry_calls(prod: &str, handles: &[String]) -> (usize, Vec<String>) {
+        let receiver_char = |c: char| c.is_ascii_alphanumeric() || "_.()&".contains(c);
+        let (mut calls, mut flagged) = (0, Vec::new());
+        for (i, _) in prod.match_indices(".get_or_create(") {
+            calls += 1;
+            let receiver: String = prod[..i]
+                .chars()
+                .rev()
+                .filter(|c| !c.is_whitespace())
+                .take_while(|c| receiver_char(*c))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let last = receiver.rsplit('.').next().unwrap_or("");
+            if handles.iter().any(|h| h == last) {
+                flagged.push(format!("{receiver}.get_or_create("));
+            }
+        }
+        (calls, flagged)
+    }
+
+    #[test]
+    fn registry_calls_see_wrapped_and_single_line_chains() {
+        let planted = "struct S { registry: Arc<McpRegistry>, tenants: Arc<TenantRegistry> }\n\
+                       fn a(&self) { let _ = self\n    .inner\n    .registry\n    .get_or_create(id); }\n\
+                       fn b(&self) { let _ = self.inner.registry.get_or_create(id); }\n\
+                       fn c(&self) { let _ = state\n    .tenants\n    .get_or_create(id); }\n";
+        let handles: Vec<String> = mcp_handle_names(planted)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(handles, ["registry"]);
+        let (calls, flagged) = registry_calls(planted, &handles);
+        assert_eq!(calls, 3);
+        assert_eq!(
+            flagged,
+            [
+                "self.inner.registry.get_or_create(",
+                "self.inner.registry.get_or_create("
+            ],
+            "the wrapped and the single-line chain on the MCP registry are both \
+             flagged; the tenant-pool chain is not"
+        );
+    }
+
     /// The account endpoint builds every call's `DrustMcp` through
     /// `build_live`, and the per-tenant cache behind `get_or_create` has no
     /// production reader: no `.get_or_create(` call outside this file has an
@@ -677,7 +728,6 @@ mod build_live_tests {
         for (_, _, h) in &sources {
             global.extend(h.iter().filter(|(_, p)| *p).map(|(n, _)| n.clone()));
         }
-        let receiver_char = |c: char| c.is_ascii_alphanumeric() || "_.()&".contains(c);
         let (mut calls, mut via_mcp) = (0, Vec::new());
         for (f, prod, local) in &sources {
             assert!(
@@ -685,21 +735,11 @@ mod build_live_tests {
                 "{}: names McpRegistry::get_or_create",
                 f.display()
             );
-            for (i, _) in prod.match_indices(".get_or_create(") {
-                calls += 1;
-                let receiver: String = prod[..i]
-                    .chars()
-                    .rev()
-                    .take_while(|c| receiver_char(*c))
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let last = receiver.rsplit('.').next().unwrap_or("");
-                if global.iter().any(|h| h == last) || local.iter().any(|(n, _)| n == last) {
-                    via_mcp.push(format!("{}: {receiver}.get_or_create(", f.display()));
-                }
-            }
+            let mut handles = global.clone();
+            handles.extend(local.iter().map(|(n, _)| n.clone()));
+            let (n, flagged) = registry_calls(prod, &handles);
+            calls += n;
+            via_mcp.extend(flagged.into_iter().map(|c| format!("{}: {c}", f.display())));
         }
         // Anti-vacuous: the tenant pool registry's own get_or_create calls are seen.
         assert!(calls > 50, "only {calls} .get_or_create( calls found");
