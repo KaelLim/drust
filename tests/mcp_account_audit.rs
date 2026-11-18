@@ -934,3 +934,197 @@ async fn no_audit_row_carries_the_ticket_or_its_hash() {
     });
     assert!(!leaked, "an audit row carries the ticket or its hash");
 }
+
+// ─── create_upload_url ──────────────────────────────────────────────────────
+
+async fn upl_audit_harness(tenant: &'static str) -> helpers::AccountMcpHarness {
+    helpers::spin_up_account_mcp_with(helpers::AccountMcpOpts {
+        admins: vec![("mcp-owner", "owner"), ("upl-member", "member")],
+        tenants: vec![(tenant, Some(0))],
+        files: true,
+        mcp_enabled: true,
+    })
+    .await
+}
+
+/// The parsed reply of a successful create_upload_url call.
+async fn upl_reply(h: &helpers::AccountMcpHarness, args: Value) -> Value {
+    let m = mcp_call(&h.app, &h.access, &h.tid, "create_upload_url", args).await;
+    assert_ne!(m["result"]["isError"], true, "create_upload_url refused");
+    serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn create_upload_url_success_writes_one_issuance_row() {
+    audit_path();
+    let h = upl_audit_harness("aud-upl-ok").await;
+    let o = &h.accesses[0];
+    let args = json!({"tenant": "aud-upl-ok", "size": 5, "path": "a/b.txt",
+        "visibility": "public", "filename": "secret-name.txt"});
+    let mut plain = Vec::new();
+    for _ in 0..2 {
+        let r = upl_reply(&h, args.clone()).await;
+        let auth = r["create"]["headers"]["Authorization"].as_str().unwrap();
+        plain.push(auth.strip_prefix("Bearer ").unwrap().to_string());
+    }
+    let label: String = h
+        .meta
+        .lock()
+        .await
+        .query_row(
+            "SELECT COALESCE(email, username) FROM admins WHERE id = ?1",
+            [o.admin_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let rows = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'create_upload_url'"),
+        "aud-upl-ok",
+        2,
+    )
+    .await;
+    for row in &rows {
+        assert_eq!(row["status"], "ok");
+        assert_eq!(row["error_code"], Value::Null);
+        assert_eq!(row["auth_method"], "mcp_oauth");
+        assert_eq!(row["token_hint"], "-");
+        assert_eq!(row["actor_admin_id"], json!(o.admin_id));
+        assert_eq!(row["actor_email_snapshot"], json!(label));
+        assert_eq!(
+            extra_of(row),
+            json!({"grant_id": o.grant_id, "max_bytes": 5, "visibility": "public", "has_path": true})
+        );
+    }
+    let mut scanned = rows_now("SELECT * FROM audit WHERE tenant = ?1", "aud-upl-ok");
+    scanned.extend(rows_now(
+        "SELECT * FROM audit WHERE tenant = '-' AND actor_admin_id = CAST(?1 AS INTEGER)",
+        &o.admin_id.to_string(),
+    ));
+    assert!(scanned.len() >= 2);
+    let kind = drust::mgmt::mcp_oauth::tokens::TokenKind::UploadTicket;
+    let mut needles: Vec<String> = vec!["a/b.txt".into(), "secret-name.txt".into()];
+    for p in &plain {
+        needles.push(p.clone());
+        needles.push(drust::mgmt::mcp_oauth::tokens::hash(kind, p));
+    }
+    for row in &scanned {
+        let s = row.to_string();
+        for (i, n) in needles.iter().enumerate() {
+            assert!(!s.contains(n.as_str()), "an audit row carries needle #{i}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn create_upload_url_denials_audit_on_the_host_only() {
+    audit_path();
+    let h = upl_audit_harness("aud-upl-deny").await;
+    let m = &h.accesses[1];
+    let before = rows_now(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
+        "aud-upl-deny",
+    )
+    .len();
+    // (a) a tenant the member cannot see
+    let text = mcp_tool_text(
+        &h.app,
+        &m.access,
+        "aud-upl-deny",
+        "create_upload_url",
+        json!({"size": 1}),
+    )
+    .await;
+    assert!(text.contains("TENANT_NOT_FOUND"));
+    let d = rows_eventually(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+             AND json_extract(extra, '$.requested_tenant') = ?1"
+        ),
+        "aud-upl-deny",
+        1,
+    )
+    .await;
+    assert_eq!(d[0]["error_code"], "TENANT_NOT_FOUND");
+    assert_eq!(d[0]["actor_admin_id"], json!(m.admin_id));
+    assert_eq!(
+        extra_of(&d[0]),
+        json!({"surface": "upload_tool", "name": "create_upload_url",
+            "requested_tenant": "aud-upl-deny", "grant_id": m.grant_id})
+    );
+    // (b) no tenant at all
+    let (st, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&m.access),
+        tools_call("create_upload_url", json!({"size": 1})),
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(msgs[0]["result"]["isError"], true);
+    let r = rows_eventually(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+             AND actor_admin_id = CAST(?1 AS INTEGER) AND error_code = 'TENANT_REQUIRED' \
+             AND json_extract(extra, '$.name') = 'create_upload_url'"
+        ),
+        &m.admin_id.to_string(),
+        1,
+    )
+    .await;
+    let x = extra_of(&r[0]);
+    assert_eq!(x["surface"], "upload_tool");
+    assert_eq!(x["name"], "create_upload_url");
+    assert!(x.get("requested_tenant").is_none());
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        rows_now(
+            &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
+            "aud-upl-deny"
+        )
+        .len(),
+        before
+    );
+    assert!(
+        rows_now(
+            "SELECT * FROM audit WHERE tenant = 'aud-upl-deny' AND actor_admin_id = CAST(?1 AS INTEGER)",
+            &m.admin_id.to_string(),
+        )
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn create_upload_url_refused_after_resolve_audits_on_the_tenant() {
+    audit_path();
+    let h = upl_audit_harness("aud-upl-big").await;
+    let o = &h.accesses[0];
+    // the harness's large_upload_max_bytes is the MgmtState default 2 GiB
+    let text = mcp_tool_text(
+        &h.app,
+        &h.access,
+        "aud-upl-big",
+        "create_upload_url",
+        json!({"size": 2_147_483_649u64}),
+    )
+    .await;
+    assert!(text.contains("UPLOAD_TOO_LARGE"));
+    let rows = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'create_upload_url'"),
+        "aud-upl-big",
+        1,
+    )
+    .await;
+    assert_eq!(rows[0]["status"], "error");
+    assert_eq!(rows[0]["error_code"], "UPLOAD_TOO_LARGE");
+    assert_eq!(rows[0]["actor_admin_id"], json!(o.admin_id));
+    // No host row names this tenant (admin ids repeat across this binary's
+    // harnesses, so the tenant id is the filter).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        rows_now(
+            "SELECT * FROM audit WHERE tenant = '-' \
+             AND json_extract(extra, '$.requested_tenant') = ?1",
+            "aud-upl-big",
+        )
+        .is_empty()
+    );
+}

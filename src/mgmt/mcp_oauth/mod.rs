@@ -434,7 +434,7 @@ mod source_pins {
                     "ticket",
                     "authorization",
                 ],
-                1,
+                22,
             ),
         ];
         for (name, src, banned, min) in files {

@@ -40,7 +40,6 @@ pub(crate) enum DeniedSurface<'a> {
     /// A `prompts/get` of this prompt name.
     Prompt(&'a str),
     /// The upload-URL tool.
-    #[cfg_attr(not(test), allow(dead_code))]
     UploadTool,
     /// An upload request that presented a ticket.
     UploadTicket,
@@ -128,6 +127,23 @@ pub(crate) fn call_entry(
         extra.insert("collection".into(), Value::String(c));
     }
     tenant_row(tenant, op, caller, error_code, ms).with_extra(Value::Object(extra))
+}
+
+/// The row of a `create_upload_url` call that issued a ticket: the tenant
+/// row of a call, plus the size limit, the visibility and whether a path was
+/// declared. Never the ticket, its hash, the path or the file name.
+pub(crate) fn ticket_issued_entry(
+    tenant: &str,
+    caller: &McpCaller,
+    max_bytes: i64,
+    public: bool,
+    has_path: bool,
+) -> AuditEntry {
+    call_entry(tenant, "create_upload_url", caller, None, 0, None).with_extra(json!({
+        "max_bytes": max_bytes,
+        "visibility": if public { "public" } else { "private" },
+        "has_path": has_path,
+    }))
 }
 
 /// One refusal at or before the tenant check: a host row (`tenant = "-"`,
@@ -601,6 +617,35 @@ mod tests {
                 nf.error_message.as_deref()
             ),
             ("error", Some("HTTP_404"), Some(""))
+        );
+    }
+
+    #[test]
+    fn ticket_issued_entry_carries_only_the_four_extra_keys() {
+        let c = crate::mgmt::mcp_oauth::caller::McpCaller::for_tests(7, 42);
+        let e = ticket_issued_entry("blog", &c, 1024, true, false);
+        assert_eq!(
+            (
+                e.tenant.as_str(),
+                e.token_hint.as_str(),
+                e.op.as_str(),
+                e.status.as_str()
+            ),
+            ("blog", "-", "create_upload_url", "ok")
+        );
+        assert_eq!(e.auth_method.as_deref(), Some("mcp_oauth"));
+        assert_eq!(e.actor_admin_id, Some(7));
+        assert_eq!(e.actor_email_snapshot.as_deref(), Some(c.admin_label()));
+        assert_eq!(e.error_code, None);
+        let keys: Vec<&str> = e.extra.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["grant_id", "max_bytes", "visibility", "has_path"]);
+        assert_eq!(
+            serde_json::Value::Object(e.extra.clone()),
+            serde_json::json!({"grant_id":42,"max_bytes":1024,"visibility":"public","has_path":false})
+        );
+        assert_eq!(
+            ticket_issued_entry("blog", &c, 0, false, true).extra["visibility"],
+            "private"
         );
     }
 }

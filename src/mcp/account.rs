@@ -566,7 +566,7 @@ pub(crate) fn tool_call_entry(
         denied_entry(
             Some(caller.admin_id()),
             Some(caller.grant_id()),
-            DeniedSurface::Tool(tool),
+            denied_surface_for(tool),
             requested_tenant(args),
             code,
         )
@@ -814,40 +814,122 @@ impl AccountMcp {
         resolved: Resolved,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, McpError> {
-        let plan = match plan_upload(args, &self.inner.uploads) {
-            Ok(p) => p,
-            Err(r) => return tool_error(r.code, r.message, None),
-        };
-        let req = TicketRequest {
-            tenant_id: &resolved.tenant_id,
-            max_bytes: plan.max_bytes,
-            path: plan.path.as_deref(),
-            public: plan.public,
-        };
-        let outcome = {
-            let c = self.inner.meta.lock().await;
-            issue_ticket_or_not_found(&c, caller, &resolved.incarnation, &req)
-        };
-        match outcome {
-            Err(d) => ToolDenied::from(d).into_call_result(),
-            Ok(t) => {
-                let body = upload_reply(
-                    &self.inner.cfg,
+        let started = std::time::Instant::now();
+        let ms = || started.elapsed().as_millis() as u64;
+        let (result, entry) = match plan_upload(args, &self.inner.uploads) {
+            Err(r) => {
+                let e = upload_audit_entry(
                     &resolved.tenant_id,
-                    &plan,
-                    &t,
-                    &self.inner.uploads,
+                    caller,
+                    UploadOutcome::Refused(&r),
+                    ms(),
                 );
-                let text = serde_json::to_string(&body)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                (tool_error(r.code, r.message, None), e)
             }
-        }
+            Ok(plan) => {
+                let req = TicketRequest {
+                    tenant_id: &resolved.tenant_id,
+                    max_bytes: plan.max_bytes,
+                    path: plan.path.as_deref(),
+                    public: plan.public,
+                };
+                let outcome = {
+                    let c = self.inner.meta.lock().await;
+                    issue_ticket_or_not_found(&c, caller, &resolved.incarnation, &req)
+                };
+                match outcome {
+                    Err(d) => {
+                        let e = upload_audit_entry(
+                            &resolved.tenant_id,
+                            caller,
+                            UploadOutcome::Denied(&d),
+                            ms(),
+                        );
+                        (ToolDenied::from(d).into_call_result(), e)
+                    }
+                    Ok(t) => {
+                        let e = upload_audit_entry(
+                            &resolved.tenant_id,
+                            caller,
+                            UploadOutcome::Issued(&plan),
+                            ms(),
+                        );
+                        let body = upload_reply(
+                            &self.inner.cfg,
+                            &resolved.tenant_id,
+                            &plan,
+                            &t,
+                            &self.inner.uploads,
+                        );
+                        let text = serde_json::to_string(&body)
+                            .map_err(|e| McpError::internal_error(e.to_string(), None));
+                        (
+                            text.map(|s| CallToolResult::success(vec![Content::text(s)])),
+                            e,
+                        )
+                    }
+                }
+            }
+        };
+        // Every meta guard is dropped by now.
+        crate::safety::audit::write_entry(&self.inner.log_dir, &entry).await;
+        result
     }
 }
 
 /// The outer tool that issues a one-upload ticket for a tenant.
 pub(crate) const CREATE_UPLOAD_URL: &str = "create_upload_url";
+
+/// The surface a refused `tools/call` of `name` is audited under.
+pub(crate) fn denied_surface_for(name: &str) -> DeniedSurface<'_> {
+    if name == CREATE_UPLOAD_URL {
+        DeniedSurface::UploadTool
+    } else {
+        DeniedSurface::Tool(name)
+    }
+}
+
+/// How a `create_upload_url` call that passed the tenant check ended. Holds
+/// no `IssuedTicket`, so the ticket cannot reach the audit row.
+pub(crate) enum UploadOutcome<'a> {
+    /// `plan_upload` refused the request.
+    Refused(&'a UploadRefusal),
+    /// The re-check under the issuing meta guard refused, or issuing failed.
+    Denied(&'a Denied),
+    /// A ticket was issued for this plan.
+    Issued(&'a UploadPlan),
+}
+
+/// The one audit row of a `create_upload_url` call that passed the tenant
+/// check: an issued ticket and a refused request are rows in the tenant; a
+/// re-check that no longer admits the caller is a host `mcp_denied` row, so
+/// no tenant's log names a caller who could not see it.
+pub(crate) fn upload_audit_entry(
+    tenant: &str,
+    caller: &McpCaller,
+    outcome: UploadOutcome<'_>,
+    ms: u64,
+) -> AuditEntry {
+    match outcome {
+        UploadOutcome::Issued(plan) => crate::mcp::account_audit::ticket_issued_entry(
+            tenant,
+            caller,
+            plan.max_bytes,
+            plan.public,
+            plan.path.is_some(),
+        ),
+        UploadOutcome::Denied(d) => denied_entry(
+            Some(caller.admin_id()),
+            Some(caller.grant_id()),
+            DeniedSurface::UploadTool,
+            Some(tenant),
+            d.audit_code(),
+        ),
+        UploadOutcome::Refused(r) => {
+            call_entry(tenant, CREATE_UPLOAD_URL, caller, Some(r.code), ms, None)
+        }
+    }
+}
 
 /// A validated `create_upload_url` request. Carries no credential.
 #[derive(Debug)]
@@ -3578,5 +3660,101 @@ mod upload_tool_tests {
             Err(Denied::NotFound)
         ));
         assert_eq!(tickets(&conn), 0);
+    }
+
+    use crate::mcp::account_audit::DeniedSurface;
+
+    #[test]
+    fn denied_surface_for_maps_only_the_upload_tool() {
+        assert!(matches!(
+            denied_surface_for("create_upload_url"),
+            DeniedSurface::UploadTool
+        ));
+        assert!(matches!(
+            denied_surface_for("insert_record"),
+            DeniedSurface::Tool("insert_record")
+        ));
+    }
+
+    #[test]
+    fn upload_audit_entry_maps_each_outcome() {
+        let c = McpCaller::for_tests(7, 42);
+        let plan = plan_upload(
+            &args(json!({"tenant":"blog","size":5,"path":"a/b.txt","visibility":"public"})),
+            &limits(),
+        )
+        .unwrap();
+        let ok = upload_audit_entry("blog", &c, UploadOutcome::Issued(&plan), 3);
+        let want = crate::mcp::account_audit::ticket_issued_entry("blog", &c, 5, true, true);
+        // `extra` is flattened when serialized, so compare the maps themselves.
+        assert_eq!(ok.extra, want.extra);
+        assert_eq!(
+            (ok.tenant.as_str(), ok.op.as_str(), ok.status.as_str()),
+            ("blog", "create_upload_url", "ok")
+        );
+        for (d, code) in [
+            (Denied::NotFound, "TENANT_NOT_FOUND"),
+            (Denied::Internal, "INTERNAL"),
+        ] {
+            let e = upload_audit_entry("blog", &c, UploadOutcome::Denied(&d), 3);
+            assert_eq!(
+                (
+                    e.tenant.as_str(),
+                    e.op.as_str(),
+                    e.error_code.as_deref(),
+                    e.actor_admin_id
+                ),
+                ("-", "mcp_denied", Some(code), Some(7)),
+                "{code}"
+            );
+            assert_eq!(
+                Value::Object(e.extra.clone()),
+                json!({"surface":"upload_tool",
+                "name":"create_upload_url","requested_tenant":"blog","grant_id":42}),
+                "{code}"
+            );
+        }
+        let r = plan_upload(&args(json!({"tenant":"blog","size":101})), &limits()).unwrap_err();
+        let e = upload_audit_entry("blog", &c, UploadOutcome::Refused(&r), 3);
+        assert_eq!(
+            (
+                e.tenant.as_str(),
+                e.op.as_str(),
+                e.status.as_str(),
+                e.error_code.as_deref(),
+                e.actor_admin_id
+            ),
+            (
+                "blog",
+                "create_upload_url",
+                "error",
+                Some("UPLOAD_TOO_LARGE"),
+                Some(7)
+            )
+        );
+    }
+
+    #[test]
+    fn create_upload_url_writes_exactly_one_audit_entry() {
+        use crate::tenant::rooms::srcpin::{code_only, prod_fn_body};
+        let own = code_only(include_str!("account.rs"));
+        let body = prod_fn_body(&own, "async fn create_upload_url(");
+        assert_eq!(body.matches("write_entry(").count(), 1, "one row per call");
+        assert_eq!(
+            body.matches("upload_audit_entry(").count(),
+            3,
+            "every outcome goes through the one selector"
+        );
+        for n in [
+            "call_entry(",
+            "denied_entry(",
+            "ticket_issued_entry(",
+            concat!(".plain", "text()"),
+        ] {
+            assert!(
+                !body.contains(n),
+                "create_upload_url must not build rows itself: {n}"
+            );
+        }
     }
 }

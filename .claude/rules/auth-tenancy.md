@@ -197,9 +197,11 @@ columns (including the ticket's copied `admin_id`) never prove the grant exists.
 connection without `PRAGMA foreign_keys = ON` that deletes a grant leaves its children
 behind, and this join is what keeps them dead until the sweep removes them.
 
-**Upload tickets.** `_mcp_upload_tickets` exists, but nothing issues or reads a ticket yet:
-only `revoke_mcp_grant` (which revokes a grant's tickets) and the sweep touch the table.
-The contract for the upload feature that will, written above the DDL in `db/migrations.rs`:
+**Upload tickets.** Tickets are issued only by the account-level endpoint's
+`create_upload_url` tool, after its tenant check and a re-check under the same meta lock it
+issues with; they are read only by the ticket layer in front of the tus routes;
+`revoke_mcp_grant` revokes a grant's tickets and the sweep removes them. The contract,
+written above the DDL in `db/migrations.rs`:
 a ticket is issued with `INSERT … SELECT …, t.created_at FROM tenants t WHERE t.id = ? AND
 t.deleted_at IS NULL`, so `tenant_created_at` is copied in SQL, and every ticket read joins
 `tenants` on `id`, `created_at` and `deleted_at IS NULL` in addition to the grant and admin
