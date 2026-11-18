@@ -144,7 +144,10 @@ enum Lookup {
     Unknown,
 }
 
-/// `Upload-Metadata`, read exactly as the tus `create` handler reads it.
+/// `Upload-Metadata`, read exactly as the tus `create` handler reads it
+/// (`uploads::create`, its "Metadata" block). A change to how the handler
+/// reads the header must change this too, or the ticket check and the
+/// handler's decision part ways.
 fn declared_metadata(headers: &HeaderMap) -> HashMap<String, String> {
     headers
         .get("upload-metadata")
@@ -153,7 +156,9 @@ fn declared_metadata(headers: &HeaderMap) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// `Upload-Length`, read exactly as the tus `create` handler reads it.
+/// `Upload-Length`, read exactly as the tus `create` handler reads it
+/// (`uploads::create`, its "Upload-Length (required)" block). A change to how
+/// the handler reads the header must change this too.
 fn declared_upload_length(headers: &HeaderMap) -> Option<i64> {
     headers
         .get("upload-length")
