@@ -66,7 +66,7 @@
 
 ## :zap: 快速開始
 
-drust 只服務 plain HTTP —— 正式環境請在前面擺一個負責 TLS 終止的反向代理（Caddy、nginx、Traefik）。MCP 一定需要它：OAuth 要求 `https://` 的對外 URL（本機開發是 loopback 例外，見[連接 Claude Code](#electric_plug-連接-claude-code)）。
+drust 只服務 plain HTTP —— 正式環境請在前面擺一個負責 TLS 終止的反向代理（Caddy、nginx、Traefik）。MCP 一定需要它：OAuth 要求 `https://` 的對外 URL（本機開發是 loopback 例外，見[串接 Claude Code](#electric_plug-串接-claude-code)）。
 
 **直接跑預編 image** —— 多架構（amd64 / arm64），免 clone、免建置：
 
@@ -112,7 +112,7 @@ systemd 搭反向代理的部署見 [`CLAUDE.md`](CLAUDE.md) 與 `deploy/` 的 u
 
 </details>
 
-## :electric_plug: 連接 Claude Code
+## :electric_plug: 串接 Claude Code
 
 drust 的**整個帳號只有一個 MCP 端點**：`<DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`。它只接受 drust 自己登入流程發出的 OAuth access token，所以 client 設定裡永遠不放任何金鑰。
 
@@ -120,7 +120,7 @@ drust 的**整個帳號只有一個 MCP 端點**：`<DRUST_PUBLIC_URL><DRUST_BAS
 claude mcp add --transport http --scope user drust https://<host>/mcp
 ```
 
-接著在 Claude Code 裡執行 `/mcp` → **drust** → **Authenticate**，並在已登入 drust 後台 UI 的瀏覽器裡核准這個連線。除了 `list_tenants`，每個 tool 都帶 `tenant` 參數。你看得到的就是你的 admin 帳號看得到的：owner 與 admin 看得到所有租戶，member 看得到自己擁有的租戶。後台 UI 的 **Connect Claude Code** 頁（`/admin/mcp`）會給出這台伺服器的確切指令，owner 的 **MCP diagnostics** 頁（`/admin/mcp/diagnostics`）會從你的瀏覽器檢查 discovery URL。
+接著在 Claude Code 裡執行 `/mcp` → **drust** → **Authenticate**，並在已登入 drust 後台 UI 的瀏覽器裡核准這個連線。除了 `list_tenants`，每個 tool 都帶 `tenant` 參數。你看得到的就是你的 admin 帳號看得到的：owner 與 admin 看得到所有租戶，member 看得到自己擁有的租戶。後台 UI 的 **串接 Claude Code** 頁（`/admin/mcp`）會給出這台伺服器的確切指令，owner 的 **MCP 連線診斷** 頁（`/admin/mcp/diagnostics`）會從你的瀏覽器檢查 discovery URL。
 
 - **Docker / Compose**：在內附的 Caddy 前面加上 TLS，並把 `DRUST_PUBLIC_URL` 設成那個 `https://` origin；`DRUST_MCP` 維持預設的 `auto` 時就會自己啟用 MCP，網址是 `https://<host>/mcp`。那層 TLS 代理多了一跳：照 `docker-compose.yml` 裡 `DRUST_TRUSTED_PROXIES` 的註解設定，否則所有 client 會共用它的位址計算 per-IP 限流。設 `DRUST_MCP=off` 可維持關閉。
 - **掛在 `/drust` 下的裸機**：`auto` 永遠不會啟用 MCP。先把 [`deploy/Caddyfile`](deploy/Caddyfile) 的兩條 root `/.well-known/*` 規則加進你的 proxy（TLS 上游也必須轉發，且不得 redirect），再設 `DRUST_MCP=on`。網址是 `https://<host>/drust/mcp`。
@@ -157,7 +157,7 @@ flowchart LR
 | 後台 UI | `/admin/*` | Cookie session | 租戶 + schema 管理、policy、檔案、function |
 | 租戶 REST | `/t/<id>/...` | Bearer（`anon` / `user` / `service`） | CRUD、`/list`、`/search`、RPC、檔案、上傳、realtime |
 | MCP | `/mcp` | OAuth MCP access token（admin 登入） | 跨你看得到的租戶做 LLM 工具呼叫 —— CRUD、schema、index、RPC、檔案、向量搜尋、webhook、policy、function |
-| 已退役的 MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED`；MCP 啟用時，訊息會以簡短的 `claude mcp` 指令寫出新網址（完整指令在連接頁） |
+| 已退役的 MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED`；MCP 啟用時，訊息會以簡短的 `claude mcp` 指令寫出新網址（完整指令在串接頁） |
 | Codegen | `/t/<id>/{openapi.json,types.ts,zod.ts}` | Bearer | 依租戶當前 schema 的型別化 client |
 | Health | `/health` | 無 | Liveness probe |
 
