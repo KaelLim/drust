@@ -873,8 +873,8 @@ def main():
     mm, t = prompt("secure_collection", {"collection": "notes"})
     check("prompts/get secure_collection embeds describe_collection", '"title"' in t, short(mm))
     mm, t = prompt("debug_write", {"collection": "notes"})
-    check("prompts/get debug_write no longer suggests recent_writes or a dry_run re-run",
-          bool(t) and "recent_writes" not in t and "re-sending one runs it for real" in t, short(mm))
+    check("prompts/get debug_write names recent_writes for a lost reply and says a re-send runs for real",
+          bool(t) and "recent_writes" in t and "re-sending one runs it for real" in t, short(mm))
     mm, t = prompt("write_edge_function", {"trigger": "record.created on notes"})
     check("prompts/get write_edge_function asks the user to upload the .wasm (no key, no curl)",
           "ask the user to upload the .wasm" in t and "curl" not in t and "service-token" not in t, clip(short(mm), 200))
