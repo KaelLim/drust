@@ -750,3 +750,217 @@ async fn ticket_misses_do_not_throttle_the_account_endpoint() {
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+/// A ticket bound to its own 8-byte session: `(ticket, tus token)`.
+async fn bound(h: &AccountMcpHarness) -> (String, String) {
+    let t = ticket(h, 8, None, false).await;
+    let (s, hd, _) = create(h, &t, 8, "").await;
+    assert_eq!(s, StatusCode::CREATED);
+    (t, tok_of(&hd))
+}
+
+async fn meta_exec(h: &AccountMcpHarness, sql: &str) {
+    let g = h.meta.lock().await;
+    g.execute(sql, []).unwrap();
+}
+
+async fn assert_patch_is_401(h: &AccountMcpHarness, t: &str, tok: &str, offset: usize) {
+    let (s, _, v) = patch(h, t, tok, offset, b"efgh".to_vec()).await;
+    assert_eq!(
+        (s, v["message"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some(MSG))
+    );
+}
+
+#[tokio::test]
+async fn recycled_tenant_id_kills_the_ticket() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let t = ticket(&h, 4, None, false).await;
+    meta_exec(
+        &h,
+        "UPDATE tenants SET deleted_at = datetime('now') WHERE id = 'acme'",
+    )
+    .await;
+    {
+        let mut g = h.meta.lock().await;
+        let made = drust::mgmt::tenants::crud::make_tenant_inner(
+            &mut g,
+            h.tenants.data_root(),
+            "acme",
+            "Acme 2",
+            10,
+            1000,
+            h.admin_id,
+        )
+        .unwrap();
+        assert!(made.recycled, "anti-vacuous: the id-recycle branch ran");
+        let n: i64 = g
+            .query_row(
+                "SELECT COUNT(*) FROM _mcp_upload_tickets WHERE tenant_id = 'acme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+    // What the create route does after the lock: drop the old incarnation's pool.
+    h.tenants.evict("acme");
+    let (s, _, v) = create(&h, &t, 4, "").await;
+    assert_eq!(
+        (s, v["message"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some(MSG))
+    );
+}
+
+#[tokio::test]
+async fn grant_revocation_ends_the_next_patch() {
+    use drust::auth::middleware::AdminId;
+    use drust::mgmt::mcp_oauth::store::{GrantOwner, RevokeReason, RevokedGrant, revoke_mcp_grant};
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    assert_eq!(
+        patch(&h, &t, &tok, 0, b"abcd".to_vec()).await.0,
+        StatusCode::NO_CONTENT
+    );
+    {
+        let mut g = h.meta.lock().await;
+        let tx = g.transaction().unwrap();
+        assert_eq!(
+            revoke_mcp_grant(
+                &tx,
+                &GrantOwner::caller(&AdminId(h.admin_id)),
+                h.grant_id,
+                RevokeReason::User
+            )
+            .unwrap(),
+            RevokedGrant::Revoked
+        );
+        tx.commit().unwrap();
+    }
+    assert_patch_is_401(&h, &t, &tok, 4).await;
+}
+
+#[tokio::test]
+async fn grant_revoked_without_touching_tickets_still_401() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    meta_exec(
+        &h,
+        "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now')",
+    )
+    .await;
+    assert_patch_is_401(&h, &t, &tok, 0).await;
+}
+
+#[tokio::test]
+async fn removed_admin_ends_the_ticket() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "DELETE FROM _mcp_oauth_grants WHERE admin_id = ?1",
+            [h.admin_id],
+        )
+        .unwrap();
+        g.execute("DELETE FROM admins WHERE id = ?1", [h.admin_id])
+            .unwrap();
+    }
+    assert_patch_is_401(&h, &t, &tok, 0).await;
+}
+
+#[tokio::test]
+async fn lost_visibility_ends_the_ticket() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    meta_exec(&h, "UPDATE admins SET role = 'member'").await;
+    meta_exec(&h, "UPDATE tenants SET owner_admin_id = NULL").await;
+    assert_patch_is_401(&h, &t, &tok, 0).await;
+}
+
+#[tokio::test]
+async fn owner_transfer_ends_the_ticket() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "INSERT INTO admins (username, password_hash, email, role) \
+             VALUES ('other-owner', '$oauth-only$', 'o@example.test', 'owner')",
+            [],
+        )
+        .unwrap();
+        let other = g.last_insert_rowid();
+        g.execute(
+            "UPDATE admins SET role = 'member' WHERE id = ?1",
+            [h.admin_id],
+        )
+        .unwrap();
+        g.execute(
+            "UPDATE tenants SET owner_admin_id = ?1 WHERE id = 'acme'",
+            [other],
+        )
+        .unwrap();
+    }
+    assert_patch_is_401(&h, &t, &tok, 0).await;
+}
+
+#[tokio::test]
+async fn bound_ticket_past_expires_at_is_401_even_with_session_row() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    meta_exec(
+        &h,
+        "UPDATE _mcp_upload_tickets SET expires_at = datetime('now', '-1 seconds')",
+    )
+    .await;
+    let (s, _, _) = send(
+        &h.app,
+        "HEAD",
+        &format!("/t/acme/uploads/{tok}"),
+        Some(&t),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let n: i64 = tenant_conn(&h, "acme")
+        .query_row(
+            "SELECT COUNT(*) FROM _system_upload_sessions WHERE upload_token = ?1",
+            [&tok],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[tokio::test]
+async fn bound_ticket_outlives_create_by() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let (t, tok) = bound(&h).await;
+    meta_exec(
+        &h,
+        "UPDATE _mcp_upload_tickets SET create_by = datetime('now', '-1 minutes')",
+    )
+    .await;
+    assert_eq!(
+        patch(&h, &t, &tok, 0, b"abcd".to_vec()).await.0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn unbound_ticket_past_create_by_is_401() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let t = ticket(&h, 4, None, false).await;
+    meta_exec(
+        &h,
+        "UPDATE _mcp_upload_tickets SET create_by = datetime('now', '-1 seconds')",
+    )
+    .await;
+    let (s, _, v) = create(&h, &t, 4, "").await;
+    assert_eq!(
+        (s, v["message"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some(MSG))
+    );
+}

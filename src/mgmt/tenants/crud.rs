@@ -401,6 +401,13 @@ pub fn make_tenant_inner(
         // tenant next holds this id: an owner approving a stale queue entry
         // would raise the NEW tenant's tier. Nothing may outlive a recycled id.
         crate::mgmt::quota_admin::delete_requests_for_tenant(conn, id)?;
+        // A ticket names its tenant by id string; one left behind would keep
+        // its grant-checked rights against whatever tenant next holds this id
+        // once the incarnation check is all that stands between them.
+        conn.execute(
+            "DELETE FROM _mcp_upload_tickets WHERE tenant_id = ?1",
+            rusqlite::params![id],
+        )?;
         conn.execute("DELETE FROM tenants WHERE id = ?1", rusqlite::params![id])?;
         let dir = tenant_dir(data_dir, id);
         if dir.exists() {
