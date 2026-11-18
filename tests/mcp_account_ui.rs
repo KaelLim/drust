@@ -707,7 +707,8 @@ async fn api_keys_page_links_to_the_connect_page_only_when_enabled() {
             enabled,
             "enabled={enabled}: link text"
         );
-        for gone in ["key-mcp-pat", "copyMcpCommand", "/t/acme/mcp", "drust_pat_"] {
+        let old_endpoint = format!("/t/{}/mcp", "acme");
+        for gone in ["key-mcp-pat", "copyMcpCommand", &old_endpoint, "drust_pat_"] {
             assert!(!b.contains(gone), "enabled={enabled}: page has {gone:?}");
         }
         assert!(!b.contains("!!"), "a missing locale key renders as !!key!!");

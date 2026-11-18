@@ -347,10 +347,11 @@ async fn fresh_tenant_meta_has_fts_indexes_json_column() {
     );
 }
 
-/// The three tools are service-only by ROUTE dispatch (`/t/<id>/mcp` → anon
-/// `WRITE_DENIED`, user `MCP_USER_DENIED`), exactly like `create_index`: the
-/// tool fns take no role/CallerCtx param. Driving the HTTP endpoint with an
-/// anon token is heavier than this task needs; instead pin that the three tools
+/// The three tools are service-only by construction, exactly like
+/// `create_index`: they are reachable only through the account-level `/mcp`,
+/// which admits only an admin-tier OAuth caller and runs every tool as
+/// Service, and the tool fns take no role/CallerCtx param. Driving the HTTP
+/// endpoint is heavier than this task needs; instead pin that the three tools
 /// are registered (count 70 → 73) and that their signatures carry no role gate.
 /// The absolute total moved on to 76 with the v1.63 files-RLS policy tools —
 /// what this test owns is that the fts trio is still IN it.

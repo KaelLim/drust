@@ -2,7 +2,7 @@
 type: reference
 name: drust source architecture index
 status: production
-updated: 2026-11-16
+updated: 2026-11-18
 generated_by: docs/gen-architecture.py
 ---
 
@@ -22,20 +22,20 @@ generated_by: docs/gen-architecture.py
 | group | files | public items | imports out | imports in |
 |---|---:|---:|---:|---:|
 | [`(root)/`](#srcroot) | 6 | 34 | 3 | 31 |
-| [`auth/`](#srcauth) | 10 | 54 | 3 | 53 |
+| [`auth/`](#srcauth) | 10 | 54 | 3 | 55 |
 | [`bin/`](#srcbin) | 3 | 0 | 0 | 0 |
 | [`codegen/`](#srccodegen) | 7 | 26 | 10 | 6 |
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 27 | 212 | 86 | 43 |
-| [`mgmt/`](#srcmgmt) | 63 | 530 | 188 | 107 |
+| [`mcp/`](#srcmcp) | 29 | 277 | 100 | 48 |
+| [`mgmt/`](#srcmgmt) | 69 | 597 | 218 | 146 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
-| [`safety/`](#srcsafety) | 8 | 51 | 2 | 19 |
-| [`storage/`](#srcstorage) | 18 | 192 | 24 | 109 |
-| [`tenant/`](#srctenant) | 39 | 297 | 124 | 81 |
+| [`safety/`](#srcsafety) | 8 | 51 | 2 | 23 |
+| [`storage/`](#srcstorage) | 18 | 192 | 24 | 111 |
+| [`tenant/`](#srctenant) | 39 | 307 | 137 | 86 |
 
 ## Group dependency graph
 
@@ -60,7 +60,9 @@ graph LR
   functions --> tenant
   mcp --> cron
   mcp --> functions
+  mcp --> mgmt
   mcp --> query
+  mcp --> safety
   mcp --> storage
   mcp --> tenant
   mgmt --> root
@@ -185,17 +187,19 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 
 ### `src/mcp/`
 
+- [`account.rs`](../src/mcp/account.rs) — The server handler behind the account-level MCP endpoint (`/mcp`). · 39 pub
+- [`account_audit.rs`](../src/mcp/account_audit.rs) — The audit rows the account-level MCP endpoint writes: one per tool call · 15 pub
 - [`error_code.rs`](../src/mcp/error_code.rs) — The one classifier behind MCP's JSON-RPC `data.error_code`. · 3 pub
-- [`handler.rs`](../src/mcp/handler.rs) — rmcp Streamable HTTP handler for the per-tenant MCP endpoint — the drust · 57 pub
-- [`http_registry.rs`](../src/mcp/http_registry.rs) — Per-tenant cache of `StreamableHttpService` instances. · 2 pub
-- [`mod.rs`](../src/mcp/mod.rs) — 7 pub
-- [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 2 pub
-- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 12 pub
+- [`handler.rs`](../src/mcp/handler.rs) — rmcp tool router and handler behind the account-level MCP endpoint — the · 59 pub
+- [`http_registry.rs`](../src/mcp/http_registry.rs) — The management plane's handle on the MCP state: one `McpRegistry`, shared · 1 pub
+- [`mod.rs`](../src/mcp/mod.rs) — 9 pub
+- [`prompts.rs`](../src/mcp/prompts.rs) — v1.56 M3 — MCP Prompts. Hand-written (rmcp's `#[prompt_router]` macro would · 3 pub
+- [`resources.rs`](../src/mcp/resources.rs) — MCP Resources (v1.56, M2) — the URI parser + a thin router that projects · 16 pub
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
 - [`tools/batch.rs`](../src/mcp/tools/batch.rs) — M2 — batch insert (+ upsert, next task), service-only on both faces. · 8 pub
 - [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
-- [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 4 pub
+- [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 5 pub
 - [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 6 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url / set_file_visibility. · 8 pub
 - [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
@@ -208,10 +212,10 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`tools/read.rs`](../src/mcp/tools/read.rs) — 6 pub
 - [`tools/realtime.rs`](../src/mcp/tools/realtime.rs) — MCP `set_realtime` tool — toggle SSE broadcast on one collection. · 1 pub
 - [`tools/schema.rs`](../src/mcp/tools/schema.rs) — 16 pub
-- [`tools/user.rs`](../src/mcp/tools/user.rs) — Pure async helpers for T24 MCP user-management tools. · 6 pub
+- [`tools/user.rs`](../src/mcp/tools/user.rs) — Pure async helpers for T24 MCP user-management tools. · 7 pub
 - [`tools/vector.rs`](../src/mcp/tools/vector.rs) — MCP `search_collection` tool. Thin wrapper that constructs the same · 2 pub
 - [`tools/webhook.rs`](../src/mcp/tools/webhook.rs) — Pure async helpers for Task 7 — webhook subscription MCP tools. · 4 pub
-- [`tools/write.rs`](../src/mcp/tools/write.rs) — 14 pub
+- [`tools/write.rs`](../src/mcp/tools/write.rs) — 15 pub
 
 <a id="srcmgmt"></a>
 
@@ -233,21 +237,27 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`functions_admin.rs`](../src/mgmt/functions_admin.rs) — v1.36 — admin UI for the `ƒ _functions` virtual sidebar entry. · 7 pub
 - [`i18n.rs`](../src/mgmt/i18n.rs) — Server-side i18n for the admin UI. See spec · 10 pub
 - [`locale_layer.rs`](../src/mgmt/locale_layer.rs) — Locale resolution + `Extension<Locale>` attachment for admin requests. · 2 pub
+- [`mcp_oauth/account_routes.rs`](../src/mgmt/mcp_oauth/account_routes.rs) — The account-level MCP router: `/mcp` and its protected-resource metadata. · 5 pub
 - [`mcp_oauth/authorize.rs`](../src/mgmt/mcp_oauth/authorize.rs) — `GET /oauth/authorize`: validates the request and hands it to the consent page. · 14 pub
+- [`mcp_oauth/caller.rs`](../src/mgmt/mcp_oauth/caller.rs) — The caller of one account-level MCP request, carried in its request · 1 pub
 - [`mcp_oauth/clients.rs`](../src/mgmt/mcp_oauth/clients.rs) — Pinned OAuth clients. drust accepts exactly the clients listed here; there · 3 pub
 - [`mcp_oauth/config.rs`](../src/mgmt/mcp_oauth/config.rs) — `McpOauthConfig`: whether the MCP OAuth authorization server is on, the public · 10 pub
+- [`mcp_oauth/connect.rs`](../src/mgmt/mcp_oauth/connect.rs) — The admin pages that help people connect Claude Code to the account-level · 9 pub
 - [`mcp_oauth/consent.rs`](../src/mgmt/mcp_oauth/consent.rs) — Browser consent for the MCP OAuth AS (`GET /oauth/consent`, · 8 pub
 - [`mcp_oauth/envelope.rs`](../src/mgmt/mcp_oauth/envelope.rs) — Resume envelope and resume cookie: the signed authorize request that the · 17 pub
 - [`mcp_oauth/metadata.rs`](../src/mgmt/mcp_oauth/metadata.rs) — RFC 8414 authorization-server metadata (`GET /.well-known/oauth-authorization-server`). · 2 pub
-- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. Routes are mounted only when · 22 pub
+- [`mcp_oauth/mod.rs`](../src/mgmt/mcp_oauth/mod.rs) — MCP OAuth authorization server. The authorization server, metadata and · 30 pub
 - [`mcp_oauth/oauth_error_layer.rs`](../src/mgmt/mcp_oauth/oauth_error_layer.rs) — OAuth JSON errors for `/oauth/token` and `/oauth/revoke`. · 3 pub
 - [`mcp_oauth/params.rs`](../src/mgmt/mcp_oauth/params.rs) — Form / query parameter parsing for the OAuth endpoints. · 3 pub
 - [`mcp_oauth/pkce.rs`](../src/mgmt/mcp_oauth/pkce.rs) — PKCE (RFC 7636), S256 only: the authorize-side challenge shape check and · 3 pub
+- [`mcp_oauth/prm.rs`](../src/mgmt/mcp_oauth/prm.rs) — RFC 9728 protected resource metadata for the account-level MCP endpoint. · 2 pub
 - [`mcp_oauth/redirect.rs`](../src/mgmt/mcp_oauth/redirect.rs) — `redirect_uri` validation for `GET /oauth/authorize`. · 5 pub
 - [`mcp_oauth/refresh.rs`](../src/mgmt/mcp_oauth/refresh.rs) — The refresh_token grant's state machine. · 4 pub
 - [`mcp_oauth/revoke.rs`](../src/mgmt/mcp_oauth/revoke.rs) — `POST /oauth/revoke` — RFC 7009, always per GRANT. · 1 pub
-- [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for `/oauth/token`, and the limiter key shapes · 11 pub
-- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives, token-to-grant lookups, · 21 pub
+- [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for the MCP OAuth authorization server (`/oauth/token`; · 17 pub
+- [`mcp_oauth/route_layer.rs`](../src/mgmt/mcp_oauth/route_layer.rs) — Entry gates for the account-level MCP endpoint: on/off switch, Host, Origin, body limit, SSE buffering header. · 9 pub
+- [`mcp_oauth/rs_layer.rs`](../src/mgmt/mcp_oauth/rs_layer.rs) — Bearer layer for the account-level MCP endpoint: accepts MCP OAuth access tokens only. · 3 pub
+- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives, token-to-grant lookups, · 38 pub
 - [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
 - [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token`: request validation, grant-type dispatch, the · 3 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
@@ -265,7 +275,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`script_json.rs`](../src/mgmt/script_json.rs) — HTML-`<script>`-safe JSON serialization — single canonical escaper. · 2 pub
 - [`signed_bytes.rs`](../src/mgmt/signed_bytes.rs) — Public (unauth) GET handlers that serve a drust-signed download URL. · 4 pub
 - [`stats.rs`](../src/mgmt/stats.rs) — Tenant-stats denormalization sampler. · 4 pub
-- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 11 pub
+- [`tenant_authz.rs`](../src/mgmt/tenant_authz.rs) — v1.50 — single ownership predicate shared by every enforcement site · 18 pub
 - [`tenant_broadcast.rs`](../src/mgmt/tenant_broadcast.rs) — v1.31.5 — Admin Broadcast Inspector page. · 1 pub
 - [`tenant_cap.rs`](../src/mgmt/tenant_cap.rs) — v1.57 — per-member tenant creation cap. · 22 pub
 - [`tenant_files.rs`](../src/mgmt/tenant_files.rs) — Tenant-side file handlers (private bytes proxy, upload/list/get/delete, sign). · 22 pub
@@ -370,8 +380,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`events.rs`](../src/tenant/events.rs) — 2 pub
 - [`file_caps.rs`](../src/tenant/file_caps.rs) — Per-tenant file-storage capabilities (v1.42). · 7 pub
 - [`file_policy_routes.rs`](../src/tenant/file_policy_routes.rs) — Files RLS (#950-B) — the service-only REST face of the per-tenant prefix · 4 pub
-- [`mcp_dispatch.rs`](../src/tenant/mcp_dispatch.rs) — Axum handler that forwards `/t/:tenant/mcp` traffic to the · 1 pub
-- [`mod.rs`](../src/tenant/mod.rs) — 30 pub
+- [`mod.rs`](../src/tenant/mod.rs) — 29 pub
 - [`oauth_admin_routes.rs`](../src/tenant/oauth_admin_routes.rs) — Service-only admin endpoints for managing this tenant's OAuth provider · 7 pub
 - [`oauth_config.rs`](../src/tenant/oauth_config.rs) — 10 pub
 - [`oauth_routes.rs`](../src/tenant/oauth_routes.rs) — Per-tenant OAuth start + callback handlers. End users of a tenant's · 15 pub
@@ -387,14 +396,15 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`rooms/mod.rs`](../src/tenant/rooms/mod.rs) — v1.31 — broadcast rooms (WebSocket multiplex). · 9 pub
 - [`rooms/policy.rs`](../src/tenant/rooms/policy.rs) — v1.31 policy gates: room-name validation, per-tenant publish · 6 pub
 - [`rooms/rest.rs`](../src/tenant/rooms/rest.rs) — v1.31 REST publish handler — POST /t/{tenant}/rooms/{room}. · 4 pub
-- [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the STRUCTURAL PINS (#955, #975). · 4 pub
+- [`rooms/srcpin.rs`](../src/tenant/rooms/srcpin.rs) — Test-only source scanner for the STRUCTURAL PINS (#955, #975). · 10 pub
 - [`rooms/state.rs`](../src/tenant/rooms/state.rs) — v1.31 rooms config: env-driven knobs threaded through `TenantStack`. · 7 pub
 - [`rooms/ws.rs`](../src/tenant/rooms/ws.rs) — v1.31 WebSocket multiplex handler — GET /t/{tenant}/realtime. · 1 pub
 - [`rooms/ws_auth.rs`](../src/tenant/rooms/ws_auth.rs) — v1.31 query-string-to-header bearer adapter for WS upgrade. · 5 pub
-- [`router.rs`](../src/tenant/router.rs) — 8 pub
+- [`router.rs`](../src/tenant/router.rs) — 9 pub
 - [`sse.rs`](../src/tenant/sse.rs) — 1 pub
-- [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 10 pub
+- [`uploads/mod.rs`](../src/tenant/uploads/mod.rs) — v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage. · 12 pub
 - [`uploads/session.rs`](../src/tenant/uploads/session.rs) — _system_upload_sessions row CRUD + tus metadata/derivation helpers + · 12 pub
+- [`uploads/ticket.rs`](../src/tenant/uploads/ticket.rs) — Upload-ticket redemption on the tus routes. · 3 pub
 - [`vector_search.rs`](../src/tenant/vector_search.rs) — POST /t/{tenant}/collections/{coll}/search · 2 pub
 - [`webhook_dispatcher.rs`](../src/tenant/webhook_dispatcher.rs) — WebhookDispatcher — record-CRUD event → subscribed URLs. · 25 pub
 - [`webhook_resolver.rs`](../src/tenant/webhook_resolver.rs) — Per-dispatch DNS resolver. See spec · 5 pub

@@ -4,9 +4,9 @@
 //! `src/tenant/webhook_routes.rs`, but returns `anyhow::Result<Value>` so
 //! it can be wired uniformly from `#[tool]` methods in `handler.rs`.
 //!
-//! MCP is service-key-only — the dispatch layer blocks anon bearers before
-//! these helpers run, so the role is not re-checked here (mirrors the
-//! oauth/user tool modules).
+//! These tools are reachable only through the account-level `/mcp`, which
+//! runs every tool as Service for an admin-tier OAuth caller, so the role is
+//! not re-checked here (mirrors the oauth/user tool modules).
 
 use crate::storage::pool::SharedTenantPool;
 use crate::tenant::webhook_routes::{check_events, check_url, generate_secret};

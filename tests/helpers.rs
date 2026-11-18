@@ -904,7 +904,7 @@ pub struct RoomsHarness {
     pub meta: Arc<Mutex<rusqlite::Connection>>,
     pub auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
     pub tenants: Arc<TenantRegistry>,
-    /// The SAME `McpRegistry` the stack's `/t/<id>/mcp` surface serves from —
+    /// The SAME `McpRegistry` the stack's MCP surface builds from —
     /// exposed so a test can prove (not assume) that the MCP tools evict the
     /// bus this harness's sockets are on. `McpHttpRegistry` keeps its inner
     /// registry private, so without this handle the only available check would
@@ -1213,7 +1213,7 @@ pub async fn tenants_state_with_cache(
 /// E5 — the `tenants_state_with_cache` fixture, but also handing back the
 /// inner `McpRegistry` (the layer whose `DrustMcp` holds the
 /// `Arc<TenantPool>`), so a lifecycle test can observe eviction at the
-/// registry layer without going through the `/t/<id>/mcp` route.
+/// registry layer without going through an HTTP route.
 pub async fn tenants_state_with_mcp(
     tenant: &str,
 ) -> (

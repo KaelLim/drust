@@ -14,9 +14,10 @@
 //!    (v1.58.6: a bare `serde_json::Value` arg advertises "any", which invited
 //!    clients to JSON-encode the object and made every filter fail).
 //!
-//! MCP is service-only by dispatch (`/t/<id>/mcp` → anon `WRITE_DENIED`, user
-//! `MCP_USER_DENIED`), so there is deliberately no per-tool role check to test
-//! here — the REST face carries that half (`tests/files_rls_policy.rs`).
+//! MCP tools are reachable only through the account-level `/mcp`, which admits
+//! only an admin-tier OAuth caller and runs every tool as Service, so there is
+//! deliberately no per-tool role check to test here — the REST face carries
+//! that half (`tests/files_rls_policy.rs`).
 //!
 //! Delegates are driven directly, as in `tests/policy_mcp.rs`; the wire-name +
 //! annotation half lives in-file in `src/mcp/handler.rs` because `tool_router()`

@@ -5,8 +5,9 @@
 //! the writer closure (TOCTOU-safe, same as `set_anon_caps` / `set_owner_field`
 //! and the sibling REST handler `tenant::policy_routes`).
 //!
-//! Service-only by MCP dispatch — the whole MCP service is service-key-only
-//! (anon → 403 WRITE_DENIED, user → 403 MCP_USER_DENIED), so no extra guard
+//! Service-only by construction: these tools are reachable only through the
+//! account-level `/mcp`, which admits only an admin-tier OAuth caller and runs
+//! every tool as Service on a tenant that caller can see, so no extra guard
 //! is needed here (spec §8.3).
 
 use crate::mcp::server::DrustMcp;

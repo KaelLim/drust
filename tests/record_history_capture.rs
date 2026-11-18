@@ -468,7 +468,7 @@ async fn mcp_delete_user_cascade_captures_per_row_history() {
         assert_eq!(actor.as_str(), "service");
         assert_eq!(
             actor_id, &None,
-            "MCP is service-key-only — no per-request admin identity"
+            "delete_user was called with no admin identity"
         );
         assert!(new.is_none(), "delete has no post-image");
         let old: serde_json::Value =

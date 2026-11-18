@@ -36,7 +36,8 @@ optional environment variables.
   so a role change, an owner transfer or a deleted tenant takes effect on the next call
   without revoking anything. Inside a tenant the caller acts with the service role.
 - **`whoami`** returns the tenant's identity, the anon key and the REST and upload paths;
-  the service key is shown redacted, with where to get it.
+  the service key is shown redacted, with where to get it. `endpoints.files_upload` is gone
+  (`endpoints.files_upload_resumable` remains); `endpoints.mcp` is the account endpoint.
 - **Resources and prompts.** `resources/list` is empty; `resources/templates/list` lists
   every resource as `drust://{tenant}/…`. The six prompts take `tenant` as their first
   argument.
@@ -57,16 +58,18 @@ optional environment variables.
   `429 RATE_LIMITED`.
 - **Admin UI.** A **Connect Claude Code** page (`/admin/mcp`, every signed-in admin, while
   MCP is on) gives the exact `claude mcp add` command for this server. An owner-only **MCP
-  diagnostics** page (`/admin/mcp/diagnostics`) runs the discovery checks from your browser
-  and, while MCP is off, says why. The API Keys page no longer shows MCP setup, and the
-  settings card for personal API tokens says they work on REST and the admin API only.
+  diagnostics** page (`/admin/mcp/diagnostics`) runs the discovery checks from your
+  browser, checks that the retired per-tenant path answers `410`, and, while MCP is off,
+  says why. The API Keys page no longer shows MCP setup, and the settings card for
+  personal API tokens says they work on REST and the admin API only.
 - **Retired endpoint.** `/t/<id>/mcp` answers `410` with error code `MCP_ENDPOINT_MOVED` and
   `Cache-Control: no-store`, for every tenant id and every method, before any credential is
-  read, so it reveals nothing about which tenants exist. Its message gives the two
-  `claude mcp` commands to run.
+  read, so it reveals nothing about which tenants exist. Its message gives the
+  `claude mcp` commands to run; with MCP off it names no URL and says MCP is not enabled on
+  this server yet.
 - **CLI.** `drust collections create`, `add-field`, `drop` and `set-caps` used the retired
-  endpoint; on its `410` they print a hint to make schema changes in the admin UI or through
-  Claude Code.
+  endpoint; on its `410` they print `schema changes: use the admin UI or Claude Code for now`
+  instead of the server's message (exit code 1).
 
 ### Changed (always on)
 
@@ -204,13 +207,18 @@ signed URLs, including the ones MCP tools return. An unrecognised `DRUST_MCP` va
 `on` an unusable `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH`, leaves MCP off and logs one
 `error` line; boot always continues. Every boot logs one line beginning
 `MCP OAuth AS enabled` or `MCP OAuth AS disabled` with the reason (it never prints a
-rejected `DRUST_PUBLIC_URL`), and the owner-only diagnostics page shows the same state.
+rejected `DRUST_PUBLIC_URL`), and the owner-only diagnostics page shows the same state. A
+host that `auto` turned on logs `MCP OAuth AS enabled (DRUST_MCP=auto): …`, so a search for
+that prefix finds it; under `DRUST_BASE_PATH=/drust` (bare metal) `auto` stays off and the
+line says `DRUST_BASE_PATH is set`. `auto` with an `https://` `DRUST_PUBLIC_URL` on a
+loopback host (`localhost`, `127.0.0.1`, `::1`) stays off too; set `DRUST_MCP=on` for that.
 
-**With MCP off**, `/mcp` answers `404 MCP_DISABLED`, `/t/<id>/mcp` still answers `410`, and
-the owner-only diagnostics page exists to say why. No other MCP route, discovery document,
-OAuth endpoint or the connect page is mounted, and an upload ticket is an unknown bearer
-(`401`). Whether or not MCP is on, the API Keys page no longer shows MCP setup and the
-personal API token card on the settings page is renamed.
+**With MCP off**, `/mcp` answers `404 MCP_DISABLED` to every method, `/t/<id>/mcp` still
+answers `410` (with the message that names no URL), and the owner-only diagnostics page
+exists to say why. No other MCP route, discovery document, OAuth endpoint or the connect
+page is mounted, and an upload ticket is an unknown bearer (`401`). Whether or not MCP is
+on, the API Keys page no longer shows MCP setup and the personal API token card on the
+settings page is renamed.
 
 ### Security properties
 

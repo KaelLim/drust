@@ -1,8 +1,10 @@
-//! MCP OAuth authorization server. Routes are mounted only when
-//! `config::McpOauthConfig::enabled()`; with MCP off no route or page changes.
-//! The exceptions with MCP off: the admin CHANGELOG viewer shows these release
-//! notes, the `admin.team.remove` audit row gains `revoked_mcp_grants` (0), and
-//! `login_submit`'s cross-site refusal is always on. Tables:
+//! MCP OAuth authorization server. The authorization server, metadata and
+//! connect page are mounted only when `config::McpOauthConfig::enabled()`.
+//! Always mounted: `/mcp` (404 `MCP_DISABLED` while off) and the owner-only
+//! diagnostics page; the retired `/t/<id>/mcp` answers 410 either way. Other
+//! changes that hold with MCP off: the admin CHANGELOG viewer shows these
+//! release notes, the `admin.team.remove` audit row gains `revoked_mcp_grants`
+//! (0), and `login_submit`'s cross-site refusal is always on. Tables:
 //! `db::migrations::SQL_CREATE_MCP_OAUTH_IF_NOT_EXISTS`. Release notes: CHANGELOG.md.
 pub mod account_routes;
 pub mod authorize;

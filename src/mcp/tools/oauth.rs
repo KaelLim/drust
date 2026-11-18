@@ -1,6 +1,7 @@
 //! Pure async helpers for the per-tenant OAuth-provider admin MCP tools
-//! (T14-T16). MCP is service-key-only — anon bearers are blocked at the
-//! dispatch layer, so these helpers do not re-check the role.
+//! (T14-T16). They are reachable only through the account-level `/mcp`,
+//! which runs every tool as Service for an admin-tier OAuth caller, so these
+//! helpers do not re-check the role.
 //!
 //! Each function mirrors a handler in `src/tenant/oauth_admin_routes.rs`
 //! and returns `anyhow::Result<serde_json::Value>` so it can be wired

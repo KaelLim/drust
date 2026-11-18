@@ -19,7 +19,8 @@ ignore = [
     # `transport-streamable-http-client-unix-socket`) — none of those
     # features, nor `client` / `__reqwest`, is enabled, and rmcp pulls no
     # reqwest/hyper into the graph. drust-cli (cli/) does not depend on rmcp
-    # at all; it speaks JSON-RPC to /t/<id>/mcp with its own reqwest client.
+    # at all; its schema commands POST JSON-RPC to the per-tenant MCP path
+    # with its own reqwest client; servers that retired that path answer 410.
     # RE-CHECK the feature list whenever rmcp's features change in Cargo.toml.
     # REMOVE when drust moves to rmcp >= 3.9 (the U stage of the MCP design).
     "RUSTSEC-2026-0462",

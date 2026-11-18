@@ -40,12 +40,11 @@ pub struct MgmtState {
     /// next REST/MCP request through the tenant router sees the change
     /// without waiting for natural cache turnover.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
-    /// Per-tenant MCP service registry (handed on to `TenantsState.mcp`).
-    /// soft_delete_tenant evicts the cached `DrustMcpService` for a tenant so
-    /// its in-flight session state and `Arc<TenantPool>` clones release, and
-    /// the id-recycle create path does the same (via
-    /// `crud::evict_tenant_everywhere`); its `evict` cascades into the inner
-    /// `McpRegistry` and closes the evicted service's live sessions.
+    /// The MCP registry handle (handed on to `TenantsState.mcp`).
+    /// soft_delete_tenant evicts the tenant's cached `DrustMcp` so its
+    /// `Arc<TenantPool>` clones release, and the id-recycle create path does
+    /// the same (via `crud::evict_tenant_everywhere`); its `evict` reaches
+    /// the inner `McpRegistry`.
     pub mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
     /// Per-(tenant, collection) SSE broadcast channels. soft_delete_tenant
     /// drops every channel keyed on the tenant so subscribers receive
