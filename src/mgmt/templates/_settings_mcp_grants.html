@@ -4,7 +4,7 @@
           <div class="card-head"><div>
             <div class="card-title">{{ t.s("settings.mcp_grants.card_title") }}</div>
             <div class="card-sub">{{ t.s("settings.mcp_grants.desc") }}</div>
-          </div></div>
+          </div><a class="btn sm ghost" style="margin-left:auto;" href="{{ crate::base_path::base_path() }}/admin/mcp">{{ t.s("settings.mcp_grants.connect_link") }}</a></div>
           <div class="card-body" style="padding:14px 16px;">
             {% if mcp_grants_error %}
               <div class="muted">{{ t.s("settings.mcp_grants.load_failed") }}</div>

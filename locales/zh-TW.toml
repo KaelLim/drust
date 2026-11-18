@@ -846,6 +846,58 @@ csrf = "無法驗證這份表單，請回上一頁、重新整理同意頁後再
 admin_missing = "你的帳號已不存在於此伺服器。"
 internal = "發生錯誤，沒有授權任何東西。"
 
+[mcp_connect.page]
+title = "drust 管理 — 串接 Claude Code"
+meta_description = "drust 管理 — 把 Claude Code 串接到帳號層級的 MCP 端點。"
+
+[mcp_connect.head]
+eyebrow = "管理 · MCP"
+title = "串接 Claude Code"
+sub = "一個 MCP 端點涵蓋你的帳號能看到的每個 tenant。你在這個瀏覽器裡登入；設定檔裡不放任何金鑰。"
+tools_pill = "{n} 個 tool"
+
+[mcp_connect.add]
+title = "加入伺服器"
+sub = "在執行 Claude Code 的那台電腦上執行下列指令。"
+step_add = "1. 加入端點（只需一次）："
+step_auth = "2. 在 Claude Code 裡執行 /mcp，選 drust，再選 Authenticate。也可以從 shell 登入："
+ssh = "透過 SSH 時，在 ssh -t 裡執行登入指令，並加上 --no-browser。"
+json = "改用 JSON 寫這一筆？一定要帶 type http，否則 Claude Code 會把它當成本機指令而略過："
+
+[mcp_connect.migrate]
+title = "從每個 tenant 各自的伺服器搬過來"
+remove = "在當初加入的每個專案裡，移除每一筆名稱是 drust- 加 tenant id 的舊設定。設定裡寫了 Authorization header 的伺服器，Claude Code 會一直送那個 header、不會改走登入，所以舊設定不能原地升級。"
+rules = "權限規則改名，而且不能再依 tenant 分別核准 tool：現在一個伺服器服務所有 tenant。"
+reroll = "如果你曾把個人 access token 或 tenant 的 service 金鑰貼進 MCP 設定，請重新產生：個人 token 在「設定」頁，service 金鑰在該 tenant 的「API 金鑰」頁。drust 不會強制，但留在設定檔裡的金鑰在重新產生之前一直有效。"
+
+[mcp_connect.disconnect]
+title = "中斷連線"
+body = "先登出再移除：只移除設定不會撤銷登入。"
+manage = "你授權過的每一條連線都列在「設定 → MCP 連線」，可以撤銷其中一條或全部。"
+manage_link = "開啟 MCP 連線"
+
+[mcp_connect.url_change]
+title = "伺服器網址變更時"
+body = "伺服器管理者改了 DRUST_PUBLIC_URL 或 base path 之後，每位使用者都要在 Claude Code 執行 /mcp，選 drust，選 Clear authentication，再重新登入。"
+
+[mcp_connect.fallback]
+title = "掛在路徑下、探索失敗時"
+body = "這台伺服器掛在一個路徑下。在前面的 proxy 能在主機根目錄轉發那兩個探索網址之前，可以讓 Claude Code 直接指向登入用的 metadata："
+note = "加入這一筆之前，先移除上面加入的 drust。"
+
+[mcp_connect.scope]
+title = "這條連線能做與不能做的事"
+rights = "在你的帳號能看到的每個 tenant 上，Claude 擁有 service 等級的權限。失去存取的 tenant，下一次呼叫就無法使用。"
+clients = "只支援 Claude Code。Codex、Cursor、Claude Desktop 與 Gemini 暫不支援。"
+ci = "CI 與全新的容器不能使用 MCP：登入需要瀏覽器。在那些地方請用 tenant 金鑰呼叫 REST API。"
+functions = "這條連線不能部署 edge function：它不帶任何 tenant 金鑰。要部署 .wasm，請到管理後台該 tenant 的「函式」頁，頁面上有上傳指令。"
+uploads = "上傳檔案時對話裡不會出現金鑰：Claude 會申請一個只能上傳一個檔案的上傳網址（create_upload_url），再分塊上傳。"
+
+[mcp_connect.copy]
+button = "複製"
+done = "已複製"
+failed = "複製失敗"
+
 [mcp_diag.check.mcp]
 label = "MCP 端點回應登入 challenge（401）"
 hint = "421：proxy 送出的 Host 既不是 127.0.0.1:47826 也不是公開主機。404 且為 MCP_DISABLED：回應的那台伺服器關閉了 MCP。其他 404：base path 底下的請求沒有轉到 drust。"
@@ -941,6 +993,7 @@ flag_sibling_rejected = "重複的 refresh"
 flag_sibling_rejected_hint = "這條連線已被取代的 refresh token 又被出示了一次，最近一次的時間顯示在列中。同一台機器上多個 Claude Code 工作階段同時 refresh 時，這是正常現象。如果「最後使用」顯示你不認得的活動，請撤銷這條連線。"
 btn_revoke = "撤銷"
 btn_revoke_all = "全部撤銷"
+connect_link = "串接 Claude Code"
 
 [settings.mcp_grants.confirm]
 revoke_all_title = "撤銷全部 MCP 連線"

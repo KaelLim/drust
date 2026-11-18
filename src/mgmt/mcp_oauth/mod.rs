@@ -106,6 +106,16 @@ pub fn team_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
+/// "Connect Claude Code", already `with_state`. `MgmtState::with_data_dir`
+/// merges it into `settings_router` ONLY when `McpOauthConfig::enabled()`: a
+/// personal page for every role, like `/admin/settings`, so no
+/// `require_owner_layer`.
+pub fn connect_routes(state: &MgmtState) -> Router {
+    Router::new()
+        .route("/admin/mcp", get(connect::connect_page))
+        .with_state(state.clone())
+}
+
 /// en and zh-TW must carry the same keys under every MCP OAuth prefix (build.rs
 /// only checks en).
 #[cfg(test)]

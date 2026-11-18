@@ -1,0 +1,109 @@
+{% extends "_base.html" %}
+{% import "_ui.html" as ui %}
+
+{% block title %}{{ t.s("mcp_connect.page.title") }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("mcp_connect.page.meta_description") }}">{% endblock %}
+{% block body_attrs %} data-section="settings"{% endblock %}
+
+{% block content %}
+    <div class="page">
+
+      {% call ui::view_head(t.s("mcp_connect.head.eyebrow"), t.s("mcp_connect.head.title"), t.s("mcp_connect.head.sub")) %}<span class="pill info">{{ t.fmt1("mcp_connect.head.tools_pill", "n", tool_count) }}</span>{% endcall %}
+
+      {% call ui::card(t.s("mcp_connect.add.title"), t.s("mcp_connect.add.sub")) %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.add.step_add") }}</p>
+        <pre class="code" id="mcp-cmd-add">{{ cmds.add }}</pre>
+        <button type="button" class="btn sm ghost" data-mcp-copy="mcp-cmd-add">{{ t.s("mcp_connect.copy.button") }}</button>
+        <p>{{ t.s("mcp_connect.add.step_auth") }}</p>
+        <pre class="code" id="mcp-cmd-login">{{ cmds.login }}</pre>
+        <button type="button" class="btn sm ghost" data-mcp-copy="mcp-cmd-login">{{ t.s("mcp_connect.copy.button") }}</button>
+        <p class="muted">{{ t.s("mcp_connect.add.ssh") }}</p>
+        <p>{{ t.s("mcp_connect.add.json") }}</p>
+        <pre class="code" id="mcp-cmd-json">{{ cmds.add_json }}</pre>
+        <button type="button" class="btn sm ghost" data-mcp-copy="mcp-cmd-json">{{ t.s("mcp_connect.copy.button") }}</button>
+      </div>
+      {% endcall %}
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_connect.migrate.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.migrate.remove") }}</p>
+        <pre class="code" id="mcp-cmd-migrate">{{ cmds.list }}
+{{ cmds.remove_old }}</pre>
+        <p>{{ t.s("mcp_connect.migrate.rules") }} <code>{{ cmds.old_rule }}</code> → <code>{{ cmds.new_rule }}</code></p>
+        <p class="muted">{{ t.s("mcp_connect.migrate.reroll") }}</p>
+      </div>
+      {% endcall %}
+      </div>
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_connect.disconnect.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.disconnect.body") }}</p>
+        <pre class="code" id="mcp-cmd-disconnect">{{ cmds.logout }}
+{{ cmds.remove }}</pre>
+        <button type="button" class="btn sm ghost" data-mcp-copy="mcp-cmd-disconnect">{{ t.s("mcp_connect.copy.button") }}</button>
+        <p>{{ t.s("mcp_connect.disconnect.manage") }}</p>
+        <a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/settings#mcp-grants">{{ t.s("mcp_connect.disconnect.manage_link") }}</a>
+      </div>
+      {% endcall %}
+      </div>
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_connect.url_change.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.url_change.body") }}</p>
+      </div>
+      {% endcall %}
+      </div>
+
+      {% match cmds.metadata_fallback %}{% when Some with (cmd) %}
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_connect.fallback.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.fallback.body") }}</p>
+        <pre class="code" id="mcp-cmd-fallback">{{ cmd }}</pre>
+        <button type="button" class="btn sm ghost" data-mcp-copy="mcp-cmd-fallback">{{ t.s("mcp_connect.copy.button") }}</button>
+        <p class="muted">{{ t.s("mcp_connect.fallback.note") }}</p>
+      </div>
+      {% endcall %}
+      </div>
+      {% when None %}{% endmatch %}
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_connect.scope.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_connect.scope.rights") }}</p>
+        <p>{{ t.s("mcp_connect.scope.clients") }}</p>
+        <p>{{ t.s("mcp_connect.scope.ci") }}</p>
+        <p>{{ t.s("mcp_connect.scope.functions") }}</p>
+        <p>{{ t.s("mcp_connect.scope.uploads") }}</p>
+      </div>
+      {% endcall %}
+      </div>
+
+    </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% include "_modal.html" %}
+<script>
+(function () {
+  var done = '{{ t.s("mcp_connect.copy.done")|safe }}';
+  var failed = '{{ t.s("mcp_connect.copy.failed")|safe }}';
+  document.querySelectorAll('[data-mcp-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var el = document.getElementById(btn.getAttribute('data-mcp-copy'));
+      if (!el || !navigator.clipboard) { btn.textContent = failed; return; }
+      navigator.clipboard.writeText(el.textContent).then(
+        function () { btn.textContent = done; },
+        function () { btn.textContent = failed; }
+      );
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -1533,9 +1533,11 @@ impl MgmtState {
                 axum::routing::post(super::admin_pat::cli_token_revoke),
             )
             .with_state(settings_state);
-        // MCP grant revoke routes, mounted only when MCP OAuth is on.
+        // MCP grant revoke routes and the Connect Claude Code page, mounted only when MCP OAuth is on.
         let settings_router = if self.mcp_oauth.enabled() {
-            settings_router.merge(crate::mgmt::mcp_oauth::settings_routes(&self))
+            settings_router
+                .merge(crate::mgmt::mcp_oauth::settings_routes(&self))
+                .merge(crate::mgmt::mcp_oauth::connect_routes(&self))
         } else {
             settings_router
         };

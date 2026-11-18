@@ -15,7 +15,18 @@
 
 use std::collections::HashSet;
 
+use askama::Template;
+use axum::Extension;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
+
+use crate::mcp::account::AccountMcp;
+use crate::mgmt::admin_profile::AdminProfileExt;
+use crate::mgmt::i18n::{LocaleHint, Translator};
 use crate::mgmt::mcp_oauth::config::{DisabledReason, McpOauthConfig};
+use crate::mgmt::routes::MgmtState;
+use crate::mgmt::theme::{ResolvedPalette, Theme, ThemeHint, ThemeRenderCtx};
 
 /// The commands the connect page prints, all derived from `resource_url()`.
 pub struct ConnectCommands {
@@ -217,6 +228,61 @@ pub fn disabled_reason_detail(r: &DisabledReason) -> Option<&'static str> {
     match r {
         DisabledReason::PublicUrlInvalid(why) => Some(*why),
         _ => None,
+    }
+}
+
+#[derive(Template)]
+#[template(path = "mcp_connect.html")]
+struct McpConnectPage {
+    version: &'static str,
+    t: Translator,
+    admin: AdminProfileExt,
+    palette_resolved: ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
+    cmds: ConnectCommands,
+    tool_count: usize,
+}
+
+/// The connect page, or `None` when `connect_commands` has nothing to show
+/// (disabled, or a public URL that is not shell-safe).
+fn connect_page_html(
+    cfg: &McpOauthConfig,
+    t: Translator,
+    admin: AdminProfileExt,
+    theme: Theme,
+) -> Option<String> {
+    let cmds = connect_commands(cfg)?;
+    let trc = ThemeRenderCtx::build(theme);
+    Some(
+        McpConnectPage {
+            version: env!("CARGO_PKG_VERSION"),
+            t,
+            admin,
+            palette_resolved: trc.palette_resolved,
+            mascot_json_static: trc.mascot_json_static,
+            mascot_json_light: trc.mascot_json_light,
+            mascot_json_dark: trc.mascot_json_dark,
+            cmds,
+            tool_count: AccountMcp::tool_count(),
+        }
+        .render()
+        .unwrap_or_default(),
+    )
+}
+
+/// `GET /admin/mcp` — "Connect Claude Code", a personal page for every role.
+pub async fn connect_page(
+    State(s): State<MgmtState>,
+    LocaleHint(locale): LocaleHint,
+    ThemeHint(theme): ThemeHint,
+    Extension(admin): Extension<AdminProfileExt>,
+) -> Response {
+    match connect_page_html(&s.mcp_oauth, Translator::new(locale), admin, theme) {
+        Some(html) => Html(html).into_response(),
+        // Mounted only while enabled, so None means the public URL is not shell-safe: no command to show.
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -483,5 +549,42 @@ mod tests {
                 assert!(!en.s(k).starts_with("!!"), "{k} missing in en");
             }
         }
+    }
+
+    #[test]
+    fn connect_pages_read_nothing_from_the_database() {
+        let src = include_str!("connect.rs");
+        let code = crate::tenant::rooms::srcpin::code_only(src);
+        let prod = crate::tenant::rooms::srcpin::production_half(&code);
+        // MgmtState's database handles (meta, audit_meta_read, tenants) and the
+        // ways in. `.meta.` / `.meta)` / `.meta,` rather than a bare `.meta`, which
+        // would match the `metadata_fallback` field.
+        for n in [
+            concat!(".lo", "ck("),
+            concat!("rusq", "lite"),
+            concat!("get_or_", "create"),
+            concat!("get_if_", "live"),
+            concat!(".me", "ta."),
+            concat!(".me", "ta)"),
+            concat!(".me", "ta,"),
+            concat!("audit_me", "ta_read"),
+            concat!(".ten", "ants"),
+        ] {
+            assert!(!prod.contains(n), "connect.rs production code names {n}");
+        }
+    }
+
+    #[test]
+    fn connect_page_html_is_none_while_disabled() {
+        let t = crate::mgmt::i18n::Translator::new(crate::mgmt::i18n::Locale::En);
+        assert!(
+            connect_page_html(
+                &McpOauthConfig::disabled(),
+                t,
+                crate::mgmt::admin_profile::AdminProfileExt::placeholder(),
+                crate::mgmt::theme::Theme::System
+            )
+            .is_none()
+        );
     }
 }

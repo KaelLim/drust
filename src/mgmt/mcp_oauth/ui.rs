@@ -623,6 +623,10 @@ mod tests {
                     "mcp_oauth_error.html",
                     include_str!("../templates/mcp_oauth_error.html"),
                 ),
+                (
+                    "mcp_connect.html",
+                    include_str!("../templates/mcp_connect.html"),
+                ),
             ])
             .collect();
         let (mut urls, mut back_links) = (0, 0);
@@ -651,9 +655,10 @@ mod tests {
                 }
             }
         }
-        // Card: two form actions; team page: one fetch; consent: three form
-        // actions and one link.
-        assert_eq!(urls, 7);
+        // Card: two form actions and the connect link; team page: one fetch;
+        // consent: three form actions and one link; connect page: the
+        // settings link.
+        assert_eq!(urls, 9);
         assert_eq!(back_links, 1, "the error page's back link");
     }
 

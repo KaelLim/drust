@@ -826,6 +826,58 @@ csrf = "The form could not be verified. Go back, reload the consent page, and tr
 admin_missing = "Your account no longer exists on this server."
 internal = "Something went wrong. Nothing was authorized."
 
+[mcp_connect.page]
+title = "drust admin — connect Claude Code"
+meta_description = "drust admin — connect Claude Code to the account-level MCP endpoint."
+
+[mcp_connect.head]
+eyebrow = "Admin · MCP"
+title = "Connect Claude Code"
+sub = "One MCP endpoint for every tenant your account can see. You sign in through this browser; no key goes into a config file."
+tools_pill = "{n} tools"
+
+[mcp_connect.add]
+title = "Add the server"
+sub = "Run these on the machine where Claude Code runs."
+step_add = "1. Add the endpoint once:"
+step_auth = "2. In Claude Code, run /mcp, select drust and choose Authenticate. Or sign in from a shell:"
+ssh = "Over SSH, run the sign-in command inside ssh -t and add --no-browser."
+json = "Writing the entry as JSON instead? It must carry type http, or Claude Code treats it as a local command and skips it:"
+
+[mcp_connect.migrate]
+title = "Moving from the per-tenant servers"
+remove = "Remove every old entry named drust- followed by a tenant id, in each project where you added it. Claude Code keeps sending the Authorization header set in a server entry and never switches that entry to sign-in, so an old entry cannot be upgraded in place."
+rules = "Permission rules are renamed, and tools can no longer be approved per tenant: one server now serves every tenant."
+reroll = "If you ever pasted a personal access token or a tenant service key into an MCP config, reroll it: the personal token on the Settings page, a service key on the tenant API keys page. drust does not force this, but a key left in a config file keeps working until it is rerolled."
+
+[mcp_connect.disconnect]
+title = "Disconnect"
+body = "Sign out first, then remove: removing the entry alone does not revoke the sign-in."
+manage = "Every connection you authorized is listed under Settings → MCP connections, where you can revoke one or all of them."
+manage_link = "Open MCP connections"
+
+[mcp_connect.url_change]
+title = "If the server address changes"
+body = "After an operator changes DRUST_PUBLIC_URL or the base path, every user runs /mcp in Claude Code, selects drust, chooses Clear authentication and signs in again."
+
+[mcp_connect.fallback]
+title = "If discovery fails behind a path-mounted proxy"
+body = "This server is mounted under a path. Until the proxy in front of it forwards the two discovery addresses at the host root, point Claude Code at the sign-in metadata directly:"
+note = "Remove the drust entry added above before adding this one."
+
+[mcp_connect.scope]
+title = "What this connection can and cannot do"
+rights = "On every tenant your account can see, Claude acts with service-level rights. A tenant you lose access to stops working on the next call."
+clients = "Only Claude Code is supported. Codex, Cursor, Claude Desktop and Gemini are not supported yet."
+ci = "CI jobs and fresh containers cannot use MCP: signing in needs a browser. Use the REST API with a tenant key there."
+functions = "This connection cannot deploy edge functions: it carries no tenant key. To deploy a .wasm, open the tenant Functions page in the admin UI; it shows the upload command."
+uploads = "Files upload without any key in the chat: Claude asks for a one-file upload ticket (create_upload_url) and sends the file in chunks."
+
+[mcp_connect.copy]
+button = "Copy"
+done = "Copied"
+failed = "Copy failed"
+
 [mcp_diag.check.mcp]
 label = "MCP endpoint answers with a sign-in challenge (401)"
 hint = "421: the proxy sends a Host that is neither 127.0.0.1:47826 nor the public host. 404 with MCP_DISABLED: the server that answered has MCP off. Any other 404: requests under the base path do not reach drust."
@@ -921,6 +973,7 @@ flag_sibling_rejected = "duplicate refresh"
 flag_sibling_rejected_hint = "A refresh token this connection had already replaced was presented; the latest time is shown in the row. This is normal when several Claude Code sessions on one machine refresh at the same moment. If Last used shows activity you do not recognize, revoke this connection."
 btn_revoke = "Revoke"
 btn_revoke_all = "Revoke all"
+connect_link = "Connect Claude Code"
 
 [settings.mcp_grants.confirm]
 revoke_all_title = "Revoke all MCP connections"
