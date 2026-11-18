@@ -689,6 +689,9 @@ async fn main() -> anyhow::Result<()> {
             // #952 — the SAME shared room bus TenantStack threads below, so a
             // session-revoke handler's evict reaches live WS subscribers.
             bus_rooms: bus_rooms.clone(),
+            // The SAME config and limiters the management state holds.
+            mcp_oauth: mcp_oauth.clone(),
+            mcp_oauth_rl: mcp_oauth_rl.clone(),
         },
         bus: bus.clone(),
         bus_rooms: bus_rooms.clone(),

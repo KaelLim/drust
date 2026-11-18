@@ -782,3 +782,102 @@ pub async fn terminate(
     token_locks().remove(&token);
     (StatusCode::NO_CONTENT, tus_headers()).into_response()
 }
+
+/// Removes one tus session from outside the handlers: the spool, the session
+/// row and the append lock, the same three things `terminate` removes. A
+/// malformed token or a tenant that is gone is `Ok(())` with nothing touched
+/// (the token is shape-checked before any filesystem use).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn abort_session(
+    files: &TenantFilesState,
+    tenant_id: &str,
+    upload_token: &str,
+) -> anyhow::Result<()> {
+    if !session::is_valid_token(upload_token) {
+        return Ok(());
+    }
+    let Some(pool) = files.tenants.get_if_live(tenant_id) else {
+        return Ok(());
+    };
+    match tokio::fs::remove_file(spool_path(files, tenant_id, upload_token)).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    session::delete_session(&pool, upload_token).await?;
+    token_locks().remove(upload_token);
+    Ok(())
+}
+
+#[cfg(test)]
+mod abort_tests {
+    use super::*;
+
+    const TID: &str = "t1";
+
+    fn fixture(
+        dir: &std::path::Path,
+    ) -> (TenantFilesState, crate::storage::pool::SharedTenantPool) {
+        let root = dir.to_path_buf();
+        crate::storage::tenant_db::open_write(&root, TID).unwrap();
+        let registry = Arc::new(crate::storage::pool::TenantRegistry::new(root.clone(), 2));
+        let pool = registry.get_if_live(TID).expect("tenant exists");
+        let state = TenantFilesState::test_default(None, root, registry);
+        (state, pool)
+    }
+
+    #[tokio::test]
+    async fn abort_session_removes_row_spool_and_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, pool) = fixture(dir.path());
+        let tok = uuid::Uuid::new_v4().to_string();
+        session::insert_session(
+            &pool,
+            session::NewSession {
+                upload_token: tok.clone(),
+                tenant_id: TID.into(),
+                key: "k.bin".into(),
+                visibility: "private".into(),
+                original_name: "a.bin".into(),
+                content_type: None,
+                total_length: 4,
+                expires_at: "2999-01-01T00:00:00+00:00".into(),
+                uploader: "service".into(),
+                path: None,
+            },
+        )
+        .await
+        .unwrap();
+        let spool = spool_path(&state, TID, &tok);
+        std::fs::create_dir_all(spool.parent().unwrap()).unwrap();
+        std::fs::write(&spool, b"ab").unwrap();
+        let _lock = token_lock(&tok);
+        assert!(token_locks().contains_key(&tok), "anti-vacuous");
+
+        abort_session(&state, TID, &tok).await.unwrap();
+        assert!(session::get_session(&pool, &tok).await.unwrap().is_none());
+        assert!(!spool_path(&state, TID, &tok).exists());
+        assert!(!token_locks().contains_key(&tok));
+        // A second abort finds nothing and still succeeds.
+        abort_session(&state, TID, &tok).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_session_refuses_a_malformed_token_and_ignores_a_gone_tenant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, _pool) = fixture(dir.path());
+        // A traversal-shaped token reaches no filesystem path.
+        let tdir = crate::storage::tenant_db::tenant_dir(dir.path(), TID);
+        std::fs::create_dir_all(tdir.join("_uploads")).unwrap();
+        let outside = tdir.join("x.part");
+        std::fs::write(&outside, b"keep").unwrap();
+        assert!(abort_session(&state, TID, "../x").await.is_ok());
+        assert!(outside.exists());
+        let uuid = uuid::Uuid::new_v4().to_string();
+        assert!(abort_session(&state, "no-such-tenant", &uuid).await.is_ok());
+        assert!(
+            !crate::storage::tenant_db::tenant_dir(dir.path(), "no-such-tenant").exists(),
+            "a gone tenant is not created"
+        );
+    }
+}

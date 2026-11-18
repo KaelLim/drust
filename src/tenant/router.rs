@@ -73,6 +73,12 @@ pub struct TenantAuthState {
     /// when a user session is revoked its in-flight rooms must be dropped here —
     /// see [`TenantAuthState::revoke_user_realtime`].
     pub bus_rooms: crate::tenant::rooms::RoomBus,
+    /// The MCP OAuth config, the SAME `Arc` the management state holds. The
+    /// files router mounts upload-ticket redemption only when it is enabled.
+    pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
+    /// The MCP OAuth limiters, the SAME `Arc` the management state holds:
+    /// upload-ticket misses charge `rs_miss_ip`.
+    pub mcp_oauth_rl: Arc<crate::mgmt::mcp_oauth::rl::McpOauthLimiters>,
 }
 
 impl TenantAuthState {
@@ -141,6 +147,10 @@ impl TenantAuthState {
             // A fresh empty bus: tests that assert on room eviction build their
             // own subscribers against THIS instance, so a default is correct.
             bus_rooms: crate::tenant::rooms::RoomBus::default(),
+            // Disabled: no tenant test sees upload-ticket redemption unless it
+            // turns it on.
+            mcp_oauth: Arc::new(crate::mgmt::mcp_oauth::config::McpOauthConfig::disabled()),
+            mcp_oauth_rl: Arc::new(crate::mgmt::mcp_oauth::rl::McpOauthLimiters::new()),
         }
     }
 }
@@ -1013,7 +1023,9 @@ pub async fn require_service_layer(req: Request<axum::body::Body>, next: Next) -
     next.run(req).await
 }
 
-fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
+/// The token of an `Authorization: Bearer <token>` header. The scheme is
+/// matched byte for byte (`Bearer` and one space), as it always has been.
+pub(crate) fn extract_bearer<B>(req: &Request<B>) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.to_string())
 }
@@ -1063,5 +1075,14 @@ mod tests {
             0,
             "revoke_user_realtime must evict the tenant's in-flight rooms"
         );
+    }
+
+    #[test]
+    fn test_default_leaves_mcp_oauth_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
+        let registry = Arc::new(TenantRegistry::new(dir.path().to_path_buf(), 2));
+        let s = TenantAuthState::test_default(meta, registry);
+        assert!(!s.mcp_oauth.enabled());
     }
 }
