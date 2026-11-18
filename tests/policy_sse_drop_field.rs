@@ -10,8 +10,8 @@
 //!
 //! Ordering trap (see `policy_sse.rs`): `grab_pool` is a SEPARATE registry with
 //! its own schema cache, so the seed and the policy are written before the app
-//! first touches `posts`, and the drop goes THROUGH the app's MCP so the app's
-//! cache is invalidated the way a real caller sees it.
+//! first touches `posts`, and the drop goes THROUGH the app's account-level
+//! MCP so the app's cache is invalidated the way a real caller sees it.
 
 #[path = "helpers.rs"]
 mod helpers;
@@ -21,7 +21,7 @@ use axum::http::{Request, StatusCode, header};
 use drust::storage::schema::DmlVerb;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use helpers::{grab_pool, spin_up_dual_role_self_register};
+use helpers::grab_pool;
 use serde_json::{Value, json};
 use std::time::Duration;
 use tower::ServiceExt;
@@ -190,115 +190,21 @@ async fn list_posts(app: &axum::Router, tid: &str, tok: &str) -> (StatusCode, Va
 
 // ── MCP plumbing (drop_field is service-only MCP) ──────────────────────
 
-fn mcp_req_with_session(tid: &str, token: &str, sid: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", sid)
-        .body(Body::from(body.to_string()))
-        .unwrap()
+/// The account harness with self-registration on (the fixture these tests
+/// were written against had it on).
+async fn harness(t: &'static str) -> helpers::AccountMcpHarness {
+    let h = helpers::spin_up_account_mcp(t).await;
+    helpers::account_allow_self_register(&h).await;
+    h
 }
 
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.strip_prefix("data:").unwrap_or(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            out.push(v);
-        }
-    }
-    out
-}
-
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            json!({
-                "jsonrpc":"2.0","id":1,"method":"initialize",
-                "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                          "clientInfo":{"name":"test","version":"0"}}
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let r = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(r.status(), StatusCode::OK, "initialize failed");
-    let sid = r
-        .headers()
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(r).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &sid,
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    sid
-}
-
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    sid: &str,
-    name: &str,
-    args: Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        sid,
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
-               "params":{"name":name,"arguments":args}}),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} status {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
-}
-
-/// `drop_field posts.<field>` through the app's MCP → the parsed tool result.
-async fn mcp_drop_field(app: &axum::Router, tid: &str, svc: &str, field: &str) -> Value {
-    let sid = mcp_init(app, tid, svc).await;
-    let out = mcp_call_tool(
-        app,
-        tid,
-        svc,
-        &sid,
+/// `drop_field posts.<field>` through the app's account-level MCP → the
+/// parsed tool result.
+async fn mcp_drop_field(h: &helpers::AccountMcpHarness, field: &str) -> Value {
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "drop_field",
         json!({"collection": "posts", "field": field}),
     )
@@ -310,26 +216,32 @@ async fn mcp_drop_field(app: &axum::Router, tid: &str, svc: &str, field: &str) -
 
 #[tokio::test]
 async fn inflight_anon_sse_goes_silent_after_a_policy_field_is_dropped() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e6-inflight").await;
-    seed(&dir, &tid, json!({"x": {"$is_null": true}})).await;
-    let mut events = open_sse(&app, &tid, &anon).await;
+    let h = harness("e6-inflight").await;
+    seed(&h.dir, &h.tid, json!({"x": {"$is_null": true}})).await;
+    let mut events = open_sse(&h.app, &h.tid, &h.anon).await;
 
     // Before the drop the policy works: `hidden` (x set) is filtered.
-    let hidden = insert_post(&app, &tid, &svc, json!({"status": "hidden", "x": "h"})).await;
-    insert_post(&app, &tid, &svc, json!({"status": "visible"})).await;
+    let hidden = insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status": "hidden", "x": "h"}),
+    )
+    .await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "visible"})).await;
     let first = next_event(&mut events).await;
     assert_eq!(
         first["record"]["status"], "visible",
         "pre-drop: the policy must hide `hidden`"
     );
 
-    let drop = mcp_drop_field(&app, &tid, &svc, "x").await;
+    let drop = mcp_drop_field(&h, "x").await;
     assert_eq!(drop["dropped_field"], "x");
 
     // After the drop every event row lacks `x`: none may pass.
-    insert_post(&app, &tid, &svc, json!({"status": "after"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "after"})).await;
     assert_eq!(
-        patch_post(&app, &tid, &svc, hidden, json!({"status": "after2"})).await,
+        patch_post(&h.app, &h.tid, &h.svc, hidden, json!({"status": "after2"})).await,
         StatusCode::OK,
         "the write must really happen, else silence proves nothing"
     );
@@ -347,24 +259,24 @@ async fn inflight_anon_sse_goes_silent_after_a_policy_field_is_dropped() {
 
 #[tokio::test]
 async fn anon_sse_reconnect_after_the_drop_is_200_and_silent() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e6-reconnect").await;
-    seed(&dir, &tid, json!({"x": {"$is_null": true}})).await;
-    mcp_drop_field(&app, &tid, &svc, "x").await;
+    let h = harness("e6-reconnect").await;
+    seed(&h.dir, &h.tid, json!({"x": {"$is_null": true}})).await;
+    mcp_drop_field(&h, "x").await;
 
     // Connect-time does not compile the policy: still 200 (no new 4xx/5xx).
-    let mut events = open_sse(&app, &tid, &anon).await;
-    insert_post(&app, &tid, &svc, json!({"status": "after"})).await;
+    let mut events = open_sse(&h.app, &h.tid, &h.anon).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "after"})).await;
     assert_silent_but_open(&mut events, "anon reconnected after drop").await;
 }
 
 #[tokio::test]
 async fn service_sse_still_receives_every_event_after_the_drop() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("e6-service").await;
-    seed(&dir, &tid, json!({"x": {"$is_null": true}})).await;
-    mcp_drop_field(&app, &tid, &svc, "x").await;
+    let h = harness("e6-service").await;
+    seed(&h.dir, &h.tid, json!({"x": {"$is_null": true}})).await;
+    mcp_drop_field(&h, "x").await;
 
-    let mut events = open_sse(&app, &tid, &svc).await;
-    insert_post(&app, &tid, &svc, json!({"status": "after"})).await;
+    let mut events = open_sse(&h.app, &h.tid, &h.svc).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "after"})).await;
     let ev = next_event(&mut events).await;
     assert_eq!(ev["record"]["status"], "after");
     assert!(
@@ -375,16 +287,16 @@ async fn service_sse_still_receives_every_event_after_the_drop() {
 
 #[tokio::test]
 async fn dropping_an_unreferenced_field_changes_nothing() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e6-unref").await;
-    seed(&dir, &tid, json!({"status": "published"})).await;
-    let mut events = open_sse(&app, &tid, &anon).await;
+    let h = harness("e6-unref").await;
+    seed(&h.dir, &h.tid, json!({"status": "published"})).await;
+    let mut events = open_sse(&h.app, &h.tid, &h.anon).await;
 
-    let drop = mcp_drop_field(&app, &tid, &svc, "y").await;
+    let drop = mcp_drop_field(&h, "y").await;
     assert_eq!(drop["dropped_field"], "y");
     assert!(drop.get("warnings").is_none(), "nothing to report: {drop}");
 
-    insert_post(&app, &tid, &svc, json!({"status": "draft"})).await;
-    insert_post(&app, &tid, &svc, json!({"status": "published"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "draft"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "published"})).await;
     let first = next_event(&mut events).await;
     assert_eq!(first["record"]["status"], "published");
     assert_silent_but_open(&mut events, "draft must stay filtered").await;
@@ -392,17 +304,17 @@ async fn dropping_an_unreferenced_field_changes_nothing() {
 
 #[tokio::test]
 async fn sql_face_still_fails_closed_after_the_drop() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e6-sql").await;
-    seed(&dir, &tid, json!({"x": {"$is_null": true}})).await;
-    insert_post(&app, &tid, &svc, json!({"status": "a"})).await;
-    insert_post(&app, &tid, &svc, json!({"status": "b", "x": "set"})).await;
-    mcp_drop_field(&app, &tid, &svc, "x").await;
+    let h = harness("e6-sql").await;
+    seed(&h.dir, &h.tid, json!({"x": {"$is_null": true}})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "a"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"status": "b", "x": "set"})).await;
+    mcp_drop_field(&h, "x").await;
 
-    let (status, body) = list_posts(&app, &tid, &anon).await;
+    let (status, body) = list_posts(&h.app, &h.tid, &h.anon).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     assert_eq!(body["error_code"], "POLICY_COMPILE_ERROR", "{body}");
 
-    let (status, body) = list_posts(&app, &tid, &svc).await;
+    let (status, body) = list_posts(&h.app, &h.tid, &h.svc).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["records"].as_array().map(Vec::len),

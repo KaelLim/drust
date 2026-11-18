@@ -10,7 +10,7 @@
 //!   • an audit row (op `tenant.egress.set`) lands on every mutation.
 //! The 65 → 67 MCP tool-count bump is pinned by the derived lib test
 //! (`cargo test --lib mcp::handler`); this file drives the two new tools
-//! end-to-end over the Streamable-HTTP endpoint.
+//! end-to-end over the account-level `/mcp` endpoint.
 
 mod helpers;
 
@@ -238,137 +238,6 @@ fn get_req(tid: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
-// ─── MCP helpers (copied from admin_users.rs) ────────────────────────────────
-
-fn mcp_req_with_session(
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let ct = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    if ct.starts_with("text/event-stream") {
-        let mut out = Vec::new();
-        for frame in text.split("\n\n") {
-            for line in frame.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    let trimmed = data.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(v) = serde_json::from_str(trimmed) {
-                        out.push(v);
-                    }
-                }
-            }
-        }
-        out
-    } else if text.is_empty() {
-        vec![]
-    } else {
-        vec![serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)]
-    }
-}
-
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"}
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(init_resp.status(), StatusCode::OK, "MCP initialize failed");
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize must set mcp-session-id")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(init_resp).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &session_id,
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    session_id
-}
-
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        session_id,
-        serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} HTTP status: {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn service_put_valid_then_get_returns_normalized() {
     let tid = "t-egr1";
@@ -483,15 +352,12 @@ async fn fifty_first_entry_returns_400_egress_too_many() {
 
 #[tokio::test]
 async fn mcp_set_egress_allowlist_reflected_via_rest_get() {
-    let tid = "t-egr6";
-    let (app, service, _anon, _user, _dir) = spin_up_egress(tid).await;
-    let sid = mcp_init(&app, tid, &service).await;
+    let h = helpers::spin_up_account_mcp("t-egr6").await;
 
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &service,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_egress_allowlist",
         serde_json::json!({"entries":[{"system":"function","uri":"https://api.github.com/"}]}),
     )
@@ -502,17 +368,21 @@ async fn mcp_set_egress_allowlist_reflected_via_rest_get() {
     );
 
     // REST GET reflects what the MCP tool wrote (shared meta store).
-    let resp = app.clone().oneshot(get_req(tid, &service)).await.unwrap();
+    let resp = h
+        .app
+        .clone()
+        .oneshot(get_req(&h.tid, &h.svc))
+        .await
+        .unwrap();
     let v = json_body(resp).await;
     assert_eq!(v["entries"][0]["uri"], "https://api.github.com");
     assert_eq!(v["entries"][0]["system"], "function");
 
     // The MCP get tool returns the same view.
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &service,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "get_egress_allowlist",
         serde_json::json!({}),
     )

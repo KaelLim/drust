@@ -567,159 +567,42 @@ async fn rest_anon_token_rejected_with_403_service_only() {
     assert_eq!(v["error_code"].as_str(), Some("SERVICE_ONLY"));
 }
 
-// ── MCP tool tests for webhook CRUD (Task 7) ───────────────────────────────
+// ── MCP tool tests for webhook CRUD (Task 7), over the account-level `/mcp` ──
 //
-// TODO: extract the mcp_* helpers below into a shared module — they are
-// duplicated from `tests/admin_users.rs` (lines 318-435).
+// The account endpoint builds every call with the meta handle, so the
+// webhook tools' egress registration gate (invariant 6) runs here exactly as
+// on REST: each test allowlists the origins it registers first.
 
-/// Build one MCP HTTP request (session-id must be set externally via header).
-fn mcp_req_with_session(
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-/// Parse rmcp Streamable-HTTP response: JSON or SSE → flat Vec<Value>.
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let ct = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    if ct.starts_with("text/event-stream") {
-        let mut out = Vec::new();
-        for frame in text.split("\n\n") {
-            for line in frame.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    let trimmed = data.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(v) = serde_json::from_str(trimmed) {
-                        out.push(v);
-                    }
-                }
-            }
-        }
-        out
-    } else if text.is_empty() {
-        vec![]
-    } else {
-        vec![serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)]
+/// Allowlist `origins` for system `webhook` through the MCP
+/// `set_egress_allowlist` tool (it replaces the whole list).
+async fn mcp_allowlist_webhook_origins(h: &helpers::AccountMcpHarness, origins: &[&str]) {
+    let entries: Vec<serde_json::Value> = origins
+        .iter()
+        .map(|o| serde_json::json!({"system": "webhook", "uri": o}))
+        .collect();
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "set_egress_allowlist",
+        serde_json::json!({ "entries": entries }),
+    )
+    .await;
+    for o in origins {
+        assert!(txt.contains(o), "egress allowlist must hold {o}: {txt}");
     }
-}
-
-/// Full MCP initialize handshake → returns session_id string.
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"}
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(
-        init_resp.status(),
-        axum::http::StatusCode::OK,
-        "MCP initialize failed"
-    );
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize must set mcp-session-id")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(init_resp).await;
-
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &session_id,
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    session_id
-}
-
-/// Call one MCP tool and return the raw text of content[0].text.
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        session_id,
-        serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} HTTP status: {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
 }
 
 #[tokio::test]
 async fn mcp_create_webhook_returns_secret_then_list_redacts() {
-    let tid = "t-mcpwh1";
-    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
-    let sid = mcp_init(&app, tid, &svc).await;
+    let h = helpers::spin_up_account_mcp("t-mcpwh1").await;
+    mcp_allowlist_webhook_origins(&h, &["https://example.com"]).await;
 
     // create_webhook → raw 64-hex secret
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_webhook",
         serde_json::json!({
             "collection": "notes",
@@ -749,11 +632,10 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
     assert_eq!(v["active"], true);
 
     // list_webhooks → redacted secret
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "list_webhooks",
         serde_json::json!({}),
     )
@@ -768,15 +650,13 @@ async fn mcp_create_webhook_returns_secret_then_list_redacts() {
 
 #[tokio::test]
 async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
-    let tid = "t-mcpwh2";
-    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
-    let sid = mcp_init(&app, tid, &svc).await;
+    let h = helpers::spin_up_account_mcp("t-mcpwh2").await;
+    mcp_allowlist_webhook_origins(&h, &["https://example.com", "http://attacker.example"]).await;
 
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_webhook",
         serde_json::json!({
             "collection": "notes",
@@ -789,11 +669,10 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     let id = v["id"].as_i64().unwrap();
 
     // Good update — change url + toggle active off
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_webhook",
         serde_json::json!({"id": id, "url": "https://example.com/b", "active": false}),
     )
@@ -803,11 +682,10 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     assert_eq!(v["id"], id);
 
     // Verify via list
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "list_webhooks",
         serde_json::json!({}),
     )
@@ -818,11 +696,10 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     assert_eq!(items[0]["active"].as_bool(), Some(false));
 
     // Bad update — http://attacker URL should error
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_webhook",
         serde_json::json!({"id": id, "url": "http://attacker.example"}),
     )
@@ -833,11 +710,10 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
     );
 
     // Bad update — invalid event name
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_webhook",
         serde_json::json!({"id": id, "events": ["bogus"]}),
     )
@@ -850,15 +726,13 @@ async fn mcp_update_webhook_changes_url_and_rejects_invalid() {
 
 #[tokio::test]
 async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
-    let tid = "t-mcpwh3";
-    let (app, svc, _dir) = spin_up_tenant_with_role(tid, "service").await;
-    let sid = mcp_init(&app, tid, &svc).await;
+    let h = helpers::spin_up_account_mcp("t-mcpwh3").await;
+    mcp_allowlist_webhook_origins(&h, &["https://example.com"]).await;
 
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_webhook",
         serde_json::json!({
             "collection": "notes",
@@ -871,11 +745,10 @@ async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
     let id = v["id"].as_i64().unwrap();
 
     // Delete the existing webhook.
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "delete_webhook",
         serde_json::json!({"id": id}),
     )
@@ -885,11 +758,10 @@ async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
     assert_eq!(v["id"], id);
 
     // Delete again → NOT_FOUND error.
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "delete_webhook",
         serde_json::json!({"id": id}),
     )
@@ -900,11 +772,10 @@ async fn mcp_delete_webhook_succeeds_and_errors_on_missing_id() {
     );
 
     // Update on missing id also errors.
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_webhook",
         serde_json::json!({"id": 9999, "active": true}),
     )

@@ -332,150 +332,21 @@ async fn get_nonexistent_user_returns_404() {
 // Task 24 MCP tool tests
 // =============================================================================
 
-/// Build one MCP HTTP request (session-id must be set externally via header).
-fn mcp_req_with_session(
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-/// Parse rmcp Streamable-HTTP response: JSON or SSE → flat Vec<Value>.
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let ct = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    if ct.starts_with("text/event-stream") {
-        let mut out = Vec::new();
-        for frame in text.split("\n\n") {
-            for line in frame.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    let trimmed = data.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(v) = serde_json::from_str(trimmed) {
-                        out.push(v);
-                    }
-                }
-            }
-        }
-        out
-    } else if text.is_empty() {
-        vec![]
-    } else {
-        vec![serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)]
-    }
-}
-
-/// Full MCP initialize handshake → returns (app clone with session, session_id).
-/// Performs: initialize + notifications/initialized, returns session_id string.
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"}
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(init_resp.status(), StatusCode::OK, "MCP initialize failed");
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize must set mcp-session-id")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(init_resp).await;
-
-    // notifications/initialized
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &session_id,
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    session_id
-}
-
-/// Call one MCP tool and return the raw text of content[0].text.
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        session_id,
-        serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} HTTP status: {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    // Extract content[0].text from result or return full msg as string
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
+/// The account harness with self-registration on, as the fixture these tests
+/// were written against had it.
+async fn harness(t: &'static str) -> helpers::AccountMcpHarness {
+    let h = helpers::spin_up_account_mcp(t).await;
+    helpers::account_allow_self_register(&h).await;
+    h
 }
 
 #[tokio::test]
 async fn mcp_create_user_tool() {
-    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu1").await;
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let h = harness("t-mcpu1").await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_user",
         serde_json::json!({"email":"a@b.com","password":"longpassword"}),
     )
@@ -486,15 +357,13 @@ async fn mcp_create_user_tool() {
 
 #[tokio::test]
 async fn mcp_list_get_update_delete_user() {
-    let (app, tid, svc, _anon, _dir) = helpers::spin_up_dual_role_self_register("t-mcpu2").await;
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("t-mcpu2").await;
 
     // Create
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_user",
         serde_json::json!({"email":"a@b.com","password":"longpassword"}),
     )
@@ -508,15 +377,21 @@ async fn mcp_list_get_update_delete_user() {
         .collect();
 
     // List
-    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "list_users", serde_json::json!({})).await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "list_users",
+        serde_json::json!({}),
+    )
+    .await;
     assert!(txt.contains("a@b.com"), "list_users body: {txt}");
 
     // Get
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "get_user",
         serde_json::json!({"user_id": &uid}),
     )
@@ -524,11 +399,10 @@ async fn mcp_list_get_update_delete_user() {
     assert!(txt.contains("a@b.com"), "get_user body: {txt}");
 
     // Update — change email
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_user",
         serde_json::json!({"user_id": &uid, "email": "z@b.com"}),
     )
@@ -536,11 +410,10 @@ async fn mcp_list_get_update_delete_user() {
     assert!(txt.contains("z@b.com"), "update_user body: {txt}");
 
     // Revoke sessions (safe on a user with no sessions)
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "revoke_user_sessions",
         serde_json::json!({"user_id": &uid}),
     )
@@ -548,11 +421,10 @@ async fn mcp_list_get_update_delete_user() {
     assert!(txt.contains("revoked"), "revoke_user_sessions body: {txt}");
 
     // Delete
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "delete_user",
         serde_json::json!({"user_id": &uid}),
     )
@@ -566,8 +438,8 @@ async fn mcp_list_get_update_delete_user() {
 
 #[tokio::test]
 async fn mcp_set_owner_field_tool() {
-    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-mcpof").await;
-    let pool = helpers::grab_pool(&tid, &dir).await;
+    let h = harness("t-mcpof").await;
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     pool.with_writer(|c| {
         c.execute_batch(
             "CREATE TABLE posts (
@@ -581,13 +453,10 @@ async fn mcp_set_owner_field_tool() {
     })
     .await
     .unwrap();
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_owner_field",
         serde_json::json!({"collection":"posts","field":"user_id","read_scope":"own"}),
     )
@@ -598,92 +467,15 @@ async fn mcp_set_owner_field_tool() {
 
 #[tokio::test]
 async fn mcp_set_self_register_tool() {
-    // Build a tenant app with meta wired into McpRegistry so set_self_register
-    // can write to meta.sqlite. The standard test helper (test_mcp_http) does
-    // NOT wire meta — we build the stack manually here.
-    use drust::auth::bearer::{generate_token, hash_token};
-    use drust::mcp::http_registry::McpHttpRegistry;
-    use drust::mcp::server::McpRegistry;
-    use drust::storage::meta::open_meta;
-    use drust::storage::pool::TenantRegistry;
-    use drust::tenant::router::TenantAuthState;
-    use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    let tid = "t-mcpsr";
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().to_path_buf();
-    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
-        rusqlite::params![tid],
-    )
-    .unwrap();
-    let svc_tok = generate_token();
-    conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'service')",
-        rusqlite::params![tid, hash_token(&svc_tok)],
-    )
-    .unwrap();
-    let _ = drust::storage::tenant_db::open_write(&data, tid).unwrap();
-    drust::db::migrations::run_migrations(&conn, &data).unwrap();
-
-    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
-    let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
-    let meta_arc = Arc::new(Mutex::new(conn));
-    // #955 — the auth state is built FIRST so its bus can be threaded into the
-    // MCP registry below as well: `delete_user` / `revoke_user_sessions` are MCP
-    // tools, and they must evict the bus this stack's sockets are on.
-    let mut state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
-    let bus_rooms = helpers::shared_bus_rooms(&mut state);
-    let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
-        tenants.clone(),
-        bus.clone(),
-        webhooks.clone(),
-        None,
-        String::new(),
-        Arc::new([0u8; 32]),
-        Some(meta_arc.clone()),
-        52_428_800,
-        1_000_000,
-        Arc::new(Mutex::new(
-            drust::safety::audit_db::open_audit_db_memory().unwrap(),
-        )),
-        bus_rooms.clone(),
-        drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
-        drust::tenant::rooms::RoomsConfig::test_defaults(),
-        Arc::new(drust::tenant::auth_cache::AuthCache::new(
-            std::time::Duration::from_secs(10),
-            200_000,
-        )),
-        drust::functions::dispatcher::FunctionDispatcher::new(
-            tenants.clone(),
-            tokio::sync::mpsc::channel(8).0,
-            drust::functions::FnConfig::test_default(),
-        ),
-    ));
-    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
-    let stack = TenantStack {
-        auth: state,
-        bus: bus.clone(),
-        bus_rooms: bus_rooms.clone(),
-        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
-        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),
-        files: None,
-        webhooks,
-        functions,
-        functions_exec,
-        fn_cfg,
-        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
-        cors_origins: Vec::new(),
-    };
-    let app = build_tenant_router(stack);
+    // The account harness: `set_self_register` writes meta.sqlite, and the
+    // account endpoint builds every call with the meta handle. Self-register
+    // is deliberately NOT turned on first — the point is that MCP turns it on.
+    let h = helpers::spin_up_account_mcp("t-mcpsr").await;
+    let tid = &h.tid;
 
     // Confirm register is off by default.
-    let r = app
+    let r = h
+        .app
         .clone()
         .oneshot(
             Request::builder()
@@ -704,12 +496,10 @@ async fn mcp_set_self_register_tool() {
     );
 
     // Enable self-register via MCP tool.
-    let sid = mcp_init(&app, tid, &svc_tok).await;
-    let txt = mcp_call_tool(
-        &app,
-        tid,
-        &svc_tok,
-        &sid,
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_self_register",
         serde_json::json!({"enabled": true}),
     )
@@ -717,7 +507,9 @@ async fn mcp_set_self_register_tool() {
     assert!(txt.contains("allow_self_register"), "body: {txt}");
 
     // Now /auth/register should succeed.
-    let r = app
+    let r = h
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -735,21 +527,17 @@ async fn mcp_set_self_register_tool() {
         "register should now work: {}",
         r.status()
     );
-    drop(dir);
 }
 
 #[tokio::test]
 async fn mcp_create_user_with_profile_returns_object_not_string() {
     // Regression: profile written as JSON object should round-trip as JSON
     // object, not as a JSON-encoded string.
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-mcpu-profile").await;
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let h = harness("t-mcpu-profile").await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_user",
         json!({
             "email": "p@x.com",
@@ -762,7 +550,14 @@ async fn mcp_create_user_with_profile_returns_object_not_string() {
     let uid = create_resp["user_id"].as_str().unwrap().to_string();
 
     // get_user — the profile field should be an OBJECT, not a string.
-    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "get_user", json!({"user_id": uid})).await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "get_user",
+        json!({"user_id": uid}),
+    )
+    .await;
     let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let profile = &got["profile"];
     assert!(
@@ -779,14 +574,11 @@ async fn mcp_create_user_with_stringified_profile_still_round_trips_as_object() 
     // pre-stringify a JSON object before sending. profile arrives as
     // Value::String("{...}") instead of Value::Object. We should detect this
     // and store the inner JSON so reads still surface a structured object.
-    let (app, tid, svc, _anon, _dir) =
-        helpers::spin_up_dual_role_self_register("t-mcpu-strprofile").await;
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let txt = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let h = harness("t-mcpu-strprofile").await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_user",
         json!({
             "email": "s@x.com",
@@ -799,7 +591,14 @@ async fn mcp_create_user_with_stringified_profile_still_round_trips_as_object() 
     let create_resp: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let uid = create_resp["user_id"].as_str().unwrap().to_string();
 
-    let txt = mcp_call_tool(&app, &tid, &svc, &sid, "get_user", json!({"user_id": uid})).await;
+    let txt = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "get_user",
+        json!({"user_id": uid}),
+    )
+    .await;
     let got: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let profile = &got["profile"];
     assert!(

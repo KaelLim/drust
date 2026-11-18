@@ -411,27 +411,35 @@ async fn user_with_full_caps_still_denied_on_query_mcp_sse() {
             .contains("QUERY_USER_DENIED")
     );
 
-    // /mcp → MCP_USER_DENIED
-    let r = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/t/{tid}/mcp"))
-                .header(header::AUTHORIZATION, format!("Bearer {user}"))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::FORBIDDEN);
-    assert!(
-        String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 65_536).await.unwrap())
-            .contains("MCP_USER_DENIED")
-    );
+    // `/mcp` → 401 invalid_token (account endpoint: OAuth only). It lives at
+    // the host root, so it gets its own harness with the same full caps.
+    let ha = helpers::spin_up_account_mcp("uc-mcp").await;
+    helpers::account_allow_self_register(&ha).await;
+    seed_notes(
+        &ha.dir,
+        &ha.tid,
+        &[
+            DmlVerb::Select,
+            DmlVerb::Insert,
+            DmlVerb::Update,
+            DmlVerb::Delete,
+        ],
+    )
+    .await;
+    let ha_user = register_and_login_via_app(&ha.app, &ha.tid, "u@x.com", "longpassword").await;
+    let auth = format!("Bearer {ha_user}");
+    let (status, headers, body) = helpers::mcp_raw(
+        &ha.app,
+        "POST",
+        &[("authorization", auth.as_str())],
+        Some(json!({"jsonrpc":"2.0","method":"tools/list","id":1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "MCP_OAUTH_REQUIRED");
+    let www = headers["www-authenticate"].to_str().unwrap();
+    assert!(www.contains("error=\"invalid_token\""), "{www}");
 
     // SSE subscribe → SSE_USER_DENIED
     let r = app
