@@ -10,8 +10,8 @@ updated: 2026-08-17
 
 # drust — Rust multi-tenant SQLite BaaS
 
-Self-hosted service providing a PocketHost-like management UI plus per-tenant REST and MCP
-endpoints backed by isolated SQLite files.
+Self-hosted service providing a PocketHost-like management UI plus per-tenant REST endpoints
+and one account-level MCP endpoint, backed by isolated SQLite files.
 
 > [!IMPORTANT]
 > **This file describes the system's current shape, not the path it took to get here.**
@@ -84,7 +84,7 @@ Three SQLite files, three lifetimes:
 
 | File | Holds | Notes |
 |---|---|---|
-| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs, MCP OAuth grants and token hashes (`_mcp_*`) | bearer tokens and admin PATs stored hashed **and** plaintext, so `whoami` and the admin UI can echo the key; `_mcp_*` stores hashes only |
+| `meta.sqlite` | admins, sessions, tenants, bearer tokens, admin PATs, MCP OAuth grants and token hashes (`_mcp_*`) | bearer tokens and admin PATs stored hashed **and** plaintext, so the admin UI can echo the key (MCP `whoami` echoes only the anon key); `_mcp_*` stores hashes only |
 | `tenants/<id>/data.sqlite` | one per tenant: user collections + `_system_*` tables | reads via `SQLITE_OPEN_READONLY` connections under `sqlite3_set_authorizer`; writes serialize on a per-tenant writer mutex (`pool.with_writer`) |
 | `meta_logs.sqlite` | the host-wide audit log | written by a single batching task; lossy under backpressure by design |
 
@@ -111,11 +111,15 @@ reachable by an untrusted caller.
 | `/t/<id>/rpc/<name>` (`kind='sql'`) | service; anon/user only when `anon_callable` and the collection is not row-access-restricted |
 | `/t/<id>/rpc/<name>` (`kind='query'`) | service; anon/user when `anon_callable` — runs a stored `FilterAst` template through the `/list` pipeline under the **caller's** identity, so owner-scope + RLS policy apply by construction (the structured camp; `RPC_ANON_OWNER_SCOPED` does not apply) |
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
-| `/t/<id>/mcp` | **service only** — anon `WRITE_DENIED`, user `MCP_USER_DENIED` |
-| `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | **service only** — full-text index lifecycle, reachable only through `/t/<id>/mcp` |
+| `/mcp` (the account-level MCP endpoint) | **an MCP OAuth access token only** (`drust_mcpat_`, admin tier) — a tenant key, admin PAT, user or anon token, session cookie or upload ticket gets 401 `MCP_OAUTH_REQUIRED` with a challenge. Always mounted; answers 404 `MCP_DISABLED` unless `DRUST_MCP` resolves to enabled. Each call names its `tenant` and is admitted only for a tenant the grant's admin can see (invariants 7 and 21) |
+| `/.well-known/oauth-protected-resource/mcp` (PRM) | unauthenticated — mounted only when `DRUST_MCP` resolves to enabled; pure JSON from config, outside the `/mcp` gates |
+| `/t/<id>/mcp` | retired: **410 `MCP_ENDPOINT_MOVED` to every caller and method** for any tenant id, before bearer auth — not an existence oracle |
+| `/t/<id>/uploads/*` with a `drust_upl_` ticket | only the one tus upload the ticket was minted for by `create_upload_url`; every other route answers the ticket 401. The ticket layer is mounted only when `DRUST_MCP` resolves to enabled |
+| `/admin/mcp` (connect page), `/admin/mcp/diagnostics` | connect page: any signed-in admin, a personal page like `/admin/settings`, mounted only when `DRUST_MCP` resolves to enabled. Diagnostics: **owner only** (`require_owner_layer`), always mounted, shows the disabled reason while MCP is off |
+| `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | full-text index lifecycle, reachable only through the account-level `/mcp`, like every MCP tool |
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
 | `/t/<id>/openapi.json`, `types.ts`, `zod.ts` | service and anon (different shapes; `X-Drust-Schema-Source` records which) |
-| `/.well-known/oauth-authorization-server` (AS metadata) | unauthenticated — mounted **only when `DRUST_MCP` resolves to enabled** (`McpOauthConfig::enabled()`: `on` with a valid `DRUST_PUBLIC_URL`; `auto` currently mounts nothing). Pure JSON from config, never touches meta, never reads `Host` |
+| `/.well-known/oauth-authorization-server` (AS metadata) | unauthenticated — mounted **only when `DRUST_MCP` resolves to enabled** (`McpOauthConfig::enabled()`: `on` with a usable `DRUST_PUBLIC_URL`, or `auto` with a non-loopback `https://` `DRUST_PUBLIC_URL` and an empty `DRUST_BASE_PATH`). Pure JSON from config, never touches meta, never reads `Host` |
 | `/oauth/token`, `/oauth/revoke` | unauthenticated, same mount rule. The credential is in the form body — never a cookie, never the query string: an authorization code plus its PKCE verifier (token), or a `drust_mcpat_` / `drust_mcprt_` token; a PAT or tenant key sent here is "an invalid token" and untouched. Every non-2xx is OAuth JSON with `Cache-Control: no-store` |
 | `/oauth/authorize` | unauthenticated; mounted only when `DRUST_MCP` resolves to enabled. Writes nothing. Before client and `redirect_uri` validation it answers an HTML error page and never redirects; after it, errors redirect only to the validated loopback `redirect_uri` and success goes to `/oauth/consent` |
 | `/oauth/consent`, `/oauth/consent/approve`, `/oauth/consent/deny` | **admin session cookie only** — a `drust_pat_*` bearer gets 403 `MCP_CONSENT_COOKIE_REQUIRED`; mounted only when `DRUST_MCP` resolves to enabled |
@@ -141,11 +145,20 @@ file prefix policies, audit toggle) are **service-only** on every face. Storage 
 > writer open carries `SQLITE_DBCONFIG_DEFENSIVE`.
 
 > [!CAUTION]
-> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for
-> `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects a non-loopback Host with a
-> 403/421 that looks like a WAF block. Garage's `/public/*` (the bare-metal host) is the same
-> family in reverse: it routes *by* Host, so that block must send `Host: public.web.local`.
-> The Compose block talks to an S3 API path-style and keeps `Host {upstream_hostport}`.
+> **The account-level `/mcp` checks `Host` before authentication.** It accepts `localhost`,
+> `127.0.0.1`, `::1` and the host of `DRUST_PUBLIC_URL` (any port); a bad or missing Host is
+> `421 MCP_HOST_NOT_ALLOWED`, never 403 (Claude Code treats a 403 like a 401 and starts a
+> sign-in that cannot succeed), and `403 MCP_ORIGIN_NOT_ALLOWED` only answers a browser
+> request that carries a disallowed `Origin`. rmcp's own guard is configured from the same
+> list. Keep `header_up Host "127.0.0.1:47826"` on the `/drust/*` block and on the Compose
+> catch-all as the default; a 421 on `/mcp` means the proxy forwards some third host name or
+> `DRUST_PUBLIC_URL` names the wrong host. The retired `/t/<id>/mcp` answers 410 before any
+> Host or bearer check. On bare metal the two root `/.well-known/*` rules in
+> `deploy/Caddyfile` are mandatory, and the upstream must forward them without a redirect:
+> without them Claude Code cannot discover the authorization server. Garage's `/public/*`
+> (the bare-metal host) is the same family in reverse: it routes *by* Host, so that block
+> must send `Host: public.web.local`. The Compose block talks to an S3 API path-style and
+> keeps `Host {upstream_hostport}`.
 
 > [!CAUTION]
 > **The systemd unit deliberately OMITS `MemoryDenyWriteExecute`.** wasmtime's Cranelift JIT
@@ -247,13 +260,15 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    (`CONN_EXPIRED` + Close 1008 on the rooms socket, end-of-stream on SSE), the socket-side
    half of the per-request expiry gate; nothing else is touched, and sliding user sessions
    and never-expiring tenant bearers deliberately carry no deadline.
-   Per-tenant **MCP** Streamable-HTTP sessions are outside this set: the server declares no
-   push capability, so a session's GET stream carries nothing and every POST
-   re-authenticates. Adding any server capability or push makes reroll and the PAT family
-   end MCP sessions too (`server_capabilities_declare_no_server_push` pins the exact
-   capability set; rmcp does not stop an undeclared push, so
-   `mcp_sources_never_push` also fails on any code under `src/mcp/` that names the
-   peer — `call_tool` and the resource/prompt handlers hold a `RequestContext`).
+   The account-level **MCP** endpoint is outside this set: it is stateless (no rmcp
+   session, no GET stream), every POST is authorized again through `find_grant_by_access`,
+   and an MCP access token opens no SSE or rooms stream (every other plane answers it 401,
+   `mcp_access_is_refused_on_every_other_plane`). Adding any server capability or push, or a
+   session, gives every `revoke_mcp_grant` caller and `remove_admin` an MCP eviction duty
+   (`server_capabilities_declare_no_server_push` pins the exact capability set; rmcp does
+   not stop an undeclared push, so `mcp_sources_never_push` also fails on any code under
+   `src/mcp/` that names the peer — `call_tool` and the resource/prompt handlers hold a
+   `RequestContext`).
    (`user_caps` paths do not evict — user tokens cannot subscribe to SSE.)
    `drop_field` deliberately does NOT evict, even when the dropped column is named by a
    select policy: the per-event filter (`eval_policy_materialized`) drops every
@@ -271,12 +286,17 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
 
 7. **Tenant visibility is decided by `tenant_authz::tenant_access_for`, and role questions by
    `sees_all_tenants` / `can_manage_members` / `can_manage_privileged` — never by a bare
-   `is_owner`.** Seven sites share the predicate: list filtering, the `tenant_ownership_layer`
+   `is_owner`.** Ten sites share the predicate: list filtering, the `tenant_ownership_layer`
    route guard, the `ensure_tenant_visible` handler choke point, the data-plane PAT deny in
    the bearer CTE, creator-becomes-owner on create, FK orphaning on `remove_admin`, and the
    id-recycle branch of `make_tenant_inner` — which hard-DELETEs a soft-deleted tenant's row
    and tokens, sits on a route with no `{id}`, and therefore inherits nothing from the route
-   guard. The management plane answers **404** for a non-visible tenant, never 403, so it is
+   guard. The other three are the account-level MCP sites, which reach the predicate through the
+   grant-anchored `tenant_access_for_admin` / `visible_tenants_for_admin` (the admin's role
+   is read through the live grant row): `resolve_tenant` for every tool, resource and prompt
+   call (and the re-check `create_upload_url` issues under), the `list_tenants` filter, and
+   the check on every upload-ticket redemption. That endpoint answers a tenant the caller
+   cannot see exactly like a missing one (`TENANT_NOT_FOUND`). The management plane answers **404** for a non-visible tenant, never 403, so it is
    not an existence oracle; the data-plane PAT deny is **403 `PAT_TENANT_DENIED`**. A new
    tenant-scoped admin route joins a guarded sub-router or calls the choke point.
 
@@ -284,10 +304,17 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
    `require_owner_layer`.** The ownership guard keys on `{id}` and therefore cannot see
    these. Backups, host audit, host metrics, quota review and host files are owner-only for
    this reason — `/admin/files*` was missed until an audit precisely because it had no `{id}`.
+   The account-level `/mcp` is the deliberate exception: it has no `{id}`, but every call
+   names a tenant and is decided by invariant 7's grant-anchored sites, so it does not join
+   `require_owner_layer` (AGENTS.md records the verdict). `/admin/mcp/diagnostics` is
+   host-wide and does join it; `/admin/mcp` is a personal page like `/admin/settings`.
 
-9. **`/query` and `/query/explain` are service-only; `/mcp` rejects user and anon.** drust
+9. **`/query` and `/query/explain` are service-only; `/mcp` accepts only an MCP OAuth access token.** drust
    does not rewrite the raw SQL these accept, so no row-access control can be enforced on
-   them — user gets `QUERY_USER_DENIED`, anon gets `QUERY_ANON_DENIED`. For per-user reads of
+   them — user gets `QUERY_USER_DENIED`, anon gets `QUERY_ANON_DENIED`.
+   `/mcp` is an admin-tier surface for the same reason: a tenant key, a user token or an
+   anon key there is 401 `MCP_OAUTH_REQUIRED`, and a tenant the caller's admin cannot see is
+   `TENANT_NOT_FOUND`. For per-user reads of
    owner-scoped data use a stored RPC with `:user_id`, or `/search` / `/list` / `/aggregate`,
    where drust builds the SQL.
 
@@ -338,6 +365,10 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     host state is built with `functions: None` (`HostStateSeed::build_mcp`); restoring a
     dispatcher there reintroduces unbounded recursion. `CallerCtx` has no `Default` and no
     fallthrough to `Privileged` — that absence is the privilege-escalation guard.
+    The account-level endpoint builds a fresh `DrustMcp` per call through
+    `McpRegistry::build_live`, which takes `functions` from the registry exactly as
+    `get_or_create` does, opens only a live tenant (`get_if_live`) and never reads or writes
+    the registry's cache.
 
 14. **Every byte responder calls `insert_content_type_headers`.** Tenant bytes are served
     from the same origin as the admin UI, so a caller-supplied markup content type rendered
@@ -398,7 +429,11 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     lists hands out every tenant's public keys. The three
     stations with a caller identity share one decision (`files::enforce_upload_visibility` —
     Mode-A multipart, tus `create`, and edge `put-file` via `enforced_put_file`); the fourth,
-    host-admin `/admin/files/upload`, is owner-only management plane. What the shared decision
+    host-admin `/admin/files/upload`, is owner-only management plane.
+    A fifth shape, the upload ticket minted by the account-level `create_upload_url`, enters
+    tus `create` as Service, so the per-prefix grant does not apply to it; whether it
+    publishes is fixed when it is minted, by the tool's explicit `visibility` argument
+    (default `private`), and a ticket can never reach set-visibility or `sign`. What the shared decision
     enforces since v1.64 (#974) is **two gates on an explicit publish**: the tenant-wide
     `upload` file cap (outer, unchanged) AND a per-prefix `public_upload_roles` grant on the
     LONGEST `_system_file_policy` rule matching the upload's declared `path` (inner) — the
@@ -454,6 +489,22 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
     a second open, never `get_or_create` on a read path, and never under the read-only
     authorizer, which would deny its own `_system_*` read.
 
+21. **The MCP entry accepts only an OAuth MCP access token, and every call decides tenant
+    visibility on `meta.sqlite` before it touches the tenant.** `/mcp` admits a request only
+    through `find_grant_by_access` — never a tenant key, admin PAT, user or anon token,
+    session cookie or upload ticket. Every tool, resource and prompt call that names a
+    tenant decides visibility before opening the tenant and again after, requiring the same
+    (owner, created_at); every upload-ticket redemption checks the ticket's tenant
+    incarnation and the grant's visibility before it opens the tenant. The tenant is always
+    opened with `get_if_live`, never `get_or_create`. An old-incarnation pool still cached by
+    the tenant registry is the recycle residual documented in `.claude/rules/auth-tenancy.md`
+    — it is not detectable here and nothing claims it is. When a refused call or ticket is
+    recorded, it is a host row (`tenant = "-"`), never a row in the tenant it named, and no
+    admin identity is ever written into a tenant the caller cannot see; an unknown tool, a
+    failed `list_tenants` and an unknown ticket are not recorded at all. No MCP token is
+    cached anywhere today; a cache added later gives demotion, owner transfer, tenant
+    soft-delete and every `revoke_mcp_grant` caller an eviction duty (invariant 4).
+
 ## Where the rest lives
 
 Mechanism moved into path-scoped rule files. Each loads automatically when you read a file
@@ -464,9 +515,9 @@ the glob fires, just read the file.
 |---|---|---|
 | `.claude/rules/build-deploy.md` | `Dockerfile`, `Makefile`, `Cargo.*`, `.github/workflows/**`, `deploy/**`, `docker-compose*.yml` | build toolchain, test-group harnesses + the coverage gate, systemd sandbox, Caddy duties, version/lockfile sync, release gates |
 | `.claude/rules/migrations-boot.md` | `src/db/**`, `src/main.rs`, `src/storage/meta.rs` | migration idempotency, one-shot backfills, STRICT rebuild, boot scans |
-| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/mgmt/mcp_oauth/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, the MCP OAuth authorization server (grants, endpoints, consent, refresh rotation, revoke UI), quota tier and tenant cap |
+| `.claude/rules/auth-tenancy.md` | `src/auth/**`, `src/oauth/**`, `src/mgmt/{tenant_authz,admin_team,cli_device,oauth_login,quota_admin,tenant_cap}.rs`, `src/mgmt/tenants/**`, `src/mgmt/mcp_oauth/**`, `src/tenant/{auth_cache,oauth_routes,admin_user_routes}.rs` | bearer CTE layout, auth cache, roles, end-user auth, OAuth, CLI device flow, the MCP OAuth authorization server (grants, endpoints, consent, refresh rotation, revoke UI), the account-level `/mcp` bearer layer, quota tier and tenant cap |
 | `.claude/rules/write-path.md` | `src/tenant/records*.rs`, `src/mcp/tools/**`, `src/storage/{record_history,quota,schema}.rs`, `src/query/**`, `src/functions/enforce.rs` | caps matrix, owner/RLS mechanics, batch and upsert, record-history internals, quota measurement, CHECK constraints |
-| `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server}.rs` | tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
+| `.claude/rules/mcp-surface.md` | `src/mcp/{handler,resources,prompts,http_registry,server,account,account_audit}.rs` | the account-level endpoint (transport, tenant argument, per-call audit), tool/resource/prompt surface, URI parser hardening, why credential-bearing reads stay behind tools |
 | `.claude/rules/storage-files.md` | `src/storage/{files,visibility,garage,file_policy,file_path}.rs`, `src/tenant/{uploads/**,file_caps.rs,file_policy_routes.rs,mod.rs}`, `src/mgmt/{public_files,tenant_files}.rs` | object-store integration (S3 client, bucket probe), upload/delete ordering, file caps, tus, Files RLS (prefix registry, the two file evaluators, the publish decision), the stored-XSS defense |
 | `.claude/rules/background-jobs.md` | `src/{functions,cron,rpc,safety}/**`, `src/tenant/{webhook*,egress,rooms}` | edge functions, cron semantics, stored-RPC guards, webhooks, egress, audit writer, SSE |
 | `.claude/rules/admin-ui.md` | `src/mgmt/**`, `build.rs`, `build_support/**`, `locales/**`, `themes/**` | 頁面解剖學 (the six `_ui.html` macros and the **eight `build.rs` gates that will fail your build**), `script_json`, i18n, theming |
