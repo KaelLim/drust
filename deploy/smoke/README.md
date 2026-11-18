@@ -63,6 +63,7 @@ source address.
 | drust directly, no proxy | `http://127.0.0.1:48826` |
 | Object store | RustFS has no host port (checks go through Caddy's `/public/*`). Garage mode has S3 / website / admin on `127.0.0.1:48900` / `48902` / `48903` |
 | Admin username, password, PAT, object-store keys, `SMOKE_STORE` | `deploy/smoke/.env` (generated, mode 600, gitignored) |
+| MCP access token for a run | `SMOKE_MCP_TOKEN` in the environment of `run-all.sh` only; revoked when the run ends |
 
 Everything binds to loopback, and the ports are chosen not to collide with a
 drust (47826) or Garage (47830–47832) already running on the host. Override
@@ -86,11 +87,19 @@ so the check scripts never need a human and you sign in to the browser once
 To choose the password yourself, set `SMOKE_ADMIN_PASSWORD` before the *first*
 `up.sh` (or after `down.sh --wipe`); it is only read on first boot.
 
+The MCP checks use the account-level endpoint (`/mcp`), which takes OAuth access tokens
+only. `run-all.sh` signs in once with the generated admin password, runs the
+authorization code flow with PKCE against the stack itself, keeps the token in the
+environment (never in a file) and revokes it when the run ends; a script run on its own
+does the same on its first MCP call and revokes its token on exit. A failed sign-in is not
+retried within the run; `.last-run/mcp-token.txt` records the outcome (never the token).
+`docker-compose.smoke.yml` turns `DRUST_MCP` on for this (`SMOKE_DRUST_MCP=off
+deploy/smoke/up.sh` starts the stack with it off), and `DRUST_PUBLIC_URL` is the loopback
+`http://localhost:<port>`, which drust accepts for development only.
+
 ## Checks that fail today
 
-None. `run-all.sh` exits zero at this commit: all 1425 assertions pass, on RustFS and on
-Garage (`SMOKE_STORE=garage`). The stack's first run, before the v1.67.0 fixes, passed 1356
-and failed 22, each on a confirmed defect; all of those are fixed.
+None known at this commit.
 
 When a check fails on a confirmed defect that is not fixed yet, add a line to this table,
 and remove it in the same commit that fixes the defect. An assertion states the intended

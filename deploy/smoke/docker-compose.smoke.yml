@@ -31,3 +31,6 @@ services:
       # needs it: it is the only honest proof of which build is answering.
       DRUST_HIDE_VERSION: !reset null
       DRUST_PUBLIC_URL: http://localhost:${SMOKE_HTTP_PORT:-48080}
+      # The checks reach MCP only through the account-level endpoint, which needs it on.
+      # SMOKE_DRUST_MCP=off deploy/smoke/up.sh starts the stack with it off, to see how they fail.
+      DRUST_MCP: "${SMOKE_DRUST_MCP:-on}"

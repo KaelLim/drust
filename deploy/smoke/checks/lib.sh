@@ -9,6 +9,15 @@
 # Needs bash 3.2+, curl and python3 — nothing else, so it runs on a stock Mac.
 # Every check talks to the stack that deploy/smoke/up.sh started and reads its
 # secrets from deploy/smoke/.env. Nothing here prints a secret.
+#
+# MCP checks go to the account-level endpoint ($BASE/mcp) with an OAuth access
+# token in SMOKE_MCP_TOKEN: run-all.sh mints one per run, and mcp_token mints
+# one on demand when a script runs on its own (revoked again on exit). A failed
+# mint is not retried within the run, so a broken sign-in cannot use up the
+# admin login rate limit. mcp_call takes the tenant from
+# $T, never from TENANT_ID, because several scripts switch tenants by setting
+# T alone. Each MCP call takes at least 0.2 s (mcp_client.py MIN_CALL_SECS) so
+# a run stays far below the endpoint's 600 requests per minute per grant.
 
 set -u
 
@@ -26,10 +35,14 @@ set -a
 set +a
 
 # BASE goes through Caddy, which is what a real client sees (and what the MCP
-# endpoint needs: Caddy rewrites Host for rmcp's DNS-rebinding guard).
+# endpoint needs: Caddy rewrites Host for the endpoint's Host check).
 # DIRECT bypasses Caddy; use it only to compare against BASE.
 BASE="http://127.0.0.1:${SMOKE_HTTP_PORT:-48080}"
 DIRECT="http://127.0.0.1:${SMOKE_DRUST_PORT:-48826}"
+# The account-level MCP endpoint, and the public URL the stack runs with (the
+# DRUST_PUBLIC_URL of docker-compose.smoke.yml): the OAuth resource is $PUBLIC_URL/mcp.
+MCP_URL="$BASE/mcp"
+PUBLIC_URL="http://localhost:${SMOKE_HTTP_PORT:-48080}"
 # PUBLIC is this deployment's own /public/* route through Caddy, i.e. what a client
 # fetches. It is the same URL on either store, so every public-object assertion
 # means the same thing on RustFS and Garage.
@@ -42,8 +55,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/drust-smoke.XXXXXX")"
 PASS=0
 FAIL=0
 _tenants=""
+# MCP token state of this script: whether it re-minted after a 401 already,
+# whether it minted the token it holds (and so revokes it on exit), and whether
+# it already noted that no token is available.
+_mcp_reminted=0
+_mcp_minted_here=0
+_mcp_token_noted=0
 
 _cleanup() {
+  _mcp_revoke_own
   local id
   for id in $_tenants; do
     curl -sS -o /dev/null -X DELETE "$BASE/admin/api/tenants/$id" \
@@ -162,27 +182,95 @@ _tenant_call() {
   fi
 }
 
-# mcp_call TOOL JSON_ARGS — one stateless MCP tools/call as the service key.
-# Sets MCP_TEXT (the first text content block), MCP_IS_ERROR ("true"/"false")
-# and leaves the raw JSON-RPC result in BODY.
-mcp_call() {
-  local payload
-  payload="$(python3 -c '
-import json, sys
-print(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                  "params": {"name": sys.argv[1], "arguments": json.loads(sys.argv[2])}}))
-' "$1" "${2:-{\}}")"
-  mcp_rpc "$payload"
-  MCP_IS_ERROR="$(printf '%s' "$BODY" | json result.isError 2>/dev/null || echo false)"
-  MCP_TEXT="$(printf '%s' "$BODY" | json result.content.0.text 2>/dev/null || true)"
+# mcp_token — make sure SMOKE_MCP_TOKEN holds an access token for the account
+# endpoint. Uses the one run-all.sh passed in, else mints one (and remembers that
+# this script minted it). A failed mint is remembered in SMOKE_MCP_TOKEN_FAILED
+# and noted once; later calls fail at once without signing in again.
+mcp_token() {
+  [ -n "${SMOKE_MCP_TOKEN:-}" ] && return 0
+  if [ "${SMOKE_MCP_TOKEN_FAILED:-0}" = 1 ]; then
+    if [ "$_mcp_token_noted" = 0 ]; then
+      note "mcp token unavailable (an earlier attempt in this run failed; see mcp token above)"
+      _mcp_token_noted=1
+    fi
+    return 1
+  fi
+  local minted
+  minted="$(python3 "$_lib_dir/mcp_client.py" token "$BASE" "$PUBLIC_URL/mcp" 2>"$TMP/mcp-token.err")" || minted=""
+  if [ -n "$minted" ]; then
+    SMOKE_MCP_TOKEN="$minted"
+    export SMOKE_MCP_TOKEN
+    _mcp_minted_here=1
+    return 0
+  fi
+  SMOKE_MCP_TOKEN=""
+  SMOKE_MCP_TOKEN_FAILED=1
+  _mcp_token_noted=1
+  # The client's last stderr line names the step, the status and the error code only.
+  note "mcp token unavailable: $(tail -n 1 "$TMP/mcp-token.err")"
+  return 1
 }
 
-# mcp_rpc JSON — send one JSON-RPC message to the tenant's MCP endpoint after
-# an initialize handshake, and put the matching JSON-RPC response in BODY.
-mcp_rpc() {
-  python3 "$_lib_dir/mcp_client.py" "$T/mcp" "$SERVICE_KEY" "$1" > "$TMP/mcp.out" 2> "$TMP/mcp.err"
+# _mcp_revoke_own — revoke the token this script minted itself; a token passed
+# in by run-all.sh is left to run-all.sh.
+_mcp_revoke_own() {
+  if [ "$_mcp_minted_here" = 1 ] && [ -n "${SMOKE_MCP_TOKEN:-}" ]; then
+    python3 "$_lib_dir/mcp_client.py" revoke "$BASE" >/dev/null 2>&1 || true
+  fi
+  _mcp_minted_here=0
+  return 0
+}
+
+# _mcp_tenant — the tenant id of $T ($BASE/t/<id>); nothing when T names none.
+_mcp_tenant() {
+  case "${T:-}" in
+    */t/*) printf '%s' "${T##*/t/}" ;;
+  esac
+}
+
+# _mcp_send ARGS... — run mcp_client.py ARGS with the run's token; sets STATUS
+# (the client's exit code) and BODY (its stdout). A 401 MCP_OAUTH_REQUIRED (an
+# expired or revoked token) mints a new token once per script and re-sends.
+# BODY never goes to a file: it can carry an anon key or an upload ticket.
+_mcp_send() {
+  if ! mcp_token; then
+    STATUS=1
+    BODY='{"http_status": 0, "body": "no MCP access token"}'
+    return 0
+  fi
+  BODY="$(python3 "$_lib_dir/mcp_client.py" "$@" 2>"$TMP/mcp.err")"
   STATUS=$?
-  BODY="$(cat "$TMP/mcp.out")"
+  if [ "$STATUS" -ne 0 ] && [ "$_mcp_reminted" = 0 ] &&
+    [ "$(printf '%s' "$BODY" | python3 "$_lib_dir/mcp_client.py" field remint)" = yes ]; then
+    _mcp_reminted=1
+    _mcp_revoke_own
+    SMOKE_MCP_TOKEN=""
+    if mcp_token; then
+      BODY="$(python3 "$_lib_dir/mcp_client.py" "$@" 2>"$TMP/mcp.err")"
+      STATUS=$?
+    fi
+  fi
+  return 0
+}
+
+# mcp_call TOOL [JSON_ARGS] — one tools/call on the account endpoint, for the
+# tenant of $T. Sets BODY (the JSON-RPC message, or {"http_status","body"} on an
+# HTTP failure), STATUS, MCP_IS_ERROR ("false" only for a real result that is
+# not isError), MCP_TEXT (the result text, or the error message) and MCP_CODE
+# (the error_code of a failure, empty otherwise).
+mcp_call() {
+  local args="${2:-}"
+  [ -n "$args" ] || args='{}'
+  _mcp_send tool "$MCP_URL" "$1" "$args" "$(_mcp_tenant)"
+  MCP_IS_ERROR="$(printf '%s' "$BODY" | python3 "$_lib_dir/mcp_client.py" field is_error)"
+  MCP_TEXT="$(printf '%s' "$BODY" | python3 "$_lib_dir/mcp_client.py" field text)"
+  MCP_CODE="$(printf '%s' "$BODY" | python3 "$_lib_dir/mcp_client.py" field code)"
+}
+
+# mcp_rpc JSON — send one JSON-RPC message to the account endpoint and put the
+# response with the same id in BODY (STATUS 0), or the HTTP failure (STATUS 1).
+mcp_rpc() {
+  _mcp_send call "$MCP_URL" "$1"
 }
 
 finish() {
