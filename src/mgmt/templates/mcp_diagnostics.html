@@ -8,7 +8,7 @@
 {% block content %}
     <div class="page">
 
-      {% call ui::view_head(t.s("mcp_diag.head.eyebrow"), t.s("mcp_diag.head.title"), t.s("mcp_diag.head.sub")) %}<a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/mcp">{{ t.s("mcp_diag.nav.connect") }}</a>{% endcall %}
+      {% call ui::view_head(t.s("mcp_diag.head.eyebrow"), t.s("mcp_diag.head.title"), t.s("mcp_diag.head.sub")) %}{% if enabled %}<a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/mcp">{{ t.s("mcp_diag.nav.connect") }}</a>{% endif %}{% endcall %}
 
       {% if enabled %}
       {# `hidden` sits on a class-less wrapper: `.banner` sets display:flex,

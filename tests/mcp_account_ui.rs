@@ -613,6 +613,28 @@ async fn connect_page_links_to_diagnostics_for_owners_only() {
     assert!(!member.contains(LINK));
 }
 
+/// The diagnostics page offers the connect page only while it is mounted:
+/// with MCP off `/admin/mcp` is a 404.
+#[tokio::test]
+async fn diagnostics_page_links_to_the_connect_page_only_while_enabled() {
+    use drust::mgmt::mcp_oauth::config::McpOauthConfig;
+    const LINK: &str = "href=\"/drust/admin/mcp\"";
+    let label = esc(&bundle("en.toml")["mcp_diag.nav.connect"]);
+    for (enabled, fx) in [
+        (true, mo::fixture(true).await),
+        (false, mo::fixture_with(McpOauthConfig::disabled()).await),
+    ] {
+        let s = session(&fx, fx.owner_id).await;
+        let r = get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await;
+        assert_eq!(r.status(), StatusCode::OK, "enabled={enabled}");
+        let page = body(r).await;
+        assert_eq!(page.contains(LINK), enabled, "enabled={enabled}: link");
+        assert_eq!(page.contains(&label), enabled, "enabled={enabled}: label");
+        let connect = get_page(&fx.app, "/admin/mcp", Some(&s)).await.status();
+        assert_eq!(connect == StatusCode::OK, enabled, "enabled={enabled}");
+    }
+}
+
 #[tokio::test]
 async fn disabled_diagnostics_page_shows_the_reason_to_owners() {
     // The diagnostics page is mounted whatever the switch says: with MCP off
