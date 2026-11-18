@@ -863,6 +863,242 @@ fn find(
     .optional()
 }
 
+// ─── upload tickets ─────────────────────────────────────────────────────────
+//
+// A ticket is a one-upload, service-equivalent credential for one tenant. Its
+// row never vouches for itself: every read that decides validity re-joins the
+// grant, the admin incarnation (id + created_at) and the tenant incarnation
+// (id + created_at + deleted_at IS NULL), and every state change guards itself
+// in SQL. All times are SQLite datetime() text, written and compared in SQL.
+
+/// What a ticket may open: one tus upload of at most `max_bytes` on
+/// `tenant_id`, at `path` (or unfiled), public or private.
+pub struct TicketRequest<'a> {
+    pub tenant_id: &'a str,
+    pub max_bytes: i64,
+    pub path: Option<&'a str>,
+    pub public: bool,
+}
+
+/// A freshly issued ticket. NO `Debug`: `ticket` is the live plaintext
+/// credential (pinned by `credential_types_do_not_derive_debug`); only its
+/// hash is stored.
+pub struct IssuedTicket {
+    ticket: String,
+    /// SQLite datetime() text (UTC): the tus create must happen before it.
+    pub create_by: String,
+}
+
+impl IssuedTicket {
+    /// The plaintext ticket: it leaves the process once, in the reply that
+    /// hands it to the caller.
+    pub(crate) fn plaintext(&self) -> &str {
+        &self.ticket
+    }
+}
+
+// The tenant incarnation is bound twice: `t.created_at = ?7` (the incarnation
+// the caller's visibility check admitted) and the copied `tenant_created_at`
+// every later read joins on.
+const SQL_TICKET_ISSUE: &str = "\
+INSERT INTO _mcp_upload_tickets \
+  (ticket_hash, grant_id, admin_id, tenant_id, tenant_created_at, max_bytes, path, visibility, create_by, expires_at) \
+SELECT ?1, g.id, g.admin_id, t.id, t.created_at, ?4, ?5, ?6, \
+       datetime('now','+15 minutes'), datetime('now','+15 minutes') \
+  FROM _mcp_oauth_grants g \
+  JOIN admins ad ON ad.id = g.admin_id AND ad.created_at = g.admin_created_at \
+  JOIN tenants t ON t.id = ?3 AND t.deleted_at IS NULL AND t.created_at = ?7 \
+ WHERE g.id = ?2 AND g.revoked_at IS NULL \
+   AND g.idle_expires_at > datetime('now') AND g.absolute_expires_at > datetime('now')";
+
+const SQL_TICKET_CREATE_BY: &str =
+    "SELECT create_by FROM _mcp_upload_tickets WHERE ticket_hash = ?1";
+
+// AUTHORIZATION strength for a ticket: the row is live (not revoked, not past
+// expires_at, and an unbound one still inside create_by), its grant is live,
+// its admin and its tenant are the incarnations it was issued under.
+const SQL_TICKET_FIND_LIVE: &str = "\
+SELECT u.ticket_hash, u.grant_id, u.admin_id, u.tenant_id, u.max_bytes, u.path, \
+       u.visibility = 'public', u.bound_upload, u.create_by > datetime('now') \
+  FROM _mcp_upload_tickets u \
+  JOIN _mcp_oauth_grants g ON g.id = u.grant_id AND g.admin_id = u.admin_id AND g.revoked_at IS NULL \
+       AND g.idle_expires_at > datetime('now') AND g.absolute_expires_at > datetime('now') \
+  JOIN admins ad ON ad.id = g.admin_id AND ad.created_at = g.admin_created_at \
+  JOIN tenants t ON t.id = u.tenant_id AND t.created_at = u.tenant_created_at AND t.deleted_at IS NULL \
+ WHERE u.ticket_hash = ?1 AND u.revoked_at IS NULL AND u.expires_at > datetime('now') \
+   AND (u.bound_upload IS NOT NULL OR u.create_by > datetime('now'))";
+
+// Attribution only, never authorization: LEFT JOINs, so a dead ticket still
+// names its grant; the admin id is filled only when the grant's admin
+// incarnation still matches (the ticket's copied admin_id does not vouch).
+const SQL_TICKET_ATTRIBUTION: &str = "\
+SELECT u.grant_id, ad.id \
+  FROM _mcp_upload_tickets u \
+  LEFT JOIN _mcp_oauth_grants g ON g.id = u.grant_id \
+  LEFT JOIN admins ad ON ad.id = g.admin_id AND ad.created_at = g.admin_created_at AND ad.id = u.admin_id \
+ WHERE u.ticket_hash = ?1";
+
+// NULL -> 'creating'. Self-guarding: a revoked, bound, claimed or expired
+// ticket matches 0 rows.
+const SQL_TICKET_CLAIM: &str = "\
+UPDATE _mcp_upload_tickets SET bound_upload = 'creating' \
+ WHERE ticket_hash = ?1 AND bound_upload IS NULL AND revoked_at IS NULL \
+   AND create_by > datetime('now') AND expires_at > datetime('now')";
+
+// 'creating' -> the tus token; the deadline becomes the session's.
+const SQL_TICKET_BIND: &str = "\
+UPDATE _mcp_upload_tickets \
+   SET bound_upload = ?2, expires_at = datetime('now', printf('+%d seconds', ?3)) \
+ WHERE ticket_hash = ?1 AND bound_upload = 'creating' AND revoked_at IS NULL";
+
+// 'creating' -> NULL, after a create that did not answer 201.
+const SQL_TICKET_RELEASE: &str = "\
+UPDATE _mcp_upload_tickets SET bound_upload = NULL \
+ WHERE ticket_hash = ?1 AND bound_upload = 'creating'";
+
+/// Issues one ticket for `req.tenant_id` under the caller's grant. It does NOT
+/// decide tenant visibility: the caller must have admitted `inc` through
+/// `tenant_access_for_admin` first, and the INSERT binds that incarnation's
+/// `created_at`. `None` = the tenant is gone or another incarnation, or the
+/// grant or its admin is no longer live.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn issue_upload_ticket(
+    conn: &Connection,
+    caller: &crate::mgmt::mcp_oauth::caller::McpCaller,
+    inc: &crate::mgmt::tenant_authz::TenantIncarnation,
+    req: &TicketRequest<'_>,
+) -> rusqlite::Result<Option<IssuedTicket>> {
+    let ticket = tokens::new_token(TokenKind::UploadTicket);
+    let h = tokens::hash(TokenKind::UploadTicket, &ticket);
+    let n = conn.execute(
+        SQL_TICKET_ISSUE,
+        params![
+            h,
+            caller.grant_id(),
+            req.tenant_id,
+            req.max_bytes,
+            req.path,
+            if req.public { "public" } else { "private" },
+            inc.created_at,
+        ],
+    )?;
+    if n == 0 {
+        return Ok(None);
+    }
+    let create_by: String = conn.query_row(SQL_TICKET_CREATE_BY, params![h], |r| r.get(0))?;
+    Ok(Some(IssuedTicket { ticket, create_by }))
+}
+
+/// One live ticket as redemption sees it. NO `Debug` (pinned by
+/// `credential_types_do_not_derive_debug`): it carries the ticket's hash and
+/// the bound tus token.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct TicketRow {
+    pub ticket_hash: String,
+    pub grant_id: i64,
+    pub admin_id: i64,
+    pub tenant_id: String,
+    pub max_bytes: i64,
+    pub path: Option<String>,
+    pub public: bool,
+    /// `None` (unbound), `Some("creating")` (claimed) or the tus token.
+    pub bound_upload: Option<String>,
+    /// `create_by` has not passed: an unbound ticket may still create.
+    pub unbound_create_open: bool,
+}
+
+/// The ticket, re-joined to its grant, admin and tenant incarnations. A wrong
+/// prefix or length answers `None` without touching SQL.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn find_live_ticket(
+    conn: &Connection,
+    ticket: &str,
+) -> rusqlite::Result<Option<TicketRow>> {
+    if !tokens::looks_like(TokenKind::UploadTicket, ticket) {
+        return Ok(None);
+    }
+    let h = tokens::hash(TokenKind::UploadTicket, ticket);
+    conn.query_row(SQL_TICKET_FIND_LIVE, params![h], |r| {
+        Ok(TicketRow {
+            ticket_hash: r.get(0)?,
+            grant_id: r.get(1)?,
+            admin_id: r.get(2)?,
+            tenant_id: r.get(3)?,
+            max_bytes: r.get(4)?,
+            path: r.get(5)?,
+            public: r.get(6)?,
+            bound_upload: r.get(7)?,
+            unbound_create_open: r.get(8)?,
+        })
+    })
+    .optional()
+}
+
+/// Who a known ticket belongs to, for the audit row of a refused one.
+/// `admin_id` is `Some` only while the grant's admin incarnation still
+/// matches the ticket's.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TicketAttribution {
+    pub grant_id: i64,
+    pub admin_id: Option<i64>,
+}
+
+/// Attribution of any ticket row with this hash, live or not. Never an
+/// authorization: it proves only that such a row exists. A wrong prefix or
+/// length answers `None` without touching SQL.
+pub(crate) fn ticket_attribution(
+    conn: &Connection,
+    ticket: &str,
+) -> rusqlite::Result<Option<TicketAttribution>> {
+    if !tokens::looks_like(TokenKind::UploadTicket, ticket) {
+        return Ok(None);
+    }
+    let h = tokens::hash(TokenKind::UploadTicket, ticket);
+    conn.query_row(SQL_TICKET_ATTRIBUTION, params![h], |r| {
+        Ok(TicketAttribution {
+            grant_id: r.get(0)?,
+            admin_id: r.get(1)?,
+        })
+    })
+    .optional()
+}
+
+/// A ticket row with this hash exists, whatever its state.
+pub fn ticket_hash_known(conn: &Connection, ticket: &str) -> rusqlite::Result<bool> {
+    Ok(ticket_attribution(conn, ticket)?.is_some())
+}
+
+/// Claims the ticket's one create (`NULL` -> `'creating'`). `false` = already
+/// claimed or bound, revoked, or past `create_by` / `expires_at`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn claim_ticket_create(conn: &Connection, ticket_hash: &str) -> rusqlite::Result<bool> {
+    Ok(conn.execute(SQL_TICKET_CLAIM, params![ticket_hash])? == 1)
+}
+
+/// Binds a claimed ticket to the tus token its create returned and moves its
+/// deadline to the session's (`ttl_secs` from now). `false` = not claimed any
+/// more, or revoked in between. A TTL that `datetime()` cannot represent makes
+/// the UPDATE fail on `expires_at NOT NULL`: an `Err`, which fails closed.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn bind_ticket(
+    conn: &Connection,
+    ticket_hash: &str,
+    upload_token: &str,
+    ttl_secs: u64,
+) -> rusqlite::Result<bool> {
+    let ttl = i64::try_from(ttl_secs).unwrap_or(i64::MAX);
+    Ok(conn.execute(SQL_TICKET_BIND, params![ticket_hash, upload_token, ttl])? == 1)
+}
+
+/// Gives a claimed ticket its create back (`'creating'` -> `NULL`) after a
+/// create that did not answer 201. A bound ticket is left as it is.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn release_ticket_claim(conn: &Connection, ticket_hash: &str) -> rusqlite::Result<()> {
+    conn.execute(SQL_TICKET_RELEASE, params![ticket_hash])?;
+    Ok(())
+}
+
 // ─── test token minting (debug builds and tests only) ───────────────────────
 //
 // Integration tests are another crate and cannot see cfg(test); a debug build
@@ -939,6 +1175,29 @@ pub fn seed_tokens_for_tests(conn: &Connection, grant_id: i64) -> rusqlite::Resu
         refresh,
         refresh_id,
     })
+}
+
+/// Issues a ticket the way the account endpoint does, from a real access
+/// token: `find_grant_by_access` -> `McpCaller::from_access` ->
+/// `tenant_access_for_admin` -> `issue_upload_ticket`. `None` when the token
+/// does not authorize or the tenant is not visible to its admin.
+#[cfg(any(test, debug_assertions))]
+pub fn issue_upload_ticket_for_tests(
+    conn: &Connection,
+    access: &str,
+    req: &TicketRequest<'_>,
+) -> rusqlite::Result<Option<String>> {
+    use crate::mgmt::tenant_authz::{AdminTenantAccess, tenant_access_for_admin};
+    let Some(g) = find_grant_by_access(conn, access)? else {
+        return Ok(None);
+    };
+    let caller = crate::mgmt::mcp_oauth::caller::McpCaller::from_access(&g);
+    let AdminTenantAccess::Allow(inc) =
+        tenant_access_for_admin(conn, caller.grant_id(), caller.admin_id(), req.tenant_id)?
+    else {
+        return Ok(None);
+    };
+    Ok(issue_upload_ticket(conn, &caller, &inc, req)?.map(|t| t.plaintext().to_string()))
 }
 
 #[cfg(test)]
@@ -1244,6 +1503,8 @@ mod tests {
             ("pub struct CodeRedeemRequest", "CodeRedeemRequest"),
             ("pub enum RedeemOutcome", "RedeemOutcome"),
             ("pub struct SeededAccess", "SeededAccess"),
+            ("pub struct IssuedTicket", "IssuedTicket"),
+            ("pub(crate) struct TicketRow", "TicketRow"),
         ] {
             assert!(
                 !attrs_before(prod, head).contains("Debug"),
@@ -1517,5 +1778,363 @@ mod tests {
             }
         }
         assert_eq!(defining, 1, "store.rs was not among the walked files");
+    }
+
+    // ─── upload tickets ──────────────────────────────────────────────────────
+
+    use crate::mgmt::mcp_oauth::caller::McpCaller;
+    use crate::mgmt::tenant_authz::TenantIncarnation;
+
+    /// `meta_with_grant` plus a tenant `t1` owned by the grant's admin; returns
+    /// the connection, the grant id, the admin id and the tenant incarnation.
+    fn ticket_fixture(dir: &std::path::Path) -> (Connection, i64, i64, TenantIncarnation) {
+        let (conn, g) = meta_with_grant(dir);
+        let a: i64 = conn
+            .query_row(
+                "SELECT admin_id FROM _mcp_oauth_grants WHERE id = ?1",
+                [g],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES ('t1', 'T1', ?1)",
+            [a],
+        )
+        .unwrap();
+        let created_at: String = conn
+            .query_row("SELECT created_at FROM tenants WHERE id = 't1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let inc = TenantIncarnation {
+            owner: Some(a),
+            created_at,
+        };
+        (conn, g, a, inc)
+    }
+
+    fn fresh_ticket(conn: &Connection, g: i64, a: i64, inc: &TenantIncarnation) -> String {
+        let caller = McpCaller::for_tests(a, g);
+        let req = TicketRequest {
+            tenant_id: "t1",
+            max_bytes: 10,
+            path: None,
+            public: false,
+        };
+        issue_upload_ticket(conn, &caller, inc, &req)
+            .unwrap()
+            .expect("issued")
+            .plaintext()
+            .to_string()
+    }
+
+    fn ticket_hash_of(t: &str) -> String {
+        tokens::hash(TokenKind::UploadTicket, t)
+    }
+
+    #[test]
+    fn issued_ticket_is_live_once_and_stores_only_its_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g, a, inc) = ticket_fixture(dir.path());
+        let caller = McpCaller::for_tests(a, g);
+        let req = TicketRequest {
+            tenant_id: "t1",
+            max_bytes: 10,
+            path: Some("docs/a.txt"),
+            public: true,
+        };
+        let t = issue_upload_ticket(&conn, &caller, &inc, &req)
+            .unwrap()
+            .unwrap();
+        assert!(tokens::looks_like(TokenKind::UploadTicket, t.plaintext()));
+        let stored: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _mcp_upload_tickets WHERE ticket_hash = ?1 AND ticket_hash != ?2",
+                params![ticket_hash_of(t.plaintext()), t.plaintext()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 1);
+        let plain: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _mcp_upload_tickets WHERE ticket_hash = ?1",
+                params![t.plaintext()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(plain, 0, "the plaintext is never stored");
+        let create_by_matches: bool = conn
+            .query_row(
+                "SELECT create_by = ?1 AND create_by > datetime('now') FROM _mcp_upload_tickets",
+                params![t.create_by],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            create_by_matches,
+            "create_by is the stored value, in the future"
+        );
+        let row = find_live_ticket(&conn, t.plaintext()).unwrap().unwrap();
+        assert_eq!(
+            (
+                row.grant_id,
+                row.admin_id,
+                row.tenant_id.as_str(),
+                row.max_bytes
+            ),
+            (g, a, "t1", 10)
+        );
+        assert_eq!(row.path.as_deref(), Some("docs/a.txt"));
+        assert!(row.public && row.bound_upload.is_none() && row.unbound_create_open);
+        assert_eq!(row.ticket_hash, ticket_hash_of(t.plaintext()));
+    }
+
+    #[test]
+    fn issue_refuses_a_stale_incarnation_or_a_dead_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g, a, inc) = ticket_fixture(dir.path());
+        let caller = McpCaller::for_tests(a, g);
+        let req = TicketRequest {
+            tenant_id: "t1",
+            max_bytes: 1,
+            path: None,
+            public: false,
+        };
+        let stale = TenantIncarnation {
+            owner: inc.owner,
+            created_at: "2000-01-01 00:00:00".into(),
+        };
+        assert!(
+            issue_upload_ticket(&conn, &caller, &stale, &req)
+                .unwrap()
+                .is_none()
+        );
+        conn.execute("UPDATE tenants SET deleted_at = datetime('now')", [])
+            .unwrap();
+        assert!(
+            issue_upload_ticket(&conn, &caller, &inc, &req)
+                .unwrap()
+                .is_none()
+        );
+        conn.execute("UPDATE tenants SET deleted_at = NULL", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            issue_upload_ticket(&conn, &caller, &inc, &req)
+                .unwrap()
+                .is_none()
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _mcp_upload_tickets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "no refused issue wrote a row");
+    }
+
+    #[test]
+    fn find_live_ticket_rejoins_parents_every_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g, a, inc) = ticket_fixture(dir.path());
+        // (break the ticket or a parent, put the parent back, attributed admin)
+        let cases: [(&str, &str, &str, Option<i64>); 6] = [
+            (
+                "grant revoked",
+                "UPDATE _mcp_oauth_grants SET revoked_at = datetime('now')",
+                "UPDATE _mcp_oauth_grants SET revoked_at = NULL",
+                Some(a),
+            ),
+            (
+                "admin re-created",
+                "UPDATE admins SET created_at = '2001-01-01 00:00:00'",
+                "UPDATE admins SET created_at = \
+                   (SELECT admin_created_at FROM _mcp_oauth_grants LIMIT 1)",
+                None,
+            ),
+            (
+                "tenant re-created",
+                "UPDATE tenants SET created_at = '2001-01-01 00:00:00'",
+                "UPDATE tenants SET created_at = \
+                   (SELECT tenant_created_at FROM _mcp_upload_tickets LIMIT 1)",
+                Some(a),
+            ),
+            (
+                "ticket expired",
+                "UPDATE _mcp_upload_tickets SET expires_at = datetime('now', '-1 seconds') \
+                  WHERE ticket_hash = ?1",
+                "",
+                Some(a),
+            ),
+            (
+                "unbound past create_by",
+                "UPDATE _mcp_upload_tickets SET create_by = datetime('now', '-1 seconds') \
+                  WHERE ticket_hash = ?1",
+                "",
+                Some(a),
+            ),
+            (
+                "ticket revoked",
+                "UPDATE _mcp_upload_tickets SET revoked_at = datetime('now') \
+                  WHERE ticket_hash = ?1",
+                "",
+                Some(a),
+            ),
+        ];
+        for (name, kill, heal, want_admin) in cases {
+            let t = fresh_ticket(&conn, g, a, &inc);
+            assert!(
+                find_live_ticket(&conn, &t).unwrap().is_some(),
+                "{name}: live before"
+            );
+            if kill.contains("?1") {
+                conn.execute(kill, params![ticket_hash_of(&t)]).unwrap();
+            } else {
+                conn.execute(kill, []).unwrap();
+            }
+            assert!(
+                find_live_ticket(&conn, &t).unwrap().is_none(),
+                "{name}: must not be live"
+            );
+            assert_eq!(
+                ticket_attribution(&conn, &t).unwrap(),
+                Some(TicketAttribution {
+                    grant_id: g,
+                    admin_id: want_admin
+                }),
+                "{name}"
+            );
+            assert!(ticket_hash_known(&conn, &t).unwrap(), "{name}");
+            if !heal.is_empty() {
+                conn.execute(heal, []).unwrap();
+            }
+        }
+        // Bound, a ticket outlives create_by but not expires_at.
+        let t = fresh_ticket(&conn, g, a, &inc);
+        let h = ticket_hash_of(&t);
+        assert!(claim_ticket_create(&conn, &h).unwrap());
+        assert!(bind_ticket(&conn, &h, "0f8fad5b-d9cb-469f-a165-70867728950e", 600).unwrap());
+        conn.execute(
+            "UPDATE _mcp_upload_tickets SET create_by = datetime('now', '-1 minutes') \
+              WHERE ticket_hash = ?1",
+            params![h],
+        )
+        .unwrap();
+        let row = find_live_ticket(&conn, &t)
+            .unwrap()
+            .expect("bound outlives create_by");
+        assert!(!row.unbound_create_open);
+        assert_eq!(
+            row.bound_upload.as_deref(),
+            Some("0f8fad5b-d9cb-469f-a165-70867728950e")
+        );
+    }
+
+    #[test]
+    fn claim_bind_release_are_self_guarding() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g, a, inc) = ticket_fixture(dir.path());
+        let bound = |h: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT bound_upload FROM _mcp_upload_tickets WHERE ticket_hash = ?1",
+                params![h],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let tok = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        let h = ticket_hash_of(&fresh_ticket(&conn, g, a, &inc));
+        assert!(claim_ticket_create(&conn, &h).unwrap(), "first claim");
+        assert!(!claim_ticket_create(&conn, &h).unwrap(), "second claim");
+        release_ticket_claim(&conn, &h).unwrap();
+        assert_eq!(bound(&h), None);
+        assert!(
+            claim_ticket_create(&conn, &h).unwrap(),
+            "claim after release"
+        );
+        assert!(bind_ticket(&conn, &h, tok, 86_400).unwrap());
+        let far: bool = conn
+            .query_row(
+                "SELECT expires_at > datetime('now', '+86000 seconds') \
+                   FROM _mcp_upload_tickets WHERE ticket_hash = ?1",
+                params![h],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(far, "bound: the deadline is the session's");
+        assert!(
+            !bind_ticket(&conn, &h, tok, 86_400).unwrap(),
+            "no longer claimed"
+        );
+        release_ticket_claim(&conn, &h).unwrap();
+        assert_eq!(
+            bound(&h).as_deref(),
+            Some(tok),
+            "release leaves a bound ticket"
+        );
+        assert!(
+            !claim_ticket_create(&conn, &h).unwrap(),
+            "bound: no second create"
+        );
+
+        let revoked = ticket_hash_of(&fresh_ticket(&conn, g, a, &inc));
+        conn.execute(
+            "UPDATE _mcp_upload_tickets SET revoked_at = datetime('now') WHERE ticket_hash = ?1",
+            params![revoked],
+        )
+        .unwrap();
+        assert!(
+            !claim_ticket_create(&conn, &revoked).unwrap(),
+            "revoked: no claim"
+        );
+
+        let claimed = ticket_hash_of(&fresh_ticket(&conn, g, a, &inc));
+        assert!(claim_ticket_create(&conn, &claimed).unwrap());
+        conn.execute(
+            "UPDATE _mcp_upload_tickets SET revoked_at = datetime('now') WHERE ticket_hash = ?1",
+            params![claimed],
+        )
+        .unwrap();
+        assert!(
+            !bind_ticket(&conn, &claimed, tok, 86_400).unwrap(),
+            "revoked between claim and bind"
+        );
+        assert_eq!(bound(&claimed).as_deref(), Some("creating"));
+    }
+
+    #[test]
+    fn unknown_or_malformed_tickets_are_not_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, g, a, inc) = ticket_fixture(dir.path());
+        let unknown = format!("{}{}", tokens::UPLOAD_TICKET_PREFIX, "A".repeat(43));
+        assert!(tokens::looks_like(TokenKind::UploadTicket, &unknown));
+        for t in [unknown.as_str(), "not-a-ticket"] {
+            assert!(!ticket_hash_known(&conn, t).unwrap());
+            assert_eq!(ticket_attribution(&conn, t).unwrap(), None);
+            assert!(find_live_ticket(&conn, t).unwrap().is_none());
+        }
+        let issued = fresh_ticket(&conn, g, a, &inc);
+        assert!(ticket_hash_known(&conn, &issued).unwrap());
+    }
+
+    #[test]
+    fn ticket_lookup_sql_carries_every_grant_liveness_clause() {
+        for clause in crate::mgmt::tenant_authz::GRANT_LIVE_CLAUSES {
+            assert!(
+                SQL_TICKET_FIND_LIVE.contains(clause),
+                "ticket lookup query lacks `{clause}`"
+            );
+        }
+    }
+
+    #[test]
+    fn ticket_issue_sql_carries_every_grant_liveness_clause() {
+        for clause in crate::mgmt::tenant_authz::GRANT_LIVE_CLAUSES {
+            assert!(
+                SQL_TICKET_ISSUE.contains(clause),
+                "ticket issue query lacks `{clause}`"
+            );
+        }
     }
 }

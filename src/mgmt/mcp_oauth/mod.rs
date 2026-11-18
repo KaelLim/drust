@@ -335,7 +335,7 @@ mod source_pins {
     /// therefore use the words.
     #[test]
     fn plaintext_code_never_reaches_logs_or_audit() {
-        let files: [(&str, &str, &[&str], usize); 6] = [
+        let files: [(&str, &str, &[&str], usize); 7] = [
             (
                 "consent.rs",
                 include_str!("consent.rs"),
@@ -403,6 +403,13 @@ mod source_pins {
                 include_str!("../../mcp/account_audit.rs"),
                 &["token", "access", "bearer", "ticket", "secret", "password"],
                 4,
+            ),
+            // No log or audit site today; the list applies to the first one added.
+            (
+                "store.rs",
+                include_str!("store.rs"),
+                &["ticket", "token", "presented", "ticket_hash", "hash"],
+                0,
             ),
         ];
         for (name, src, banned, min) in files {
@@ -509,7 +516,7 @@ fn f() {
             (
                 "store.rs",
                 include_str!("store.rs"),
-                "pub fn seed_tokens_for_tests(",
+                "pub fn issue_upload_ticket_for_tests(",
             ),
             (
                 "account_routes.rs",
