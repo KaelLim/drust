@@ -27,24 +27,17 @@ SANDBOX="sandbox allow-top-navigation-by-user-activation"   # storage::files::SA
 # ---- local helpers ------------------------------------------------------------
 # The data plane rate-limits per token (DRUST_RATE_LIMIT_PER_TOKEN, default 60
 # per 10 s) and per IP for non-service upload/delete. This script is denser
-# than that, so `req` and `mcp_rpc` are wrapped (lib.sh untouched): a 429 is
-# retried after a short back-off, at most 6 times. A request that is still
-# 429 after that is returned as-is and fails its check honestly.
+# than that, so `req` is wrapped (lib.sh untouched): a 429 is retried after a
+# short back-off, at most 6 times. A request that is still 429 after that is
+# returned as-is and fails its check honestly.
+# MCP calls go to the account endpoint and are not charged to this key.
 eval "$(declare -f req | sed '1s/^req /_lib_req /')"
-eval "$(declare -f mcp_rpc | sed '1s/^mcp_rpc /_lib_mcp_rpc /')"
 req() {
   local i
   for i in 1 2 3 4 5 6; do
     _lib_req "$@"
     [ "$STATUS" = 429 ] || return 0
     sleep 2
-  done
-}
-mcp_rpc() {
-  local i
-  for i in 1 2 3 4 5 6; do
-    _lib_mcp_rpc "$@"
-    case "$BODY" in *'"http_status": 429'*) sleep 2 ;; *) return 0 ;; esac
   done
 }
 

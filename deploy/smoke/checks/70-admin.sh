@@ -74,9 +74,7 @@ print("%d|%s" % (len(hits), ctx))
 drust_refs() { py "$DRUST_PY"; }
 
 # mcp_result_ok NAME — the last mcp_call produced a real JSON-RPC `result`
-# with isError != true. lib.sh's MCP_IS_ERROR defaults to "false" when the
-# body has no `result` at all (JSON-RPC error, HTTP/transport failure), so a
-# bare `check_eq ... false "$MCP_IS_ERROR"` cannot fail; this one can.
+# with isError != true (lib.sh's MCP_IS_ERROR is "true" for anything else).
 mcp_result_ok() {
   local r
   r="$(printf '%s' "$BODY" | python3 -c 'import json,sys
@@ -330,8 +328,8 @@ svc GET /collections
 check_eq "data plane refuses the deleted tenant's service key: 404 TENANT_NOT_FOUND" "404 TENANT_NOT_FOUND" "$STATUS $(body error_code)"
 anon GET /collections
 check_eq "data plane refuses the deleted tenant's anon key: 404 TENANT_NOT_FOUND" "404 TENANT_NOT_FOUND" "$STATUS $(body error_code)"
-mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-check_eq "MCP on the deleted tenant answers HTTP 404" 404 "$(body http_status)"
+mcp_call list_collections '{}'
+check_eq "MCP on the deleted tenant answers isError TENANT_NOT_FOUND" "true TENANT_NOT_FOUND" "$MCP_IS_ERROR $MCP_CODE"
 reg_body="{\"email\":\"smoke70-$RUN@example.com\",\"password\":\"smoke-pass-$RUN-long\"}"
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
   req POST "$T/auth/register" -H 'Content-Type: application/json' --data "$reg_body"

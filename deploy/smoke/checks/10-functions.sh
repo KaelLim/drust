@@ -25,9 +25,10 @@ FN_TIMEOUT_SECS=30 # DRUST_FN_TIMEOUT_SECS default; docker-compose.yml does not 
 
 # The per-token limiter (DRUST_RATE_LIMIT_PER_TOKEN, default 60 per 10 s) is
 # easy to hit with one service key driving a long script. Shadow lib.sh's req
-# and mcp_rpc so a per-TOKEN 429 (error_code RATE_LIMITED) is waited out and
-# retried a bounded number of times. Per-IP 429s (RATE_LIMITED_IP — login and
-# the anon/user invoke limiter) are NOT retried: those are behaviour under test.
+# so a per-TOKEN 429 (error_code RATE_LIMITED) is waited out and retried a
+# bounded number of times. Per-IP 429s (RATE_LIMITED_IP — login and the
+# anon/user invoke limiter) are NOT retried: those are behaviour under test.
+# MCP calls go to the account endpoint and are not charged to this key.
 eval "_lib_$(declare -f req)"
 req() {
   local tries=0 ra
@@ -43,17 +44,6 @@ req() {
     sleep "$ra"
   done
 }
-eval "_lib_$(declare -f mcp_rpc)"
-mcp_rpc() {
-  local tries=0
-  while :; do
-    _lib_mcp_rpc "$@"
-    case "$BODY" in *'"http_status": 429'*) ;; *) return 0 ;; esac
-    tries=$((tries + 1))
-    [ "$tries" -le 8 ] || return 0
-    sleep 3
-  done
-}
 
 # upload NAME FILE [TRIGGERS] — multipart create on the current tenant.
 upload() {
@@ -66,9 +56,8 @@ upload() {
 user_call() { _tenant_call "$@"; }
 
 # mcp_ok NAME — the last mcp_call produced a real tools/call RESULT with
-# isError false. lib.sh's MCP_IS_ERROR falls back to "false" when there is no
-# result at all (HTTP 401, transport failure, JSON-RPC error), so comparing it
-# with "false" alone cannot fail; this helper can.
+# isError false (lib.sh's MCP_IS_ERROR is "true" for anything else); on failure
+# the detail names what came back instead.
 mcp_ok() {
   local got
   got="$(printf '%s' "$BODY" | python3 -c '
@@ -336,8 +325,8 @@ check_eq "service revokes invoke_user" false "$(body invoke_user)"
 # --- invoke ACL: user ----------------------------------------------------------------------
 UPW="$(python3 -c 'import secrets; print("Sm0ke-" + secrets.token_urlsafe(18))')"
 UEMAIL="smoke-fn-$$@example.invalid"
-mcp_call create_user "{\"email\":\"$UEMAIL\",\"password\":\"$UPW\",\"verified\":true}"
-mcp_ok "MCP create_user succeeds"
+svc POST /admin/users "{\"email\":\"$UEMAIL\",\"password\":\"$UPW\",\"verified\":true}"
+check_eq "service REST create_user succeeds" 201 "$STATUS"
 # The end-user login limiter is per IP (5 per 60 s) and every smoke agent
 # shares this host's IP, so a 429 here is usually someone else's logins. Back
 # off and retry at most twice (bounded: <= ~50 s extra) before skipping.
@@ -491,7 +480,7 @@ check_eq "MCP set_function_active false" false "$(printf '%s' "$MCP_TEXT" | json
 svc GET /functions/pmvp
 check_eq "MCP set_function_active is visible over REST" false "$(body active)"
 mcp_call set_function_active '{"name":"ghost","active":true}'
-check_contains "MCP set_function_active on a missing name reports FN_NOT_FOUND" FN_NOT_FOUND "$BODY"
+check_eq "MCP set_function_active on a missing name reports FN_NOT_FOUND" FN_NOT_FOUND "$MCP_CODE"
 mcp_call set_function_invoke_acl '{"name":"swap","anon":true,"user":false}'
 check_eq "MCP set_function_invoke_acl answers the new flags" true "$(printf '%s' "$MCP_TEXT" | json invoke_anon)"
 svc GET /functions/swap
@@ -510,7 +499,7 @@ if poll_until "mcp invoke ran" 60 _mcp_ran; then ok "MCP-enqueued invoke ran (ne
 mcp_call get_function_logs '{"name":"happy","limit":1}'
 check_eq "MCP get_function_logs shows the async run ok" ok "$(printf '%s' "$MCP_TEXT" | json logs.0.status)"
 mcp_call invoke_function '{"name":"ghost","event":{}}'
-check_contains "MCP invoke_function on a missing name reports FN_NOT_FOUND" FN_NOT_FOUND "$BODY"
+check_eq "MCP invoke_function on a missing name reports FN_NOT_FOUND" FN_NOT_FOUND "$MCP_CODE"
 
 # --- delete + artifact GC -----------------------------------------------------------------------
 svc DELETE /functions/happy
