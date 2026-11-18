@@ -893,7 +893,7 @@ connect = "Connect Claude Code"
 [mcp_diag.about]
 title = "What these checks do"
 body = "Your browser requests each public address below, the way Claude Code discovers this server, and compares the answer with what this server expects. No check sends a cookie or a token; only the status, whether a sign-in challenge is present and the compared fields are shown."
-origin = "Your browser adds an Origin header to the two POST checks. It equals the public origin, which the MCP endpoint accepts; Claude Code itself sends no Origin."
+origin = "Your browser adds an Origin header to the POST checks. It equals the public origin, which the MCP endpoint accepts; Claude Code itself sends no Origin."
 proxy = "A failing check almost always points at a proxy in front of drust: a missing rule, a redirect, or the wrong Host header."
 
 [mcp_diag.expected]

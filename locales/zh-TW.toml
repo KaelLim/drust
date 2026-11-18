@@ -913,7 +913,7 @@ connect = "串接 Claude Code"
 [mcp_diag.about]
 title = "這些檢查做什麼"
 body = "瀏覽器會像 Claude Code 探索這台伺服器那樣，逐一請求下列公開網址，並把回應與這台伺服器預期的值比對。每項檢查都不送 cookie，也不送 token；畫面只顯示狀態碼、有沒有登入 challenge，以及比對的欄位。"
-origin = "瀏覽器會在兩項 POST 檢查加上 Origin header，值等於公開 origin，MCP 端點會放行；Claude Code 本身不送 Origin。"
+origin = "瀏覽器會在 POST 檢查加上 Origin header，值等於公開 origin，MCP 端點會放行；Claude Code 本身不送 Origin。"
 proxy = "檢查失敗幾乎都指向 drust 前面的 proxy：少了規則、有轉址，或 Host header 不對。"
 
 [mcp_diag.expected]
