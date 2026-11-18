@@ -92,6 +92,21 @@
     return;
   }
 
+  // run sits directly below the origin check, and the helpers it calls
+  // follow it (function declarations are hoisted), so nothing else lies
+  // between that check and the page's only request.
+  function run(c) {
+    var el = cell(c.id);
+    if (el) { note(el, T.running); }
+    var opts = { method: c.method, redirect: 'manual', cache: 'no-store', credentials: 'omit' };
+    if (c.expect === 'challenge') { opts.headers = CHALLENGE_HEADERS; opts.body = '{}'; }
+    fetch(c.url, opts)
+      .then(function (r) { return judge(c, r); }, function () { return { ok: false, notes: [T.network] }; })
+      .then(function (res) { show(c.id, res.ok, res.notes); }, function () { show(c.id, false, [T.network]); });
+  }
+
+  function runAll() { d.checks.forEach(run); }
+
   function cell(id) {
     var el = document.querySelector('[data-diag-result="' + id + '"]');
     if (el) {
@@ -158,18 +173,6 @@
       return { ok: false, notes: notes };
     });
   }
-
-  function run(c) {
-    var el = cell(c.id);
-    if (el) { note(el, T.running); }
-    var opts = { method: c.method, redirect: 'manual', cache: 'no-store', credentials: 'omit' };
-    if (c.expect === 'challenge') { opts.headers = CHALLENGE_HEADERS; opts.body = '{}'; }
-    fetch(c.url, opts)
-      .then(function (r) { return judge(c, r); }, function () { return { ok: false, notes: [T.network] }; })
-      .then(function (res) { show(c.id, res.ok, res.notes); }, function () { show(c.id, false, [T.network]); });
-  }
-
-  function runAll() { d.checks.forEach(run); }
 
   var rerun = document.querySelector('[data-diag-rerun]');
   if (rerun) { rerun.addEventListener('click', runAll); }

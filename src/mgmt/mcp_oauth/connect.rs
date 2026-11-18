@@ -693,6 +693,14 @@ mod tests {
             branch.contains("return;"),
             "a mismatch returns before any request"
         );
+        // Exactly one: any other `return;` in this span (a helper declared
+        // between the check and the fetch) would keep the line above green
+        // with the mismatch branch's own `return;` deleted.
+        assert_eq!(
+            branch.matches("return;").count(),
+            1,
+            "only the mismatch branch returns between the origin check and the fetch"
+        );
         assert!(branch.contains("T.wrong_origin.replace('{url}', d.page)"));
     }
 
