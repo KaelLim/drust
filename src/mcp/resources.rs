@@ -125,13 +125,30 @@ fn internal(e: impl std::fmt::Display) -> McpError {
 /// (not an existence oracle — parse already rejected protected/ill-formed
 /// names), everything else → internal. Substring is a SECONDARY contract here
 /// (the parser is the primary gate); `list_records` reliably `bail!`s
-/// `COLLECTION_NOT_FOUND` for a valid-but-absent collection.
-fn map_reader_err(e: anyhow::Error) -> McpError {
+/// `COLLECTION_NOT_FOUND` for a valid-but-absent collection. The reader's
+/// message embeds the collection or `sort` field the caller sent, and rmcp
+/// logs every error response at WARN, so the answer never carries that text:
+/// the collection goes through `shown_name`, and an internal error is only
+/// its classified code.
+fn map_reader_err(e: anyhow::Error, collection: &str) -> McpError {
     let s = e.to_string();
     if s.contains("COLLECTION_NOT_FOUND") || s.contains("no such collection") {
-        McpError::resource_not_found(s, None)
+        let lead = if s.starts_with("COLLECTION_NOT_FOUND") {
+            "COLLECTION_NOT_FOUND: "
+        } else {
+            ""
+        };
+        McpError::resource_not_found(
+            format!(
+                "{lead}no such collection: {}",
+                crate::mcp::account_audit::shown_name(collection)
+            ),
+            None,
+        )
     } else {
-        McpError::internal_error(s, None)
+        let code =
+            crate::mcp::error_code::mcp_error_code(&s, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        McpError::internal_error(code.into_owned(), None)
     }
 }
 
@@ -647,7 +664,7 @@ pub async fn render_resource(
             };
             let mut v = crate::mcp::tools::read::list_records(s, args)
                 .await
-                .map_err(map_reader_err)?;
+                .map_err(|e| map_reader_err(e, collection))?;
             // Top-level (never per-row — codex D3): the default projection omits
             // `id` and `resource_link` is a legal user column, so a row-level
             // link would be absent-or-colliding. This template tells the model

@@ -4,7 +4,9 @@
 mod helpers;
 
 use axum::http::StatusCode;
-use helpers::{AccountMcpHarness, McpAccess, mcp_rpc, seed_mcp_access, spin_up_account_mcp};
+use helpers::{
+    AccountMcpHarness, McpAccess, mcp_call, mcp_rpc, seed_mcp_access, spin_up_account_mcp,
+};
 use serde_json::{Value, json};
 
 fn rpc(method: &str, params: Value) -> Value {
@@ -437,4 +439,36 @@ async fn refusals_bound_the_caller_text_they_echo() {
     let (_, _, p) = prompt(&h, &m.access, &long, json!({"tenant": "mine-r"})).await;
     assert!(msg(&p).starts_with("no such prompt: ccc"));
     assert!(msg(&p).chars().count() <= 200, "{}", msg(&p).len());
+
+    // The records template: an absent collection and an unknown sort field
+    // are each answered with bounded text, keeping their error code.
+    mcp_call(
+        &h.app,
+        &h.access,
+        "acct-res",
+        "create_collection",
+        json!({"name": "posts", "fields": [{"name": "title", "sql_type": "text"}]}),
+    )
+    .await;
+    let (_, _, r) = read(
+        &h,
+        &h.access,
+        &format!("drust://acct-res/collections/{long}/records"),
+    )
+    .await;
+    assert_eq!(r["error"]["code"], -32002, "{}", &msg(&r)[..80]);
+    assert!(
+        msg(&r).starts_with("COLLECTION_NOT_FOUND"),
+        "{}",
+        &msg(&r)[..80]
+    );
+    assert!(msg(&r).chars().count() <= 300, "{}", msg(&r).len());
+    let (_, _, r) = read(
+        &h,
+        &h.access,
+        &format!("drust://acct-res/collections/posts/records?sort={long}"),
+    )
+    .await;
+    assert_eq!(r["error"]["code"], -32603, "{}", &msg(&r)[..80]);
+    assert!(msg(&r).chars().count() <= 300, "{}", msg(&r).len());
 }
