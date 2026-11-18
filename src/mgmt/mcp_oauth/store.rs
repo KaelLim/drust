@@ -1760,9 +1760,19 @@ mod tests {
                     prod.contains("pub fn seed_tokens_for_tests("),
                     "anti-vacuous"
                 );
+                assert!(
+                    prod.contains("pub fn issue_upload_ticket_for_tests("),
+                    "anti-vacuous"
+                );
+                // Defined once and called by nothing else in this file.
+                assert_eq!(prod.matches("issue_upload_ticket_for_tests").count(), 1);
                 continue;
             }
-            for needle in ["seed_access_for_tests", "seed_tokens_for_tests"] {
+            for needle in [
+                "seed_access_for_tests",
+                "seed_tokens_for_tests",
+                "issue_upload_ticket_for_tests",
+            ] {
                 assert!(
                     !prod.contains(needle),
                     "{}: {needle} is test-only and must not be called from production code",
