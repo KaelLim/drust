@@ -311,13 +311,13 @@ check_eq "reroll of an unknown role answers 400 TYPE_MISMATCH" "400 TYPE_MISMATC
 admin POST "/admin/api/tenants/smoke-70-no-such-tenant-$RUN/tokens/service/reroll"
 check_eq "reroll on a nonexistent tenant answers 404" 404 "$STATUS"
 
-# ================================ first incarnation data (REST + MCP cache warm)
+# ================================ first incarnation data (REST + MCP)
 mcp_call create_collection '{"name":"probe_old","fields":[{"name":"x","sql_type":"text"}]}'
 mcp_result_ok "MCP create_collection probe_old in the first incarnation returns a result"
 svc POST /records/probe_old '{"data":{"x":"first-incarnation"}}'
 check_eq "insert a row into probe_old" 201 "$STATUS"
 mcp_call list_collections '{}'
-check_contains "MCP sees probe_old in the first incarnation (MCP cache now holds its pool)" "probe_old" "$MCP_TEXT"
+check_contains "MCP list_collections shows probe_old in the first incarnation" "probe_old" "$MCP_TEXT"
 admin POST "/admin/tenants/$TID/allow-self-register" '{"enabled":true}'
 check_eq "self-registration toggled on" true "$(body enabled)"
 
