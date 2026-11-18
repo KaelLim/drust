@@ -14,8 +14,8 @@
 //! gated fallback is replaced by the metadata router's plain one). A `.layer`
 //! on the router this returns would gate every unmatched admin path.
 //!
-//! `MgmtState::with_data_dir` merges this router only when
-//! `McpOauthConfig::enabled()`. The metadata route sits outside the three
+//! `MgmtState::with_data_dir` always merges this router; disabled, it holds
+//! only `/mcp`, which answers H1. The metadata route sits outside the three
 //! gates on purpose: it reads no Host, no header and no database, like the
 //! authorization-server metadata.
 //!
@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::middleware::{from_fn, from_fn_with_state};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -67,6 +68,16 @@ pub(crate) fn upload_limits(state: &MgmtState) -> UploadLimits {
 /// doc for why the order and the layer kind matter.
 pub fn account_routes(state: &MgmtState) -> Router {
     let cfg = state.mcp_oauth.clone();
+    if !cfg.enabled() {
+        // Disabled: no rmcp service and no metadata route. The entry gate's
+        // first check answers H1 on every method, before any Host check.
+        return Router::new()
+            .route(
+                MCP_PATH,
+                axum::routing::any(|| async { StatusCode::NOT_FOUND }),
+            )
+            .route_layer(from_fn_with_state(cfg, mcp_route_layer));
+    }
     let mcp = AccountMcp::new(
         state.mcp.registry().clone(),
         state.meta.clone(),

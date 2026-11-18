@@ -206,14 +206,14 @@ async fn revoke_with(app: &axum::Router, pairs: &[(&str, &str)]) -> Response<Bod
 }
 
 /// The disabled-mount check shared by the three disabled configurations: each
-/// new path answers exactly like a path that never existed.
+/// new path answers exactly like a path that never existed, except `/mcp`,
+/// which answers `404 MCP_DISABLED`.
 async fn assert_nothing_mounted(app: &axum::Router) {
     let never_get = snapshot(get(app, "/oauth/nonexistent", &[]).await).await;
     for uri in [
         META_PATH,
         "/oauth/authorize",
         "/.well-known/openid-configuration",
-        "/mcp",
         "/.well-known/oauth-protected-resource/mcp",
     ] {
         assert_eq!(
@@ -227,12 +227,31 @@ async fn assert_nothing_mounted(app: &axum::Router) {
     for (uri, body) in [
         ("/oauth/token", "grant_type=password"),
         ("/oauth/revoke", "token=abc"),
-        ("/mcp", r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
     ] {
         assert_eq!(
             snapshot(post_raw(app, uri, body).await).await,
             never_post,
             "POST {uri}"
+        );
+    }
+    for (m, resp) in [
+        ("GET", get(app, "/mcp", &[]).await),
+        (
+            "POST",
+            post_raw(
+                app,
+                "/mcp",
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            )
+            .await,
+        ),
+    ] {
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{m} /mcp");
+        assert_eq!(resp.headers()["cache-control"], "no-store", "{m} /mcp");
+        assert_eq!(
+            body_text(resp).await,
+            r#"{"message":"MCP is disabled on this server; ask the operator (see boot log)","error_code":"MCP_DISABLED"}"#,
+            "{m} /mcp"
         );
     }
 }

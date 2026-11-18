@@ -605,10 +605,13 @@ async fn connect_page_links_to_diagnostics_for_owners_only() {
 }
 
 #[tokio::test]
-async fn disabled_diagnostics_page_is_not_mounted() {
-    // Same shape as disabled_connect_page_is_not_mounted, kept separate so the
-    // diagnostics half can change on its own.
+async fn disabled_diagnostics_page_shows_the_reason_to_owners() {
+    // The diagnostics page is mounted whatever the switch says: with MCP off
+    // the owner sees why, everyone else gets the owner-only answer, and a
+    // caller with no credential gets what any protected page gives it.
     use drust::mgmt::mcp_oauth::config::{McpOauthConfig, McpOauthEnv};
+    use drust::mgmt::mcp_oauth::connect::disabled_reason_key;
+    const RAW_URL: &str = "https://zqx-public.test";
     let on_without_url = McpOauthConfig::from_parts(
         &McpOauthEnv {
             mode: Some("on"),
@@ -619,16 +622,54 @@ async fn disabled_diagnostics_page_is_not_mounted() {
         [1; 32],
         [2; 32],
     );
-    for cfg in [McpOauthConfig::disabled(), on_without_url] {
+    let auto_under_base = McpOauthConfig::from_parts(
+        &McpOauthEnv {
+            mode: Some("auto"),
+            public_url: Some(RAW_URL),
+            ..Default::default()
+        },
+        "/drust",
+        [1; 32],
+        [2; 32],
+    );
+    let en = bundle("en.toml");
+    for cfg in [McpOauthConfig::disabled(), on_without_url, auto_under_base] {
+        let reason = cfg.disabled_reason().expect("disabled").clone();
+        let sentence = esc(&en[disabled_reason_key(&reason)]);
         let fx = mo::fixture_with(cfg).await;
+        let a = mo::add_admin(&fx, "alice", "", "admin").await;
+        let m = mo::add_admin(&fx, "mia", "", "member").await;
+
         let s = session(&fx, fx.owner_id).await;
-        for cookie in [Some(s.as_str()), None] {
-            let never =
-                mo::response_snapshot(get_page(&fx.app, "/admin/nonexistent", cookie).await).await;
-            let got =
-                mo::response_snapshot(get_page(&fx.app, "/admin/mcp/diagnostics", cookie).await)
+        let r = get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await;
+        assert_eq!(r.status(), StatusCode::OK, "{reason:?}");
+        let page = body(r).await;
+        assert!(page.contains(&sentence), "{reason:?}: reason sentence");
+        assert!(!page.contains("drust_"), "{reason:?}: names a credential");
+        assert!(
+            !page.contains("zqx-public"),
+            "{reason:?}: echoes DRUST_PUBLIC_URL"
+        );
+
+        for id in [a, m] {
+            let s = session(&fx, id).await;
+            let reference =
+                mo::response_snapshot(get_page(&fx.app, "/admin/quota-requests", Some(&s)).await)
                     .await;
-            assert_eq!(got, never, "cookie {}", cookie.is_some());
+            assert_eq!(reference.0, StatusCode::FORBIDDEN);
+            let got =
+                mo::response_snapshot(get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await)
+                    .await;
+            assert_eq!(got, reference, "{reason:?}: admin {id}");
+        }
+
+        for accept in ["text/html", "application/json"] {
+            let h = [("accept", accept)];
+            let reference =
+                mo::response_snapshot(get_with(&fx.app, "/admin/quota-requests", &h).await).await;
+            let got =
+                mo::response_snapshot(get_with(&fx.app, "/admin/mcp/diagnostics", &h).await).await;
+            assert_eq!(got, reference, "{reason:?}: no credential, {accept}");
         }
     }
 }

@@ -1,8 +1,9 @@
 //! The account-level MCP endpoint (`/mcp`) at the protocol level, on the app
 //! assembled the way `main` assembles it: version negotiation, the empty
 //! server surface, the stateless SSE transport, the host list rmcp receives,
-//! the Origin gate, the challenge URL, metadata agreement, and that paths near
-//! `/mcp` and a disabled host answer like a path that never existed.
+//! the Origin gate, the challenge URL, metadata agreement, that paths near
+//! `/mcp` answer like a path that never existed, and that a disabled host
+//! answers `MCP_DISABLED` on `/mcp` and nothing on the metadata path.
 
 mod helpers;
 
@@ -363,7 +364,8 @@ async fn metadata_documents_agree_byte_for_byte() {
 }
 
 #[tokio::test]
-async fn disabled_host_answers_mcp_like_an_unknown_path() {
+async fn disabled_host_answers_h1_on_mcp_and_nothing_on_prm() {
+    const H1: &[u8] = br#"{"message":"MCP is disabled on this server; ask the operator (see boot log)","error_code":"MCP_DISABLED"}"#;
     let h = helpers::spin_up_account_mcp_with(helpers::AccountMcpOpts {
         admins: vec![("mcp-owner", "owner")],
         tenants: vec![("t1", Some(0))],
@@ -371,15 +373,32 @@ async fn disabled_host_answers_mcp_like_an_unknown_path() {
         mcp_enabled: false,
     })
     .await;
-    for (m, uri) in [
-        ("POST", "/mcp"),
-        ("GET", "/mcp"),
-        ("GET", "/.well-known/oauth-protected-resource/mcp"),
+    let bearer = format!("Bearer {}", h.access);
+    for host in ["127.0.0.1", "evil.example", "bad host"] {
+        for auth in ["", "Bearer x", bearer.as_str()] {
+            for m in ["POST", "GET", "DELETE", "PUT"] {
+                let body = (m == "POST").then(|| init("2025-06-18"));
+                let (s, hs, b) = helpers::http_raw(
+                    &h.app,
+                    m,
+                    "/mcp",
+                    &[("host", host), ("authorization", auth)],
+                    body,
+                )
+                .await;
+                assert_eq!(s, StatusCode::NOT_FOUND, "{m} host={host}");
+                assert_eq!(b, H1, "{m} host={host}");
+                assert_eq!(hs["cache-control"], "no-store");
+                assert_eq!(hs["content-type"], "application/json");
+            }
+        }
+    }
+    for uri in [
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-authorization-server",
     ] {
-        let body = (m == "POST").then(|| init("2025-06-18"));
-        let hs = [("authorization", "Bearer x")];
-        let got = helpers::http_raw(&h.app, m, uri, &hs, body.clone()).await;
-        let never = helpers::http_raw(&h.app, m, "/no-such-path", &hs, body).await;
-        assert_eq!(sorted(got), sorted(never), "{m} {uri}");
+        let got = helpers::http_raw(&h.app, "GET", uri, &[], None).await;
+        let never = helpers::http_raw(&h.app, "GET", "/no-such-path", &[], None).await;
+        assert_eq!(sorted(got), sorted(never), "{uri}");
     }
 }

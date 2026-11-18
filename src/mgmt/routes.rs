@@ -1643,12 +1643,12 @@ impl MgmtState {
         // The owner-only MCP diagnostics page rides protected too (it needs
         // AdminProfileExt for its owner gate).
         let protected_routes = if self.mcp_oauth.enabled() {
-            protected_routes
-                .merge(crate::mgmt::mcp_oauth::session_routes(&self))
-                .merge(crate::mgmt::mcp_oauth::diagnostics_routes(&self))
+            protected_routes.merge(crate::mgmt::mcp_oauth::session_routes(&self))
         } else {
             protected_routes
         };
+        let protected_routes =
+            protected_routes.merge(crate::mgmt::mcp_oauth::diagnostics_routes(&self));
         let protected = protected_routes
             .layer(axum::middleware::from_fn_with_state(
                 inner_theme_state,
@@ -1700,14 +1700,10 @@ impl MgmtState {
         // its router's default fallback this router's fallback; the one it
         // replaces is the default fallback wrapped only by the locale and
         // theme layers, which write request extensions and nothing else, so
-        // an unmatched path answers byte for byte as before.
-        if self.mcp_oauth.enabled() {
-            app.merge(crate::mgmt::mcp_oauth::account_routes::account_routes(
-                &self,
-            ))
-        } else {
-            app
-        }
+        // an unmatched path answers byte for byte as before, MCP on or off.
+        app.merge(crate::mgmt::mcp_oauth::account_routes::account_routes(
+            &self,
+        ))
     }
 }
 

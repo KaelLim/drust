@@ -120,8 +120,8 @@ pub fn connect_routes(state: &MgmtState) -> Router {
 /// page with no `{id}`, so it carries `require_owner_layer` (CLAUDE.md
 /// invariant 8). `route_layer`, never `layer`: `layer` would also wrap this
 /// router's default fallback and gate unmatched paths; once merged into the
-/// app that mistake is invisible, so a test drives this router alone. Merged
-/// ONLY when `McpOauthConfig::enabled()`.
+/// app that mistake is invisible, so a test drives this router alone. Always
+/// merged into the protected router; while MCP is off it shows why.
 pub fn diagnostics_routes(state: &MgmtState) -> Router {
     Router::new()
         .route("/admin/mcp/diagnostics", get(connect::diagnostics_page))
