@@ -71,6 +71,33 @@ async fn tools_list_is_the_inner_tools_plus_list_tenants() {
     assert_eq!(drust::mcp::handler::DrustMcpService::tool_count(), 76);
 }
 
+#[tokio::test]
+async fn recent_writes_account_description_is_the_override() {
+    let h = spin_up_account_mcp("acct-tools").await;
+    let (_, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    let t = msgs[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "recent_writes")
+        .unwrap();
+    let d = t["description"].as_str().unwrap();
+    assert!(
+        d.starts_with("Recent write events recorded in this tenant's audit log (ts/op/collection/status/error_code), newest first:"),
+        "{d}"
+    );
+    assert!(
+        !d.contains("NOT POPULATED") && !d.contains("Service-key"),
+        "{d}"
+    );
+    assert_eq!(t["inputSchema"]["required"][0], "tenant");
+}
+
 async fn call(h: &AccountMcpHarness, token: &str, name: &str, args: Option<Value>) -> Value {
     let (st, _, msgs) = mcp_rpc(&h.app, Some(token), tools_call(9, name, args)).await;
     assert_eq!(st, 200, "{name}");
