@@ -898,6 +898,60 @@ button = "複製"
 done = "已複製"
 failed = "複製失敗"
 
+[mcp_connect.diag]
+body = "Claude Code 連不上？診斷頁會檢查它需要的公開網址。"
+link = "開啟連線診斷"
+
+[mcp_diag.page]
+title = "drust 管理 — MCP 連線診斷"
+meta_description = "drust 管理 — 檢查 Claude Code 登入這台伺服器需要的公開網址。"
+
+[mcp_diag.head]
+eyebrow = "管理 · 平台"
+title = "MCP 連線診斷"
+sub = "從這個瀏覽器檢查 Claude Code 用來找到並登入這台伺服器的網址。"
+
+[mcp_diag.nav]
+connect = "串接 Claude Code"
+
+[mcp_diag.about]
+title = "這些檢查做什麼"
+body = "瀏覽器會像 Claude Code 探索這台伺服器那樣，逐一請求下列公開網址，並把回應與這台伺服器預期的值比對。每項檢查都不送 cookie，也不送 token；畫面只顯示狀態碼、有沒有登入 challenge，以及比對的欄位。"
+origin = "瀏覽器會在兩項 POST 檢查加上 Origin header，值等於公開 origin，MCP 端點會放行；Claude Code 本身不送 Origin。"
+proxy = "檢查失敗幾乎都指向 drust 前面的 proxy：少了規則、有轉址，或 Host header 不對。"
+
+[mcp_diag.expected]
+title = "預期值"
+resource = "MCP 端點（resource）"
+issuer = "Issuer"
+
+[mcp_diag.results]
+title = "檢查項目"
+rerun = "重新檢查"
+
+[mcp_diag.col]
+check = "檢查"
+request = "請求"
+result = "結果"
+
+[mcp_diag.js]
+running = "檢查中…"
+pass = "通過"
+fail = "失敗"
+redirect = "被轉址：Claude Code 遇到轉址就會停止"
+network = "沒有回應：網路錯誤或被阻擋"
+status = "HTTP {status}"
+challenge_ok = "有登入 challenge"
+challenge_missing = "沒有登入 challenge"
+not_json = "回應不是 JSON"
+mismatch = "不相符：{field}"
+wrong_origin = "這一頁是從其他網址開啟的，檢查無法執行。請從公開網址開啟：{url}"
+
+[mcp_diag.disabled]
+title = "這台伺服器的 MCP 已關閉"
+detail = "找到的問題："
+steps = "在伺服器環境修正上面指出的設定，重新啟動 drust，再看開機 log 中以 MCP OAuth AS 開頭的那一行。MCP 開啟後才會執行網址檢查。"
+
 [mcp_diag.check.mcp]
 label = "MCP 端點回應登入 challenge（401）"
 hint = "421：proxy 送出的 Host 既不是 127.0.0.1:47826 也不是公開主機。404 且為 MCP_DISABLED：回應的那台伺服器關閉了 MCP。其他 404：base path 底下的請求沒有轉到 drust。"

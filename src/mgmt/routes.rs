@@ -1640,8 +1640,12 @@ impl MgmtState {
             .merge(cli_device_router);
         // Consent needs AdminId + AuthMethod + the inner theme layer, so it
         // rides `protected`; not merged at all when MCP OAuth is disabled.
+        // The owner-only MCP diagnostics page rides protected too (it needs
+        // AdminProfileExt for its owner gate).
         let protected_routes = if self.mcp_oauth.enabled() {
-            protected_routes.merge(crate::mgmt::mcp_oauth::session_routes(&self))
+            protected_routes
+                .merge(crate::mgmt::mcp_oauth::session_routes(&self))
+                .merge(crate::mgmt::mcp_oauth::diagnostics_routes(&self))
         } else {
             protected_routes
         };

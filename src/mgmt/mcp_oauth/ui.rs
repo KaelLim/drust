@@ -627,6 +627,10 @@ mod tests {
                     "mcp_connect.html",
                     include_str!("../templates/mcp_connect.html"),
                 ),
+                (
+                    "mcp_diagnostics.html",
+                    include_str!("../templates/mcp_diagnostics.html"),
+                ),
             ])
             .collect();
         let (mut urls, mut back_links) = (0, 0);
@@ -657,8 +661,8 @@ mod tests {
         }
         // Card: two form actions and the connect link; team page: one fetch;
         // consent: three form actions and one link; connect page: the
-        // settings link.
-        assert_eq!(urls, 9);
+        // settings and diagnostics links; diagnostics page: the link back.
+        assert_eq!(urls, 11);
         assert_eq!(back_links, 1, "the error page's back link");
     }
 

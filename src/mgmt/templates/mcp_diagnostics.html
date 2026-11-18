@@ -1,0 +1,180 @@
+{% extends "_base.html" %}
+{% import "_ui.html" as ui %}
+
+{% block title %}{{ t.s("mcp_diag.page.title") }}{% endblock %}
+{% block meta_description %}<meta name="description" content="{{ t.s("mcp_diag.page.meta_description") }}">{% endblock %}
+{% block body_attrs %} data-section="settings"{% endblock %}
+
+{% block content %}
+    <div class="page">
+
+      {% call ui::view_head(t.s("mcp_diag.head.eyebrow"), t.s("mcp_diag.head.title"), t.s("mcp_diag.head.sub")) %}<a class="btn sm ghost" href="{{ crate::base_path::base_path() }}/admin/mcp">{{ t.s("mcp_diag.nav.connect") }}</a>{% endcall %}
+
+      {% if enabled %}
+      {# `hidden` sits on a class-less wrapper: `.banner` sets display:flex,
+         which would override the UA's [hidden] rule on the banner itself. #}
+      <div id="mcp-diag-wrong-origin" hidden><div class="banner warn"><div class="b-body" data-diag-wrong-origin-text></div></div></div>
+
+      {% call ui::card(t.s("mcp_diag.about.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_diag.about.body") }}</p>
+        <p>{{ t.s("mcp_diag.about.origin") }}</p>
+        <p>{{ t.s("mcp_diag.about.proxy") }}</p>
+      </div>
+      {% endcall %}
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_diag.expected.title"), "") %}
+      <div class="card-body">
+        <p>{{ t.s("mcp_diag.expected.resource") }}: <code>{{ resource }}</code></p>
+        <p>{{ t.s("mcp_diag.expected.issuer") }}: <code>{{ issuer }}</code></p>
+      </div>
+      {% endcall %}
+      </div>
+
+      <div style="margin-top:18px;">
+      {% call ui::card(t.s("mcp_diag.results.title"), "") %}
+      <div class="card-body">
+        <button type="button" class="btn sm ghost" data-diag-rerun>{{ t.s("mcp_diag.results.rerun") }}</button>
+        {% call ui::data_table("") %}
+        <thead>
+          <tr>
+            <th>{{ t.s("mcp_diag.col.check") }}</th>
+            <th>{{ t.s("mcp_diag.col.request") }}</th>
+            <th>{{ t.s("mcp_diag.col.result") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in checks %}
+          <tr data-diag-check="{{ c.id }}"><td>{{ t.s(c.label_key) }}<div class="muted">{{ t.s(c.hint_key) }}</div></td><td><code>{{ c.method }} {{ c.url }}</code></td><td data-diag-result="{{ c.id }}"></td></tr>
+          {% endfor %}
+        </tbody>
+        {% endcall %}
+      </div>
+      {% endcall %}
+      </div>
+      {% else %}
+      <div class="banner warn"><div class="b-body"><div class="b-title">{{ t.s("mcp_diag.disabled.title") }}</div><p>{{ t.s(reason_key) }}</p>{% match reason_detail %}{% when Some with (why) %}<p>{{ t.s("mcp_diag.disabled.detail") }} <code>{{ why }}</code></p>{% when None %}{% endmatch %}<p>{{ t.s("mcp_diag.disabled.steps") }}</p></div></div>
+      {% endif %}
+
+    </div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% include "_mascot.html" %}
+{% include "_cmdk.html" %}
+{% include "_modal.html" %}
+{% if enabled %}
+<script id="mcp-diag-data" type="application/json">{{ diag_json|safe }}</script>
+<script>
+(function () {
+  var d = JSON.parse(document.getElementById('mcp-diag-data').textContent);
+  var T = {
+    running: '{{ t.s("mcp_diag.js.running")|safe }}',
+    pass: '{{ t.s("mcp_diag.js.pass")|safe }}',
+    fail: '{{ t.s("mcp_diag.js.fail")|safe }}',
+    redirect: '{{ t.s("mcp_diag.js.redirect")|safe }}',
+    network: '{{ t.s("mcp_diag.js.network")|safe }}',
+    status: '{{ t.s("mcp_diag.js.status")|safe }}',
+    challenge_ok: '{{ t.s("mcp_diag.js.challenge_ok")|safe }}',
+    challenge_missing: '{{ t.s("mcp_diag.js.challenge_missing")|safe }}',
+    not_json: '{{ t.s("mcp_diag.js.not_json")|safe }}',
+    mismatch: '{{ t.s("mcp_diag.js.mismatch")|safe }}',
+    wrong_origin: '{{ t.s("mcp_diag.js.wrong_origin")|safe }}'
+  };
+  var CHALLENGE_HEADERS = { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' };
+
+  // Opened from another address (an internal name, the loopback port): the
+  // endpoints send no CORS headers, so every check would fail for nothing.
+  if (location.origin !== d.origin) {
+    document.querySelector('[data-diag-wrong-origin-text]').textContent = T.wrong_origin.replace('{url}', d.page);
+    document.getElementById('mcp-diag-wrong-origin').hidden = false;
+    return;
+  }
+
+  function cell(id) {
+    var el = document.querySelector('[data-diag-result="' + id + '"]');
+    if (el) {
+      while (el.firstChild) { el.removeChild(el.firstChild); }
+    }
+    return el;
+  }
+
+  function note(el, text) {
+    var div = document.createElement('div');
+    div.className = 'muted';
+    div.textContent = text;
+    el.appendChild(div);
+  }
+
+  function show(id, ok, notes) {
+    var el = cell(id);
+    if (!el) { return; }
+    var pill = document.createElement('span');
+    pill.className = ok ? 'pill mint' : 'pill danger';
+    pill.textContent = ok ? T.pass : T.fail;
+    el.appendChild(pill);
+    notes.forEach(function (n) { note(el, n); });
+  }
+
+  function judge(c, r) {
+    var notes = [];
+    if (r.type === 'opaqueredirect') {
+      notes.push(T.redirect);
+      return { ok: false, notes: notes };
+    }
+    notes.push(T.status.replace('{status}', r.status));
+    if (c.expect === 'challenge') {
+      var challenged = r.status === 401 &&
+        (r.headers.get('WWW-Authenticate') || '').indexOf('Bearer resource_metadata="') === 0;
+      notes.push(challenged ? T.challenge_ok : T.challenge_missing);
+      return { ok: challenged, notes: notes };
+    }
+    return r.json().then(function (j) {
+      if (j === null || typeof j !== 'object') { j = {}; }
+      var ok;
+      if (c.expect === 'prm') {
+        ok = r.status === 200;
+        if (j.resource !== d.resource) {
+          ok = false;
+          notes.push(T.mismatch.replace('{field}', 'resource'));
+        }
+        if (!Array.isArray(j.authorization_servers) || j.authorization_servers[0] !== d.issuer) {
+          ok = false;
+          notes.push(T.mismatch.replace('{field}', 'authorization_servers'));
+        }
+      } else if (c.expect === 'as') {
+        ok = r.status === 200;
+        if (j.issuer !== d.issuer) {
+          ok = false;
+          notes.push(T.mismatch.replace('{field}', 'issuer'));
+        }
+      } else {
+        ok = r.status === 400 && typeof j.error === 'string';
+      }
+      return { ok: ok, notes: notes };
+    }, function () {
+      notes.push(T.not_json);
+      return { ok: false, notes: notes };
+    });
+  }
+
+  function run(c) {
+    var el = cell(c.id);
+    if (el) { note(el, T.running); }
+    var opts = { method: c.method, redirect: 'manual', cache: 'no-store', credentials: 'omit' };
+    if (c.expect === 'challenge') { opts.headers = CHALLENGE_HEADERS; opts.body = '{}'; }
+    fetch(c.url, opts)
+      .then(function (r) { return judge(c, r); }, function () { return { ok: false, notes: [T.network] }; })
+      .then(function (res) { show(c.id, res.ok, res.notes); }, function () { show(c.id, false, [T.network]); });
+  }
+
+  function runAll() { d.checks.forEach(run); }
+
+  var rerun = document.querySelector('[data-diag-rerun]');
+  if (rerun) { rerun.addEventListener('click', runAll); }
+  runAll();
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -118,7 +118,7 @@ async fn seed_secrets(fx: &mo::McpOauthFixture) -> Vec<String> {
 }
 
 /// The pages this file adds; each rides `protected`.
-const NEW_PAGES: &[&str] = &["/admin/mcp"];
+const NEW_PAGES: &[&str] = &["/admin/mcp", "/admin/mcp/diagnostics"];
 
 /// Every key of `locales/<file>`, flattened to dotted paths.
 fn bundle(file: &str) -> std::collections::BTreeMap<String, String> {
@@ -422,6 +422,213 @@ fn mcp_account_ui_locale_values_render_verbatim() {
                 assert!(!v.contains(bad), "{lang} `{k}` contains {bad:?}");
             }
             assert!(!v.trim().is_empty(), "{lang} `{k}` is empty");
+        }
+    }
+}
+
+// ─── the diagnostics page ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn diagnostics_page_is_owner_only() {
+    let fx = mo::fixture(true).await;
+    let a = mo::add_admin(&fx, "alice", "", "admin").await;
+    let m = mo::add_admin(&fx, "mia", "", "member").await;
+    let s = session(&fx, fx.owner_id).await;
+    assert_eq!(
+        get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    for id in [a, m] {
+        let s = session(&fx, id).await;
+        let reference =
+            mo::response_snapshot(get_page(&fx.app, "/admin/quota-requests", Some(&s)).await).await;
+        assert_eq!(reference.0, StatusCode::FORBIDDEN);
+        let got =
+            mo::response_snapshot(get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await)
+                .await;
+        assert_eq!(
+            got, reference,
+            "admin {id}: same answer as another owner-only page"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&got.2).unwrap();
+        assert_eq!(v["error_code"], "OWNER_REQUIRED");
+        // The PAT arm of admin_session_layer must reach the same role check.
+        let pat = format!("Bearer {}", known_pat(&fx, id).await);
+        let h = [("authorization", pat.as_str()), ("accept", "text/html")];
+        let reference =
+            mo::response_snapshot(get_with(&fx.app, "/admin/quota-requests", &h).await).await;
+        assert_eq!(reference.0, StatusCode::FORBIDDEN);
+        let got =
+            mo::response_snapshot(get_with(&fx.app, "/admin/mcp/diagnostics", &h).await).await;
+        assert_eq!(
+            got, reference,
+            "admin {id} PAT: same answer as another owner-only page"
+        );
+    }
+    let pat = format!("Bearer {}", known_pat(&fx, fx.owner_id).await);
+    let r = get_with(
+        &fx.app,
+        "/admin/mcp/diagnostics",
+        &[("authorization", pat.as_str())],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK, "owner PAT");
+}
+
+#[tokio::test]
+async fn diagnostics_page_embeds_no_credential() {
+    let fx = mo::fixture(true).await;
+    let secrets = seed_secrets(&fx).await;
+    let s = session(&fx, fx.owner_id).await;
+    let r = get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await;
+    assert_eq!(
+        r.status(),
+        StatusCode::OK,
+        "the page must render for the negatives to mean anything"
+    );
+    let b = body(r).await;
+    assert!(b.contains("mcp-diag-data"));
+    for (i, secret) in secrets.iter().enumerate() {
+        assert!(!b.contains(secret.as_str()), "credential #{i} on the page");
+    }
+    for prefix in ["drust_pat_", "drust_mcpat_", "drust_mcprt_", "drust_upl_"] {
+        assert!(!b.contains(prefix), "{prefix}");
+    }
+}
+
+/// Regression guard only: in the full app a layered fallback is replaced by
+/// later merges, so this cannot tell route_layer from layer — the lib test
+/// diagnostics_owner_gate_wraps_its_route_and_not_the_fallback does.
+#[tokio::test]
+async fn unknown_mcp_paths_stay_not_found() {
+    let fx = mo::fixture(true).await;
+    let m = mo::add_admin(&fx, "mia", "", "member").await;
+    let s = session(&fx, m).await;
+    let never =
+        mo::response_snapshot(get_page(&fx.app, "/admin/nonexistent", Some(&s)).await).await;
+    assert_eq!(never.0, StatusCode::NOT_FOUND);
+    for uri in ["/admin/mcp/nonexistent", "/admin/mcp/diagnostics/x"] {
+        assert_eq!(
+            mo::response_snapshot(get_page(&fx.app, uri, Some(&s)).await).await,
+            never,
+            "{uri}"
+        );
+    }
+}
+
+fn island(page: &str) -> serde_json::Value {
+    const OPEN: &str = r#"<script id="mcp-diag-data" type="application/json">"#;
+    let start = page.find(OPEN).expect("diag_json island") + OPEN.len();
+    let end = start + page[start..].find("</script>").unwrap();
+    serde_json::from_str(&page[start..end]).unwrap()
+}
+
+#[tokio::test]
+async fn diagnostics_json_matches_the_check_table() {
+    let fx = mo::fixture(true).await;
+    let s = session(&fx, fx.owner_id).await;
+    let b = body(get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await).await;
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests(mo::PUBLIC_URL);
+    let v = island(&b);
+    assert_eq!(
+        v,
+        drust::mgmt::mcp_oauth::connect::diagnostics_json(&cfg).unwrap()
+    );
+    let urls: Vec<&str> = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://drust.test/drust/mcp",
+            "https://drust.test/drust/.well-known/oauth-protected-resource/mcp",
+            "https://drust.test/.well-known/oauth-protected-resource/drust/mcp",
+            "https://drust.test/.well-known/oauth-authorization-server/drust",
+            "https://drust.test/drust/.well-known/oauth-authorization-server",
+            "https://drust.test/drust/oauth/token",
+        ]
+    );
+    assert!(!v.to_string().contains("drust_"));
+    assert!(
+        b.contains(&format!("<code>{}</code>", mo::RESOURCE))
+            && b.contains(&format!("<code>{}</code>", mo::ISSUER))
+    );
+    for id in ["mcp", "prm", "prm_root", "as_root", "as_base", "token"] {
+        assert!(
+            b.contains(&format!("data-diag-result=\"{id}\"")),
+            "{id} row"
+        );
+    }
+}
+
+#[tokio::test]
+async fn diagnostics_page_script_never_sends_credentials() {
+    let fx = mo::fixture(true).await;
+    let s = session(&fx, fx.owner_id).await;
+    let b = body(get_page(&fx.app, "/admin/mcp/diagnostics", Some(&s)).await).await;
+    for needle in [
+        "redirect: 'manual'",
+        "cache: 'no-store'",
+        "credentials: 'omit'",
+        "location.origin !== d.origin",
+        "'opaqueredirect'",
+        "fetch(c.url, opts)",
+    ] {
+        assert!(b.contains(needle), "{needle}");
+    }
+    assert_eq!(b.matches("fetch(c.url, opts)").count(), 1);
+    assert!(!b.contains("!!"));
+}
+
+#[tokio::test]
+async fn connect_page_links_to_diagnostics_for_owners_only() {
+    let fx = mo::fixture(true).await;
+    let m = mo::add_admin(&fx, "mia", "", "member").await;
+    const LINK: &str = "href=\"/drust/admin/mcp/diagnostics\"";
+    let owner = body(
+        get_page(
+            &fx.app,
+            "/admin/mcp",
+            Some(&session(&fx, fx.owner_id).await),
+        )
+        .await,
+    )
+    .await;
+    let member = body(get_page(&fx.app, "/admin/mcp", Some(&session(&fx, m).await)).await).await;
+    assert!(owner.contains(LINK));
+    assert!(!member.contains(LINK));
+}
+
+#[tokio::test]
+async fn disabled_diagnostics_page_is_not_mounted() {
+    // Same shape as disabled_connect_page_is_not_mounted, kept separate so the
+    // diagnostics half can change on its own.
+    use drust::mgmt::mcp_oauth::config::{McpOauthConfig, McpOauthEnv};
+    let on_without_url = McpOauthConfig::from_parts(
+        &McpOauthEnv {
+            mode: Some("on"),
+            public_url: None,
+            ..Default::default()
+        },
+        "/drust",
+        [1; 32],
+        [2; 32],
+    );
+    for cfg in [McpOauthConfig::disabled(), on_without_url] {
+        let fx = mo::fixture_with(cfg).await;
+        let s = session(&fx, fx.owner_id).await;
+        for cookie in [Some(s.as_str()), None] {
+            let never =
+                mo::response_snapshot(get_page(&fx.app, "/admin/nonexistent", cookie).await).await;
+            let got =
+                mo::response_snapshot(get_page(&fx.app, "/admin/mcp/diagnostics", cookie).await)
+                    .await;
+            assert_eq!(got, never, "cookie {}", cookie.is_some());
         }
     }
 }

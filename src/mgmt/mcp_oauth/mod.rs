@@ -116,6 +116,19 @@ pub fn connect_routes(state: &MgmtState) -> Router {
         .with_state(state.clone())
 }
 
+/// Owner-only MCP connection diagnostics, already `with_state`: a host-wide
+/// page with no `{id}`, so it carries `require_owner_layer` (CLAUDE.md
+/// invariant 8). `route_layer`, never `layer`: `layer` would also wrap this
+/// router's default fallback and gate unmatched paths; once merged into the
+/// app that mistake is invisible, so a test drives this router alone. Merged
+/// ONLY when `McpOauthConfig::enabled()`.
+pub fn diagnostics_routes(state: &MgmtState) -> Router {
+    Router::new()
+        .route("/admin/mcp/diagnostics", get(connect::diagnostics_page))
+        .route_layer(from_fn(crate::mgmt::tenant_authz::require_owner_layer))
+        .with_state(state.clone())
+}
+
 /// en and zh-TW must carry the same keys under every MCP OAuth prefix (build.rs
 /// only checks en).
 #[cfg(test)]

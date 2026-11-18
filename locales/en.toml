@@ -878,6 +878,60 @@ button = "Copy"
 done = "Copied"
 failed = "Copy failed"
 
+[mcp_connect.diag]
+body = "Claude Code cannot connect? The diagnostics page checks the public addresses it needs."
+link = "Open connection diagnostics"
+
+[mcp_diag.page]
+title = "drust admin — MCP connection diagnostics"
+meta_description = "drust admin — check the public addresses Claude Code needs to sign in to this server."
+
+[mcp_diag.head]
+eyebrow = "Admin · platform"
+title = "MCP connection diagnostics"
+sub = "Checks, from this browser, the addresses Claude Code uses to find and sign in to this server."
+
+[mcp_diag.nav]
+connect = "Connect Claude Code"
+
+[mcp_diag.about]
+title = "What these checks do"
+body = "Your browser requests each public address below, the way Claude Code discovers this server, and compares the answer with what this server expects. No check sends a cookie or a token; only the status, whether a sign-in challenge is present and the compared fields are shown."
+origin = "Your browser adds an Origin header to the two POST checks. It equals the public origin, which the MCP endpoint accepts; Claude Code itself sends no Origin."
+proxy = "A failing check almost always points at a proxy in front of drust: a missing rule, a redirect, or the wrong Host header."
+
+[mcp_diag.expected]
+title = "Expected values"
+resource = "MCP endpoint (resource)"
+issuer = "Issuer"
+
+[mcp_diag.results]
+title = "Checks"
+rerun = "Run again"
+
+[mcp_diag.col]
+check = "Check"
+request = "Request"
+result = "Result"
+
+[mcp_diag.js]
+running = "Running…"
+pass = "Pass"
+fail = "Fail"
+redirect = "Redirected: Claude Code stops on any redirect"
+network = "No answer: network error or blocked"
+status = "HTTP {status}"
+challenge_ok = "Sign-in challenge present"
+challenge_missing = "No sign-in challenge"
+not_json = "The answer is not JSON"
+mismatch = "Does not match: {field}"
+wrong_origin = "This page was opened from another address, so the checks cannot run. Open it from the public address: {url}"
+
+[mcp_diag.disabled]
+title = "MCP is off on this server"
+detail = "Problem found:"
+steps = "Fix the setting named above in the server environment, restart drust, and read the boot log line that starts with MCP OAuth AS. The address checks run once MCP is on."
+
 [mcp_diag.check.mcp]
 label = "MCP endpoint answers with a sign-in challenge (401)"
 hint = "421: the proxy sends a Host that is neither 127.0.0.1:47826 nor the public host. 404 with MCP_DISABLED: the server that answered has MCP off. Any other 404: requests under the base path do not reach drust."

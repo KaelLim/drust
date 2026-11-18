@@ -286,6 +286,96 @@ pub async fn connect_page(
     }
 }
 
+#[derive(Template)]
+#[template(path = "mcp_diagnostics.html")]
+struct McpDiagnosticsPage {
+    version: &'static str,
+    t: Translator,
+    admin: AdminProfileExt,
+    palette_resolved: ResolvedPalette,
+    mascot_json_static: String,
+    mascot_json_light: String,
+    mascot_json_dark: String,
+    enabled: bool,
+    resource: String,
+    issuer: String,
+    checks: Vec<DiagCheck>,
+    /// `diagnostics_json` through `script_json::escape_json_for_script`.
+    diag_json: String,
+    /// While disabled: the locale key of the reason sentence; "" while enabled.
+    reason_key: &'static str,
+    reason_detail: Option<&'static str>,
+}
+
+/// The diagnostics page. Enabled: the expected values, the check table and
+/// the JSON island the page script reads. Disabled: the reason sentence and
+/// the steps, and no check at all.
+fn diagnostics_page_html(
+    cfg: &McpOauthConfig,
+    t: Translator,
+    admin: AdminProfileExt,
+    theme: Theme,
+) -> String {
+    let trc = ThemeRenderCtx::build(theme);
+    let (enabled, resource, issuer, checks, diag_json, reason_key, reason_detail) =
+        match diagnostics_json(cfg) {
+            Some(v) => (
+                true,
+                cfg.resource_url(),
+                cfg.issuer(),
+                diag_checks(cfg),
+                crate::mgmt::script_json::escape_json_for_script(&v.to_string()),
+                "",
+                None,
+            ),
+            None => (
+                false,
+                String::new(),
+                String::new(),
+                Vec::new(),
+                String::new(),
+                cfg.disabled_reason()
+                    .map_or("mcp_diag.reason.mode_off", disabled_reason_key),
+                cfg.disabled_reason().and_then(disabled_reason_detail),
+            ),
+        };
+    McpDiagnosticsPage {
+        version: env!("CARGO_PKG_VERSION"),
+        t,
+        admin,
+        palette_resolved: trc.palette_resolved,
+        mascot_json_static: trc.mascot_json_static,
+        mascot_json_light: trc.mascot_json_light,
+        mascot_json_dark: trc.mascot_json_dark,
+        enabled,
+        resource,
+        issuer,
+        checks,
+        diag_json,
+        reason_key,
+        reason_detail,
+    }
+    .render()
+    .unwrap_or_default()
+}
+
+/// `GET /admin/mcp/diagnostics` — owner-only (the router carries
+/// `require_owner_layer`). The checks themselves run in the browser.
+pub async fn diagnostics_page(
+    State(s): State<MgmtState>,
+    LocaleHint(locale): LocaleHint,
+    ThemeHint(theme): ThemeHint,
+    Extension(admin): Extension<AdminProfileExt>,
+) -> Response {
+    Html(diagnostics_page_html(
+        &s.mcp_oauth,
+        Translator::new(locale),
+        admin,
+        theme,
+    ))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,5 +676,210 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    const DIAG_TEMPLATE: &str = include_str!("../templates/mcp_diagnostics.html");
+    const CONNECT_TEMPLATE: &str = include_str!("../templates/mcp_connect.html");
+
+    #[test]
+    fn diagnostics_template_checks_the_origin_before_any_fetch() {
+        let origin = DIAG_TEMPLATE
+            .find("location.origin !== d.origin")
+            .expect("origin check");
+        let fetch = DIAG_TEMPLATE.find("fetch(").expect("one fetch");
+        assert!(origin < fetch, "the origin check runs before any request");
+        let branch = &DIAG_TEMPLATE[origin..fetch];
+        assert!(
+            branch.contains("return;"),
+            "a mismatch returns before any request"
+        );
+        assert!(branch.contains("T.wrong_origin.replace('{url}', d.page)"));
+    }
+
+    #[test]
+    fn diagnostics_template_never_follows_or_authenticates() {
+        assert_eq!(DIAG_TEMPLATE.matches("fetch(").count(), 1);
+        assert!(DIAG_TEMPLATE.contains("fetch(c.url, opts)"));
+        assert!(DIAG_TEMPLATE.contains(
+            "{ method: c.method, redirect: 'manual', cache: 'no-store', credentials: 'omit' }"
+        ));
+        assert!(DIAG_TEMPLATE.contains("r.type === 'opaqueredirect'"));
+        // Only the endpoint check carries headers and a body; the token check stays
+        // an empty, Content-Type-less POST that the token preflight refuses first.
+        assert!(DIAG_TEMPLATE.contains(
+            "if (c.expect === 'challenge') { opts.headers = CHALLENGE_HEADERS; opts.body = '{}'; }"
+        ));
+        assert_eq!(DIAG_TEMPLATE.matches("opts.headers").count(), 1);
+        assert_eq!(DIAG_TEMPLATE.matches("opts.body").count(), 1);
+        // Every other way a page sends a request or a cookie, and any mode
+        // override (a non-cors mode lets a referrer policy turn Origin into null).
+        const BANNED: &[&str] = &[
+            "Authorization",
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "action=\"",
+            "XMLHttpRequest",
+            "sendBeacon",
+            "EventSource",
+            "WebSocket",
+            "<form",
+            "new Request(",
+            "withCredentials",
+            "credentials: 'include'",
+            "credentials: 'same-origin'",
+            "mode:",
+            ".mode",
+        ];
+        for bad in BANNED {
+            assert!(
+                !DIAG_TEMPLATE.contains(bad),
+                "diagnostics template contains {bad}"
+            );
+        }
+        for bad in [
+            "fetch(",
+            "innerHTML",
+            "action=\"",
+            "XMLHttpRequest",
+            "sendBeacon",
+            "EventSource",
+            "WebSocket",
+            "<form",
+        ] {
+            assert!(
+                !CONNECT_TEMPLATE.contains(bad),
+                "connect template contains {bad}"
+            );
+        }
+    }
+
+    fn test_state(tmp: &tempfile::TempDir) -> crate::mgmt::routes::MgmtState {
+        // Same construction as account_routes::tests::enabled_state, minus the config.
+        let data = tmp.path().to_path_buf();
+        let conn = crate::storage::meta::open_meta(&data.join("meta.sqlite")).unwrap();
+        crate::db::migrations::run_migrations(&conn, &data).unwrap();
+        let tenants =
+            std::sync::Arc::new(crate::storage::pool::TenantRegistry::new(data.clone(), 2));
+        let mcp = std::sync::Arc::new(crate::mcp::http_registry::McpHttpRegistry::new(
+            std::sync::Arc::new(crate::mcp::server::McpRegistry::new(tenants.clone())),
+        ));
+        crate::mgmt::routes::MgmtState::test_default(
+            std::sync::Arc::new(tokio::sync::Mutex::new(conn)),
+            data,
+            tenants,
+            mcp,
+            crate::tenant::events::EventBus::new(),
+            crate::tenant::rooms::RoomBus::new(),
+        )
+    }
+
+    /// `route_layer` vs `layer` is invisible in the merged app (axum keeps the
+    /// right-hand default fallback on merge), so the router is tested alone. No
+    /// AdminProfileExt is inserted: require_owner_layer fails closed on the route,
+    /// and must never see an unmatched path — under `.layer` it would answer 403.
+    #[tokio::test]
+    async fn diagnostics_owner_gate_wraps_its_route_and_not_the_fallback() {
+        use tower::ServiceExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let app = crate::mgmt::mcp_oauth::diagnostics_routes(&test_state(&tmp));
+        let get = |uri: &str| {
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let r = app
+            .clone()
+            .oneshot(get("/admin/mcp/diagnostics"))
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "the gate covers the route"
+        );
+        let r = app.oneshot(get("/admin/mcp/elsewhere")).await.unwrap();
+        assert_eq!(
+            r.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "the gate does not cover the fallback"
+        );
+    }
+
+    #[test]
+    fn diagnostics_page_renders_each_disabled_reason_without_running_checks() {
+        let cases = [
+            (cfg(Some("off"), None, "/drust"), None, None),
+            (
+                cfg(Some("auto"), Some("https://drust.test"), "/drust"),
+                None,
+                None,
+            ),
+            (
+                cfg(Some("sideways-x"), None, "/drust"),
+                Some("sideways-x"),
+                None,
+            ),
+            (cfg(Some("on"), None, "/drust"), None, None),
+            (
+                cfg(Some("on"), Some("https://ZQX@drust.test"), "/drust"),
+                Some("ZQX"),
+                Some("userinfo"),
+            ),
+            (
+                cfg(Some("on"), Some("http://drust.test"), "/drust"),
+                None,
+                None,
+            ),
+            (
+                cfg(Some("on"), Some("https://drust.test"), "/dr ust"),
+                None,
+                None,
+            ),
+        ];
+        for (c, hidden, detail) in cases {
+            let r = c.disabled_reason().unwrap().clone();
+            let en = crate::mgmt::i18n::Translator::new(crate::mgmt::i18n::Locale::En);
+            let want = en.s(disabled_reason_key(&r)).into_owned();
+            let steps = en.s("mcp_diag.disabled.steps").into_owned();
+            let html = diagnostics_page_html(
+                &c,
+                en,
+                crate::mgmt::admin_profile::AdminProfileExt::placeholder(),
+                crate::mgmt::theme::Theme::System,
+            );
+            assert!(html.contains(&want), "{r:?}: reason sentence");
+            assert!(html.contains(&steps), "{r:?}: steps");
+            assert!(
+                !html.contains("mcp-diag-data") && !html.contains("fetch(c.url"),
+                "{r:?}: no checks while disabled"
+            );
+            if let Some(h) = hidden {
+                assert!(!html.contains(h), "{r:?}: raw value shown");
+            }
+            if let Some(d) = detail {
+                assert!(html.contains(&format!("<code>{d}</code>")), "{r:?}: detail");
+            }
+            assert!(!html.contains("!!"), "{r:?}: missing key");
+        }
+    }
+
+    #[test]
+    fn diagnostics_page_embeds_the_json_through_the_script_escaper() {
+        let en = crate::mgmt::i18n::Translator::new(crate::mgmt::i18n::Locale::En);
+        let html = diagnostics_page_html(
+            &on(),
+            en,
+            crate::mgmt::admin_profile::AdminProfileExt::placeholder(),
+            crate::mgmt::theme::Theme::System,
+        );
+        let raw = diagnostics_json(&on()).unwrap().to_string();
+        let escaped = crate::mgmt::script_json::escape_json_for_script(&raw);
+        assert!(html.contains(&format!(
+            r#"<script id="mcp-diag-data" type="application/json">{escaped}</script>"#
+        )));
     }
 }
