@@ -16,9 +16,9 @@ SCRIPT_START=$(date +%s)
 
 # ── helpers local to this script ────────────────────────────────────────────
 
-# req with bounded back-off on 429 (per-token rate limit is 60 / 10 s and the
-# same budget also counts MCP round-trips). Overrides lib.sh's req in this
-# script only.
+# req with bounded back-off on 429 (per-token rate limit is 60 / 10 s).
+# Overrides lib.sh's req in this script only.
+# MCP calls go to the account endpoint and are not charged to this key.
 eval "_lib_req() $(declare -f req | sed '1d')"
 req() {
   local i=0
@@ -58,88 +58,12 @@ except Exception:
 }
 bodyj() { printf '%s' "$BODY" | pyj "$1"; }
 
-# Session-reusing MCP client: one initialize per tenant per run, then one HTTP
-# request per tool call (lib.sh's mcp_call does 3 per call, which burns the
-# per-token rate budget). Retries 429 with Retry-After; re-initializes when the
-# server forgets the session.
-cat > "$TMP/mcpc.py" <<'PY'
-import json, os, sys, time, urllib.error, urllib.request
-url, bearer, sidfile, message = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
-PV = "2025-06-18"
-def post(msg, sid=None, proto=None):
-    h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-         "Authorization": "Bearer " + bearer}
-    if sid: h["Mcp-Session-Id"] = sid
-    if proto: h["MCP-Protocol-Version"] = proto
-    for attempt in range(10):
-        req = urllib.request.Request(url, data=json.dumps(msg).encode(), headers=h, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=90) as r:
-                return r.status, r.headers, r.headers.get("Content-Type", ""), r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 9:
-                ra = e.headers.get("Retry-After", "2")
-                time.sleep(min(10, int(ra) if ra.isdigit() else 2))
-                continue
-            return e.code, e.headers, e.headers.get("Content-Type", ""), e.read().decode("utf-8", "replace")
-def pick(ctype, raw, want):
-    msgs = []
-    if "text/event-stream" in ctype:
-        for line in raw.splitlines():
-            if line.startswith("data:") and line[5:].strip():
-                try: msgs.append(json.loads(line[5:].strip()))
-                except ValueError: pass
-    elif raw.strip():
-        try:
-            p = json.loads(raw); msgs = p if isinstance(p, list) else [p]
-        except ValueError: pass
-    for m in msgs:
-        if isinstance(m, dict) and m.get("id") == want: return m
-    return None
-def init():
-    st, hd, ct, raw = post({"jsonrpc": "2.0", "id": 0, "method": "initialize",
-        "params": {"protocolVersion": PV, "capabilities": {}, "clientInfo": {"name": "drust-smoke-80", "version": "1"}}})
-    m = pick(ct, raw, 0)
-    if st != 200 or m is None: return None, None
-    sid = hd.get("Mcp-Session-Id"); proto = m.get("result", {}).get("protocolVersion", PV)
-    post({"jsonrpc": "2.0", "method": "notifications/initialized"}, sid, proto)
-    with open(sidfile, "w") as f: f.write(json.dumps({"sid": sid, "proto": proto}))
-    return sid, proto
-sid = proto = None
-if os.path.exists(sidfile):
-    try:
-        s = json.load(open(sidfile)); sid, proto = s["sid"], s["proto"]
-    except Exception: pass
-if not sid:
-    sid, proto = init()
-for _ in range(2):
-    st, hd, ct, raw = post(message, sid, proto)
-    ans = pick(ct, raw, message.get("id"))
-    if ans is not None:
-        print(json.dumps(ans, ensure_ascii=False)); sys.exit(0)
-    if st in (400, 404, 410):
-        sid, proto = init(); continue
-    break
-print(json.dumps({"http_status": st, "body": raw[:2000]})); sys.exit(1)
-PY
-
-# mcp TOOL JSON_ARGS — service-key tools/call on the current tenant. Sets
-# MCP_OK (true when a result that is not isError), MCP_TEXT (result text or the
-# error message), MCP_CODE (data.error_code when present), BODY (raw).
-_mcp_id=1
+# mcp TOOL JSON_ARGS — tools/call on the current tenant through the account
+# endpoint (lib.sh's mcp_call). Sets MCP_OK (true for a result that is not
+# isError), MCP_TEXT (the result text) and MCP_CODE (the error code of a failure).
 mcp() {
-  _mcp_id=$((_mcp_id + 1))
-  local payload
-  payload="$(python3 -c '
-import json, sys
-print(json.dumps({"jsonrpc": "2.0", "id": int(sys.argv[3]), "method": "tools/call",
-                  "params": {"name": sys.argv[1], "arguments": json.loads(sys.argv[2])}}))
-' "$1" "$2" "$_mcp_id")"
-  python3 "$TMP/mcpc.py" "$T/mcp" "$SERVICE_KEY" "$TMP/mcp-$TENANT_ID.sid" "$payload" > "$TMP/mcp.out" 2>"$TMP/mcp.err" || true
-  BODY="$(cat "$TMP/mcp.out")"
-  MCP_OK="$(bodyj '("result" in d) and not d["result"].get("isError", False)')"
-  MCP_TEXT="$(bodyj 'd["result"]["content"][0]["text"] if "result" in d else d["error"]["message"]')"
-  MCP_CODE="$(bodyj '(d.get("error", {}).get("data") or {}).get("error_code", "")')"
+  mcp_call "$1" "$2"
+  if [ "$MCP_IS_ERROR" = false ]; then MCP_OK=true; else MCP_OK=false; fi
 }
 
 # Remember / switch between this run's tenants (lib.sh's helpers use globals).
@@ -228,12 +152,12 @@ mcp create_collection '{"name":"items","fields":[{"name":"title","sql_type":"tex
 setup_ok "rpc tenant: create_collection items"
 mcp create_collection '{"name":"owned","fields":[{"name":"title","sql_type":"text"},{"name":"owner","sql_type":"text","foreign_key":"_system_users"}]}'
 setup_ok "rpc tenant: create_collection owned (owner FK to _system_users)"
-mcp set_owner_field '{"collection":"owned","field":"owner"}'
-setup_ok "rpc tenant: set_owner_field owned.owner"
+svc POST /collections/owned/owner-field '{"field":"owner"}'
+check_eq "rpc tenant: set owner-field owned.owner answers 200" 200 "$STATUS"
 mcp create_collection '{"name":"posts","fields":[{"name":"title","sql_type":"text"},{"name":"status","sql_type":"text"}]}'
 setup_ok "rpc tenant: create_collection posts"
-mcp set_policy '{"collection":"posts","op":"select","using":{"status":"published"}}'
-setup_ok "rpc tenant: attach select policy status=published on posts"
+svc PUT /collections/posts/policies '{"select":{"using":{"status":"published"}}}'
+check_eq "rpc tenant: PUT select policy status=published on posts answers 200" "200 true" "$STATUS $(body ok)"
 mcp create_collection '{"name":"drift","fields":[{"name":"a","sql_type":"text"},{"name":"b","sql_type":"text"}]}'
 setup_ok "rpc tenant: create_collection drift"
 
@@ -279,7 +203,7 @@ check_eq "rpc: anon may call an anon_callable RPC over an unrestricted collectio
 mcp create_rpc '{"name":"bad_owned","sql":"SELECT id, title FROM owned","params":[],"anon_callable":true}'
 check_eq "rpc guard (create): anon_callable RPC over an owner-scoped collection without :user_id is refused" false "$MCP_OK"
 check_contains "rpc guard (create): refusal names RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
-check_eq "rpc guard (create): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
+check_eq "rpc guard (create): MCP refusal carries error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp create_rpc '{"name":"bad_owned2","sql":"SELECT id, title FROM owned WHERE :user_id IS NOT NULL","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
 check_contains "rpc guard (create): declaring :user_id without constraining the owner column is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
 mcp create_rpc '{"name":"bad_policy","sql":"SELECT id, title FROM posts WHERE title = :user_id","params":[{"name":"user_id","type":"text"}],"anon_callable":true}'
@@ -293,7 +217,7 @@ mcp create_rpc '{"name":"r_owned_svc","sql":"SELECT id, title FROM owned","param
 setup_ok "rpc: create service-only RPC over owned"
 mcp update_rpc '{"name":"r_owned_svc","anon_callable":true}'
 check_contains "rpc guard (update): flipping anon_callable on an RPC over owned is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
-check_eq "rpc guard (update): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
+check_eq "rpc guard (update): MCP refusal carries error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 anon POST /rpc/r_owned_svc '{}'
 check_eq "rpc guard (update): after the refused flip anon still gets 403 ANON_DENIED" "403 ANON_DENIED" "$STATUS $(body error_code)"
 mcp create_collection '{"name":"pubtab","fields":[{"name":"title","sql_type":"text"},{"name":"owner","sql_type":"text","foreign_key":"_system_users"}]}'
@@ -302,10 +226,10 @@ mcp create_rpc '{"name":"r_pubtab","sql":"SELECT id, title FROM pubtab","params"
 setup_ok "rpc: create anon_callable RPC over pubtab (not yet restricted)"
 mcp set_owner_field '{"collection":"pubtab","field":"owner"}'
 check_contains "rpc guard (set_owner_field): making a collection owner-scoped under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
-check_eq "rpc guard (set_owner_field): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
+check_eq "rpc guard (set_owner_field): MCP refusal carries error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 mcp set_policy '{"collection":"pubtab","op":"select","using":{"title":"x"}}'
 check_contains "rpc guard (policy attach): attaching an RLS policy under an anon_callable RPC is refused" RPC_ANON_OWNER_SCOPED "$MCP_TEXT"
-check_eq "rpc guard (policy attach): MCP refusal carries data.error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
+check_eq "rpc guard (policy attach): MCP refusal carries error_code RPC_ANON_OWNER_SCOPED" RPC_ANON_OWNER_SCOPED "$MCP_CODE"
 
 # ── validate_rpc_sql refusals (create-time, mode-matched authorizer) ───────
 # Every PrepareError carries the "prepare-time validation" prefix — a syntax
@@ -321,7 +245,7 @@ mcp create_rpc '{"name":"bad_attach","sql":"ATTACH DATABASE '"'"'/tmp/smoke80.db
 check_authz_refusal "rpc validate: ATTACH in a read RPC is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_master","sql":"SELECT name FROM sqlite_master","params":[]}'
 check_authz_refusal "rpc validate: a sqlite_master read is refused at create by the authorizer"
-check_eq "rpc validate: MCP create_rpc's authorizer refusal carries data.error_code INVALID_SQL_FOR_MODE" INVALID_SQL_FOR_MODE "$MCP_CODE"
+check_eq "rpc validate: MCP create_rpc's authorizer refusal carries error_code INVALID_SQL_FOR_MODE" INVALID_SQL_FOR_MODE "$MCP_CODE"
 mcp create_rpc '{"name":"bad_sysread","sql":"SELECT * FROM _system_users","params":[]}'
 check_authz_refusal "rpc validate: a _system_* read is refused at create by the authorizer"
 mcp create_rpc '{"name":"bad_rw","sql":"INSERT INTO items(title) VALUES('"'"'x'"'"')","params":[]}'
