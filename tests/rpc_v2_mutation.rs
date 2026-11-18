@@ -790,115 +790,9 @@ async fn q3_user_id_inside_string_literal_not_autobound() {
 
 // ────────────────────────────────────────────────────────────────────
 // v1.48.1 — MCP update_rpc `mode` param (spec 測試 cases 5-6).
-// Dispatched through the real per-tenant MCP endpoint (JSON-RPC
-// tools/call via app.oneshot, mirroring tests/mcp_merged_tools.rs).
+// Dispatched through the real account-level MCP endpoint (JSON-RPC
+// tools/call over `/mcp`).
 // ────────────────────────────────────────────────────────────────────
-
-fn mcp_req_with_session(
-    tid: &str,
-    token: &str,
-    sid: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", sid)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.strip_prefix("data:").unwrap_or(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            out.push(v);
-        }
-    }
-    out
-}
-
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            json!({
-                "jsonrpc":"2.0","id":1,"method":"initialize",
-                "params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let r = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(r.status(), StatusCode::OK, "initialize failed");
-    let sid = r
-        .headers()
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(r).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &sid,
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    sid
-}
-
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    sid: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        sid,
-        json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} status {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
-}
 
 async fn stored_rpc_mode(pool: &drust::storage::pool::SharedTenantPool, name: &str) -> String {
     let name = name.to_string();
@@ -918,8 +812,8 @@ async fn stored_rpc_mode(pool: &drust::storage::pool::SharedTenantPool, name: &s
 // the stored mode untouched. Execution via REST proves the swapped body.
 #[tokio::test]
 async fn mode5_update_rpc_omitted_mode_validates_under_stored_write_mode() {
-    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-m5").await;
-    let pool = helpers::grab_pool(&tid, &dir).await;
+    let h = helpers::spin_up_account_mcp("t-rpc-m5").await;
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     create_orders_table(&pool).await;
     // Admin-created write RPC (direct row insert mirrors the admin path).
     create_rpc(
@@ -931,15 +825,13 @@ async fn mode5_update_rpc_omitted_mode_validates_under_stored_write_mode() {
         "write",
     )
     .await;
-    let sid = mcp_init(&app, &tid, &svc).await;
 
     // Swap in a NEW write body with `mode` omitted — must validate under
     // the stored row's mode (write).
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name":"add_one","sql":"INSERT INTO orders (qty) VALUES (2)"}),
     )
@@ -955,8 +847,10 @@ async fn mode5_update_rpc_omitted_mode_validates_under_stored_write_mode() {
     );
 
     // Execution proof: the new body inserts qty=2.
-    let r = app
-        .oneshot(req("POST", &tid, "/rpc/add_one", Some(json!({})), &svc))
+    let r = h
+        .app
+        .clone()
+        .oneshot(req("POST", &h.tid, "/rpc/add_one", Some(json!({})), &h.svc))
         .await
         .unwrap();
     let status = r.status();
@@ -971,8 +865,8 @@ async fn mode5_update_rpc_omitted_mode_validates_under_stored_write_mode() {
 // to a SELECT body in the same call succeeds and lands mode='read'.
 #[tokio::test]
 async fn mode6_update_rpc_downgrade_to_read_requires_select_body() {
-    let (app, tid, svc, _anon, dir) = helpers::spin_up_dual_role_self_register("t-rpc-m6").await;
-    let pool = helpers::grab_pool(&tid, &dir).await;
+    let h = helpers::spin_up_account_mcp("t-rpc-m6").await;
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     create_orders_table(&pool).await;
     create_rpc(
         &pool,
@@ -983,15 +877,13 @@ async fn mode6_update_rpc_downgrade_to_read_requires_select_body() {
         "write",
     )
     .await;
-    let sid = mcp_init(&app, &tid, &svc).await;
 
     // Downgrade to read while keeping a write body → the read-only
     // authorizer must refuse the sql; the row stays untouched.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name":"add_one","mode":"read","sql":"INSERT INTO orders (qty) VALUES (3)"}),
     )
@@ -1008,11 +900,10 @@ async fn mode6_update_rpc_downgrade_to_read_requires_select_body() {
     );
 
     // Same downgrade WITH a SELECT body succeeds; mode lands as read.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name":"add_one","mode":"read","sql":"SELECT COUNT(*) AS n FROM orders"}),
     )

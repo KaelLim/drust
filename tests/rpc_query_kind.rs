@@ -101,105 +101,11 @@ async fn read_audit_lines(tenant: &str) -> Vec<Value> {
 
 // ── MCP plumbing (the create face is service-only MCP / admin) ─────────
 
-fn mcp_req_with_session(tid: &str, token: &str, sid: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", sid)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.strip_prefix("data:").unwrap_or(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            out.push(v);
-        }
-    }
-    out
-}
-
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            json!({
-                "jsonrpc":"2.0","id":1,"method":"initialize",
-                "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                          "clientInfo":{"name":"test","version":"0"}}
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let r = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(r.status(), StatusCode::OK, "initialize failed");
-    let sid = r
-        .headers()
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(r).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &sid,
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    sid
-}
-
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    sid: &str,
-    name: &str,
-    args: Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        sid,
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
-               "params":{"name":name,"arguments":args}}),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} status {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
+/// The account harness with self-registration on, so a test can register users.
+async fn harness(t: &'static str) -> helpers::AccountMcpHarness {
+    let h = helpers::spin_up_account_mcp(t).await;
+    helpers::account_allow_self_register(&h).await;
+    h
 }
 
 // ── REST plumbing ──────────────────────────────────────────────────────
@@ -330,22 +236,17 @@ async fn set_select_policy(pool: &SharedTenantPool, coll: &str, policy_json: Val
 }
 
 /// Create a `kind='query'` RPC through the MCP create face (service-only).
-#[allow(clippy::too_many_arguments)]
 async fn create_query_rpc(
-    app: &axum::Router,
-    tid: &str,
-    svc: &str,
-    sid: &str,
+    h: &helpers::AccountMcpHarness,
     name: &str,
     params: Value,
     query: Value,
     anon_callable: bool,
 ) -> String {
-    mcp_call_tool(
-        app,
-        tid,
-        svc,
-        sid,
+    helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_rpc",
         json!({
             "name": name,
@@ -399,17 +300,12 @@ fn titles(v: &Value) -> Vec<String> {
 
 #[tokio::test]
 async fn anon_reads_policy_rows_through_query_rpc() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-unlock").await;
+    let h = harness("qk-unlock").await;
     // anon_caps=[] on purpose: the RPC's own anon_callable flag is the grant.
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "recent_posts",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -419,15 +315,21 @@ async fn anon_reads_policy_rows_through_query_rpc() {
     assert!(out.contains("created"), "create query rpc: {out}");
 
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status":"published","title":"pub"}),
     )
     .await;
-    insert_post(&app, &tid, &svc, json!({"status":"draft","title":"priv"})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"draft","title":"priv"}),
+    )
+    .await;
 
-    let (status, v) = call_rpc(&app, &tid, &anon, "recent_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "recent_posts", json!({})).await;
     assert_eq!(status, StatusCode::OK, "anon query rpc body: {v}");
     assert_eq!(titles(&v), vec!["pub".to_string()], "policy must filter");
     assert_eq!(v["total"], 1);
@@ -443,10 +345,10 @@ async fn anon_reads_policy_rows_through_query_rpc() {
 
 #[tokio::test]
 async fn anon_on_owner_scoped_is_forbidden() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-anon-owner").await;
+    let h = harness("qk-anon-owner").await;
     let pool = seed_posts(
-        &dir,
-        &tid,
+        &h.dir,
+        &h.tid,
         Some("owner_id"),
         Some("own"),
         "[\"select\"]",
@@ -454,13 +356,8 @@ async fn anon_on_owner_scoped_is_forbidden() {
     )
     .await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "my_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -469,7 +366,7 @@ async fn anon_on_owner_scoped_is_forbidden() {
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
 
-    let (status, v) = call_rpc(&app, &tid, &anon, "my_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "my_posts", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {v}");
     assert_eq!(v["error_code"], "ANON_FORBIDDEN_OWNER_SCOPED");
 }
@@ -478,20 +375,15 @@ async fn anon_on_owner_scoped_is_forbidden() {
 
 #[tokio::test]
 async fn user_own_scope_sees_only_own_rows() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-own").await;
-    let pool = seed_posts(&dir, &tid, Some("owner_id"), Some("own"), "[]", "[]").await;
+    let h = harness("qk-own").await;
+    let pool = seed_posts(&h.dir, &h.tid, Some("owner_id"), Some("own"), "[]", "[]").await;
 
-    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let _tb = register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let ta = register_and_login_via_app(&h.app, &h.tid, "a@x.com", "longpassword").await;
+    let _tb = register_and_login_via_app(&h.app, &h.tid, "b@x.com", "longpassword").await;
     let uid_a = user_id_for(&pool, "a@x.com").await;
     let uid_b = user_id_for(&pool, "b@x.com").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "my_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -500,10 +392,22 @@ async fn user_own_scope_sees_only_own_rows() {
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
 
-    insert_post(&app, &tid, &svc, json!({"title":"a1","owner_id":uid_a})).await;
-    insert_post(&app, &tid, &svc, json!({"title":"b1","owner_id":uid_b})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"title":"a1","owner_id":uid_a}),
+    )
+    .await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"title":"b1","owner_id":uid_b}),
+    )
+    .await;
 
-    let (status, v) = call_rpc(&app, &tid, &ta, "my_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &ta, "my_posts", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(titles(&v), vec!["a1".to_string()]);
     assert_eq!(v["total"], 1);
@@ -513,20 +417,15 @@ async fn user_own_scope_sees_only_own_rows() {
 
 #[tokio::test]
 async fn user_readscope_all_without_caps_is_denied() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-all-nocap").await;
+    let h = harness("qk-all-nocap").await;
     // user_caps=[] with read_scope="all": no row filter applies, so the cap is
     // the row gate and RpcGrant must NOT skip it.
-    let pool = seed_posts(&dir, &tid, Some("owner_id"), Some("all"), "[]", "[]").await;
+    let pool = seed_posts(&h.dir, &h.tid, Some("owner_id"), Some("all"), "[]", "[]").await;
 
-    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
+    let ta = register_and_login_via_app(&h.app, &h.tid, "a@x.com", "longpassword").await;
     let uid_a = user_id_for(&pool, "a@x.com").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -534,9 +433,15 @@ async fn user_readscope_all_without_caps_is_denied() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"title":"a1","owner_id":uid_a})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"title":"a1","owner_id":uid_a}),
+    )
+    .await;
 
-    let (status, v) = call_rpc(&app, &tid, &ta, "all_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &ta, "all_posts", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {v}");
     assert_eq!(v["error_code"], "ANON_CAP_DENIED");
     assert!(
@@ -549,10 +454,10 @@ async fn user_readscope_all_without_caps_is_denied() {
 
 #[tokio::test]
 async fn user_readscope_all_with_caps_sees_all_rows() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-all-cap").await;
+    let h = harness("qk-all-cap").await;
     let pool = seed_posts(
-        &dir,
-        &tid,
+        &h.dir,
+        &h.tid,
         Some("owner_id"),
         Some("all"),
         "[]",
@@ -560,17 +465,12 @@ async fn user_readscope_all_with_caps_sees_all_rows() {
     )
     .await;
 
-    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-    let _tb = register_and_login_via_app(&app, &tid, "b@x.com", "longpassword").await;
+    let ta = register_and_login_via_app(&h.app, &h.tid, "a@x.com", "longpassword").await;
+    let _tb = register_and_login_via_app(&h.app, &h.tid, "b@x.com", "longpassword").await;
     let uid_a = user_id_for(&pool, "a@x.com").await;
     let uid_b = user_id_for(&pool, "b@x.com").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -578,10 +478,22 @@ async fn user_readscope_all_with_caps_sees_all_rows() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"title":"a1","owner_id":uid_a})).await;
-    insert_post(&app, &tid, &svc, json!({"title":"b1","owner_id":uid_b})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"title":"a1","owner_id":uid_a}),
+    )
+    .await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"title":"b1","owner_id":uid_b}),
+    )
+    .await;
 
-    let (status, v) = call_rpc(&app, &tid, &ta, "all_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &ta, "all_posts", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(titles(&v), vec!["a1".to_string(), "b1".to_string()]);
 }
@@ -590,15 +502,10 @@ async fn user_readscope_all_with_caps_sees_all_rows() {
 
 #[tokio::test]
 async fn anon_callable_false_denies_anon() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-nocall").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-nocall").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "svc_only",
         json!([]),
         json!({"collection": "posts"}),
@@ -606,14 +513,14 @@ async fn anon_callable_false_denies_anon() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"title":"a1"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"title":"a1"})).await;
 
-    let (status, v) = call_rpc(&app, &tid, &anon, "svc_only", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "svc_only", json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {v}");
     assert_eq!(v["error_code"], "ANON_DENIED");
 
     // …and the service token still gets through the same RPC.
-    let (status, v) = call_rpc(&app, &tid, &svc, "svc_only", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "svc_only", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(v["total"], 1);
 }
@@ -622,15 +529,10 @@ async fn anon_callable_false_denies_anon() {
 
 #[tokio::test]
 async fn rpc_grant_opens_a_capless_non_owner_collection() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-grant").await;
-    seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-grant").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -638,24 +540,25 @@ async fn rpc_grant_opens_a_capless_non_owner_collection() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"title":"a1"})).await;
-    insert_post(&app, &tid, &svc, json!({"title":"a2"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"title":"a1"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"title":"a2"})).await;
 
     // The documented trade-off (spec §否決的替代): an anon-callable query RPC
     // over a non-owner-scoped, policy-free collection exposes every row.
-    let (status, v) = call_rpc(&app, &tid, &anon, "all_posts", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "all_posts", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(titles(&v), vec!["a1".to_string(), "a2".to_string()]);
 
     // …while plain `/list` on the same collection still obeys anon_caps.
-    let resp = app
+    let resp = h
+        .app
         .clone()
         .oneshot(rest_req(
             "POST",
-            &tid,
+            &h.tid,
             "/collections/posts/list",
             Some(json!({})),
-            &anon,
+            &h.anon,
         ))
         .await
         .unwrap();
@@ -670,15 +573,10 @@ async fn rpc_grant_opens_a_capless_non_owner_collection() {
 
 #[tokio::test]
 async fn object_param_is_rejected_as_not_scalar() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-notscalar").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-notscalar").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "by_title",
         json!([{"name":"who","type":"text","required":true}]),
         json!({"collection": "posts", "filter": {"title": {"$param": "who"}}}),
@@ -688,9 +586,9 @@ async fn object_param_is_rejected_as_not_scalar() {
     assert!(out.contains("created"), "create query rpc: {out}");
 
     let (status, v) = call_rpc(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         "by_title",
         json!({"who": {"$fts": {"index": "i", "query": "x"}}}),
     )
@@ -699,7 +597,7 @@ async fn object_param_is_rejected_as_not_scalar() {
     assert_eq!(v["error_code"], "RPC_PARAM_NOT_SCALAR");
 
     // An array argument is the same gate.
-    let (status, v) = call_rpc(&app, &tid, &svc, "by_title", json!({"who": [1, 2]})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "by_title", json!({"who": [1, 2]})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {v}");
     assert_eq!(v["error_code"], "RPC_PARAM_NOT_SCALAR");
 }
@@ -708,15 +606,10 @@ async fn object_param_is_rejected_as_not_scalar() {
 
 #[tokio::test]
 async fn param_type_and_unknown_key_mirror_the_sql_arm() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-params").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-params").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "by_score",
         json!([{"name":"min","type":"integer","required":true}]),
         json!({"collection": "posts", "filter": {"score": {"gte": {"$param": "min"}}}}),
@@ -725,11 +618,11 @@ async fn param_type_and_unknown_key_mirror_the_sql_arm() {
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
 
-    let (status, v) = call_rpc(&app, &tid, &svc, "by_score", json!({"min": "nope"})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "by_score", json!({"min": "nope"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {v}");
     assert_eq!(v["error_code"], "PARAM_TYPE_MISMATCH");
 
-    let (status, v) = call_rpc(&app, &tid, &svc, "by_score", json!({"nope": 1})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "by_score", json!({"nope": 1})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {v}");
     assert_eq!(v["error_code"], "PARAM_UNKNOWN");
 }
@@ -738,15 +631,10 @@ async fn param_type_and_unknown_key_mirror_the_sql_arm() {
 
 #[tokio::test]
 async fn dropped_field_makes_the_template_stale() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-stale").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-stale").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "published",
         json!([]),
         json!({"collection": "posts", "filter": {"status": "published"}}),
@@ -754,9 +642,15 @@ async fn dropped_field_makes_the_template_stale() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"status":"published","title":"a1"})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"published","title":"a1"}),
+    )
+    .await;
 
-    let (status, _) = call_rpc(&app, &tid, &svc, "published", json!({})).await;
+    let (status, _) = call_rpc(&h.app, &h.tid, &h.svc, "published", json!({})).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -765,18 +659,17 @@ async fn dropped_field_makes_the_template_stale() {
 
     // Drop the templated column THROUGH the app so the router's schema cache
     // is invalidated the way a real caller would see it.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "drop_field",
         json!({"collection": "posts", "field": "status"}),
     )
     .await;
     assert!(!out.to_lowercase().contains("error"), "drop_field: {out}");
 
-    let (status, v) = call_rpc(&app, &tid, &svc, "published", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "published", json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
     assert_eq!(v["error_code"], "RPC_QUERY_STALE");
 }
@@ -785,15 +678,10 @@ async fn dropped_field_makes_the_template_stale() {
 
 #[tokio::test]
 async fn paging_and_dry_run_wire_contract() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-wire").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-wire").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -802,19 +690,27 @@ async fn paging_and_dry_run_wire_contract() {
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
     for i in 0..3 {
-        insert_post(&app, &tid, &svc, json!({"title": format!("a{i}")})).await;
+        insert_post(&h.app, &h.tid, &h.svc, json!({"title": format!("a{i}")})).await;
     }
 
     // per_page over the ceiling is a typed 422, never a silent clamp.
-    let (status, v) = call_rpc_qs(&app, &tid, &svc, "all_posts", json!({}), "per_page=501").await;
+    let (status, v) = call_rpc_qs(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        "all_posts",
+        json!({}),
+        "per_page=501",
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {v}");
     assert_eq!(v["error_code"], "PAGE_RANGE_INVALID");
 
     // A real page window echoes back in the envelope.
     let (status, v) = call_rpc_qs(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         "all_posts",
         json!({}),
         "page=2&per_page=2",
@@ -827,7 +723,15 @@ async fn paging_and_dry_run_wire_contract() {
     assert_eq!(titles(&v), vec!["a2".to_string()]);
 
     // dry_run has no meaning for a read-only template.
-    let (status, v) = call_rpc_qs(&app, &tid, &svc, "all_posts", json!({}), "dry_run=true").await;
+    let (status, v) = call_rpc_qs(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        "all_posts",
+        json!({}),
+        "dry_run=true",
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body: {v}");
     assert_eq!(v["error_code"], "RPC_KIND_INVALID");
 }
@@ -836,16 +740,11 @@ async fn paging_and_dry_run_wire_contract() {
 
 #[tokio::test]
 async fn query_rpc_equals_post_list_for_the_same_filter() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-equiv").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-equiv").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let filter = json!({"status": "published"});
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "published",
         json!([]),
         json!({"collection": "posts", "filter": filter,
@@ -854,25 +753,44 @@ async fn query_rpc_equals_post_list_for_the_same_filter() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"status":"published","title":"p1"})).await;
-    insert_post(&app, &tid, &svc, json!({"status":"draft","title":"d1"})).await;
-    insert_post(&app, &tid, &svc, json!({"status":"published","title":"p2"})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"published","title":"p1"}),
+    )
+    .await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"draft","title":"d1"}),
+    )
+    .await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"published","title":"p2"}),
+    )
+    .await;
 
-    let resp = app
+    let resp = h
+        .app
         .clone()
         .oneshot(rest_req(
             "POST",
-            &tid,
+            &h.tid,
             "/collections/posts/list",
             Some(json!({"filter": filter, "sort": {"field":"id","dir":"asc"}})),
-            &svc,
+            &h.svc,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list_body = read_json(resp).await;
 
-    let (status, rpc_body) = call_rpc(&app, &tid, &svc, "published", json!({})).await;
+    let (status, rpc_body) = call_rpc(&h.app, &h.tid, &h.svc, "published", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {rpc_body}");
 
     assert_eq!(
@@ -936,15 +854,10 @@ async fn seed_query_rpc_directly(
 
 #[tokio::test]
 async fn create_face_refuses_a_user_id_param_on_a_query_rpc() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-userid-create").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-userid-create").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "my_rows",
         json!([{"name":"user_id","type":"text","required":true}]),
         json!({"collection": "posts", "filter": {"owner_id": {"$param": "user_id"}}}),
@@ -973,10 +886,7 @@ async fn create_face_refuses_a_user_id_param_on_a_query_rpc() {
 
     // The sanctioned form saves and works.
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "my_rows_auth",
         json!([]),
         json!({"collection": "posts", "filter": {"owner_id": {"$auth": "id"}}}),
@@ -1022,16 +932,11 @@ async fn legacy_user_id_param_row_is_refused_at_call_time() {
 
 #[tokio::test]
 async fn db_error_does_not_leak_the_generated_sql() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-sqlleak").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-sqlleak").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "published",
         json!([]),
         json!({"collection": "posts", "filter": {"status": "published"}}),
@@ -1039,7 +944,13 @@ async fn db_error_does_not_leak_the_generated_sql() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"status":"published","title":"a1"})).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status":"published","title":"a1"}),
+    )
+    .await;
 
     // The router's SCHEMA cache is already warm (the create face and the insert
     // both loaded it) — but no reader has PREPARED the list SQL yet. Now drop
@@ -1059,7 +970,7 @@ async fn db_error_does_not_leak_the_generated_sql() {
         .await
         .unwrap();
 
-    let (status, v) = call_rpc(&app, &tid, &anon, "published", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "published", json!({})).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body: {v}");
     assert_eq!(v["error_code"], "DB_ERROR");
     let msg = v["message"].as_str().unwrap_or_default();
@@ -1083,25 +994,19 @@ async fn db_error_does_not_leak_the_generated_sql() {
 
 #[tokio::test]
 async fn unparsable_paging_is_typed_and_only_binds_the_query_arm() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-badpage").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let h = harness("qk-badpage").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_rpc",
         json!({"name": "ping", "sql": "SELECT 1 AS x", "params": []}),
     )
     .await;
     assert!(out.contains("created"), "create sql rpc: {out}");
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -1111,7 +1016,7 @@ async fn unparsable_paging_is_typed_and_only_binds_the_query_arm() {
     assert!(out.contains("created"), "create query rpc: {out}");
 
     // A sql-kind RPC never reads paging — a junk value must stay ignored.
-    let (status, v) = call_rpc_qs(&app, &tid, &svc, "ping", json!({}), "page=abc").await;
+    let (status, v) = call_rpc_qs(&h.app, &h.tid, &h.svc, "ping", json!({}), "page=abc").await;
     assert_eq!(status, StatusCode::OK, "sql arm must ignore paging: {v}");
     assert_eq!(v["column_names"][0], "x", "the sql rpc really ran: {v}");
     assert_eq!(v["rows"][0][0], 1, "the sql rpc really ran: {v}");
@@ -1124,7 +1029,7 @@ async fn unparsable_paging_is_typed_and_only_binds_the_query_arm() {
         "page=-1",
         "per_page=99999999999",
     ] {
-        let (status, v) = call_rpc_qs(&app, &tid, &svc, "all_posts", json!({}), qs).await;
+        let (status, v) = call_rpc_qs(&h.app, &h.tid, &h.svc, "all_posts", json!({}), qs).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{qs} → body: {v}");
         assert_eq!(v["error_code"], "PAGE_RANGE_INVALID", "{qs}");
     }
@@ -1135,16 +1040,11 @@ async fn unparsable_paging_is_typed_and_only_binds_the_query_arm() {
 #[tokio::test]
 async fn query_call_bumps_the_counter_and_tags_the_audit_row() {
     ensure_global_audit_writer();
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-counters").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-    let ta = register_and_login_via_app(&app, &tid, "a@x.com", "longpassword").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-counters").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
+    let ta = register_and_login_via_app(&h.app, &h.tid, "a@x.com", "longpassword").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -1153,7 +1053,7 @@ async fn query_call_bumps_the_counter_and_tags_the_audit_row() {
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
 
-    let (status, _) = call_rpc(&app, &tid, &ta, "all_posts", json!({})).await;
+    let (status, _) = call_rpc(&h.app, &h.tid, &ta, "all_posts", json!({})).await;
     assert_eq!(status, StatusCode::OK);
 
     // The bump is fire-and-forget on the writer mutex — poll briefly.
@@ -1180,7 +1080,7 @@ async fn query_call_bumps_the_counter_and_tags_the_audit_row() {
         "a user call must bump anon_calls exactly like the sql read arm"
     );
 
-    let rows = read_audit_lines(&tid).await;
+    let rows = read_audit_lines(&h.tid).await;
     assert!(
         rows.iter().any(|r| r["rpc_mode"].as_str() == Some("query")),
         "no audit row tagged rpc_mode=query: {rows:?}"
@@ -1191,15 +1091,10 @@ async fn query_call_bumps_the_counter_and_tags_the_audit_row() {
 async fn a_param_named_page_does_not_collide_with_paging() {
     // The reason paging lives on the query string: the body IS the declared
     // param map, so `page` must remain a usable param name.
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-page-param").await;
-    seed_posts(&dir, &tid, None, None, "[\"select\"]", "[\"select\"]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-page-param").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[\"select\"]", "[\"select\"]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "by_title",
         json!([{"name":"page","type":"text","required":true}]),
         json!({"collection": "posts", "filter": {"title": {"$param": "page"}},
@@ -1208,19 +1103,19 @@ async fn a_param_named_page_does_not_collide_with_paging() {
     )
     .await;
     assert!(out.contains("created"), "create query rpc: {out}");
-    insert_post(&app, &tid, &svc, json!({"title":"a1"})).await;
-    insert_post(&app, &tid, &svc, json!({"title":"a2"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"title":"a1"})).await;
+    insert_post(&h.app, &h.tid, &h.svc, json!({"title":"a2"})).await;
 
     // Body `page` is the filter argument; query-string `page` is the window.
-    let (status, v) = call_rpc(&app, &tid, &svc, "by_title", json!({"page": "a1"})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.svc, "by_title", json!({"page": "a1"})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(titles(&v), vec!["a1".to_string()]);
     assert_eq!(v["page"], 1);
 
     let (status, v) = call_rpc_qs(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         "by_title",
         json!({"page": "a1"}),
         "page=2&per_page=1",
@@ -1234,15 +1129,10 @@ async fn a_param_named_page_does_not_collide_with_paging() {
 
 #[tokio::test]
 async fn create_face_refuses_a_protected_collection_template() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-protected").await;
-    seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-protected").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "peek_users",
         json!([]),
         json!({"collection": "_system_users"}),
@@ -1255,10 +1145,7 @@ async fn create_face_refuses_a_protected_collection_template() {
     );
 
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "peek_nothing",
         json!([]),
         json!({"collection": "nope"}),
@@ -1313,16 +1200,11 @@ async fn rest(
 /// clear is refused until the RPC is disarmed — two steps, never silent.
 #[tokio::test]
 async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-policy").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-clear-policy").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "recent_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -1333,12 +1215,12 @@ async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it(
 
     // REST DELETE of the select policy → refused, typed, and NOTHING cleared.
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/policies/select",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
@@ -1350,18 +1232,25 @@ async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it(
             .contains("recent_posts"),
         "must name the blocking rpc: {v}"
     );
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert_eq!(
         stored["stored"]["select"]["using"]["status"], "published",
         "a refused clear must leave the policy in place: {stored}"
     );
 
     // The MCP face refuses identically (parallel-site parity).
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "clear_policy",
         json!({"collection": "posts", "op": "select"}),
     )
@@ -1373,38 +1262,45 @@ async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it(
 
     // Other ops' clears are UNAFFECTED — the grant only rides the select path.
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/policies/insert",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "insert-op clear must pass: {v}");
 
     // Two-step remedy: disarm the RPC, then the clear goes through.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "recent_posts", "anon_callable": false}),
     )
     .await;
     assert!(out.contains("updated"), "disarm: {out}");
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/policies/select",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert!(
         stored["stored"]["select"].is_null(),
         "the clear must have landed: {stored}"
@@ -1415,15 +1311,10 @@ async fn clearing_a_select_policy_is_refused_while_an_anon_query_rpc_targets_it(
 /// grant into a whole-table one. Both faces refuse.
 #[tokio::test]
 async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-owner").await;
-    let pool = seed_posts(&dir, &tid, Some("owner_id"), Some("own"), "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-clear-owner").await;
+    let pool = seed_posts(&h.dir, &h.tid, Some("owner_id"), Some("own"), "[]", "[]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "my_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -1433,22 +1324,21 @@ async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
     assert!(out.contains("created"), "create query rpc: {out}");
 
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/owner-field",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
     assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
 
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_owner_field",
         json!({"collection": "posts", "field": null}),
     )
@@ -1475,23 +1365,22 @@ async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
     assert_eq!(owner.as_deref(), Some("owner_id"), "nothing may be cleared");
 
     // Disarm, then clear.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "my_posts", "anon_callable": false}),
     )
     .await;
     assert!(out.contains("updated"), "disarm: {out}");
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/owner-field",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
@@ -1502,15 +1391,10 @@ async fn clearing_owner_field_is_refused_while_an_anon_query_rpc_targets_it() {
 /// RPC cannot freeze a no-op call.
 #[tokio::test]
 async fn clearing_an_already_null_owner_field_is_not_blocked() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-noop").await;
-    seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let h = harness("qk-clear-noop").await;
+    seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "all_posts",
         json!([]),
         json!({"collection": "posts"}),
@@ -1520,12 +1404,12 @@ async fn clearing_an_already_null_owner_field_is_not_blocked() {
     assert!(out.contains("created"), "{out}");
 
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/owner-field",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "no transition, nothing widens: {v}");
@@ -1535,29 +1419,16 @@ async fn clearing_an_already_null_owner_field_is_not_blocked() {
 /// — and it runs through the SAME save-time validator the create face uses.
 #[tokio::test]
 async fn update_rpc_edits_the_template_and_validates_it() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-update-tpl").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "feed",
-        json!([]),
-        json!({"collection": "posts"}),
-        false,
-    )
-    .await;
+    let h = harness("qk-update-tpl").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
+    let out = create_query_rpc(&h, "feed", json!([]), json!({"collection": "posts"}), false).await;
     assert!(out.contains("created"), "{out}");
 
     // A good edit lands.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "feed",
                "query": {"collection": "posts", "filter": {"status": "published"}}}),
@@ -1570,11 +1441,10 @@ async fn update_rpc_edits_the_template_and_validates_it() {
 
     // A bad edit is refused by the same validator the create face runs, and
     // the STORED template survives.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "feed",
                "query": {"collection": "posts", "sort": {"field": "ghost", "dir": "asc"}}}),
@@ -1598,8 +1468,8 @@ async fn update_rpc_edits_the_template_and_validates_it() {
 /// param — caller-supplied, so it spoofs identity the moment anon can call it.
 #[tokio::test]
 async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-update-flip").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-update-flip").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     // Seeded past both create faces — the shape they now refuse.
     seed_query_rpc_directly(
         &pool,
@@ -1609,13 +1479,10 @@ async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
         false,
     )
     .await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "spoofable", "anon_callable": true}),
     )
@@ -1630,11 +1497,10 @@ async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
     // Repairability: an update that does NOT widen (description, or disarming)
     // must still work on the same row — otherwise a stale template would be
     // permanently unfixable and permanently un-disarmable.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "spoofable", "description": "legacy"}),
     )
@@ -1656,17 +1522,13 @@ async fn update_rpc_revalidates_the_stored_template_on_an_anon_callable_flip() {
 /// now includes `params`.
 #[tokio::test]
 async fn update_rpc_revalidates_on_a_params_only_type_change() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-params-reval").await;
+    let h = harness("qk-params-reval").await;
     // anon_caps=[] — the RPC's own anon_callable flag is the only grant.
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-    let sid = mcp_init(&app, &tid, &svc).await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
 
     // Validated at create: Integer param vs the INTEGER `score` column = same class.
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "feed",
         json!([{"name": "n", "type": "integer", "required": true}]),
         json!({"collection": "posts", "filter": {"score": {"lt": {"$param": "n"}}}}),
@@ -1677,11 +1539,10 @@ async fn update_rpc_revalidates_on_a_params_only_type_change() {
 
     // The attack: change ONLY the param type to text — no `query`, no
     // `anon_callable`. Before the fix, `widening` was false and the row landed.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "update_rpc",
         json!({"name": "feed", "params": [{"name": "n", "type": "text", "required": true}]}),
     )
@@ -1721,31 +1582,19 @@ async fn update_rpc_revalidates_on_a_params_only_type_change() {
 /// this door open (the enumeration lesson: one guarded write site is no guard).
 #[tokio::test]
 async fn a_put_that_omits_select_is_the_same_clear_and_is_guarded() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-clear-put").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "feed",
-        json!([]),
-        json!({"collection": "posts"}),
-        true,
-    )
-    .await;
+    let h = harness("qk-clear-put").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
+    let out = create_query_rpc(&h, "feed", json!([]), json!({"collection": "posts"}), true).await;
     assert!(out.contains("created"), "{out}");
 
     // No stored select policy yet → no transition → a PUT is unaffected.
     let (status, v) = rest(
-        &app,
+        &h.app,
         "PUT",
-        &tid,
+        &h.tid,
         "/collections/posts/policies",
         Some(json!({"insert": {"check": {"status": "draft"}}})),
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "nothing to widen yet: {v}");
@@ -1755,17 +1604,25 @@ async fn a_put_that_omits_select_is_the_same_clear_and_is_guarded() {
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
 
     let (status, v) = rest(
-        &app,
+        &h.app,
         "PUT",
-        &tid,
+        &h.tid,
         "/collections/posts/policies",
         Some(json!({"insert": {"check": {"status": "draft"}}})),
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
     assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert_eq!(
         stored["stored"]["select"]["using"]["status"], "published",
         "a refused PUT must write NOTHING: {stored}"
@@ -1789,16 +1646,11 @@ async fn a_put_that_omits_select_is_the_same_clear_and_is_guarded() {
 /// after the attempted covert clear.
 #[tokio::test]
 async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-covert").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-covert").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "feed",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -1808,33 +1660,33 @@ async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
     assert!(out.contains("created"), "{out}");
 
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "published", "title": "public"}),
     )
     .await;
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "draft", "title": "SECRET"}),
     )
     .await;
 
     // Baseline: the policy is the only thing keeping SECRET away from anon.
-    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "feed", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(titles(&v), vec!["public".to_string()], "baseline: {v}");
 
     // The covert clear: a select policy with NO `using`.
     let (status, v) = rest(
-        &app,
+        &h.app,
         "PUT",
-        &tid,
+        &h.tid,
         "/collections/posts/policies",
         Some(json!({"select": {}})),
-        &svc,
+        &h.svc,
     )
     .await;
     assert!(
@@ -1847,7 +1699,7 @@ async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
     assert_eq!(v["error_code"], "POLICY_INVALID", "body: {v}");
 
     // THE assertion: anon still cannot see the draft row.
-    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "feed", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert_eq!(
         titles(&v),
@@ -1856,7 +1708,15 @@ async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
     );
 
     // …and the stored policy is untouched, so nothing was half-written.
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert_eq!(
         stored["stored"]["select"]["using"]["status"], "published",
         "a refused PUT must write NOTHING: {stored}"
@@ -1866,29 +1726,16 @@ async fn a_clause_less_select_policy_cannot_covertly_clear_the_read_filter() {
 /// The MCP twin of the same covert clear: `set_policy(select)` with no `using`.
 #[tokio::test]
 async fn mcp_set_policy_select_without_using_is_refused() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-covert-mcp").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-covert-mcp").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_select_policy(&pool, "posts", json!({"using": {"status": "published"}})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "feed",
-        json!([]),
-        json!({"collection": "posts"}),
-        true,
-    )
-    .await;
+    let out = create_query_rpc(&h, "feed", json!([]), json!({"collection": "posts"}), true).await;
     assert!(out.contains("created"), "{out}");
 
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_policy",
         json!({"collection": "posts", "op": "select"}),
     )
@@ -1897,7 +1744,15 @@ async fn mcp_set_policy_select_without_using_is_refused() {
         !out.contains("\"ok\""),
         "a select policy with no `using` must be refused: {out}"
     );
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert_eq!(
         stored["stored"]["select"]["using"]["status"], "published",
         "the stored filter must survive: {stored}"
@@ -2132,16 +1987,11 @@ async fn list_as(app: &axum::Router, tid: &str, tok: &str, coll: &str) -> Vec<Va
 /// now see ZERO rows, not `["public","SECRET"]`.
 #[tokio::test]
 async fn legacy_clause_less_select_policy_denies_anon_query_rpc_reads() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("qk-legacy-deny").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-legacy-deny").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_clause_less_select_policy(&pool, "posts").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "feed",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -2151,29 +2001,29 @@ async fn legacy_clause_less_select_policy_denies_anon_query_rpc_reads() {
     assert!(out.contains("created"), "{out}");
 
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "published", "title": "public"}),
     )
     .await;
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "draft", "title": "SECRET"}),
     )
     .await;
 
     // Service still reads both — service bypasses policy.
-    let (_s, v) = call_rpc(&app, &tid, &svc, "feed", json!({})).await;
+    let (_s, v) = call_rpc(&h.app, &h.tid, &h.svc, "feed", json!({})).await;
     assert_eq!(
         v["total"], 2,
         "service bypasses the clause-less policy: {v}"
     );
 
     // Anon sees ZERO rows (was ["public","SECRET"] — the residual leak).
-    let (status, v) = call_rpc(&app, &tid, &anon, "feed", json!({})).await;
+    let (status, v) = call_rpc(&h.app, &h.tid, &h.anon, "feed", json!({})).await;
     assert_eq!(status, StatusCode::OK, "body: {v}");
     assert!(
         titles(&v).is_empty(),
@@ -2294,44 +2144,31 @@ async fn legacy_clause_less_select_policy_is_repairable() {
 /// the guard fires — even though the row has no `using`.
 #[tokio::test]
 async fn clearing_a_legacy_clause_less_policy_is_guarded_when_a_query_rpc_targets_it() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-legacy-guard").await;
-    let pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-legacy-guard").await;
+    let pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     set_clause_less_select_policy(&pool, "posts").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "feed",
-        json!([]),
-        json!({"collection": "posts"}),
-        true,
-    )
-    .await;
+    let out = create_query_rpc(&h, "feed", json!([]), json!({"collection": "posts"}), true).await;
     assert!(out.contains("created"), "{out}");
 
     // DELETE the (clause-less) select policy → refused: it denies reads, so
     // dropping it widens the anon RPC to the whole table.
     let (status, v) = rest(
-        &app,
+        &h.app,
         "DELETE",
-        &tid,
+        &h.tid,
         "/collections/posts/policies/select",
         None,
-        &svc,
+        &h.svc,
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {v}");
     assert_eq!(v["error_code"], "RPC_QUERY_GRANT_ACTIVE", "body: {v}");
 
     // MCP clear_policy refuses identically.
-    let out = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let out = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "clear_policy",
         json!({"collection": "posts", "op": "select"}),
     )
@@ -2339,7 +2176,15 @@ async fn clearing_a_legacy_clause_less_policy_is_guarded_when_a_query_rpc_target
     assert!(out.contains("RPC_QUERY_GRANT_ACTIVE"), "mcp face: {out}");
 
     // Still stored after both refusals.
-    let (_, stored) = rest(&app, "GET", &tid, "/collections/posts/policies", None, &svc).await;
+    let (_, stored) = rest(
+        &h.app,
+        "GET",
+        &h.tid,
+        "/collections/posts/policies",
+        None,
+        &h.svc,
+    )
+    .await;
     assert!(
         !stored["stored"]["select"].is_null(),
         "a refused clear must leave the policy row in place: {stored}"
@@ -2349,19 +2194,11 @@ async fn clearing_a_legacy_clause_less_policy_is_guarded_when_a_query_rpc_target
 // ── T6: MCP surface — call_rpc envelope branch + list_rpc kind ──────────
 
 /// Create a `kind='sql'` RPC via the MCP `create_rpc` tool.
-async fn create_sql_rpc(
-    app: &axum::Router,
-    tid: &str,
-    svc: &str,
-    sid: &str,
-    name: &str,
-    sql: &str,
-) -> String {
-    mcp_call_tool(
-        app,
-        tid,
-        svc,
-        sid,
+async fn create_sql_rpc(h: &helpers::AccountMcpHarness, name: &str, sql: &str) -> String {
+    helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_rpc",
         json!({ "name": name, "sql": sql, "params": [] }),
     )
@@ -2379,23 +2216,24 @@ fn parse_tool_json(text: &str) -> Value {
 /// visible.
 #[tokio::test]
 async fn mcp_call_rpc_on_query_row_returns_list_envelope() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-query").await;
-    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-mcp-query").await;
+    let _pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "published", "title": "a"}),
     )
     .await;
-    insert_post(&app, &tid, &svc, json!({"status": "draft", "title": "b"})).await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
+    insert_post(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        json!({"status": "draft", "title": "b"}),
+    )
+    .await;
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "feed",
         json!([]),
         json!({"collection": "posts", "sort": {"field": "id", "dir": "asc"}}),
@@ -2404,7 +2242,14 @@ async fn mcp_call_rpc_on_query_row_returns_list_envelope() {
     .await;
     assert!(out.contains("created"), "create_rpc: {out}");
 
-    let text = mcp_call_tool(&app, &tid, &svc, &sid, "call_rpc", json!({"name": "feed"})).await;
+    let text = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "call_rpc",
+        json!({"name": "feed"}),
+    )
+    .await;
     let v = parse_tool_json(&text);
     assert!(
         v.get("records").and_then(|r| r.as_array()).is_some(),
@@ -2424,29 +2269,26 @@ async fn mcp_call_rpc_on_query_row_returns_list_envelope() {
 /// executor's `{column_names,rows,row_count,truncated}` envelope.
 #[tokio::test]
 async fn mcp_call_rpc_on_sql_row_returns_column_envelope() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-sql").await;
-    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
+    let h = harness("qk-mcp-sql").await;
+    let _pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
     insert_post(
-        &app,
-        &tid,
-        &svc,
+        &h.app,
+        &h.tid,
+        &h.svc,
         json!({"status": "published", "title": "only"}),
     )
     .await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_sql_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "raw",
-        "SELECT title FROM posts ORDER BY id",
-    )
-    .await;
+    let out = create_sql_rpc(&h, "raw", "SELECT title FROM posts ORDER BY id").await;
     assert!(out.contains("created"), "create_rpc(sql): {out}");
 
-    let text = mcp_call_tool(&app, &tid, &svc, &sid, "call_rpc", json!({"name": "raw"})).await;
+    let text = helpers::mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "call_rpc",
+        json!({"name": "raw"}),
+    )
+    .await;
     let v = parse_tool_json(&text);
     assert!(
         v.get("column_names").and_then(|c| c.as_array()).is_some(),
@@ -2467,17 +2309,12 @@ async fn mcp_call_rpc_on_sql_row_returns_column_envelope() {
 /// query RPC from a sql one without calling either.
 #[tokio::test]
 async fn mcp_list_rpc_carries_kind_for_both() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("qk-mcp-list").await;
-    let _pool = seed_posts(&dir, &tid, None, None, "[]", "[]").await;
-
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let out = create_sql_rpc(&app, &tid, &svc, &sid, "s_row", "SELECT 1 AS one").await;
+    let h = harness("qk-mcp-list").await;
+    let _pool = seed_posts(&h.dir, &h.tid, None, None, "[]", "[]").await;
+    let out = create_sql_rpc(&h, "s_row", "SELECT 1 AS one").await;
     assert!(out.contains("created"), "create sql: {out}");
     let out = create_query_rpc(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+        &h,
         "q_row",
         json!([]),
         json!({"collection": "posts"}),
@@ -2486,7 +2323,7 @@ async fn mcp_list_rpc_carries_kind_for_both() {
     .await;
     assert!(out.contains("created"), "create query: {out}");
 
-    let text = mcp_call_tool(&app, &tid, &svc, &sid, "list_rpc", json!({})).await;
+    let text = helpers::mcp_tool_text(&h.app, &h.access, &h.tid, "list_rpc", json!({})).await;
     let arr = parse_tool_json(&text);
     let rows = arr.as_array().expect("list_rpc returns a JSON array");
     let kind_of = |name: &str| -> Option<String> {
