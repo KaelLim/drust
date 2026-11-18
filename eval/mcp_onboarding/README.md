@@ -1,10 +1,17 @@
-# drust per-tenant MCP — onboarding eval harness (Lever 0)
+# drust MCP — onboarding eval harness (Lever 0)
 
-Proves an AI's time-to-competence on the drust per-tenant MCP improves after the
+Proves an AI's time-to-competence on the drust MCP improves after the
 comprehension overhaul. Creates a THROWAWAY tenant, connects a local MCP client
-to its `/t/<id>/mcp` endpoint, drives `claude-opus-4-8` through a fixed 5-task
+to the retired `/t/<id>/mcp` endpoint (now 410), drives `claude-opus-4-8` through a fixed 5-task
 suite with ONLY that tenant's drust tools, scores the tool-call traces, and emits
 a before/after markdown report.
+
+> [!WARNING]
+> **This harness does not run against the current server.** It connects with a tenant
+> service key to the retired per-tenant endpoint, which now answers every request with
+> `410 MCP_ENDPOINT_MOVED`. The account-level `/mcp` accepts only an OAuth access token from
+> an interactive browser sign-in, so the live run stays out of service until a device
+> sign-in flow ships. The scorer's unit tests (`python -m pytest tests/ -q`) are unaffected.
 
 ## Install
 
@@ -44,4 +51,4 @@ straight from the tenant-create response (`initial_tokens.service`) — never fr
 Anthropic's remote `mcp_servers` connector cannot reach `127.0.0.1`, so the
 client runs locally (the `mcp` package's Streamable HTTP transport) and its tools
 are bridged into the Messages API tool-use loop. Hitting `127.0.0.1` directly
-satisfies rmcp's DNS-rebinding guard — no `Host` header rewrite is needed.
+passes the MCP Host check — no `Host` header rewrite is needed.

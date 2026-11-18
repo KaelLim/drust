@@ -5,8 +5,8 @@
 <br/>
 
 **AI agent 能直接驅動、使用者能信任的後端。**
-自架、多租戶的 SQLite Backend-as-a-Service，單一 Rust 執行檔：每個租戶各有 REST
-**與**原生 MCP 端點、row-level security、realtime、向量搜尋、WebAssembly edge functions。
+自架、多租戶的 SQLite Backend-as-a-Service，單一 Rust 執行檔：每個租戶各有 REST，
+**加上**一個帳號層級的原生 MCP 端點（OAuth 登入）、row-level security、realtime、向量搜尋、WebAssembly edge functions。
 一租戶一檔案，不用另外跑資料庫伺服器。
 
 [![Rust](https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -24,14 +24,14 @@
 
 ## :sparkles: 一句話
 
-為每個小應用各起一套 Postgres / Supabase 太重了 —— 一個團隊會累積數百個小 app、內部工具、AI agent 暫存區。**drust** 給每個專案一顆自帶的 `tenant.sqlite`、一套寫入路徑絕不吃 raw SQL 的型別化 API、row-level security，以及一個 AI agent **零膠水程式**就能驅動的 per-tenant MCP 伺服器 —— 全部來自單一執行檔，idle 約 15 MB、約 13k req/s。
+為每個小應用各起一套 Postgres / Supabase 太重了 —— 一個團隊會累積數百個小 app、內部工具、AI agent 暫存區。**drust** 給每個專案一顆自帶的 `tenant.sqlite`、一套寫入路徑絕不吃 raw SQL 的型別化 API、row-level security，以及整個帳號共用一個的 MCP 端點，AI agent **零膠水程式**就能跨你看得到的每個專案驅動它 —— 全部來自單一執行檔，idle 約 15 MB、約 13k req/s。
 
 ## :rocket: 你能做什麼
 
 | | |
 |---|---|
 | :bricks: **SaaS / CRUD 後端** | 在後台定義 collection，立刻拿到 REST + 型別化 TypeScript/Zod client。不必跑 DB 伺服器、不必 migration 工具。 |
-| :robot: **AI-agent 原生資料層** | 任何 MCP client 指向 `/t/<id>/mcp` —— agent 透過型別化工具檢視 schema、CRUD、向量搜尋、管理檔案。錯誤帶 `suggested_fix`、三個破壞性操作（`delete_record`、`drop_collection`、`drop_index`）支援 `dry_run`。 |
+| :robot: **AI-agent 原生資料層** | 讓 Claude Code 指向 `<public URL>/mcp` 並登入一次，agent 每次呼叫自己選租戶 —— agent 透過型別化工具檢視 schema、CRUD、向量搜尋、管理檔案。錯誤帶 `suggested_fix`、三個破壞性操作（`delete_record`、`drop_collection`、`drop_index`）支援 `dry_run`。 |
 | :office: **多租戶平台** | 單一程序、多個完全隔離的租戶。跨租戶存取由 authorizer 在 **SQL 層**就擋掉，不只是應用層。 |
 | :lock: **per-user 受保護資料** | 宣告 `owner_field`，或寫 PocketBase 風格的 row-level policy —— 每次 **record** 讀、寫、realtime 事件都自動過濾。上傳的檔案走同形狀的另一道閘：逐 verb cap 外加依檔案邏輯路徑前綴的 policy。 |
 | :zap: **Realtime 應用** | 用 SSE 訂閱，或在單一 WebSocket 上多工多個 room 並廣播 JSON。 |
@@ -41,7 +41,7 @@
 
 ## :bulb: 為何選 drust
 
-- **:robot: AI 原生，不是事後外掛。** 每個租戶都有一個 Streamable-HTTP MCP 伺服器，其 `instructions` 開場白是結構化的 *intent → tool* 地圖，讓 agent 連上第一次就能上手 —— 不需 prompt engineering、不需自製 tool wrapper。
+- **:robot: AI 原生，不是事後外掛。** 一個 Streamable-HTTP MCP 端點，其 `instructions` 開場白是結構化的 *intent → tool* 地圖，讓 agent 連上第一次就能上手 —— 不需 prompt engineering、不需自製 tool wrapper。
 - **:ice_cube: 單一 binary、一租戶一檔。** SQLite 內嵌，不必另跑或另備份資料庫伺服器。跨租戶 `ATTACH` 不可能 —— 由 SQLite authorizer 在唯讀連線上強制。
 - **:closed_lock_with_key: 會疊加的安全。** `owner_field` + per-operation RLS policy（結構化 Filter AST → `?`-bound SQL）在每個 record 讀/寫/realtime 面 AND 疊加；檔案同樣兩道閘疊加——外層逐 verb cap、內層 per-prefix policy。寫入路徑**永不**吃 raw SQL。發佈到 public 桶的物件是刻意的例外：它由物件儲存直接送出，所以「可否公開」是 per-prefix 授權，而非每次請求的檢查。
 - **:feather: 最快又最密。** idle 約 15 MB、筆電上約 13k req/s、256 MB 的機器塞數十個租戶。以 Rust 建構於 [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)。
@@ -66,7 +66,7 @@
 
 ## :zap: 快速開始
 
-drust 只服務 plain HTTP —— 正式環境請在前面擺一個負責 TLS 終止的反向代理（Caddy、nginx、Traefik）。
+drust 只服務 plain HTTP —— 正式環境請在前面擺一個負責 TLS 終止的反向代理（Caddy、nginx、Traefik）。MCP 一定需要它：OAuth 要求 `https://` 的對外 URL（本機開發是 loopback 例外，見[連接 Claude Code](#electric_plug-連接-claude-code)）。
 
 **直接跑預編 image** —— 多架構（amd64 / arm64），免 clone、免建置：
 
@@ -112,6 +112,31 @@ systemd 搭反向代理的部署見 [`CLAUDE.md`](CLAUDE.md) 與 `deploy/` 的 u
 
 </details>
 
+## :electric_plug: 連接 Claude Code
+
+drust 的**整個帳號只有一個 MCP 端點**：`<DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`。它只接受 drust 自己登入流程發出的 OAuth access token，所以 client 設定裡永遠不放任何金鑰。
+
+```bash
+claude mcp add --transport http --scope user drust https://<host>/mcp
+```
+
+接著在 Claude Code 裡執行 `/mcp` → **drust** → **Authenticate**，並在已登入 drust 後台 UI 的瀏覽器裡核准這個連線。除了 `list_tenants`，每個 tool 都帶 `tenant` 參數。你看得到的就是你的 admin 帳號看得到的：owner 與 admin 看得到所有租戶，member 看得到自己擁有的租戶。後台 UI 的 **Connect Claude Code** 頁（`/admin/mcp`）會給出這台伺服器的確切指令，owner 的 **MCP diagnostics** 頁（`/admin/mcp/diagnostics`）會從你的瀏覽器檢查 discovery URL。
+
+- **Docker / Compose**：在內附的 Caddy 前面加上 TLS，並把 `DRUST_PUBLIC_URL` 設成那個 `https://` origin；`DRUST_MCP` 維持預設的 `auto` 時就會自己啟用 MCP，網址是 `https://<host>/mcp`。設 `DRUST_MCP=off` 可維持關閉。
+- **掛在 `/drust` 下的裸機**：`auto` 永遠不會啟用 MCP。先把 [`deploy/Caddyfile`](deploy/Caddyfile) 的兩條 root `/.well-known/*` 規則加進你的 proxy（TLS 上游也必須轉發，且不得 redirect），再設 `DRUST_MCP=on`。網址是 `https://<host>/drust/mcp`。
+- 目前只支援 Claude Code。CI 與其他無人值守的工作請改用 REST API 加租戶金鑰。
+- 從舊的 per-tenant 端點（`/t/<id>/mcp`，已退役、回 410）升級：見 [`CHANGELOG.md`](CHANGELOG.md) 的 **Upgrading**。
+
+**本機開發。** 在 plain HTTP 上，MCP 只能在 loopback 上用，而且必須 `DRUST_MCP=on`（loopback `http://` origin 只供開發，開機會寫一行警告）。不經 proxy、在根路徑執行 drust，並讓 session cookie 能在 HTTP 上帶回：
+
+```bash
+DRUST_BASE_PATH="" DRUST_PUBLIC_URL=http://127.0.0.1:47826 DRUST_MCP=on \
+  DRUST_DEV_NO_SECURE_COOKIES=1 ./target/release/drust
+claude mcp add --transport http --scope user drust http://127.0.0.1:47826/mcp
+```
+
+兩處都用 `127.0.0.1`，不要用 `localhost`：加入的 URL 必須與 `DRUST_PUBLIC_URL` 逐字一致。
+
 ## :building_construction: 架構
 
 ```mermaid
@@ -122,7 +147,7 @@ flowchart LR
     B -. optional .-> E["S3 object store<br/>public/ · private/"]
 ```
 
-三個請求介面 —— 後台 UI（cookie session）、租戶 REST（`anon` / `user` / `service` bearer）、租戶 MCP（僅 `service`）。Public 物件讀取完全繞過 drust；drust 只在*寫入*路徑。完整逐檔原始碼索引在 [`docs/architecture.md`](docs/architecture.md)。
+三個請求介面 —— 後台 UI（cookie session）、租戶 REST（`anon` / `user` / `service` bearer）、帳號層級 MCP 端點（只收 OAuth MCP access token）。Public 物件讀取完全繞過 drust；drust 只在*寫入*路徑。完整逐檔原始碼索引在 [`docs/architecture.md`](docs/architecture.md)。
 
 <details>
 <summary><b>API 介面</b></summary>
@@ -131,7 +156,8 @@ flowchart LR
 |---|---|---|---|
 | 後台 UI | `/admin/*` | Cookie session | 租戶 + schema 管理、policy、檔案、function |
 | 租戶 REST | `/t/<id>/...` | Bearer（`anon` / `user` / `service`） | CRUD、`/list`、`/search`、RPC、檔案、上傳、realtime |
-| 租戶 MCP | `/t/<id>/mcp` | Bearer（僅 `service`） | LLM 工具呼叫 —— CRUD、schema、index、RPC、檔案、向量搜尋、webhook、policy、function |
+| MCP | `/mcp` | OAuth MCP access token（admin 登入） | 跨你看得到的租戶做 LLM 工具呼叫 —— CRUD、schema、index、RPC、檔案、向量搜尋、webhook、policy、function |
+| 已退役的 MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED`，附切換指令 |
 | Codegen | `/t/<id>/{openapi.json,types.ts,zod.ts}` | Bearer | 依租戶當前 schema 的型別化 client |
 | Health | `/health` | 無 | Liveness probe |
 
@@ -147,13 +173,18 @@ flowchart LR
 | `DRUST_INIT_ADMIN_USERNAME` | 首次開機 | bootstrap admin 帳號 |
 | `DRUST_INIT_ADMIN_PASSWORD` | 首次開機 | bootstrap admin 密碼 |
 | `DRUST_BIND` | 選用（`127.0.0.1:47826`） | 監聽位址 —— 容器內設 `0.0.0.0:47826` |
-| `DRUST_PUBLIC_URL` | 選用 | 對外 base URL —— OAuth redirect/callback 連結需要 |
+| `DRUST_PUBLIC_URL` | 選用 | 對外 origin（`https://`，不含路徑）—— OAuth redirect/callback 連結，也是 OAuth issuer 與 MCP 端點的 origin |
+| `DRUST_MCP` | 選用（`auto`） | `auto`：`DRUST_PUBLIC_URL` 是非 loopback 的 `https://` origin 且 `DRUST_BASE_PATH` 為空（Docker 映像檔）時啟用 MCP；`on`：設定值可用就啟用；`off`：停用 |
+| `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` | 選用（3600） | MCP access token 壽命（秒）；900–86400 |
+| `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` | 選用（60） | MCP refresh 重試寬限（秒）；0–300（`0` 是最嚴格的重用偵測） |
+| `DRUST_MCP_OAUTH_IDLE_DAYS` | 選用（30） | MCP 連線閒置這麼多天後失效；1–`DRUST_MCP_OAUTH_MAX_DAYS` |
+| `DRUST_MCP_OAUTH_MAX_DAYS` | 選用（90） | MCP 連線核准後這麼多天失效，不論是否使用；1–365 |
 | `DRUST_CORS_ORIGINS` | 選用 | 逗號分隔允許清單；支援 `https://*.example.com`、`http://localhost:*` |
 | `DRUST_TRUSTED_PROXIES` | 選用（2；映像檔 0；`docker-compose.yml` 1） | drust 前面會在 `X-Forwarded-For` 追加一項的反向代理層數；per-IP 限流以該項為 key（`0` = TCP 對端）。範圍 0–8。把映像檔放在自己的代理後面時要設定 |
 | `DRUST_DISK_MIN_FREE_PCT` | 選用（20） | 低磁碟上傳守門——僅監看**資料庫**檔案系統，不含獨立的物件儲存 PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | 選用 | 啟用檔案儲存，接 S3 相容服務（已驗證：RustFS、Garage；限制見下文）。`GARAGE_` 字首是歷史名稱；Compose 的儲存設定檔會替你設好 |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | 選用 | 僅 Garage：只有對帳頁清理舊版「每租戶 bucket」時使用。兩者都要設；只設一個會在啟動時警告並視為未設定 |
-| `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案、簽署與 MCP 宣告 URL 對外使用的來源，不含路徑。Compose 設為 `http://localhost`；k3s chart 由 ingress 主機推得（該 chart 暫停維護，凍結於 drust 1.67.0） |
+| `DRUST_PUBLIC_BASE_URL` | 選用（`http://localhost:8793`） | 檔案與簽署 URL（含 MCP tool 回傳的那些）對外使用的來源，不含路徑。MCP 端點本身的 URL 來自 `DRUST_PUBLIC_URL`。Compose 設為 `http://localhost`；k3s chart 由 ingress 主機推得（該 chart 暫停維護，凍結於 drust 1.67.0） |
 
 S3 資料路徑走 `object_store::aws::AmazonS3`（path-style、SigV4），已在 RustFS（Compose 預設）與 Garage（bare-metal 參考主機）上驗證。有兩件事是固定的、無法設定：bucket 名稱 `public` 與 `private`，以及 SigV4 的 region 字串 `garage`；儲存服務必須兩者都接受。bucket 名稱全域唯一、或會檢查簽章 region 的代管服務（AWS S3、B2）無法直接使用；MinIO 與 R2 在本版未經測試。
 

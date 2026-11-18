@@ -6,7 +6,7 @@
 
 **The backend your AI agents can drive — and your users can trust.**
 A self-hosted, multi-tenant SQLite Backend-as-a-Service in one Rust binary:
-per-tenant REST **and** a native MCP endpoint, row-level security, realtime,
+per-tenant REST **and** one native, account-level MCP endpoint (OAuth sign-in), row-level security, realtime,
 vector search, and WebAssembly edge functions. One file per tenant. No database server.
 
 [![Rust](https://img.shields.io/badge/Rust-1.97%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -24,14 +24,14 @@ vector search, and WebAssembly edge functions. One file per tenant. No database 
 
 ## :sparkles: In one sentence
 
-Spinning up a Postgres or Supabase per project is overkill for the hundreds of small apps, internal tools, and AI-agent scratchpads a team accumulates. **drust** gives each project a self-contained `tenant.sqlite`, a typed API that never accepts raw SQL on the write path, row-level security, and a per-tenant MCP server an AI agent can drive with **zero glue code** — all from a single binary that idles at ~15 MB and serves ~13k req/s.
+Spinning up a Postgres or Supabase per project is overkill for the hundreds of small apps, internal tools, and AI-agent scratchpads a team accumulates. **drust** gives each project a self-contained `tenant.sqlite`, a typed API that never accepts raw SQL on the write path, row-level security, and one MCP endpoint for your whole account that an AI agent can drive across every project you can see, with **zero glue code** — all from a single binary that idles at ~15 MB and serves ~13k req/s.
 
 ## :rocket: What you can build
 
 | | |
 |---|---|
 | :bricks: **A SaaS / CRUD backend** | Define collections in the admin UI, get REST + typed TypeScript/Zod clients instantly. No DB server, no migration tooling. |
-| :robot: **An AI-agent-native datastore** | Point any MCP client at `/t/<id>/mcp` — the agent inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; three destructive ops (`delete_record`, `drop_collection`, `drop_index`) support `dry_run`. |
+| :robot: **An AI-agent-native datastore** | Point Claude Code at `<public URL>/mcp` and sign in once; the agent picks the tenant per call — inspects the schema, does CRUD, runs vector search, manages files through typed tools. Errors carry a `suggested_fix`; three destructive ops (`delete_record`, `drop_collection`, `drop_index`) support `dry_run`. |
 | :office: **A multi-tenant platform** | One process, many fully-isolated tenants. Cross-tenant access is denied **in-SQL** by the authorizer, not just in app code. |
 | :lock: **Per-user secured data** | Declare an `owner_field`, or write PocketBase-style row-level policies — every **record** read, write, and realtime event is filtered for you. Uploaded files have their own gate of the same shape: per-verb caps plus per-prefix policies over the file's logical path. |
 | :zap: **Realtime apps** | Subscribe over SSE, or multiplex many rooms over one WebSocket and broadcast JSON. |
@@ -41,7 +41,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 
 ## :bulb: Why drust
 
-- **:robot: AI-native, not bolted-on.** Every tenant ships a Streamable-HTTP MCP server whose `instructions` prologue is a structured *intent → tool* map, so an agent is productive on first connect — no prompt engineering, no custom tool wrappers.
+- **:robot: AI-native, not bolted-on.** One Streamable-HTTP MCP endpoint whose `instructions` prologue is a structured *intent → tool* map, so an agent is productive on first connect — no prompt engineering, no custom tool wrappers.
 - **:ice_cube: One binary, one file per tenant.** SQLite embedded, no database server to run or back up separately. Cross-tenant `ATTACH` is impossible — enforced by SQLite's authorizer on read-only connections.
 - **:closed_lock_with_key: Security that composes.** `owner_field` + per-operation RLS policies (structured Filter AST → `?`-bound SQL) AND-compose on every record read/write/realtime surface; files AND-compose the same way, a per-verb cap outside and a per-prefix policy inside. The write path **never** accepts raw SQL. An object published to the public bucket is the deliberate exception — it is served straight from the object store, so publishing is a per-prefix grant, not a per-request check.
 - **:feather: Fast and dense.** ~15 MB idle, ~13k req/s on a laptop, dozens of tenants on a 256 MB box. Built in Rust on [axum](https://github.com/tokio-rs/axum) + [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk).
@@ -66,7 +66,7 @@ Spinning up a Postgres or Supabase per project is overkill for the hundreds of s
 
 ## :zap: Quickstart
 
-drust serves plain HTTP — front it with a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in production.
+drust serves plain HTTP — front it with a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in production. MCP requires it: OAuth needs an `https://` public URL (local development is the loopback exception under [Connect Claude Code](#electric_plug-connect-claude-code)).
 
 **Run the prebuilt image** — multi-arch (amd64 / arm64), no clone, no build:
 
@@ -112,6 +112,31 @@ For systemd deployment behind a reverse proxy, see [`CLAUDE.md`](CLAUDE.md) and 
 
 </details>
 
+## :electric_plug: Connect Claude Code
+
+drust has **one MCP endpoint for your whole account**: `<DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`. It accepts only an OAuth access token from drust's own sign-in, so no key ever goes into the client config.
+
+```bash
+claude mcp add --transport http --scope user drust https://<host>/mcp
+```
+
+Then, in Claude Code, run `/mcp` → **drust** → **Authenticate**, and approve the connection in a browser where you are signed in to the drust admin UI. Every tool except `list_tenants` takes a `tenant` argument. You see what your admin account sees: an owner or admin sees every tenant, a member the tenants it owns. The admin UI's **Connect Claude Code** page (`/admin/mcp`) shows the exact command for your server, and an owner's **MCP diagnostics** page (`/admin/mcp/diagnostics`) checks the discovery URLs from your browser.
+
+- **Docker / Compose**: put TLS in front of the bundled Caddy and set `DRUST_PUBLIC_URL` to that `https://` origin; with `DRUST_MCP` at its default, `auto`, MCP then enables itself, at `https://<host>/mcp`. Set `DRUST_MCP=off` to keep it off.
+- **Bare metal under `/drust`**: `auto` never enables MCP. Add the two root `/.well-known/*` rules from [`deploy/Caddyfile`](deploy/Caddyfile) to your proxy (the TLS upstream must forward them too, with no redirect), then set `DRUST_MCP=on`. The URL is `https://<host>/drust/mcp`.
+- Only Claude Code is supported for now. For CI and other unattended jobs, use the REST API with a tenant key.
+- Upgrading from the old per-tenant endpoint (`/t/<id>/mcp`, now retired with a 410): see **Upgrading** in [`CHANGELOG.md`](CHANGELOG.md).
+
+**Local development.** On plain HTTP, MCP works only on loopback and only with `DRUST_MCP=on` (a loopback `http://` origin is for development and logs a warning at boot). Run drust without a proxy at the root and let the session cookie travel over HTTP:
+
+```bash
+DRUST_BASE_PATH="" DRUST_PUBLIC_URL=http://127.0.0.1:47826 DRUST_MCP=on \
+  DRUST_DEV_NO_SECURE_COOKIES=1 ./target/release/drust
+claude mcp add --transport http --scope user drust http://127.0.0.1:47826/mcp
+```
+
+Use `127.0.0.1` in both places, not `localhost`: the URL you add must match `DRUST_PUBLIC_URL` exactly.
+
 ## :building_construction: Architecture
 
 ```mermaid
@@ -122,7 +147,7 @@ flowchart LR
     B -. optional .-> E["S3 object store<br/>public/ · private/"]
 ```
 
-Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `user` / `service` bearer), and tenant MCP (`service` only). Public object reads bypass drust entirely; drust only sits in the *write* path. The full per-file source index lives in [`docs/architecture.md`](docs/architecture.md).
+Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `user` / `service` bearer), and the account-level MCP endpoint (OAuth MCP access tokens only). Public object reads bypass drust entirely; drust only sits in the *write* path. The full per-file source index lives in [`docs/architecture.md`](docs/architecture.md).
 
 <details>
 <summary><b>API surfaces</b></summary>
@@ -131,7 +156,8 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 |---|---|---|---|
 | Admin UI | `/admin/*` | Cookie session | Tenant + schema management, policies, files, functions |
 | Tenant REST | `/t/<id>/...` | Bearer (`anon` / `user` / `service`) | CRUD, `/list`, `/search`, RPC, files, uploads, realtime |
-| Tenant MCP | `/t/<id>/mcp` | Bearer (`service` only) | LLM tool calls — CRUD, schema, indexes, RPCs, files, vector search, webhooks, policies, functions |
+| MCP | `/mcp` | OAuth MCP access token (admin sign-in) | LLM tool calls across the tenants you can see — CRUD, schema, indexes, RPCs, files, vector search, webhooks, policies, functions |
+| Retired MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED` with the commands to switch |
 | Codegen | `/t/<id>/{openapi.json,types.ts,zod.ts}` | Bearer | Typed clients for the tenant's current schema |
 | Health | `/health` | none | Liveness probe |
 
@@ -147,13 +173,18 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | `DRUST_INIT_ADMIN_USERNAME` | first boot | Bootstrap admin account |
 | `DRUST_INIT_ADMIN_PASSWORD` | first boot | Bootstrap admin password |
 | `DRUST_BIND` | optional (`127.0.0.1:47826`) | Listen address — set `0.0.0.0:47826` in a container |
-| `DRUST_PUBLIC_URL` | optional | Public base URL — required for OAuth redirect/callback links |
+| `DRUST_PUBLIC_URL` | optional | Public origin (`https://`, no path) — OAuth redirect/callback links, and the OAuth issuer and MCP endpoint origin |
+| `DRUST_MCP` | optional (`auto`) | `auto` enables MCP when `DRUST_PUBLIC_URL` is a non-loopback `https://` origin and `DRUST_BASE_PATH` is empty (the Docker image); `on` enables it whenever the values are usable; `off` disables it |
+| `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` | optional (3600) | MCP access-token lifetime in seconds; 900–86400 |
+| `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` | optional (60) | MCP refresh retry grace in seconds; 0–300 (`0` is the strictest reuse detection) |
+| `DRUST_MCP_OAUTH_IDLE_DAYS` | optional (30) | An MCP connection ends after this many days unused; 1–`DRUST_MCP_OAUTH_MAX_DAYS` |
+| `DRUST_MCP_OAUTH_MAX_DAYS` | optional (90) | An MCP connection ends this many days after approval, used or not; 1–365 |
 | `DRUST_CORS_ORIGINS` | optional | Comma-separated allow-list; supports `https://*.example.com`, `http://localhost:*` |
 | `DRUST_TRUSTED_PROXIES` | optional (2; image 0; `docker-compose.yml` 1) | Reverse proxies in front of drust that append to `X-Forwarded-For`; the per-IP rate limits key on that entry (`0` = the TCP peer). Range 0–8. Set it when you put the image behind your own proxy |
 | `DRUST_DISK_MIN_FREE_PCT` | optional (20) | Low-disk upload guard — watches the **database** filesystem only, not a separate object-store PVC |
 | `GARAGE_S3_ENDPOINT` + `GARAGE_S3_ACCESS_KEY` + `GARAGE_S3_SECRET_KEY` | optional | Enables file storage on an S3-compatible store (verified: RustFS, Garage; constraints below). The `GARAGE_` names are historical. Compose's storage file sets them for you |
 | `GARAGE_ADMIN_ENDPOINT` + `GARAGE_ADMIN_TOKEN` | optional | Garage only — used solely by the reconcile page to clean up buckets from the retired per-tenant layout. Set both; one alone is ignored with a boot warning |
-| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file, signed and MCP-advertised URLs — no path. Compose sets `http://localhost`; the k3s chart derives it from the ingress host (the chart is on hold, frozen at drust 1.67.0) |
+| `DRUST_PUBLIC_BASE_URL` | optional (`http://localhost:8793`) | Client-facing origin for file and signed URLs, including the ones MCP tools return — no path. The MCP endpoint's own URL comes from `DRUST_PUBLIC_URL`. Compose sets `http://localhost`; the k3s chart derives it from the ingress host (the chart is on hold, frozen at drust 1.67.0) |
 
 The S3 data path uses `object_store::aws::AmazonS3` (path-style, SigV4). It is verified against RustFS (the Compose default) and Garage (the bare-metal reference host). Two things are fixed and not configurable: the bucket names `public` and `private`, and the SigV4 region string `garage`. A store has to accept both. A hosted provider whose bucket names are global, or which checks the signing region (AWS S3, B2), cannot be used as it stands; MinIO and R2 are untested in this release.
 

@@ -184,18 +184,19 @@ curl -X DELETE https://drust.example.com/drust/t/<tid>/admin/oauth-providers/goo
   -H "Authorization: Bearer <service_token>"
 ```
 
-**MCP** (service-key, via Claude Code or any rmcp client):
+**MCP** (the account-level `/mcp`, signed in through OAuth in Claude Code; every call names its `tenant`):
 
 ```
 set_oauth_provider(
+  tenant="<tid>",
   provider="google",
   client_id="1234.apps.googleusercontent.com",
   client_secret="GOCSPX-...",
   allowed_redirect_uris=["https://app.example.com/auth/callback"]
 )
 
-list_oauth_providers()
-delete_oauth_provider(provider="google")
+list_oauth_providers(tenant="<tid>")
+delete_oauth_provider(tenant="<tid>", provider="google")
 ```
 
 ### Auto-register policy
