@@ -9,6 +9,9 @@
 # Secrets are generated once into deploy/smoke/.env (gitignored) and reused on
 # later runs, so the admin password and the store keys survive a restart. The
 # store is remembered there too (SMOKE_STORE): a later plain up.sh keeps it.
+# SMOKE_DRUST_MCP=off deploy/smoke/up.sh starts drust with DRUST_MCP=off and
+# records that in .env for run-all.sh; it is not remembered, so a later plain
+# up.sh starts with MCP on again.
 # SMOKE_COMPOSE_PROJECT (default drust-smoke) names the compose project; set it
 # for up.sh, run-all.sh and down.sh alike.
 # Works with the bash 3.2 that macOS ships.
@@ -23,6 +26,7 @@ hex() { openssl rand -hex "$1"; }
 # Append each key only when missing, so an older .env gains the new keys and no
 # existing secret is rotated.
 want_store="${SMOKE_STORE:-}"            # before .env is sourced, which would overwrite it
+want_mcp="${SMOKE_DRUST_MCP:-on}"        # likewise; absent means on, whatever .env recorded
 umask 077
 [ -f "$env_file" ] || { : > "$env_file"; echo "generated $env_file"; }
 ensure() { grep -q "^$1=" "$env_file" || printf '%s=%s\n' "$1" "$2" >> "$env_file"; }
@@ -45,9 +49,10 @@ set -a
 set +a
 store="${want_store:-${SMOKE_STORE:-rustfs}}"
 case "$store" in rustfs|garage) ;; *) echo "SMOKE_STORE must be rustfs or garage" >&2; exit 2 ;; esac
-grep -v '^SMOKE_STORE=' "$env_file" > "$env_file.tmp" || true
-echo "SMOKE_STORE=$store" >> "$env_file.tmp"; mv "$env_file.tmp" "$env_file"; chmod 600 "$env_file"
-export SMOKE_STORE="$store"
+grep -v -e '^SMOKE_STORE=' -e '^SMOKE_DRUST_MCP=' "$env_file" > "$env_file.tmp" || true
+{ echo "SMOKE_STORE=$store"; echo "SMOKE_DRUST_MCP=$want_mcp"; } >> "$env_file.tmp"
+mv "$env_file.tmp" "$env_file"; chmod 600 "$env_file"
+export SMOKE_STORE="$store" SMOKE_DRUST_MCP="$want_mcp"
 # shellcheck source=compose-files.sh
 . "$here/compose-files.sh"
 
@@ -191,6 +196,7 @@ cat <<EOF
 
 drust smoke stack is up.
   store      $store
+  mcp        $want_mcp
   admin UI   http://localhost:$http_port/login
   username   $SMOKE_ADMIN_USERNAME
   password   in $env_file  (SMOKE_ADMIN_PASSWORD)

@@ -20,6 +20,39 @@
 # deleted explicitly; both tenants are deleted by lib.sh on exit.
 . "$(dirname "$0")/lib.sh"
 
+# The off state. Expected answers from src/mgmt/mcp_oauth/route_layer.rs
+# (DISABLED, MOVED_DISABLED) and account_routes.rs (disabled: /mcp only, no
+# metadata route); the OAuth routes are not mounted at all.
+if [ "$MCP_OFF" = 1 ]; then
+  note "the stack runs with DRUST_MCP=off (SMOKE_DRUST_MCP=off in .env): checking the off state"
+  check_mcp_disabled
+  moved_off="MOVED: MCP is now one account-level OAuth endpoint, not enabled on this server yet; ask the operator"
+  for tenant in anything no-such-tenant; do
+    for method in POST GET; do
+      if [ "$method" = POST ]; then
+        req POST "$BASE/t/$tenant/mcp" -H 'Content-Type: application/json' \
+          --data '{"jsonrpc":"2.0","id":1,"method":"initialize"}'
+      else
+        req GET "$BASE/t/$tenant/mcp"
+      fi
+      check_eq "$method /t/$tenant/mcp answers 410 MCP_ENDPOINT_MOVED" "410 MCP_ENDPOINT_MOVED" \
+        "$STATUS $(body error_code)"
+      check_eq "... with the message for a server whose MCP is off" "$moved_off" "$(body message)"
+      check_eq "... and Cache-Control: no-store" no-store "$(header cache-control)"
+      check_not_contains "... naming no URL" "://" "$BODY"
+    done
+  done
+  for path in /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource/mcp; do
+    req GET "$BASE$path"
+    check_eq "GET $path answers 404 (not mounted)" 404 "$STATUS"
+  done
+  req POST "$BASE/oauth/token" -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data 'grant_type=authorization_code'
+  check_eq "POST /oauth/token answers 404 (not mounted)" 404 "$STATUS"
+  finish
+  exit $?
+fi
+
 # Preflight, before any token is minted: the account endpoint answers a request
 # with no bearer 401 MCP_OAUTH_REQUIRED. With DRUST_MCP not on it answers 404,
 # with no error code when /mcp is not mounted or with MCP_DISABLED when it is.
@@ -31,7 +64,7 @@ if [ "$pre" = "401 MCP_OAUTH_REQUIRED" ]; then
   ok "the account endpoint is mounted (DRUST_MCP=on in docker-compose.smoke.yml)"
 else
   case "$pre" in
-    "404 "|"404 MCP_DISABLED") why="DRUST_MCP is not on" ;;
+    "404 "|"404 MCP_DISABLED") why="DRUST_MCP is not on (for a round with it off on purpose, start the stack with SMOKE_DRUST_MCP=off deploy/smoke/up.sh)" ;;
     *) why="unexpected answer" ;;
   esac
   bad "the account endpoint is mounted (DRUST_MCP=on in docker-compose.smoke.yml)" "got [$pre]: $why"

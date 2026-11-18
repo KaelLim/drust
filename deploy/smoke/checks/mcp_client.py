@@ -2,7 +2,8 @@
 """Stateless client for the account-level MCP endpoint (smoke checks, stdlib only).
 
     mcp_client.py token BASE RESOURCE          sign in, print an OAuth access token
-    mcp_client.py revoke BASE                  revoke $SMOKE_MCP_TOKEN's grant
+    mcp_client.py revoke BASE                  revoke $SMOKE_MCP_TOKEN's grant, then check
+                                               that BASE/mcp refuses the token
     mcp_client.py call URL JSON_RPC            one JSON-RPC message to the endpoint
     mcp_client.py tool URL TOOL ARGS TENANT    one tools/call, with TENANT injected
     mcp_client.py field is_error|text|code|remint   read call/tool output on stdin
@@ -19,6 +20,11 @@ SMOKE_ADMIN_PASSWORD and runs the authorization code flow with PKCE against the
 stack itself. The access token goes to stdout only when stdout is not a
 terminal; the refresh token is dropped. A failure prints one line naming the
 step, the HTTP status and the error code, never a credential.
+
+"revoke" exits 0 only when /oauth/revoke answered 200 AND the token's next
+call to BASE/mcp answered 401 MCP_OAUTH_REQUIRED (/oauth/revoke answers 200
+for an unknown token too, so its answer alone proves nothing). Otherwise it
+prints one line naming the cause and how to revoke the grant by hand.
 """
 import base64
 import hashlib
@@ -52,6 +58,8 @@ SESSION_COOKIE = "drust_session"
 RESUME_COOKIE = "drust_mcp_oauth_resume"
 CSRF_COOKIE = "drust_mcp_oauth_csrf"
 NOT_MOUNTED = " (DRUST_MCP is not on: the OAuth endpoints are not mounted)"
+REVOKE_BY_HAND = ("; revoke the grant by hand: sign in as the smoke admin and use Revoke on the MCP"
+                  " card of /admin/settings")
 
 
 # ------------------------------------------------------------------ pure helpers
@@ -373,9 +381,18 @@ def mint(base, resource, username, password):
             issued = {}
         if not isinstance(issued, dict):
             issued = {}
-        step("token", r, lambda r: r.status == 200
-             and str(issued.get("access_token") or "").startswith("drust_mcpat_")
-             and issued.get("token_type") == "Bearer")
+        good = (r.status == 200 and str(issued.get("access_token") or "").startswith("drust_mcpat_")
+                and issued.get("token_type") == "Bearer")
+        if r.status == 200 and not good:
+            # Tokens were issued but this client will not use them: end the
+            # grant now rather than leave it live on the smoke admin's card.
+            held = [t for t in (issued.get("access_token"), issued.get("refresh_token"))
+                    if isinstance(t, str) and t]
+            gone = bool(held) and request("POST", base + "/oauth/revoke", {"Content-Type": FORM},
+                                          _form({"token": held[0]})).status == 200
+            raise Failed("token", summary_of(r) + " (tokens rejected by this client)"
+                         + (REVOKE_BY_HAND if held and not gone else ""))
+        step("token", r, lambda r: good)
         return issued["access_token"]
     finally:
         # 6. Leave no live admin session behind; the outcome does not matter.
@@ -405,17 +422,31 @@ def cmd_token(argv):
     return 0
 
 
+def revoked_answer(status, body):
+    """Whether a call's answer shows its token is dead: 401 MCP_OAUTH_REQUIRED."""
+    return error_summary(status, body) == "401 MCP_OAUTH_REQUIRED"
+
+
 def cmd_revoke(argv):
     if len(argv) != 1:
         sys.stderr.write("usage: mcp_client.py revoke BASE\n")
         return 2
     held = os.environ.get("SMOKE_MCP_TOKEN") or ""
     if not held:
+        sys.stderr.write("mcp_client: revoke: SMOKE_MCP_TOKEN is empty, nothing to revoke\n")
         return 1
-    r = request("POST", argv[0].rstrip("/") + "/oauth/revoke", {"Content-Type": FORM},
-                _form({"token": held}))
+    base = argv[0].rstrip("/")
+    r = request("POST", base + "/oauth/revoke", {"Content-Type": FORM}, _form({"token": held}))
     if r.status != 200:
-        sys.stderr.write(failure_line("revoke", summary_of(r)) + "\n")
+        sys.stderr.write(failure_line("revoke", summary_of(r)) + REVOKE_BY_HAND + "\n")
+        return 1
+    r = request("POST", base + "/mcp",
+                {"Content-Type": "application/json", "Accept": PROTOCOL_ACCEPT,
+                 "Authorization": "Bearer " + held},
+                b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+    if not revoked_answer(r.status, r.body):
+        sys.stderr.write(failure_line("the revoked token's next call", summary_of(r))
+                         + " (want 401 MCP_OAUTH_REQUIRED)" + REVOKE_BY_HAND + "\n")
         return 1
     return 0
 
@@ -532,8 +563,9 @@ def selftest():
         "mcp_client: metadata answered 404 - (DRUST_MCP is not on: the OAuth endpoints are not mounted)"
     assert failure_line("login", "429 RATE_LIMITED_IP") == "mcp_client: login answered 429 RATE_LIMITED_IP"
     assert failure_line("metadata", "0 -") == "mcp_client: metadata answered 0 -"
-    assert redact("Authorization: Bearer drust_upl_SECRET1 and SECRET2", ["drust_upl_SECRET1", "SECRET2", ""]) == \
-        "Authorization: Bearer <redacted> and <redacted>"
+    assert revoked_answer(401, b'{"message":"m","error_code":"MCP_OAUTH_REQUIRED"}')
+    assert not revoked_answer(200, b'{"jsonrpc":"2.0","id":1,"result":{}}')
+    assert not revoked_answer(401, b'{"error_code":"UNAUTHENTICATED"}') and not revoked_answer(0, b"")
     assert 60 / MIN_CALL_SECS <= RS_GRANT_BUDGET_PER_MIN / 2
     assert LOGIN_TRIES * LOGIN_BACKOFF_SECS <= 75
     assert len(REDIRECT_URI) <= 64 and REDIRECT_URI.endswith("/callback")

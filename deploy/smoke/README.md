@@ -62,7 +62,7 @@ source address.
 | Admin UI (through Caddy) | <http://localhost:48080/login> |
 | drust directly, no proxy | `http://127.0.0.1:48826` |
 | Object store | RustFS has no host port (checks go through Caddy's `/public/*`). Garage mode has S3 / website / admin on `127.0.0.1:48900` / `48902` / `48903` |
-| Admin username, password, PAT, object-store keys, `SMOKE_STORE` | `deploy/smoke/.env` (generated, mode 600, gitignored) |
+| Admin username, password, PAT, object-store keys, `SMOKE_STORE`, `SMOKE_DRUST_MCP` | `deploy/smoke/.env` (generated, mode 600, gitignored) |
 | MCP access token for a run | `SMOKE_MCP_TOKEN` in the environment of `run-all.sh` only; revoked when the run ends |
 
 Everything binds to loopback, and the ports are chosen not to collide with a
@@ -92,10 +92,15 @@ only. `run-all.sh` signs in once with the generated admin password, runs the
 authorization code flow with PKCE against the stack itself, keeps the token in the
 environment (never in a file) and revokes it when the run ends; a script run on its own
 does the same on its first MCP call and revokes its token on exit. A failed sign-in is not
-retried within the run; `.last-run/mcp-token.txt` records the outcome (never the token).
-`docker-compose.smoke.yml` turns `DRUST_MCP` on for this (`SMOKE_DRUST_MCP=off
-deploy/smoke/up.sh` starts the stack with it off), and `DRUST_PUBLIC_URL` is the loopback
-`http://localhost:<port>`, which drust accepts for development only.
+retried within the run; `.last-run/mcp-token.txt` records the outcome (never the token),
+including whether the revoke at the end held: the token's next call must answer `401
+MCP_OAUTH_REQUIRED`, and a run that cannot show that fails and says how to revoke the grant
+by hand. `docker-compose.smoke.yml` turns `DRUST_MCP` on for this, and `DRUST_PUBLIC_URL` is
+the loopback `http://localhost:<port>`, which drust accepts for development only.
+
+To check the off state, start the stack with `SMOKE_DRUST_MCP=off deploy/smoke/up.sh` (recorded
+in `.env`; a later plain `up.sh` turns MCP on again) and run `deploy/smoke/run-all.sh 00 50`:
+no token is minted, 00 and 50 check the off-state answers, and every other script is refused.
 
 ## Checks that fail today
 

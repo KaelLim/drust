@@ -18,6 +18,10 @@
 # $T, never from TENANT_ID, because several scripts switch tenants by setting
 # T alone. Each MCP call takes at least 0.2 s (mcp_client.py MIN_CALL_SECS) so
 # a run stays far below the endpoint's 600 requests per minute per grant.
+#
+# MCP_OFF is 1 when up.sh started the stack with SMOKE_DRUST_MCP=off (it records
+# that in .env): then no token is minted, and the scripts that know the off
+# state (00, 50) check it instead.
 
 set -u
 
@@ -50,6 +54,8 @@ PUBLIC="$BASE/public"
 SMOKE_STORE="${SMOKE_STORE:-rustfs}"
 SMOKE_COMPOSE_PROJECT="${SMOKE_COMPOSE_PROJECT:-drust-smoke}"
 ADMIN_PAT="${SMOKE_ADMIN_PAT:?deploy/smoke/.env has no SMOKE_ADMIN_PAT — re-run deploy/smoke/up.sh}"
+MCP_OFF=0
+[ "${SMOKE_DRUST_MCP:-on}" = off ] && MCP_OFF=1
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/drust-smoke.XXXXXX")"
 PASS=0
@@ -62,14 +68,18 @@ _mcp_reminted=0
 _mcp_minted_here=0
 _mcp_token_noted=0
 
+# On exit: revoke the token this script minted, delete its tenants, remove
+# $TMP. A revoke that cannot be shown to have worked fails the script; the exit
+# status is otherwise left alone (a script's own EXIT trap calls this last).
 _cleanup() {
-  _mcp_revoke_own
-  local id
+  local id revoke_ok=1
+  _mcp_revoke_own || revoke_ok=0
   for id in $_tenants; do
     curl -sS -o /dev/null -X DELETE "$BASE/admin/api/tenants/$id" \
       -H "Authorization: Bearer $ADMIN_PAT" || true
   done
   rm -rf "$TMP"
+  [ "$revoke_ok" = 1 ] || exit 1
 }
 trap _cleanup EXIT
 
@@ -188,6 +198,11 @@ _tenant_call() {
 # and noted once; later calls fail at once without signing in again.
 mcp_token() {
   [ -n "${SMOKE_MCP_TOKEN:-}" ] && return 0
+  if [ "$MCP_OFF" = 1 ] && [ "$_mcp_token_noted" = 0 ]; then
+    note "mcp token unavailable: the stack runs with DRUST_MCP=off (SMOKE_DRUST_MCP=off in .env)"
+    _mcp_token_noted=1
+  fi
+  [ "$MCP_OFF" = 1 ] && return 1
   if [ "${SMOKE_MCP_TOKEN_FAILED:-0}" = 1 ]; then
     if [ "$_mcp_token_noted" = 0 ]; then
       note "mcp token unavailable (an earlier attempt in this run failed; see mcp token above)"
@@ -212,13 +227,20 @@ mcp_token() {
 }
 
 # _mcp_revoke_own — revoke the token this script minted itself; a token passed
-# in by run-all.sh is left to run-all.sh.
+# in by run-all.sh is left to run-all.sh. The client proves the revoke (the
+# token's next call answers 401 MCP_OAUTH_REQUIRED); when it cannot, this
+# records a failure whose detail names the cause and how to revoke by hand,
+# and returns 1.
 _mcp_revoke_own() {
+  local rc=0
   if [ "$_mcp_minted_here" = 1 ] && [ -n "${SMOKE_MCP_TOKEN:-}" ]; then
-    python3 "$_lib_dir/mcp_client.py" revoke "$BASE" >/dev/null 2>&1 || true
+    if ! python3 "$_lib_dir/mcp_client.py" revoke "$BASE" >/dev/null 2>"$TMP/mcp-revoke.err"; then
+      bad "the MCP grant this script minted is revoked" "$(tail -n 1 "$TMP/mcp-revoke.err")"
+      rc=1
+    fi
   fi
   _mcp_minted_here=0
-  return 0
+  return "$rc"
 }
 
 # _mcp_tenant — the tenant id of $T ($BASE/t/<id>); nothing when T names none.
@@ -243,7 +265,7 @@ _mcp_send() {
   if [ "$STATUS" -ne 0 ] && [ "$_mcp_reminted" = 0 ] &&
     [ "$(printf '%s' "$BODY" | python3 "$_lib_dir/mcp_client.py" field remint)" = yes ]; then
     _mcp_reminted=1
-    _mcp_revoke_own
+    _mcp_revoke_own || true
     SMOKE_MCP_TOKEN=""
     if mcp_token; then
       BODY="$(python3 "$_lib_dir/mcp_client.py" "$@" 2>"$TMP/mcp.err")"
@@ -271,6 +293,18 @@ mcp_call() {
 # response with the same id in BODY (STATUS 0), or the HTTP failure (STATUS 1).
 mcp_rpc() {
   _mcp_send call "$MCP_URL" "$1"
+}
+
+# check_mcp_disabled — with MCP off, the account endpoint answers 404
+# MCP_DISABLED with its fixed message (route_layer.rs DISABLED) and no-store.
+check_mcp_disabled() {
+  req POST "$MCP_URL" -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  check_eq "with MCP off, POST /mcp answers 404 MCP_DISABLED" "404 MCP_DISABLED" "$STATUS $(body error_code)"
+  check_eq "... with the disabled message" \
+    "MCP is disabled on this server; ask the operator (see boot log)" "$(body message)"
+  check_eq "... and Cache-Control: no-store" no-store "$(header cache-control)"
 }
 
 finish() {
