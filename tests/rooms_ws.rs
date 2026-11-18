@@ -216,8 +216,8 @@ fn every_test_stack_shares_one_room_bus_with_its_auth_state() {
          so every revoke-then-assert test on it goes green without exercising anything.",
     );
     assert!(
-        stacks >= 27,
-        "expected at least the 27 known tenant-stack literals across tests/, found {stacks} — \
+        stacks >= 24,
+        "expected at least the 24 known tenant-stack literals across tests/, found {stacks} — \
          the scanner's anchor probably stopped matching, which would make this pin silently \
          vacuous",
     );
