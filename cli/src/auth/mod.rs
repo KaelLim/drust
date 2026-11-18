@@ -235,6 +235,17 @@ async fn logout(cli: &Cli) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+fn status(cli: &Cli) -> anyhow::Result<i32> {
+    let cfg = store::load()?;
+    let key = cfg.resolve_host_key(cli.host.as_deref())?;
+    let h = cfg.hosts.get(&key).expect("resolved");
+    println!("host: {key}  ({})", h.base_url);
+    if let Some(t) = &h.default_tenant {
+        println!("tenant: {t}");
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::guard_scheme;
@@ -268,15 +279,4 @@ mod tests {
         // userinfo in front of a genuine loopback host still passes
         assert!(guard_scheme("http://user@127.0.0.1:8793/drust", false).is_ok());
     }
-}
-
-fn status(cli: &Cli) -> anyhow::Result<i32> {
-    let cfg = store::load()?;
-    let key = cfg.resolve_host_key(cli.host.as_deref())?;
-    let h = cfg.hosts.get(&key).expect("resolved");
-    println!("host: {key}  ({})", h.base_url);
-    if let Some(t) = &h.default_tenant {
-        println!("tenant: {t}");
-    }
-    Ok(0)
 }
