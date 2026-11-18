@@ -113,8 +113,8 @@ reachable by an untrusted caller.
 | `/t/<id>/functions/<name>/invoke` | service always; anon/user only when the per-function invoke ACL allows it |
 | `/mcp` (the account-level MCP endpoint) | **an MCP OAuth access token only** (`drust_mcpat_`, admin tier) — a tenant key, admin PAT, user or anon token, session cookie or upload ticket gets 401 `MCP_OAUTH_REQUIRED` with a challenge. Always mounted; answers 404 `MCP_DISABLED` unless `DRUST_MCP` resolves to enabled. Each call names its `tenant` and is admitted only for a tenant the grant's admin can see (invariants 7 and 21) |
 | `/.well-known/oauth-protected-resource/mcp` (PRM) | unauthenticated — mounted only when `DRUST_MCP` resolves to enabled; pure JSON from config, outside the `/mcp` gates |
-| `/t/<id>/mcp` | retired: **410 `MCP_ENDPOINT_MOVED` to every caller and method** for any tenant id, before bearer auth — not an existence oracle |
-| `/t/<id>/uploads/*` with a `drust_upl_` ticket | only the one tus upload the ticket was minted for by `create_upload_url`; every other route answers the ticket 401. The ticket layer is mounted only when `DRUST_MCP` resolves to enabled |
+| `/t/<id>/mcp` | retired: **410 `MCP_ENDPOINT_MOVED` to every caller and method** for any tenant id, before bearer auth — not an existence oracle. With `DRUST_CORS_ORIGINS` set, a CORS preflight there is answered by the CORS layer instead |
+| `/t/<id>/uploads/*` with a `drust_upl_` ticket | only the one tus upload the ticket was minted for by `create_upload_url`; every other files route answers the ticket 401, any other route treats it as an unknown bearer, and an unknown path is 404. The ticket layer is mounted only when `DRUST_MCP` resolves to enabled |
 | `/admin/mcp` (connect page), `/admin/mcp/diagnostics` | connect page: any signed-in admin, a personal page like `/admin/settings`, mounted only when `DRUST_MCP` resolves to enabled. Diagnostics: **owner only** (`require_owner_layer`), always mounted, shows the disabled reason while MCP is off |
 | `create_fts_index`, `drop_fts_index`, `list_fts_indexes` (MCP tools) | full-text index lifecycle, reachable only through the account-level `/mcp`, like every MCP tool |
 | `/t/<id>/collections`, `/t/<id>/collections/<c>` (describe) | service, user, anon — the list skips `_system_*` / `sqlite_*` for **every** caller; describe answers 404 `NOT_FOUND` for them to non-service callers, while service may describe them |
@@ -492,18 +492,22 @@ look locally correct. Do not loosen any of them without re-reasoning from scratc
 21. **The MCP entry accepts only an OAuth MCP access token, and every call decides tenant
     visibility on `meta.sqlite` before it touches the tenant.** `/mcp` admits a request only
     through `find_grant_by_access` — never a tenant key, admin PAT, user or anon token,
-    session cookie or upload ticket. Every tool, resource and prompt call that names a
-    tenant decides visibility before opening the tenant and again after, requiring the same
-    (owner, created_at); every upload-ticket redemption checks the ticket's tenant
-    incarnation and the grant's visibility before it opens the tenant. The tenant is always
-    opened with `get_if_live`, never `get_or_create`. An old-incarnation pool still cached by
-    the tenant registry is the recycle residual documented in `.claude/rules/auth-tenancy.md`
-    — it is not detectable here and nothing claims it is. When a refused call or ticket is
-    recorded, it is a host row (`tenant = "-"`), never a row in the tenant it named, and no
-    admin identity is ever written into a tenant the caller cannot see; an unknown tool, a
-    failed `list_tenants` and an unknown ticket are not recorded at all. No MCP token is
-    cached anywhere today; a cache added later gives demotion, owner transfer, tenant
-    soft-delete and every `revoke_mcp_grant` caller an eviction duty (invariant 4).
+    session cookie or upload ticket. Every tool, resource and prompt call that names a tenant
+    decides visibility before opening the tenant and again after, requiring the same (owner,
+    created_at); every upload-ticket redemption checks the ticket's tenant incarnation and
+    the grant's visibility before it opens the tenant. The tenant is always opened with
+    `get_if_live`, never `get_or_create`. An old-incarnation pool still cached by the tenant
+    registry is the recycle residual documented in `.claude/rules/auth-tenancy.md` — it is
+    not detectable here and nothing claims it is. When a refused call or ticket is recorded,
+    it is a host row (`tenant = "-"`), never a row in the tenant it named; `-` is a reserved
+    tenant id (`tenant_db::HOST_AUDIT_KEY`), so no tenant can be created with that key, and
+    the per-tenant log views and this endpoint refuse it for a tenant an older release
+    created. No admin identity is written into a tenant the caller could not see when the
+    call or request began: visibility is decided then, and a row written after a long call is
+    keyed by the tenant id as it was resolved, not by the incarnation that was checked. An
+    unknown tool, a failed `list_tenants` and an unknown ticket are not recorded at all. No
+    MCP token is cached anywhere today; a cache added later gives demotion, owner transfer,
+    tenant soft-delete and every `revoke_mcp_grant` caller an eviction duty (invariant 4).
 
 ## Where the rest lives
 

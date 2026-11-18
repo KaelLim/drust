@@ -183,10 +183,11 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
   deliberately retry-safe: a repeat converges to the same state; the extra eviction only
   makes subscribers reconnect and re-gate.
-- On the account-level endpoint every tool failure is an `isError: true` result:
-  `account::finish_account_call` runs the shared `finish_tool_call` first and then turns
-  every remaining JSON-RPC error except "tool not found" into the same isError body, keeping
-  its `error_code` and `suggested_fix` (a code the error lacks is classified by
+- On the account-level endpoint every failure of a call drust ran or refused is an
+  `isError: true` result (an unknown tool, a task-augmented call and a request the
+  transport cannot parse stay JSON-RPC or HTTP errors): `account::finish_account_call`
+  runs the shared `finish_tool_call` first and then turns every remaining JSON-RPC error
+  except "tool not found" into the same isError body, keeping its `error_code` and `suggested_fix` (a code the error lacks is classified by
   `mcp::error_code::mcp_error_code`). The inner tools keep their own shapes — five tools
   (+ `list_files`) report failure as a sentinel object and the rest bail with a JSON-RPC
   error — because edge functions, resources and prompts call them directly. A classified
@@ -303,7 +304,8 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   that can never succeed, while a 421 stops with the body's hint.
 - **The retired `/t/<id>/mcp` answers 410 before bearer authentication**, identically for
   every tenant id (existing, missing or malformed) and every method, so it is not an
-  existence oracle. 401 or 403 would send clients into a doomed sign-in, 404 would read as
+  existence oracle (with `DRUST_CORS_ORIGINS` set, the CORS layer answers a preflight there
+  first, the same way for every id). 401 or 403 would send clients into a doomed sign-in, 404 would read as
   a deleted tenant, and a redirect would carry the old header to an endpoint that refuses it.
 - **The account-level endpoint sends no CORS headers.** It is merged into the management
   router, outside the tenant router's CORS layer: MCP clients are not browsers, and the only

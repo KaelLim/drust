@@ -6,6 +6,8 @@
 # If you instead run the drust service with DRUST_BASE_PATH=/drust (proxy mounts
 # it under a subpath), switch this to the `handle_path /drust/*` form from the
 # production deploy/Caddyfile snippet so Caddy strips the prefix back off.
+# MCP under a sub-path also needs that snippet's two root discovery rules, with
+# drust:47826 as their upstream (the sub-path note in docker-compose.yml).
 #
 # /public/* belongs to the object store, not to drust: a public object is served
 # straight out of the "public" bucket and never reaches drust (CLAUDE.md
@@ -69,7 +71,7 @@
 
 	handle {
 		reverse_proxy drust:47826 {
-			header_up Host "127.0.0.1:47826" # rmcp DNS-rebinding guard (MCP needs a loopback Host)
+			header_up Host "127.0.0.1:47826" # /mcp accepts a loopback Host or the DRUST_PUBLIC_URL host
 			# drust keys its per-IP rate limits on X-Forwarded-For, which Caddy sets by
 			# default and — with no `trusted_proxies` configured — rebuilds from the TCP
 			# peer, so it carries exactly one entry: DRUST_TRUSTED_PROXIES=1 in

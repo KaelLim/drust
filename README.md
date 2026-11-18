@@ -122,7 +122,7 @@ claude mcp add --transport http --scope user drust https://<host>/mcp
 
 Then, in Claude Code, run `/mcp` → **drust** → **Authenticate**, and approve the connection in a browser where you are signed in to the drust admin UI. Every tool except `list_tenants` takes a `tenant` argument. You see what your admin account sees: an owner or admin sees every tenant, a member the tenants it owns. The admin UI's **Connect Claude Code** page (`/admin/mcp`) shows the exact command for your server, and an owner's **MCP diagnostics** page (`/admin/mcp/diagnostics`) checks the discovery URLs from your browser.
 
-- **Docker / Compose**: put TLS in front of the bundled Caddy and set `DRUST_PUBLIC_URL` to that `https://` origin; with `DRUST_MCP` at its default, `auto`, MCP then enables itself, at `https://<host>/mcp`. Set `DRUST_MCP=off` to keep it off.
+- **Docker / Compose**: put TLS in front of the bundled Caddy and set `DRUST_PUBLIC_URL` to that `https://` origin; with `DRUST_MCP` at its default, `auto`, MCP then enables itself, at `https://<host>/mcp`. That TLS proxy is one more hop: follow the `DRUST_TRUSTED_PROXIES` comment in `docker-compose.yml`, or every client shares its address for the per-IP limits. Set `DRUST_MCP=off` to keep it off.
 - **Bare metal under `/drust`**: `auto` never enables MCP. Add the two root `/.well-known/*` rules from [`deploy/Caddyfile`](deploy/Caddyfile) to your proxy (the TLS upstream must forward them too, with no redirect), then set `DRUST_MCP=on`. The URL is `https://<host>/drust/mcp`.
 - Only Claude Code is supported for now. For CI and other unattended jobs, use the REST API with a tenant key.
 - Upgrading from the old per-tenant endpoint (`/t/<id>/mcp`, now retired with a 410): see **Upgrading** in [`CHANGELOG.md`](CHANGELOG.md).
@@ -157,7 +157,7 @@ Three request surfaces — admin UI (cookie session), tenant REST (`anon` / `use
 | Admin UI | `/admin/*` | Cookie session | Tenant + schema management, policies, files, functions |
 | Tenant REST | `/t/<id>/...` | Bearer (`anon` / `user` / `service`) | CRUD, `/list`, `/search`, RPC, files, uploads, realtime |
 | MCP | `/mcp` | OAuth MCP access token (admin sign-in) | LLM tool calls across the tenants you can see — CRUD, schema, indexes, RPCs, files, vector search, webhooks, policies, functions |
-| Retired MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED` with the commands to switch |
+| Retired MCP | `/t/<id>/mcp` | — | 410 `MCP_ENDPOINT_MOVED`; while MCP is on, the message names the new URL in a short `claude mcp` command (the connect page has the full ones) |
 | Codegen | `/t/<id>/{openapi.json,types.ts,zod.ts}` | Bearer | Typed clients for the tenant's current schema |
 | Health | `/health` | none | Liveness probe |
 

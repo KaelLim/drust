@@ -626,6 +626,20 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
   second precision). It has no authorization consequence — that caller may see both
   incarnations — and the cached old-incarnation pool residual under "Admin request queues"
   applies to it.
+- **Acting by id after the second check.** The tools that touch meta rows of the tenant —
+  `set_file_caps`, `set_publish_policy`, `set_self_register` and `set_egress_allowlist`
+  (writes), the `whoami` token read and `quota::read_tier` (reads) — take the `meta` lock
+  again after `resolve_tenant` released it and address the row by tenant id only. A soft
+  delete followed by an id recycle (another sees-all admin creating the same id) that lands
+  between the second check and that statement sends the write or read to the new
+  incarnation. The caller cannot trigger the recycle, and REST has the same shape: the
+  bearer CTE resolves the tenant, then the handler writes by id.
+- **Access tokens carry no resource (RFC 8707 audience).** Neither the access row nor
+  `mcp_oauth_auth_layer` records or checks one. Binding holds because the server has one
+  resource and accepts no other: authorize and code redemption take only that resource or
+  none. After a `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH` change, existing grants keep working
+  at the new URL until they expire; only a refresh that names the old resource is refused
+  (`invalid_grant`, see Refresh rotation).
 
 ### Revoke UI (settings card, team page)
 
@@ -744,13 +758,16 @@ and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud`
 tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
 so a survivor would raise the *new* tenant's tier. The same rule covers process memory: a
 create that recycled an id runs `crud::evict_tenant_everywhere` after the meta lock is
-released, which drops the old incarnation's pool cache entry, its MCP registry cache entry,
-the SSE and rooms bus channels for the id, its auth-cache entries, its cron index entry, and
-bumps its egress-allowlist version. One residual window
-remains (the crud.rs doc on that function): between releasing the lock and the first
-evictions, an admin PAT request can already reach the id, and if a request racing the
-soft-delete had left an old-incarnation pool cached, it can see that pool and, at worst,
-re-insert it into the MCP cache after the sweep — two races and a trusted caller.
+released, which drops the old incarnation's pool cache entry, its MCP registry cache entry
+(which no request path fills: `McpRegistry::get_or_create` has no production caller), the
+SSE and rooms bus channels for the id, its auth-cache entries, its cron index entry, and
+bumps its egress-allowlist version. One residual window remains (the crud.rs doc on that
+function): between releasing the lock and the pool eviction, an admin PAT on the data plane
+or a call to the account-level `/mcp` can already reach the id, and if a request racing the
+soft-delete had left an old-incarnation pool in the tenant registry's pool cache,
+`get_if_live` hands that pool out until the eviction drops it (the account endpoint's
+second visibility check passes, because the meta row is the new incarnation's). Two races
+and a trusted caller.
 The same rule covers MCP OAuth grants: `remove_admin` deletes `_mcp_oauth_grants` for the
 removed admin explicitly, inside the same transaction, before `DELETE FROM admins`.
 

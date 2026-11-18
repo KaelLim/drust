@@ -19,8 +19,11 @@ services:
   # the admin UI through here so the rate limiter sees Caddy's normalized client
   # address; drust's own port is bound to loopback for debugging only. To mount
   # drust under a sub-path instead, set DRUST_BASE_PATH=/drust and switch the
-  # Caddyfile to `handle_path /drust/*`; `auto` then never enables MCP.
-  # MCP then needs DRUST_MCP=on and the two root discovery rules from deploy/Caddyfile.
+  # Caddyfile to `handle_path /drust/*`; `auto` then never enables MCP. MCP
+  # needs DRUST_MCP=on and the two root discovery rules from deploy/Caddyfile,
+  # with every `reverse_proxy 127.0.0.1:47826` in them changed to
+  # `reverse_proxy drust:47826` (keep `header_up Host "127.0.0.1:47826"`):
+  # inside this network, 127.0.0.1 is the caddy container itself.
   # Caddy also serves /public/* straight from the object store
   # (deploy/compose.Caddyfile).
   caddy:

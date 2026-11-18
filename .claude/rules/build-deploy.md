@@ -21,7 +21,7 @@ Bumping `Cargo.toml`'s version requires updating **and staging `Cargo.lock` in t
 
 ## Tests
 
-Cost here is COMPILE, not run: every test binary statically links the drust lib + wasmtime, so a bare `cargo test <name>` compiles all of them and only filters what *runs* — the classic trap. Only `--test <name>` limits what compiles. #925 (spec `docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md`) cut that from 253 binaries to 38 (24 merged group harnesses plus 14 standalone targets); with one isolation exception added since, there are now **39**: 24 group harnesses plus 15 targets that must keep a process to themselves. Measured on the mcp group, 20 binaries → 1 was 189s → 15s of build and 3.20 GB → 244 MB of `target/debug`, running the same 137 tests.
+Cost here is COMPILE, not run: every test binary statically links the drust lib + wasmtime, so a bare `cargo test <name>` compiles all of them and only filters what *runs* — the classic trap. Only `--test <name>` limits what compiles. #925 cut that from 253 binaries to 38 (24 merged group harnesses plus 14 standalone targets); with one isolation exception added since, there are now **39**: 24 group harnesses plus 15 targets that must keep a process to themselves. Measured on the mcp group, 20 binaries → 1 was 189s → 15s of build and 3.20 GB → 244 MB of `target/debug`, running the same 137 tests.
 
 A group harness is `tests/g_<group>.rs` and contains nothing but `#[path = "<member>.rs"] mod <member>;` lines, one per former standalone file. **Member files are neither moved nor edited** — `#[path]` keeps their own `#[path = "helpers.rs"] mod helpers;` resolving exactly as before, which is why physically relocating them was rejected. Run a group with `make test-<group>` (= `cargo test --lib --test g_<group>`); `make groups` lists the harnesses with live member counts and the standalone count; `make test-lib` and `make test-all` are unchanged. Per-task workflow agents run `make test-lib` + the relevant group; only the final review runs `make test-all`.
 
@@ -50,7 +50,7 @@ Two CI gates live **outside** `make test-all`: `cargo fmt --all --check` (CI's f
 
 The chart's `deploy/helm/drust/tests/render_test.sh` also reads files outside the chart: `deploy/compose-rustfs/{init.sh,public-read.json,drust-objects.json}`, which the chart's `files/rustfs-init/` must equal byte for byte, `deploy/compose.Caddyfile`, whose `/public/*` block the chart's proxy copies (the rest of `compose.Caddyfile` is not compared), and `Cargo.toml`, whose version must equal `Chart.yaml`'s `appVersion`. **While the chart is on hold (§Deployment targets) its test runs only when `deploy/helm/**` or `.github/workflows/helm-chart.yml` changes, or by hand** (`helm-chart.yml`, not `ci.yml`), so a version bump or an edit to those Compose files does not fail CI — and must NOT be followed into the chart. Edit the Compose side alone; any later run of the chart test fails on that drift by design. The chart's own "edit both together" instructions (the `files/public-proxy.Caddyfile` header, the `templates/rustfs-init-configmap.yaml` header, and `render_test.sh`'s "— edit both" FAIL text) predate the hold and stay only because the chart is frozen; while the hold lasts they do not apply. The chart mentions inside `deploy/compose-rustfs/init.sh` describe the frozen chart and stay because the whole file is compared.
 
-`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh`, `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker), `deploy/tests/compose_public_route_test.sh` (the Compose `/public/*` block) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`.
+`make test-shell` (part of `make test-all`) and a CI step each run the deploy-script fixture tests, which `cargo test` cannot see: `deploy/tests/backup_retention_test.sh`, `deploy/tests/compose_storage_test.sh` (the bundled Compose object store: overlay, `rustfs-init`, key generator; its Docker parse checks skip themselves without docker), `deploy/tests/compose_public_route_test.sh` (the Compose `/public/*` block) and `deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh`. Both also run the smoke MCP client's offline self-test, `python3 -I deploy/smoke/checks/mcp_client.py selftest` (no stack needed); `make test-shell` runs it before `backup_retention_test.sh`, whose GNU-only assertions stop make on macOS.
 
 ## systemd
 
@@ -167,7 +167,10 @@ Per-release checklist — run it before tagging, not after. It covers the two ac
    release gate above. Compose: confirm the TLS edge and the `https://` `DRUST_PUBLIC_URL`,
    and that the boot log line reads `MCP OAuth AS enabled` (or `disabled` with the reason you
    expect). On both, open the owner-only diagnostics page from the public origin. A new path
-   that Claude Code discovers at the root needs its own bare-metal root rule.
+   that Claude Code discovers at the root needs its own bare-metal root rule. The smoke covers
+   both states: `deploy/smoke/up.sh` then `run-all.sh` (MCP on), and
+   `SMOKE_DRUST_MCP=off deploy/smoke/up.sh` then `run-all.sh 00 50` (MCP off; a plain
+   `run-all.sh` in that state fails by design, refusing every script that needs MCP).
 
 Resuming k3s — the chart-side work the hold skips, all of it, before the chart counts as a target again:
 
