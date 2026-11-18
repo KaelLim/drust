@@ -36,12 +36,37 @@ pub fn test_mcp_http(
 /// stack's own meta handle and auth cache, so an MCP tool that revokes a
 /// session clears the cache REST authenticates from. Pass the bus returned by
 /// [`shared_bus_rooms`] as `bus_rooms`.
+///
+/// [`test_mcp_http_live_with_audit`] with a fresh in-memory audit DB.
 pub fn test_mcp_http_live(
     tenants: Arc<TenantRegistry>,
     bus: EventBus,
     bus_rooms: drust::tenant::rooms::RoomBus,
     meta: Arc<Mutex<rusqlite::Connection>>,
     auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
+) -> Arc<McpHttpRegistry> {
+    test_mcp_http_live_with_audit(
+        tenants,
+        bus,
+        bus_rooms,
+        meta,
+        auth_cache,
+        Arc::new(Mutex::new(
+            drust::safety::audit_db::open_audit_db_memory().unwrap(),
+        )),
+    )
+}
+
+/// [`test_mcp_http_live`] over a caller-held read-only `meta_logs.sqlite`
+/// handle: every `DrustMcp` the registry builds (the account endpoint's
+/// per-call `build_live` included) reads `recent_writes` from `audit`.
+pub fn test_mcp_http_live_with_audit(
+    tenants: Arc<TenantRegistry>,
+    bus: EventBus,
+    bus_rooms: drust::tenant::rooms::RoomBus,
+    meta: Arc<Mutex<rusqlite::Connection>>,
+    auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
+    audit: Arc<Mutex<rusqlite::Connection>>,
 ) -> Arc<McpHttpRegistry> {
     Arc::new(McpHttpRegistry::new(Arc::new(
         McpRegistry::with_bus_and_storage(
@@ -54,9 +79,7 @@ pub fn test_mcp_http_live(
             Some(meta),
             52_428_800,
             1_000_000,
-            Arc::new(Mutex::new(
-                drust::safety::audit_db::open_audit_db_memory().unwrap(),
-            )),
+            audit,
             bus_rooms,
             drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
             drust::tenant::rooms::RoomsConfig::test_defaults(),
@@ -1417,6 +1440,15 @@ pub struct AccountMcpHarness {
     pub tenants: Arc<TenantRegistry>,
     /// The one rooms bus the stack, its auth state and its MCP registry share.
     pub bus_rooms: drust::tenant::rooms::RoomBus,
+    /// The MCP registry the stack and the management state share.
+    pub mcp: Arc<McpHttpRegistry>,
+    /// The record event bus the stack, the management state and the MCP
+    /// registry share (SSE subscribers listen on it).
+    pub bus: EventBus,
+    /// The registry's read-only `meta_logs.sqlite` handle (`recent_writes` reads it).
+    pub audit: Arc<Mutex<rusqlite::Connection>>,
+    /// The auth cache the stack's auth state and the MCP registry share.
+    pub auth_cache: Arc<drust::tenant::auth_cache::AuthCache>,
     pub dir: tempfile::TempDir,
 }
 
@@ -1687,12 +1719,17 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     state.mcp_oauth = cfg.clone();
     state.mcp_oauth_rl = rl.clone();
     let bus_rooms = shared_bus_rooms(&mut state);
-    let mcp = test_mcp_http_live(
+    let audit = Arc::new(Mutex::new(
+        drust::safety::audit_db::open_audit_db_memory().unwrap(),
+    ));
+    let auth_cache = state.auth_cache.clone();
+    let mcp = test_mcp_http_live_with_audit(
         tenants.clone(),
         bus.clone(),
         bus_rooms.clone(),
         meta.clone(),
-        state.auth_cache.clone(),
+        auth_cache.clone(),
+        audit.clone(),
     );
     let webhooks = WebhookDispatcher::new(tenants.clone(), None);
     let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
@@ -1730,6 +1767,8 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
         cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
         cors_origins: Vec::new(),
     };
+    let mcp_keep = mcp.clone();
+    let bus_keep = bus.clone();
     let mut mgmt = drust::mgmt::routes::MgmtState::test_default(
         meta.clone(),
         data.clone(),
@@ -1761,6 +1800,34 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
         meta,
         tenants,
         bus_rooms,
+        mcp: mcp_keep,
+        bus: bus_keep,
+        audit,
+        auth_cache,
         dir,
     }
+}
+
+/// Turns on `allow_self_register` for `h.tid`, so `/t/<id>/auth/register` works.
+pub async fn account_allow_self_register(h: &AccountMcpHarness) {
+    h.meta
+        .lock()
+        .await
+        .execute(
+            "UPDATE tenants SET allow_self_register = 1 WHERE id = ?1",
+            rusqlite::params![&h.tid],
+        )
+        .unwrap();
+}
+
+/// [`mcp_tool_text`], parsed as JSON.
+pub async fn mcp_tool_json(
+    app: &Router,
+    token: &str,
+    tenant: &str,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let t = mcp_tool_text(app, token, tenant, tool, args).await;
+    serde_json::from_str(&t).unwrap_or_else(|e| panic!("tools/call {tool}: not JSON ({e}): {t}"))
 }
