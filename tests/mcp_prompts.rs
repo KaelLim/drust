@@ -177,11 +177,11 @@ async fn debug_write_makes_no_dry_run_or_recent_writes_promise() {
     assert!(body.contains("list_records"), "debug_write: {body}");
 }
 
-/// M1 (PR-04): every URL in the recipe goes through `crate::base_path`, and the
-/// egress step uses the MCP tools instead of a raw PUT that would replace the
-/// whole allowlist.
+/// The recipe names no upload URL (the user uploads the .wasm), and the egress
+/// step uses the MCP tools instead of a raw PUT that would replace the whole
+/// allowlist.
 #[tokio::test]
-async fn write_edge_function_urls_honour_the_base_path() {
+async fn write_edge_function_names_no_upload_url() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
     let r = render_prompt(
@@ -193,7 +193,11 @@ async fn write_edge_function_urls_honour_the_base_path() {
     .unwrap();
     let body = body_of(&r);
     let fn_path = drust::base_path::base("/t/blog/functions");
-    assert!(body.contains(&fn_path), "must carry {fn_path}: {body}");
+    assert!(
+        body.contains("Build it, then ask the user to upload the .wasm"),
+        "{body}"
+    );
+    assert!(!body.contains(&fn_path), "must not carry {fn_path}: {body}");
     for bad in ["curl -X POST /t/", "curl -X PUT", "/egress-allowlist"] {
         assert!(!body.contains(bad), "must not contain {bad:?}: {body}");
     }

@@ -372,11 +372,11 @@ pub fn static_resource_list(t: &str) -> Vec<Resource> {
         e(
             FILES_GUIDE_PATH,
             "files guide",
-            "How this tenant's file storage works: the two upload endpoints, the \
-             public/private visibility model, the per-prefix publish grant \
-             (public_upload_roles) that decides which non-service roles may upload \
-             with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the \
-             tenant's live grant list. Carries no credentials — call whoami for tokens.",
+            "How this tenant's file storage works: uploading with the create_upload_url \
+             tool, the public/private visibility model, the per-prefix publish grant \
+             (public_upload_roles) that decides which non-service roles may upload with \
+             visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the tenant's \
+             live grant list. Carries no credentials.",
             "text/markdown",
         ),
     ]
@@ -684,38 +684,36 @@ pub async fn render_resource(
 ///
 /// Model-facing prose, so it states the RULE and the REMEDY, not the
 /// implementation. It is deliberately credential-free: a resource can be pulled
-/// into model context without an explicit call (spec §3), so tokens stay behind
-/// the `whoami` TOOL and this page only says where to get them.
-fn files_guide_static(tenant_id: &str, base: &str) -> String {
-    let bp = crate::base_path::base_path();
+/// into model context without an explicit call (spec §3). This connection
+/// holds no tenant key, so the page teaches the per-file upload ticket from
+/// `create_upload_url` and never a step that needs a key.
+fn files_guide_static(tenant_id: &str) -> String {
     format!(
         r#"# Files — tenant `{tenant_id}`
 
-Two upload endpoints, two buckets, and ONE rule about who may publish. Tokens are
-not on this page: call the `whoami` tool for the service / anon bearer.
+Two buckets and ONE rule about who may publish. This connection uploads with a
+per-file ticket from the `create_upload_url` tool; no key is on this page.
 
-## 1. Upload endpoints
+## 1. Uploading a file
 
-MCP has no upload tool by design — uploads are HTTP.
+Call `create_upload_url {{tenant, size}}` (optional `filename`, `path`, `visibility`,
+`content_type`). It returns a ticket for ONE resumable upload (tus 1.0) and the
+exact requests:
 
-**Small file (Mode A, one request)** — `POST {base}{bp}/t/{tenant_id}/files`,
-`multipart/form-data`:
+1. `POST upload_url` with `create.headers` exactly as given: 201 with a relative
+   `Location`. Send `Upload-Metadata` unchanged; the ticket only accepts the path
+   and visibility it was issued for.
+2. `PATCH` `append.url_prefix` + the last segment of `Location`, once per chunk,
+   each at most `chunk_max_bytes`, with `Upload-Offset` = bytes sent so far.
+   An empty file still takes one empty PATCH. The last chunk finalizes the file.
+3. After a dropped connection, `HEAD` the same URL and continue from its
+   `Upload-Offset`.
 
-| field | required | meaning |
-|---|---|---|
-| `file` | yes | the bytes |
-| `visibility` | no | `public` \| `private` — see §2. Omitted by a non-service caller ⇒ `private` |
-| `path` | no | the caller-DECLARED logical path, e.g. `avatars/alice/me.png`. Metadata only — never the object key — and it is what the prefix rules match |
-| `disposition` | no | `inline` \| `attachment` (default `inline`) |
-| `cache_control`, `meta` | no | cache header / free-form JSON |
-
-**Large or resumable (Mode B, tus 1.0)** — `POST {base}{bp}/t/{tenant_id}/uploads`
-creates a session (`Upload-Length`, `Upload-Metadata` carries `path`, `visibility`,
-`filename`, `filetype`), then `PATCH` each chunk, `HEAD` to resume. Visibility is
-decided at CREATE and frozen on the session; finalize does not re-check.
-Use Mode B when a file is larger than `limits.max_upload_bytes` (from `whoami`) or you need resume-on-disconnect; `OPTIONS {base}{bp}/t/{tenant_id}/uploads` (service bearer) reports `Tus-Max-Size`.
-
-`path` is immutable after upload — there is no rename or move API.
+The POST must happen within 15 minutes of issue; after it the ticket lives as long
+as the upload session. A ticket opens exactly one upload: it cannot list, read,
+sign, delete or publish other files, and the `/files` endpoint refuses it.
+Visibility is decided by `create_upload_url` (default `private`) and frozen on the
+upload. `path` is immutable after upload — there is no rename or move API.
 
 ## 2. The visibility model
 
@@ -750,8 +748,7 @@ How one upload is decided:
 The grant unlocks the VISIBILITY dimension only. The `upload` file cap is still the
 outer gate: a role without it cannot upload at all, granted prefix or not.
 
-Grant it with the `set_file_policy` MCP tool, `PUT {bp}/t/{tenant_id}/file-policies`
-(service bearer), or the admin UI's folder-rule card. **Registering a prefix
+Grant it with the `set_file_policy` MCP tool or the admin UI's folder-rule card. **Registering a prefix
 REPLACES its whole rule**, so re-send the fields you want to keep — omitting
 `public_upload_roles` REVOKES the grant.
 
@@ -774,24 +771,14 @@ REPLACES its whole rule**, so re-send the fields you want to keep — omitting
 A refusal is also correct when the registry cannot be read or its JSON is corrupt:
 publishing fails CLOSED in every direction.
 
-## 5. curl
+## 5. Uploading from this connection
 
-```sh
-# grant "user" the right to publish under avatars/ (service bearer)
-curl -X PUT "{base}{bp}/t/{tenant_id}/file-policies" \
-  -H "Authorization: Bearer $DRUST_SERVICE_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{{"prefix":"avatars/","owner_scoped":true,"public_upload_roles":["user"]}}'
+The `curl_example` field of `create_upload_url` is a ready script for one file:
+set `FILE` to the file and run it. It POSTs once, then PATCHes chunks of
+`chunk_max_bytes` until the whole file is sent, and stops with a message naming
+the offset to resume from if a request fails.
 
-# a user token then publishes into it
-curl -X POST "{base}{bp}/t/{tenant_id}/files" \
-  -H "Authorization: Bearer $DRUST_USER_TOKEN" \
-  -F file=@me.png -F path=avatars/alice/me.png -F visibility=public
-
-# read the whole map back
-curl "{base}{bp}/t/{tenant_id}/file-policies" \
-  -H "Authorization: Bearer $DRUST_SERVICE_TOKEN"
-```
+To change who may read or publish under a prefix, use the `set_file_policy` tool.
 "#
     )
 }
@@ -804,13 +791,7 @@ curl "{base}{bp}/t/{tenant_id}/file-policies" \
 /// debug a `FILE_PUBLIC_UPLOAD_DENIED` needs to see it. MCP is service-only, so
 /// the detail is not caller-facing disclosure.
 async fn render_files_guide(s: &DrustMcp) -> String {
-    render_files_guide_with(s, files_guide_static(s.tenant_id(), s.public_base_url())).await
-}
-
-/// [`render_files_guide`] over a given static half: `static_part`, then this
-/// tenant's live grant list.
-async fn render_files_guide_with(s: &DrustMcp, static_part: String) -> String {
-    let mut out = static_part;
+    let mut out = files_guide_static(s.tenant_id());
     out.push_str("\n## 6. This tenant's publish grants (live)\n\n");
     match crate::mcp::tools::file_policy::public_upload_grants(s).await {
         Ok(grants) if grants.is_empty() => out.push_str(
@@ -846,10 +827,6 @@ async fn render_files_guide_with(s: &DrustMcp, static_part: String) -> String {
 /// serves every tenant, so the tenant is the URI's host variable.
 pub(crate) const ACCOUNT_TENANT_VAR: &str = "{tenant}";
 
-/// The account-level description of `files-guide.md`: the per-tenant one
-/// points at `whoami` for tokens, which this connection does not hand out.
-pub(crate) const ACCOUNT_FILES_GUIDE_DESC: &str = "How this tenant's file storage works: uploading with the create_upload_url tool, the public/private visibility model, the per-prefix publish grant (public_upload_roles) that decides which non-service roles may upload with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the tenant's live grant list. Carries no credentials.";
-
 /// What `resources/templates/list` answers on the account-level endpoint:
 /// the ten static resources as `drust://{tenant}/<path>` templates, then the
 /// four per-tenant templates, all with `{tenant}` as the host.
@@ -858,156 +835,14 @@ pub(crate) fn account_resource_template_list() -> Vec<rmcp::model::ResourceTempl
         .into_iter()
         .map(|r| {
             let r = r.raw;
-            let desc = if r.uri.ends_with(&format!("/{FILES_GUIDE_PATH}")) {
-                Some(ACCOUNT_FILES_GUIDE_DESC.to_string())
-            } else {
-                r.description
-            };
             let mut t = rmcp::model::RawResourceTemplate::new(r.uri, r.name);
-            t.description = desc;
+            t.description = r.description;
             t.mime_type = r.mime_type;
             t.no_annotation()
         })
         .collect();
     out.extend(resource_template_list(ACCOUNT_TENANT_VAR));
     out
-}
-
-/// `text` with `from` replaced by `to`, when `from` occurs exactly once;
-/// `Err("drifted")` otherwise.
-pub(crate) fn replace_once(text: &str, from: &str, to: &str) -> Result<String, &'static str> {
-    if text.matches(from).count() != 1 {
-        return Err("drifted");
-    }
-    Ok(text.replacen(from, to, 1))
-}
-
-/// `text` with one range replaced by `with`. The range starts at `start`,
-/// which must occur exactly once, and ends after the first `end_inclusive`
-/// that follows it (`Err("drifted")` when there is none), or at the end of
-/// the text when `end_inclusive` is `None`. Both markers are part of the
-/// replaced range.
-pub(crate) fn splice_once(
-    text: &str,
-    start: &str,
-    end_inclusive: Option<&str>,
-    with: &str,
-) -> Result<String, &'static str> {
-    if text.matches(start).count() != 1 {
-        return Err("drifted");
-    }
-    let i = text.find(start).ok_or("drifted")?;
-    let end = match end_inclusive {
-        Some(e) => {
-            let after = i + start.len();
-            after + text[after..].find(e).ok_or("drifted")? + e.len()
-        }
-        None => text.len(),
-    };
-    Ok(format!("{}{with}{}", &text[..i], &text[end..]))
-}
-
-/// Applies `f` only to the part of `text` from the LAST `anchor` on, keeping
-/// everything before it as it is; `Err("drifted")` when `anchor` is absent.
-/// The fixed template text sits after the anchor, tenant data and caller
-/// arguments before it, so neither can break a replacement's uniqueness.
-pub(crate) fn within_tail(
-    text: &str,
-    anchor: &str,
-    f: impl FnOnce(&str) -> Result<String, &'static str>,
-) -> Result<String, &'static str> {
-    let i = text.rfind(anchor).ok_or("drifted")?;
-    Ok(format!("{}{}", &text[..i], f(&text[i..])?))
-}
-
-/// The static half of the files handbook as the account-level endpoint
-/// serves it: no step that needs a tenant key this connection does not hold.
-///
-/// Derived from the per-tenant text by exact one-time replacements; a later
-/// change to the account-level wording adds a replacement step here instead
-/// of editing `files_guide_static`. Any replacement that no longer matches
-/// exactly once is `Err`, and the caller refuses the read.
-pub(crate) fn files_guide_account_static(
-    tenant_id: &str,
-    base: &str,
-) -> Result<String, &'static str> {
-    let t = files_guide_static(tenant_id, base);
-    let head = format!(
-        r#"# Files — tenant `{tenant_id}`
-
-Two buckets and ONE rule about who may publish. This connection uploads with a
-per-file ticket from the `create_upload_url` tool; no key is on this page.
-
-## 1. Uploading a file
-
-Call `create_upload_url {{tenant, size}}` (optional `filename`, `path`, `visibility`,
-`content_type`). It returns a ticket for ONE resumable upload (tus 1.0) and the
-exact requests:
-
-1. `POST upload_url` with `create.headers` exactly as given: 201 with a relative
-   `Location`. Send `Upload-Metadata` unchanged; the ticket only accepts the path
-   and visibility it was issued for.
-2. `PATCH` `append.url_prefix` + the last segment of `Location`, once per chunk,
-   each at most `chunk_max_bytes`, with `Upload-Offset` = bytes sent so far.
-   An empty file still takes one empty PATCH. The last chunk finalizes the file.
-3. After a dropped connection, `HEAD` the same URL and continue from its
-   `Upload-Offset`.
-
-The POST must happen within 15 minutes of issue; after it the ticket lives as long
-as the upload session. A ticket opens exactly one upload: it cannot list, read,
-sign, delete or publish other files, and the `/files` endpoint refuses it.
-Visibility is decided by `create_upload_url` (default `private`) and frozen on the
-upload. `path` is immutable after upload — there is no rename or move API.
-"#
-    );
-    let t = splice_once(
-        &t,
-        "# Files — tenant `",
-        Some("there is no rename or move API.\n"),
-        &head,
-    )?;
-    let t = splice_once(
-        &t,
-        "Grant it with the `set_file_policy` MCP tool, `PUT ",
-        Some("(service bearer), or the admin UI's folder-rule card."),
-        "Grant it with the `set_file_policy` MCP tool or the admin UI's folder-rule card.",
-    )?;
-    splice_once(
-        &t,
-        "## 5. curl\n",
-        None,
-        "## 5. Uploading from this connection\n\nThe `curl_example` field of \
-         `create_upload_url` is a ready script for one file:\nset `FILE` to the file and run \
-         it. It POSTs once, then PATCHes chunks of\n`chunk_max_bytes` until the whole file is \
-         sent, and stops with a message naming\nthe offset to resume from if a request \
-         fails.\n\nTo change who may read or publish under a prefix, use the \
-         `set_file_policy` tool.\n",
-    )
-}
-
-/// [`render_resource`] as the account-level endpoint serves it: the files
-/// handbook comes from [`files_guide_account_static`] (and a drifted
-/// derivation is an internal error, never the per-tenant text); every other
-/// resource is the per-tenant one.
-pub(crate) async fn render_resource_account(
-    s: &DrustMcp,
-    uri: &ResourceUri,
-) -> Result<(String, &'static str), McpError> {
-    match uri {
-        ResourceUri::FilesGuide => {
-            match files_guide_account_static(s.tenant_id(), s.public_base_url()) {
-                Ok(st) => Ok((render_files_guide_with(s, st).await, "text/markdown")),
-                Err(_) => {
-                    tracing::warn!(
-                        tenant = %s.tenant_id(),
-                        "account-level files guide drifted from the per-tenant text; refused"
-                    );
-                    Err(McpError::internal_error("internal error", None))
-                }
-            }
-        }
-        other => render_resource(s, other).await,
-    }
 }
 
 /// Dedicated single-row reader for the `Record{c,id}` template. The `/list`
@@ -1115,34 +950,18 @@ mod tests {
             .into_iter()
             .find(|t| t.raw.name == "files guide")
             .unwrap();
-        assert_eq!(
-            guide.raw.description.as_deref(),
-            Some(ACCOUNT_FILES_GUIDE_DESC)
-        );
-        assert!(!ACCOUNT_FILES_GUIDE_DESC.contains("whoami"));
+        let listed = static_resource_list("t")
+            .into_iter()
+            .find(|r| r.raw.name == "files guide")
+            .unwrap();
+        assert_eq!(guide.raw.description, listed.raw.description);
+        let desc = guide.raw.description.as_deref().unwrap();
+        assert!(!desc.contains("whoami"), "{desc}");
     }
 
     #[test]
-    fn account_files_guide_drops_every_service_key_instruction() {
-        let tenant = files_guide_static("blog", "https://h.example");
-        let account = files_guide_account_static("blog", "https://h.example").unwrap();
-        for gone in [
-            "whoami` tool for the service",
-            "(service bearer)",
-            "DRUST_SERVICE_TOKEN",
-            "Authorization: Bearer",
-            "## 5. curl",
-        ] {
-            assert!(tenant.contains(gone), "fixture lost {gone:?}");
-            assert!(!account.contains(gone), "account guide still has {gone:?}");
-        }
-        assert!(account.contains("## 5. Uploading from this connection"));
-        assert!(account.contains("## 4. Fixing `FILE_PUBLIC_UPLOAD_DENIED`"));
-    }
-
-    #[test]
-    fn account_files_guide_teaches_the_ticket() {
-        let g = files_guide_account_static("blog", "https://h").unwrap();
+    fn files_guide_teaches_the_ticket() {
+        let g = files_guide_static("blog");
         for want in [
             "# Files — tenant `blog`",
             "## 1. Uploading a file",
@@ -1163,36 +982,17 @@ mod tests {
             "cannot upload by itself",
             "Authorization: Bearer",
             "(service bearer)",
+            "whoami` tool for the service",
+            "whoami",
         ] {
             assert!(!g.contains(bad), "{bad}");
         }
-        assert!(!ACCOUNT_FILES_GUIDE_DESC.contains("two upload endpoints"));
-        // the per-tenant guide is unchanged
-        assert!(
-            files_guide_static("blog", "https://h")
-                .contains("MCP has no upload tool by design — uploads are HTTP.")
-        );
-    }
-
-    #[test]
-    fn splice_helpers_fail_closed_on_drift() {
-        assert_eq!(replace_once("a b a", "a", "x"), Err("drifted"));
-        assert_eq!(replace_once("a b", "z", "x"), Err("drifted"));
-        assert_eq!(replace_once("a b", "b", "x").unwrap(), "a x");
-        assert_eq!(
-            splice_once("1 [x] 2", "[", Some("]"), "y").unwrap(),
-            "1 y 2"
-        );
-        assert_eq!(splice_once("1 [x 2", "[", Some("]"), "y"), Err("drifted"));
-        assert_eq!(splice_once("1 [x 2", "[", None, "y").unwrap(), "1 y");
-        assert_eq!(
-            within_tail("m a | m a", "| ", |t| replace_once(t, "a", "b")).unwrap(),
-            "m a | m b"
-        );
-        assert_eq!(
-            within_tail("no anchor", "| ", |t| Ok(t.to_string())),
-            Err("drifted")
-        );
+        let desc = static_resource_list("blog")
+            .into_iter()
+            .find(|r| r.raw.name == "files guide")
+            .and_then(|r| r.raw.description)
+            .unwrap();
+        assert!(!desc.contains("two upload endpoints"), "{desc}");
     }
 
     #[test]

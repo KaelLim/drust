@@ -271,93 +271,14 @@ pub(crate) fn inject_tenant(schema: &JsonObject) -> JsonObject {
     out
 }
 
-/// Account-level wording for inner tools whose description tells the model to
-/// fetch or send a tenant key, or names a per-tenant REST path: `(tool,
-/// fragment that occurs exactly once in the inner description, replacement)`.
-/// The inner descriptions stay as the per-tenant endpoint serves them;
-/// `tool_surface_tests` fails when a fragment drifts.
-pub(crate) const DESCRIPTION_OVERRIDES: &[(&str, &str, &str)] = &[
-    (
-        "whoami",
-        "both bearer tokens (anon + service, plaintext), the relative REST/MCP/files/rpc endpoint paths,",
-        "its anon token (plaintext: it is the public browser key), a REDACTED reference to its service key (id, created_at, and how_to_get: the admin UI page where the user can copy it; the key itself never appears here), `caller` (this OAuth grant), the account-level MCP URL, the relative REST/files/rpc endpoint paths,",
-    ),
-    (
-        "whoami",
-        "Use this to surface credentials needed for surfaces with no MCP tool — most importantly the multipart file upload endpoint. Tokens minted before v1.1c only stored the hash; their `plaintext` field is null and require an admin reroll to recover. ",
-        "To upload a file, call create_upload_url. ",
-    ),
-    (
-        "get_schema_overview",
-        "Service-key only.",
-        "Needs service rights, which this connection has.",
-    ),
-    (
-        "set_description",
-        "Service-key only.",
-        "Needs service rights, which this connection has.",
-    ),
-    (
-        "insert_records",
-        "Service-key only.",
-        "Needs service rights, which this connection has.",
-    ),
-    (
-        "upsert_records",
-        "Service-key only.",
-        "Needs service rights, which this connection has.",
-    ),
-    (
-        "list_oauth_providers",
-        "Service-key-only;",
-        "Needs service rights;",
-    ),
-    (
-        "broadcast",
-        "Service-key only (MCP dispatch already gates this). Fans out to every WebSocket subscriber currently connected to /t/<tenant>/realtime on the same room name.",
-        "Needs service rights, which this connection has. Fans out to every WebSocket subscriber currently connected to this tenant's realtime endpoint on the same room name.",
-    ),
-    (
-        "call_rpc",
-        "MCP is service-only, so anon_callable is not consulted on this surface — a service-key holder may call any RPC,",
-        "This connection has service rights, so anon_callable is not consulted here — you may call any RPC,",
-    ),
-    (
-        "create_rpc",
-        "write RPCs run via REST POST /t/<tenant>/rpc/<name>, the admin playground, or cron.",
-        "write RPCs run in the admin UI's RPC playground, from cron, or over REST with a tenant key the user holds (this connection carries none).",
-    ),
-    (
-        "list_functions",
-        "There is NO MCP upload tool by design — POST the .wasm to /t/<tenant>/functions (multipart: name, wasm, triggers, description) with the service bearer, at whoami's `endpoints.rest_base` + `functions`.",
-        "This connection cannot deploy a function: there is no function-deploy tool and it carries no tenant key. Ask the user to deploy the .wasm themselves; the tenant's functions page in the admin UI shows the upload command.",
-    ),
-    (
-        "invoke_function",
-        "For synchronous test runs use REST POST /t/<tenant>/functions/<name>/invoke.",
-        "For a synchronous test run, ask the user to use the test-invoke form on the tenant's functions page in the admin UI.",
-    ),
-    (
-        "list_cron_jobs",
-        "Per-job run history has no MCP tool — read the last 20 outcomes via REST GET /t/<tenant>/cron/<name>/runs with the service bearer.",
-        "Per-job run history has no MCP tool — the tenant's cron page in the admin UI shows recent runs for each job.",
-    ),
-    (
-        "recent_writes",
-        "). NOT POPULATED YET: no write path records entries in the shape this tool reads, so an empty result does NOT mean nothing was written — verify with list_records or get_record_history. Service-key + MCP only (anon and user tokens are rejected by the MCP layer).",
-        "), newest first: record writes, schema changes and call_rpc calls made through this endpoint, one row per call that reached the tenant. Use it before re-sending a write whose reply was lost. A dry_run preview is not listed. Not listed either: file, user and settings changes, and writes made over REST; check those with the matching list tool. Rows can lag by about a second and the audit log drops rows under heavy load, so an empty result is a hint, not proof.",
-    ),
-];
-
 /// The tools only the account-level endpoint has; they run here, not in a
 /// tenant's tool router.
 pub(crate) const OUTER_TOOLS: &[&str] = &[LIST_TENANTS, CREATE_UPLOAD_URL];
 
 /// Every tool `tools/list` advertises on the account-level endpoint, built
 /// once: the outer tools in `OUTER_TOOLS` order, then the per-tenant tools in
-/// the router's (name) order, each with `tenant` injected into its inputSchema
-/// and its description passed through `DESCRIPTION_OVERRIDES`. Annotations,
-/// `_meta` and execution are the inner tool's own. Only this list is cached;
+/// the router's (name) order, each with `tenant` injected into its inputSchema.
+/// Description, annotations, `_meta` and execution are the inner tool's own. Only this list is cached;
 /// the tool router itself is rebuilt for every call.
 pub(crate) fn account_tools() -> &'static [Tool] {
     static TOOLS: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
@@ -372,14 +293,6 @@ pub(crate) fn account_tools() -> &'static [Tool] {
             .collect();
         for mut t in DrustMcpService::tool_router().list_all() {
             t.input_schema = Arc::new(inject_tenant(&t.input_schema));
-            for (_, old, new) in DESCRIPTION_OVERRIDES
-                .iter()
-                .filter(|(n, _, _)| *n == t.name)
-            {
-                if let Some(d) = t.description.as_mut() {
-                    *d = d.replacen(old, new, 1).into();
-                }
-            }
             out.push(t);
         }
         out
@@ -1338,7 +1251,7 @@ impl ServerHandler for AccountMcp {
         };
         let t0 = std::time::Instant::now();
         let parsed = crate::mcp::resources::parse_resource_uri(uri, &r.tenant_id)?;
-        let (body, mime) = crate::mcp::resources::render_resource_account(&r.mcp, &parsed).await?;
+        let (body, mime) = crate::mcp::resources::render_resource(&r.mcp, &parsed).await?;
         let e = resource_read_entry(&r.tenant_id, &caller, uri, t0.elapsed().as_millis() as u64);
         self.audit_row(e).await;
         let contents =
@@ -1387,7 +1300,7 @@ impl ServerHandler for AccountMcp {
                 return Err(prompt_denied_error(&d));
             }
         };
-        crate::mcp::prompts::render_prompt_account(&r.mcp, &request.name, &request.arguments).await
+        crate::mcp::prompts::render_prompt(&r.mcp, &request.name, &request.arguments).await
     }
 
     /// One account-level `tools/call`: the caller from the request parts,
@@ -2594,7 +2507,7 @@ mod tool_surface_tests {
     }
 
     #[test]
-    fn inner_annotations_and_unlisted_descriptions_are_unchanged() {
+    fn inner_annotations_and_descriptions_are_served_unchanged() {
         for t in DrustMcpService::tool_router().list_all() {
             let a = account_tool(&t.name).unwrap();
             assert_eq!(
@@ -2603,9 +2516,7 @@ mod tool_surface_tests {
                 "{}",
                 t.name
             );
-            if !DESCRIPTION_OVERRIDES.iter().any(|(n, _, _)| *n == t.name) {
-                assert_eq!(a.description, t.description, "{}", t.name);
-            }
+            assert_eq!(a.description, t.description, "{}", t.name);
         }
     }
 
@@ -2640,47 +2551,7 @@ mod tool_surface_tests {
     }
 
     #[test]
-    fn each_description_override_matches_exactly_once() {
-        let inner = DrustMcpService::tool_router().list_all();
-        for (name, old, _) in DESCRIPTION_OVERRIDES {
-            let d = inner
-                .iter()
-                .find(|t| t.name == *name)
-                .expect("inner tool")
-                .description
-                .clone()
-                .unwrap();
-            assert_eq!(
-                d.matches(old).count(),
-                1,
-                "{name}: fragment drifted: {old:?}"
-            );
-        }
-        let mut set: Vec<&str> = DESCRIPTION_OVERRIDES.iter().map(|(n, _, _)| *n).collect();
-        set.sort();
-        set.dedup();
-        assert_eq!(
-            set,
-            [
-                "broadcast",
-                "call_rpc",
-                "create_rpc",
-                "get_schema_overview",
-                "insert_records",
-                "invoke_function",
-                "list_cron_jobs",
-                "list_functions",
-                "list_oauth_providers",
-                "recent_writes",
-                "set_description",
-                "upsert_records",
-                "whoami"
-            ]
-        );
-    }
-
-    #[test]
-    fn recent_writes_override_is_the_account_text() {
+    fn recent_writes_description_is_the_account_text() {
         let d = account_tool("recent_writes")
             .unwrap()
             .description
@@ -2688,7 +2559,7 @@ mod tool_surface_tests {
             .unwrap();
         assert!(d.starts_with("Recent write events recorded in this tenant's audit log (ts/op/collection/status/error_code), newest first:"));
         assert!(d.contains("A dry_run preview is not listed."));
-        assert!(!d.contains("NOT POPULATED") && !d.contains("Service-key"));
+        assert!(!d.contains(concat!("NOT ", "POPULATED")) && !d.contains("Service-key"));
     }
 
     #[test]

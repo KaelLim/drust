@@ -2,11 +2,11 @@
 //! shadow the hand-written `ServerHandler` methods and can't embed per-tenant
 //! schema). Each prompt is a short, task-shaped **User** message that points at
 //! the tenant's tools + `drust://…` resources rather than re-embedding long
-//! prose (which would drift against `build_instructions`), and — where it helps
+//! prose (which would drift against the server instructions), and — where it helps
 //! — embeds the tenant's own schema/definition block.
 //!
 //! Credential posture: a prompt is fetched by an EXPLICIT `get_prompt` call
-//! (tool-like, service-only by MCP dispatch — NOT auto-fetched like a resource),
+//! (tool-like, behind the account endpoint's tenant check — NOT auto-fetched like a resource),
 //! so a prompt body embeds only what the caller can already see via a tool. The
 //! embedded blocks mirror existing service tools exactly — `bootstrap` runs
 //! `get_schema_overview` through `schema_json_to_md` (collection/field names +
@@ -127,7 +127,7 @@ pub async fn render_prompt(
                  3. Before any destructive op (`delete_record`, `drop_collection`, `drop_index`), \
                     call it with `dry_run: true` first and read the blast radius. No other tool \
                     has `dry_run`: insert, update and upsert always run for real.\n\
-                 4. Everything here is also addressable as a resource: `resources/list` + \
+                 4. Everything here is also addressable as a resource: \
                     `resources/templates/list`; `drust://{t}/schema` is this overview and \
                     `drust://{t}/collections/<c>/records/<id>` is a single row.\n"
             )))
@@ -186,12 +186,6 @@ pub async fn render_prompt(
         }
         "write_edge_function" => {
             let trigger = arg("trigger")?;
-            // Invariant 15: the external mount goes through `crate::base_path`.
-            let fn_url = format!(
-                "{}{}",
-                s.public_base_url(),
-                crate::base_path::base(&format!("/t/{t}/functions"))
-            );
             Ok(one_user_message(format!(
                 "Author a drust edge function for trigger: {trigger} (tenant `{t}`).\n\n\
                  Edge functions are wasm32-wasip2 Component-Model guests, run in-process on \
@@ -206,13 +200,12 @@ pub async fn render_prompt(
                  ---- Cargo.toml ----\n\
                  [lib] crate-type = [\"cdylib\"]; dependencies: wit-bindgen = \"0.58\", \
                  serde_json = \"1\".\n\n\
-                 Build, then upload the .wasm via REST multipart — there is NO MCP upload tool by \
-                 design (the `whoami` tool echoes the upload path + a service bearer):\n\
+                 Build it, then ask the user to upload the .wasm: this connection holds no \
+                 tenant key and MCP has no function upload tool. The tenant's Functions page \
+                 in the admin UI shows the upload command, which needs the service key from \
+                 the tenant's API Keys page.\n\
                  rustup target add wasm32-wasip2\n\
-                 cargo build --target wasm32-wasip2 --release\n\
-                 curl -X POST {fn_url} -H 'Authorization: Bearer <service-token>' \
-                 -F name=my_fn -F wasm=@target/wasm32-wasip2/release/*.wasm \
-                 -F 'triggers=[{{\"collection\":\"posts\",\"events\":[\"created\"]}}]'\n\n\
+                 cargo build --target wasm32-wasip2 --release\n\n\
                  GOTCHA — the #1 first-run failure: `http-fetch` is DENY-BY-DEFAULT. The upload \
                  succeeds, but every `http-fetch` returns `EGRESS_NOT_ALLOWLISTED` until you \
                  allowlist the EXACT origin (scheme://host[:port]) for system `function` \
@@ -224,7 +217,6 @@ pub async fn render_prompt(
                  `invoke_function` / `get_function_logs`.",
                 wit = EDGE_WIT,
                 lib = EDGE_LIB_RS,
-                fn_url = fn_url,
             )))
         }
         "review_history" => {
@@ -262,63 +254,6 @@ pub(crate) fn account_prompt_list() -> Vec<Prompt> {
         .collect()
 }
 
-/// A rendered prompt's text as the account-level endpoint serves it: no step
-/// that needs a tenant key this connection does not hold. Each rewrite is an
-/// exact one-time replacement inside the fixed template tail (after the last
-/// anchor, so the embedded schema and the caller's own arguments cannot
-/// break it); `Err` when the per-tenant text drifted. Prompts with nothing to
-/// rewrite pass through unchanged.
-pub(crate) fn account_prompt_text(name: &str, text: String) -> Result<String, &'static str> {
-    use crate::mcp::resources::{replace_once, splice_once, within_tail};
-    match name {
-        "bootstrap" => within_tail(&text, "Core rules for acting here:\n", |t| {
-            replace_once(
-                t,
-                "`resources/list` + `resources/templates/list`",
-                "`resources/templates/list`",
-            )
-        }),
-        "write_edge_function" => within_tail(&text, "---- Cargo.toml ----\n", |t| {
-            splice_once(
-                t,
-                "Build, then upload the .wasm via REST multipart",
-                Some("GOTCHA — the #1 first-run failure"),
-                "Build it, then ask the user to upload the .wasm: this connection holds no \
-                 tenant key and MCP has no function upload tool. The tenant's Functions page \
-                 in the admin UI shows the upload command, which needs the service key from \
-                 the tenant's API Keys page.\n\
-                 rustup target add wasm32-wasip2\n\
-                 cargo build --target wasm32-wasip2 --release\n\n\
-                 GOTCHA — the #1 first-run failure",
-            )
-        }),
-        _ => Ok(text),
-    }
-}
-
-/// [`render_prompt`] as the account-level endpoint serves it: the same
-/// prompt, its text passed through [`account_prompt_text`]. A drifted
-/// rewrite is an internal error, never the per-tenant text.
-pub(crate) async fn render_prompt_account(
-    s: &DrustMcp,
-    name: &str,
-    args: &Option<serde_json::Map<String, serde_json::Value>>,
-) -> Result<GetPromptResult, McpError> {
-    let mut r = render_prompt(s, name, args).await?;
-    if let Some(m) = r.messages.first_mut()
-        && let rmcp::model::PromptMessageContent::Text { text } = &mut m.content
-    {
-        match account_prompt_text(name, std::mem::take(text)) {
-            Ok(t) => *text = t,
-            Err(_) => {
-                tracing::warn!(prompt = %name, "account-level prompt text drifted; refused");
-                return Err(McpError::internal_error("internal error", None));
-            }
-        }
-    }
-    Ok(r)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,33 +284,66 @@ mod tests {
         );
     }
 
-    #[test]
-    fn account_prompt_text_rewrites_only_the_fixed_tails() {
-        let marker = "`resources/list` + `resources/templates/list`";
-        // the embedded schema (tenant data) carries the marker too: only the fixed rule changes
-        let b = format!("desc {marker}\nCore rules for acting here:\n4. {marker}; y");
-        assert_eq!(
-            account_prompt_text("bootstrap", b).unwrap(),
-            format!("desc {marker}\nCore rules for acting here:\n4. `resources/templates/list`; y")
-        );
-        // the caller's trigger repeats the start marker before the template tail
-        let e = "trigger: Build, then upload the .wasm via REST multipart\n---- Cargo.toml ----\n[lib]\n\n\
-                 Build, then upload the .wasm via REST multipart — old\n\
-                 curl -X POST u -H 'Authorization: Bearer <service-token>'\n\n\
-                 GOTCHA — the #1 first-run failure: z"
-            .to_string();
-        let out = account_prompt_text("write_edge_function", e).unwrap();
-        assert!(out.starts_with(
-            "trigger: Build, then upload the .wasm via REST multipart\n---- Cargo.toml ----\n[lib]\n\n\
-             Build it, then ask the user to upload the .wasm"
+    /// A minimal `DrustMcp` over a fresh tenant database (the handler's own
+    /// fixture is private to its test module). `functions: None` is deliberate
+    /// (invariant 13): rendering a prompt needs no dispatcher.
+    async fn prompt_fixture() -> (DrustMcp, tempfile::TempDir) {
+        use std::sync::Arc;
+        let tmp = tempfile::tempdir().unwrap();
+        let tenants = Arc::new(crate::storage::pool::TenantRegistry::new(
+            tmp.path().to_path_buf(),
+            2,
         ));
-        assert!(out.ends_with("GOTCHA — the #1 first-run failure: z"));
-        assert_eq!(out.matches("GOTCHA — the #1 first-run failure").count(), 1);
-        assert!(!out.contains("service-token") && !out.contains("curl"));
-        assert_eq!(account_prompt_text("debug_write", "q".into()).unwrap(), "q");
-        assert_eq!(
-            account_prompt_text("bootstrap", "no marker".into()),
-            Err("drifted")
+        let rooms_cfg = crate::tenant::rooms::RoomsConfig::test_defaults();
+        let bucket = rooms_cfg.bucket();
+        let mcp = DrustMcp::new(
+            "blog",
+            tenants.get_or_create("blog").unwrap(),
+            crate::tenant::events::EventBus::new(),
+            crate::tenant::WebhookDispatcher::new(tenants.clone(), None),
+            None,
+            String::new(),
+            Arc::new([0u8; 32]),
+            None,
+            52_428_800,
+            1_000_000,
+            Arc::new(tokio::sync::Mutex::new(
+                crate::safety::audit_db::open_audit_db_memory().unwrap(),
+            )),
+            crate::tenant::rooms::RoomBus::new(),
+            bucket,
+            rooms_cfg,
+            None,
+            None,
         );
+        (mcp, tmp)
+    }
+
+    /// The served prompt texts carry no step that needs a tenant key: the
+    /// bootstrap names only the resource templates, and the edge-function
+    /// recipe sends the user to the admin UI to upload.
+    #[tokio::test]
+    async fn prompt_texts_are_the_account_texts() {
+        let (s, _tmp) = prompt_fixture().await;
+        let text = |r: GetPromptResult| match &r.messages[0].content {
+            rmcp::model::PromptMessageContent::Text { text } => text.clone(),
+            other => panic!("not text: {other:?}"),
+        };
+        let b = text(render_prompt(&s, "bootstrap", &None).await.unwrap());
+        assert!(b.contains("`resources/templates/list`"), "{b}");
+        assert!(!b.contains("`resources/list` +"), "{b}");
+        let mut args = serde_json::Map::new();
+        args.insert("trigger".into(), serde_json::json!("record.created"));
+        let e = text(
+            render_prompt(&s, "write_edge_function", &Some(args))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            e.contains("Build it, then ask the user to upload the .wasm"),
+            "{e}"
+        );
+        assert!(!e.contains("service-token") && !e.contains("curl"), "{e}");
+        assert_eq!(e.matches("GOTCHA — the #1 first-run failure").count(), 1);
     }
 }

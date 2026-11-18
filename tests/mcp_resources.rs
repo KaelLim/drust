@@ -177,7 +177,7 @@ async fn files_guide_carries_the_grant_model_and_no_credentials() {
     }
     // (b) The two upload stations and the two buckets.
     for needle in [
-        "multipart/form-data",
+        "create_upload_url",
         "tus 1.0",
         "private bucket",
         "public bucket",
@@ -187,7 +187,8 @@ async fn files_guide_carries_the_grant_model_and_no_credentials() {
             "missing upload/visibility text {needle:?}"
         );
     }
-    // (c) The remediation the error code sends a reader here for, plus curl.
+    // (c) The remediation the error code sends a reader here for, plus the
+    // ticket's ready script.
     assert!(
         body.contains("FILE_PUBLIC_UPLOAD_DENIED"),
         "the guide must name the error it remedies"
@@ -197,16 +198,15 @@ async fn files_guide_carries_the_grant_model_and_no_credentials() {
         "remediation must name the tools that fix it: {body}"
     );
     assert!(
-        body.contains("curl -X PUT"),
-        "curl examples must be present"
+        body.contains("`curl_example`"),
+        "the guide must point at the ticket's ready script"
     );
 
-    // (d) NO credentials. A resource can be auto-pulled into model context, so
-    // tokens stay behind the whoami TOOL (mcp-surface rule) — the guide may only
-    // name the env-var placeholder and point at whoami.
+    // (d) NO credentials. A resource can be auto-pulled into model context, and
+    // this connection holds no tenant key: the guide teaches the upload ticket.
     assert!(
-        body.contains("whoami"),
-        "the guide must point at whoami for tokens"
+        !body.contains("whoami"),
+        "this connection holds no tenant key: the guide must not send the model to whoami for one"
     );
     assert!(
         !body.contains("drust_svc_")
