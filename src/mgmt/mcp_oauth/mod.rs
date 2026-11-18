@@ -279,13 +279,17 @@ mod source_pins {
                     "dbg!",
                     "with_extra(",
                     "AuditEntry",
+                    "try_send(",
+                    "write_entry(",
                 ]
                 .iter()
                 .any(|o| rest.starts_with(o));
-            // `audit…(`: a module-local audit helper call (or its signature).
-            let helper = boundary && rest.starts_with("audit") && {
+            // `audit…(` (a module-local audit helper) or `…_entry(` (an audit
+            // row builder): a call, or its signature.
+            let helper = boundary && {
                 let n = rest.bytes().take_while(|c| is_ident(*c)).count();
-                rest.as_bytes().get(n) == Some(&b'(')
+                (rest.starts_with("audit") || rest[..n].ends_with("_entry"))
+                    && rest.as_bytes().get(n) == Some(&b'(')
             };
             if (call || helper)
                 && let Some(open) = rest.find(['(', '{'])
@@ -465,6 +469,9 @@ mod source_pins {
                     "plaintext",
                     "ticket",
                     "authorization",
+                    "t",
+                    "body",
+                    "text",
                 ],
                 22,
             ),
@@ -502,22 +509,31 @@ fn f() {
     eprintln!("{}", code);
     dbg!(code);
     log::info!("{}", code);
+    crate::safety::audit_db::try_send(&denied_entry(None, None, s, Some(code), "X"));
+    crate::safety::audit::write_entry(&dir, &code).await;
+    let e = upload_audit_entry("t", &c, code, 0);
+    tracing::info!(note = "é→ü", "{code}");
 }
 "#;
         let (n, found) = scan(bad, &["code"]);
-        assert_eq!(n, 9, "sites: {found:#?}");
+        assert_eq!(n, 13, "sites: {found:#?}");
         // Every site is flagged; the first one twice (field and value).
-        assert_eq!(found.len(), 10, "{found:#?}");
+        assert_eq!(found.len(), 14, "{found:#?}");
         let good = r#"
 fn f() {
     // tracing::warn!(code = %code);
     tracing::warn!(grant_id = g, "authorization code replay");
     e.auth_method = Some("mcp_oauth".to_string());
     if x.status == code { }
+    let label = "ünïcödé — code";
+    let y = entry(code) + my_entry + entry_of(code);
 }
 "#;
         let (n, found) = scan(good, &["code"]);
-        assert_eq!(n, 2, "a comment and a comparison are not sites");
+        assert_eq!(
+            n, 2,
+            "a comment, a comparison, plain words and a bare `entry` are not sites"
+        );
         assert!(found.is_empty(), "{found:#?}");
     }
 
@@ -584,6 +600,11 @@ fn f() {
                 "../../mcp/account.rs",
                 include_str!("../../mcp/account.rs"),
                 "async fn call_tool(",
+            ),
+            (
+                "../../tenant/uploads/ticket.rs",
+                include_str!("../../tenant/uploads/ticket.rs"),
+                "fn ticket_used(",
             ),
         ];
         for (name, src, anchor) in files {

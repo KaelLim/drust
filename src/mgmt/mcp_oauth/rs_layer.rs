@@ -895,7 +895,9 @@ mod tests {
             !prod.contains("rs_miss_ip"),
             "the account endpoint reads no per-IP bucket"
         );
-        assert!(!prod.contains("AuditEntry"), "refusals write no audit row");
+        for sink in ["AuditEntry", "try_send", "write_entry"] {
+            assert!(!prod.contains(sink), "refusals write no audit row: {sink}");
+        }
     }
 
     /// The bearer is read from the first Authorization value once, and every
