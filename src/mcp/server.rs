@@ -594,4 +594,115 @@ mod build_live_tests {
         assert!(!Arc::ptr_eq(&again.inner(), &cached.inner()));
         assert_eq!(reg.cached_count(), 1);
     }
+
+    /// The names an MCP registry handle is bound to in `prod`, each with
+    /// whether its declaration is `pub` (visible outside the file): fields and
+    /// parameters typed `Arc<McpRegistry>` / `Arc<McpHttpRegistry>` (or the
+    /// bare types), and `let` bindings built from either.
+    fn mcp_handle_names(prod: &str) -> Vec<(String, bool)> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        let mut out = Vec::new();
+        for ty in ["McpRegistry", "McpHttpRegistry"] {
+            for decl in [format!(": Arc<{ty}>"), format!(": {ty}")] {
+                for (i, _) in prod.match_indices(decl.as_str()) {
+                    let after = prod[i + decl.len()..].chars().next();
+                    if after.is_some_and(ident) {
+                        continue; // a longer type name
+                    }
+                    let name: String = prod[..i]
+                        .chars()
+                        .rev()
+                        .take_while(|c| ident(*c))
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    let line = prod[..i - name.len()].rsplit('\n').next().unwrap_or("");
+                    out.push((name, line.trim_start().starts_with("pub")));
+                }
+            }
+        }
+        for (i, _) in prod.match_indices("let ") {
+            let rest = &prod[i + 4..];
+            let name: String = rest.chars().take_while(|c| ident(*c)).collect();
+            let Some(value) = rest[name.len()..].trim_start().strip_prefix('=') else {
+                continue;
+            };
+            let value: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+            if ["Arc::new(McpRegistry::", "Arc::new(McpHttpRegistry::"]
+                .iter()
+                .any(|p| value.starts_with(p))
+            {
+                out.push((name, false));
+            }
+        }
+        out
+    }
+
+    /// The account endpoint builds every call's `DrustMcp` through
+    /// `build_live`, and the per-tenant cache behind `get_or_create` has no
+    /// production reader: no `.get_or_create(` call outside this file has an
+    /// MCP registry handle as its receiver: a name the same file binds to
+    /// one, a `pub` field typed as one, or the `registry()` accessor.
+    #[test]
+    fn get_or_create_has_no_production_caller_outside_this_file() {
+        use crate::tenant::rooms::srcpin::{code_only, collect_rs_files, production_half};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs_files(&root, &mut files);
+        let sources: Vec<(std::path::PathBuf, String, Vec<(String, bool)>)> = files
+            .into_iter()
+            .filter(|f| !f.ends_with("mcp/server.rs"))
+            .map(|f| {
+                let code = code_only(&std::fs::read_to_string(&f).unwrap());
+                let prod = production_half(&code).to_string();
+                let handles = mcp_handle_names(&prod);
+                (f, prod, handles)
+            })
+            .collect();
+        // Anti-vacuous: the handles held today are found where they live.
+        for (file, known) in [
+            ("main.rs", "mcp_reg"),
+            ("mcp/http_registry.rs", "mcp"),
+            ("mcp/account.rs", "registry"),
+        ] {
+            assert!(
+                sources
+                    .iter()
+                    .any(|(f, _, h)| f.ends_with(file) && h.iter().any(|(n, _)| n == known)),
+                "handle `{known}` not found in {file}"
+            );
+        }
+        let mut global: Vec<String> = vec!["registry()".into()];
+        for (_, _, h) in &sources {
+            global.extend(h.iter().filter(|(_, p)| *p).map(|(n, _)| n.clone()));
+        }
+        let receiver_char = |c: char| c.is_ascii_alphanumeric() || "_.()&".contains(c);
+        let (mut calls, mut via_mcp) = (0, Vec::new());
+        for (f, prod, local) in &sources {
+            assert!(
+                !prod.contains("McpRegistry::get_or_create"),
+                "{}: names McpRegistry::get_or_create",
+                f.display()
+            );
+            for (i, _) in prod.match_indices(".get_or_create(") {
+                calls += 1;
+                let receiver: String = prod[..i]
+                    .chars()
+                    .rev()
+                    .take_while(|c| receiver_char(*c))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let last = receiver.rsplit('.').next().unwrap_or("");
+                if global.iter().any(|h| h == last) || local.iter().any(|(n, _)| n == last) {
+                    via_mcp.push(format!("{}: {receiver}.get_or_create(", f.display()));
+                }
+            }
+        }
+        // Anti-vacuous: the tenant pool registry's own get_or_create calls are seen.
+        assert!(calls > 50, "only {calls} .get_or_create( calls found");
+        assert!(via_mcp.is_empty(), "{via_mcp:#?}");
+    }
 }
