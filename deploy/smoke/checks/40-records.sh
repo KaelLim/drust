@@ -70,7 +70,8 @@ else:
 }
 
 # mcp_outcome — after mcp_call: "ok" for a successful tool result, "tool_error"
-# for isError:true, "rpc_error" for a JSON-RPC error, "transport" otherwise.
+# for isError:true (every tool failure on the account endpoint, except an
+# unknown tool name), "rpc_error" for a JSON-RPC error, "transport" otherwise.
 mcp_outcome() {
   printf '%s' "$BODY" | python3 -c '
 import json, sys
@@ -122,10 +123,10 @@ USER_TOKEN=""
 user() { _tenant_call "$USER_TOKEN" "$@"; }
 
 # The data plane rate-limits each bearer to DRUST_RATE_LIMIT_PER_TOKEN (60) per
-# DRUST_RATE_LIMIT_WINDOW_SECS (10 s), and every mcp_call is three requests on
-# the service key. A 429 here is that limiter, not the behaviour under test,
-# so both request paths back off on Retry-After (bounded) and retry. The lib's
-# versions are wrapped, not edited.
+# DRUST_RATE_LIMIT_WINDOW_SECS (10 s). A 429 here is that limiter, not the
+# behaviour under test, so req backs off on Retry-After (bounded) and retries.
+# The lib's version is wrapped, not edited.
+# MCP calls go to the account endpoint and are not charged to this key.
 eval "_lib_req() $(declare -f req | sed '1d')"
 req() {
   local n=0 wait
@@ -136,16 +137,6 @@ req() {
     wait="$(header retry-after)"; case "$wait" in ''|*[!0-9]*) wait=1 ;; esac
     [ "$wait" -gt 5 ] && wait=5
     sleep "$wait"
-  done
-}
-eval "_lib_mcp_rpc() $(declare -f mcp_rpc | sed '1d')"
-mcp_rpc() {
-  local n=0
-  while :; do
-    _lib_mcp_rpc "$1"
-    case "$BODY" in *'"http_status": 429'*) ;; *) return 0 ;; esac
-    n=$((n + 1)); [ $n -ge 15 ] && return 0
-    sleep 1
   done
 }
 
@@ -179,17 +170,17 @@ done
 mcp_call add_field '{"collection":"items","field":{"name":"extra_vec","sql_type":"vector","dim":2}}'
 check_eq "add_field with sql_type=vector succeeds" ok "$(mcp_outcome)"
 mcp_call add_field '{"collection":"items","field":{"name":"bad","sql_type":"TEXT"}}'
-check_eq "add_field refuses an upper-case sql_type (must be lowercase): JSON-RPC error" rpc_error "$(mcp_outcome)"
+check_eq "add_field refuses an upper-case sql_type (must be lowercase): isError result" tool_error "$(mcp_outcome)"
 check_contains "add_field upper-case sql_type error says 'unsupported sql_type'" "unsupported sql_type" "$(mcp_err_msg)"
 
 # D1 — SQLite 3.54 refuses ALTER TABLE ADD COLUMN for a rowid alias name.
 for alias in rowid _rowid_ oid; do
   mcp_call add_field "{\"collection\":\"items\",\"field\":{\"name\":\"$alias\",\"sql_type\":\"text\"}}"
-  check_eq "D1: add_field named $alias is refused (SQLite 3.54)" rpc_error "$(mcp_outcome)"
+  check_eq "D1: add_field named $alias is refused (SQLite 3.54)" tool_error "$(mcp_outcome)"
   check_contains "D1: add_field $alias error carries SQLite's 'cannot add rowid alias' text" \
     "cannot add rowid alias" "$(mcp_err_msg)"
 done
-note "D1 surface: JSON-RPC error, data.error_code=[$(mcp_err_code)] message=[$(mcp_err_msg)]"
+note "D1 surface: isError, error_code=[$(mcp_err_code)] message=[$(mcp_err_msg)]"
 mcp_call describe_collection '{"collection":"items"}'
 check_eq "D1: describe still lists the table's columns and no rowid-alias column was added" true \
   "$(mcp_text_q '"title" in [f["name"] for f in d["fields"]] and not any(f["name"] in ("rowid","_rowid_","oid") for f in d["fields"])')"
@@ -199,7 +190,7 @@ mcp_call drop_field '{"collection":"items","field":"extra_real"}'
 check_eq "drop_field of an unreferenced column succeeds" ok "$(mcp_outcome)"
 check_eq "E6': unreferenced drop_field has no warnings key" false "$(mcp_text_q '"warnings" in d')"
 mcp_call drop_field '{"collection":"items","field":"id"}'
-check_eq "drop_field refuses the system id column (JSON-RPC error)" rpc_error "$(mcp_outcome)"
+check_eq "drop_field refuses the system id column (isError result)" tool_error "$(mcp_outcome)"
 check_contains "drop_field id refusal says 'cannot drop system column'" "cannot drop system column" "$(mcp_err_msg)"
 
 # ── 2. REST CRUD as service, types and constraints ─────────────────────────
@@ -539,10 +530,10 @@ check_eq "E1': service PATCH may still change the id" "200 7778" "$STATUS $(body
 mcp_call set_policy '{"collection":"pub","op":"select"}'
 check_contains "set_policy select without using is refused with POLICY_SELECT_REQUIRES_USING" \
   POLICY_SELECT_REQUIRES_USING "$(mcp_err_msg)"
-check_eq "clause-less select policy refusal is a tool failure" rpc_error "$(mcp_outcome)"
+check_eq "clause-less select policy refusal is an isError result" tool_error "$(mcp_outcome)"
 mcp_call set_anon_caps '{"collection":"pub","caps":["select","update"]}'
-mcp_call set_policy '{"collection":"pub","op":"select","using":{"hidden":{"eq":0}}}'
-check_eq "set_policy select using hidden=0 succeeds" ok "$(mcp_outcome)"
+svc PUT /collections/pub/policies '{"select":{"using":{"hidden":{"eq":0}}}}'
+check_eq "PUT select policy using hidden=0 answers 200 {ok:true}" "200 true" "$STATUS $(body ok)"
 svc PATCH "/records/pub/$P1" '{"data":{"hidden":0}}'
 anon POST /collections/pub/list '{"sort":{"field":"id","dir":"asc"}}'
 check_eq "RLS select policy filters anon /list to visible rows" "[$P1]" "$(pyq '[r["id"] for r in d["records"]]')"
@@ -556,8 +547,8 @@ check_eq "E9: anon PATCH whose post-image passes the policy returns the full row
 anon PATCH "/records/pub/$P1" '{"data":{"t":"now-hidden","hidden":1}}'
 check_eq "E9: anon PATCH whose post-image the policy hides returns only the id" "{\"record\": {\"id\": $P1}}" "$(pyq 'd')"
 svc PATCH "/records/pub/$P1" '{"data":{"hidden":0}}'
-mcp_call set_policy '{"collection":"pub","op":"select","using":{"x":{"eq":0}}}'
-mcp_call set_policy '{"collection":"pub","op":"update","check":{"x":{"is_null":false}}}'
+svc PUT /collections/pub/policies '{"select":{"using":{"x":{"eq":0}}},"update":{"check":{"x":{"is_null":false}}}}'
+check_eq "PUT select+update policies naming x answers 200 {ok:true}" "200 true" "$STATUS $(body ok)"
 mcp_call drop_field '{"collection":"pub","field":"x"}'
 check_eq "E6': drop_field of a policy-referenced field still succeeds" ok "$(mcp_outcome)"
 check_eq "E6': drop_field warns once per referencing clause" \
@@ -569,13 +560,15 @@ check_eq "E6': anon /list under a policy naming a dropped field fails closed (PO
 svc PATCH "/records/pub/$P1" '{"data":{"t":"pre"}}'
 anon PATCH "/records/pub/$P1" '{"data":{"t":"after-drop"}}'
 check_eq "E6'/E9: anon PATCH read-back under a policy naming a dropped field is id-only" "{\"record\": {\"id\": $P1}}" "$(pyq 'd')"
-mcp_call clear_policy '{"collection":"pub","op":"select"}'
-mcp_call clear_policy '{"collection":"pub","op":"update"}'
+svc DELETE /collections/pub/policies/select
+check_eq "DELETE select policy on pub answers 200 {ok:true}" "200 true" "$STATUS $(body ok)"
+svc DELETE /collections/pub/policies/update
+check_eq "DELETE update policy on pub answers 200 {ok:true}" "200 true" "$STATUS $(body ok)"
 
 # ── 9. end-user auth, owner_field, user_caps, E8/E9 for users ──────────────
 
-mcp_call set_self_register '{"enabled":true}'
-check_eq "set_self_register true succeeds" true "$(mcp_text_q 'd["allow_self_register"]')"
+admin POST "/admin/tenants/${T##*/t/}/allow-self-register" '{"enabled":true}'
+check_eq "self-registration toggled on (admin API)" "200 true" "$STATUS $(body enabled)"
 UEMAIL="smoke-a-$$@records.test"
 UPASS="smoke-pass-$$-$(date +%s)"
 req POST "$T/auth/register" -H 'Content-Type: application/json' \
@@ -701,14 +694,14 @@ else
       " 127.0.0.1 " " $LOGIN_IPS "
   fi
 fi
-mcp_call create_user "{\"email\":\"smoke-b-$$@records.test\",\"password\":\"another-long-pass-$$\"}"
-UB_ID="$(mcp_text_q 'd["user_id"]')"
-check_contains "MCP create_user mints a second user" "u-" "$UB_ID"
+svc POST /admin/users "{\"email\":\"smoke-b-$$@records.test\",\"password\":\"another-long-pass-$$\"}"
+UB_ID="$(body user_id)"
+check_contains "service REST create_user mints a second user" "u-" "$UB_ID"
 
 if [ -n "$USER_TOKEN" ]; then
   mcp_call create_collection '{"name":"notes","fields":[{"name":"body","sql_type":"text"},{"name":"owner_id","sql_type":"text","foreign_key":"_system_users"}]}'
-  mcp_call set_owner_field '{"collection":"notes","field":"owner_id","read_scope":"own"}'
-  check_eq "set_owner_field read_scope=own succeeds" own "$(mcp_text_q 'd["read_scope"]')"
+  svc POST /collections/notes/owner-field '{"field":"owner_id","read_scope":"own"}'
+  check_eq "set owner-field read_scope=own answers 200 own" "200 own" "$STATUS $(body read_scope)"
   mcp_call set_owner_field '{"collection":"pub","field":"t"}'
   check_eq "set_owner_field on a column without the _system_users FK answers OWNER_FIELD_NOT_FK" OWNER_FIELD_NOT_FK "$(mcp_err_code)"
 
@@ -754,7 +747,8 @@ if [ -n "$USER_TOKEN" ]; then
     "$(pyq '[r for r in d["rows"] if r["op"]=="insert"][0]["actor_kind"]') $(pyq '[r for r in d["rows"] if r["op"]=="insert"][0]["actor_id"]')"
 
   # E9 for users: owner-scoped read_scope=all with user_caps lacking select.
-  mcp_call set_owner_field '{"collection":"notes","field":"owner_id","read_scope":"all"}'
+  svc POST /collections/notes/owner-field '{"field":"owner_id","read_scope":"all"}'
+  check_eq "set owner-field read_scope=all answers 200 all" "200 all" "$STATUS $(body read_scope)"
   mcp_call set_user_caps '{"collection":"notes","caps":["insert","update"]}'
   check_eq "set_user_caps insert+update (no select) succeeds" '["insert", "update"]' "$(mcp_text_q 'sorted(d["user_caps"])')"
   user POST /collections/notes/list '{}'

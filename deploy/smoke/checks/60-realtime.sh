@@ -41,21 +41,6 @@ _tenant_call() {
     sleep 2
   done
 }
-mcp_call_r() { # TOOL JSON — mcp_call, retried on a 429 from the HTTP layer
-  local i
-  for i in 1 2 3 4 5 6; do
-    mcp_call "$1" "$2"
-    case "$BODY" in *'"http_status": 429'*) sleep 2 ;; *) break ;; esac
-  done
-  # lib's MCP_IS_ERROR only reads result.isError; a JSON-RPC error object (how
-  # bail_mcp reports e.g. OWNER_FIELD_NOT_FK) or a transport failure must count
-  # as an error too.
-  MCP_IS_ERROR="$(printf '%s' "$BODY" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-print("true" if "error" in d or "http_status" in d or d.get("result", {}).get("isError") else "false")
-' 2>/dev/null || echo true)"
-}
 
 # Tenant slots: save_tenant X after new_tenant, use_tenant X to switch.
 save_tenant() {
@@ -338,7 +323,7 @@ wsr() { json "$2" < "$TMP/ws.$1.out" 2>/dev/null || echo "-"; } # NAME PATH
 # ================================================== tenant C: keepalives ====
 # Started first so the 30 s keepalive period elapses while the rest runs.
 new_tenant rt-ka; save_tenant C
-mcp_call_r create_collection '{"name":"ka","fields":[{"name":"title","sql_type":"text"}]}'
+mcp_call create_collection '{"name":"ka","fields":[{"name":"title","sql_type":"text"}]}'
 svc PUT /collections/ka/realtime '{"enabled":true}'
 check_eq "keepalive tenant: enabling realtime on a collection answers 200" 200 "$STATUS"
 sse_open ka "$T/records/ka/subscribe" "$SERVICE_KEY" 42
@@ -492,14 +477,14 @@ ws_bg flag <<J
  {"op":"close","c":"t"}]
 J
 for _ in $(seq 1 60); do [ -f "$TMP/flag.ready" ] && break; sleep 0.5; done
-mcp_call_r set_publish_policy '{"allow_anon_publish":true}'
-check_eq "set_publish_policy(allow_anon_publish=true) succeeds over MCP" false "$MCP_IS_ERROR"
+admin PATCH "/admin/tenants/$TENANT_ID/publish-policy" '{"allow_anon_publish":true}'
+check_eq "admin PATCH publish-policy allow_anon_publish=true answers 200 true" "200 true" "$STATUS $(body allow_anon_publish)"
 touch "$TMP/flag.on"
 for _ in $(seq 1 60); do [ -f "$TMP/flag.done1" ] && break; sleep 0.5; done
 anon POST /rooms/flag '{"by":"anon-rest"}'
 check_eq "REST publish by anon answers 200 once allow_anon_publish is on" 200 "$STATUS"
-mcp_call_r set_publish_policy '{"allow_anon_publish":false}'
-check_eq "set_publish_policy(allow_anon_publish=false) succeeds over MCP" false "$MCP_IS_ERROR"
+admin PATCH "/admin/tenants/$TENANT_ID/publish-policy" '{"allow_anon_publish":false}'
+check_eq "admin PATCH publish-policy allow_anon_publish=false answers 200 false" "200 false" "$STATUS $(body allow_anon_publish)"
 touch "$TMP/flag.off"
 ws_join flag
 check_eq "an anon socket opened before the flag flip is closed 1008 at its next frame" 1008 "$(wsr flag old_close.code)"
@@ -536,7 +521,7 @@ B_SVC="$B_NEW_SVC"
 new_tenant rt-sse; save_tenant A
 S="$T/records"
 
-mcp_call_r create_collection '{"name":"notes","fields":[{"name":"title","sql_type":"text"},{"name":"tag","sql_type":"text"}]}'
+mcp_call create_collection '{"name":"notes","fields":[{"name":"title","sql_type":"text"},{"name":"tag","sql_type":"text"}]}'
 check_eq "create_collection notes over MCP succeeds" false "$MCP_IS_ERROR"
 
 sse_open g1 "$S/notes/subscribe" "$SERVICE_KEY" 15
@@ -574,20 +559,20 @@ sse_open doc "$T/collections/notes/subscribe" "$SERVICE_KEY" 10
 note "the non-route /collections/<c>/subscribe answers $(sse_status doc) (not a stream)"
 sse_kill doc
 
-mcp_call_r set_anon_caps '{"collection":"notes","caps":[]}'
+mcp_call set_anon_caps '{"collection":"notes","caps":[]}'
 sse_open g6 "$S/notes/subscribe" "$ANON_KEY" 15
 check_eq "anon subscribe without anon_caps[select] is 403 REALTIME_ANON_DENIED" "403 REALTIME_ANON_DENIED" \
   "$(sse_status g6) $(sse_code g6)"
-mcp_call_r set_anon_caps '{"collection":"notes","caps":["select"]}'
+mcp_call set_anon_caps '{"collection":"notes","caps":["select"]}'
 sse_open g7 "$S/notes/subscribe?token=$ANON_KEY" "" 20
 check_eq "anon subscribe with realtime_enabled AND anon_caps[select] (no policy) is 200 via ?token=" 200 "$(sse_status g7)"
 check_contains "... and is a text/event-stream" "text/event-stream" "$(tr -d '\r' < "$TMP/sse.g7.h")"
 sse_kill g7
 
 # owner-scoped collection: anon may never subscribe.
-mcp_call_r create_collection '{"name":"owned","fields":[{"name":"owner","sql_type":"text","foreign_key":"_system_users"},{"name":"body","sql_type":"text"}]}'
-mcp_call_r set_owner_field '{"collection":"owned","field":"owner","read_scope":"all"}'
-check_eq "set_owner_field(owned.owner, read_scope=all) succeeds" false "$MCP_IS_ERROR"
+mcp_call create_collection '{"name":"owned","fields":[{"name":"owner","sql_type":"text","foreign_key":"_system_users"},{"name":"body","sql_type":"text"}]}'
+svc POST /collections/owned/owner-field '{"field":"owner","read_scope":"all"}'
+check_eq "set owner-field (owned.owner, read_scope=all) answers 200 all" "200 all" "$STATUS $(body read_scope)"
 svc PUT /collections/owned/realtime '{"enabled":true}'
 sse_open g8 "$S/owned/subscribe" "$ANON_KEY" 15
 check_eq "anon subscribe to an owner-scoped collection (even read_scope=all) is 403 ANON_FORBIDDEN_OWNER_SCOPED" \
@@ -596,8 +581,8 @@ check_eq "anon subscribe to an owner-scoped collection (even read_scope=all) is 
 # user token: always denied on SSE.
 U_EMAIL="rt-user-$$@example.com"
 U_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(12))')"
-mcp_call_r create_user "{\"email\":\"$U_EMAIL\",\"password\":\"$U_PASS\",\"verified\":true}"
-if [ "$MCP_IS_ERROR" = "false" ]; then
+svc POST /admin/users "{\"email\":\"$U_EMAIL\",\"password\":\"$U_PASS\",\"verified\":true}"
+if [ "$STATUS" = 201 ]; then
   req POST "$T/auth/login" -H 'Content-Type: application/json' \
     --data "{\"email\":\"$U_EMAIL\",\"password\":\"$U_PASS\"}"
   USER_TOKEN="$(body token 2>/dev/null || true)"
@@ -609,7 +594,7 @@ if [ "$MCP_IS_ERROR" = "false" ]; then
     note "user login answered $STATUS — SSE_USER_DENIED leg skipped (per-IP login limit is shared)"
   fi
 else
-  bad "create_user over MCP succeeds (needed for the SSE_USER_DENIED leg)" "$(printf '%s' "$MCP_TEXT" | head -c 200)"
+  bad "service REST create_user succeeds (needed for the SSE_USER_DENIED leg)" "status $STATUS $(body error_code)"
 fi
 
 # --- events for REST writes (service stream through Caddy, admin-PAT stream).
@@ -668,12 +653,12 @@ check_contains "control: the service stream did see both deletes" \
   "$(printf 'event: deleted\ndata: {"id":%s}' "$H1")" "$(sse_body ev2)"
 
 # --- revoking anon select ends the in-flight anon stream.
-mcp_call_r set_anon_caps '{"collection":"notes","caps":[]}'
+mcp_call set_anon_caps '{"collection":"notes","caps":[]}'
 check_eq "set_anon_caps(notes, []) succeeds" false "$MCP_IS_ERROR"
 check_eq "revoking anon_caps[select] ends the in-flight anon stream" 0 "$(sse_end pol 15)"
 sse_open g10 "$S/notes/subscribe" "$ANON_KEY" 15
 check_eq "... and a reconnect is refused 403 REALTIME_ANON_DENIED" "403 REALTIME_ANON_DENIED" "$(sse_status g10) $(sse_code g10)"
-mcp_call_r set_anon_caps '{"collection":"notes","caps":["select"]}'
+mcp_call set_anon_caps '{"collection":"notes","caps":["select"]}'
 
 # --- clearing the select policy also evicts.
 sse_open clr "$S/notes/subscribe" "$ANON_KEY" 60
@@ -711,19 +696,19 @@ sse_kill g13
 
 # --- drop_collection (E4): warnings for an anon-callable dependent RPC, dry_run
 # closes nothing, the real drop ends live streams, a later subscribe is 404.
-mcp_call_r create_rpc '{"name":"count_notes","sql":"SELECT count(*) AS n FROM notes","params":[],"anon_callable":true}'
+mcp_call create_rpc '{"name":"count_notes","sql":"SELECT count(*) AS n FROM notes","params":[],"anon_callable":true}'
 check_eq "create_rpc(count_notes, anon_callable) over notes succeeds" false "$MCP_IS_ERROR"
 sse_open dsv "$S/notes/subscribe" "$SERVICE_KEY" 60
 sse_open dan "$S/notes/subscribe" "$ANON_KEY" 60
 check_eq "service + anon streams on notes open before the drop" "200 200" "$(sse_status dsv) $(sse_status dan)"
-mcp_call_r drop_collection '{"collection":"notes","dry_run":true}'
+mcp_call drop_collection '{"collection":"notes","dry_run":true}'
 check_eq "drop_collection dry_run succeeds" false "$MCP_IS_ERROR"
 check_eq "drop_collection dry_run is a preview (would_drop=true) and returns no warnings" "true -" \
   "$(printf '%s' "$MCP_TEXT" | json would_drop 2>/dev/null || echo -) $(printf '%s' "$MCP_TEXT" | json warnings 2>/dev/null || echo -)"
 svc POST /records/notes '{"data":{"title":"after-dry-run","tag":"pub"}}'
 sse_wait dsv '"title":"after-dry-run"' 15
 check_contains "dry_run closes nothing: the service stream still receives events" '"title":"after-dry-run"' "$(sse_body dsv)"
-mcp_call_r drop_collection '{"collection":"notes"}'
+mcp_call drop_collection '{"collection":"notes"}'
 check_eq "drop_collection(notes) succeeds" "false true notes" \
   "$MCP_IS_ERROR $(printf '%s' "$MCP_TEXT" | json ok) $(printf '%s' "$MCP_TEXT" | json dropped_collection)"
 check_eq "drop_collection warns ANON_RPC_DEPENDS_ON_COLLECTION for the anon-callable RPC" \
@@ -735,7 +720,7 @@ sse_open g14 "$S/notes/subscribe" "$SERVICE_KEY" 15
 check_eq "subscribe to the dropped collection is 404 NOT_FOUND" "404 NOT_FOUND" "$(sse_status g14) $(sse_code g14)"
 sse_open own "$S/owned/subscribe" "$SERVICE_KEY" 60
 check_eq "service stream on the owner-scoped collection opens (200) before its drop" 200 "$(sse_status own)"
-mcp_call_r drop_collection '{"collection":"owned"}'
+mcp_call drop_collection '{"collection":"owned"}'
 check_eq "dropping a collection no anon RPC depends on carries no warnings key" "false -" \
   "$MCP_IS_ERROR $(printf '%s' "$MCP_TEXT" | json warnings 2>/dev/null || echo -)"
 check_eq "... and still ends that collection's stream" 0 "$(sse_end own 15)"
