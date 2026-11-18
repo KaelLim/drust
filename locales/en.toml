@@ -867,7 +867,7 @@ rights = "On every tenant your account can see, Claude acts with service-level r
 clients = "Only Claude Code is supported. Codex, Cursor, Claude Desktop and Gemini are not supported yet."
 ci = "CI jobs and fresh containers cannot use MCP: signing in needs a browser. Use the REST API with a tenant key there."
 functions = "This connection cannot deploy edge functions: it carries no tenant key. To deploy a .wasm, open the tenant Functions page in the admin UI; it shows the upload command."
-uploads = "Files upload without any key in the chat: Claude asks for a one-file upload ticket (create_upload_url) and sends the file in chunks."
+uploads = "Files upload without a tenant key in the chat: Claude asks for a short-lived ticket good for one file (create_upload_url) and sends the file in chunks."
 
 [mcp_connect.copy]
 button = "Copy"

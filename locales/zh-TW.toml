@@ -887,7 +887,7 @@ rights = "在你的帳號能看到的每個 tenant 上，Claude 擁有 service �
 clients = "只支援 Claude Code。Codex、Cursor、Claude Desktop 與 Gemini 暫不支援。"
 ci = "CI 與全新的容器不能使用 MCP：登入需要瀏覽器。在那些地方請用 tenant 金鑰呼叫 REST API。"
 functions = "這條連線不能部署 edge function：它不帶任何 tenant 金鑰。要部署 .wasm，請到管理後台該 tenant 的「函式」頁，頁面上有上傳指令。"
-uploads = "上傳檔案時對話裡不會出現金鑰：Claude 會申請一個只能上傳一個檔案的上傳網址（create_upload_url），再分塊上傳。"
+uploads = "上傳檔案時對話裡不會出現租戶金鑰：Claude 會申請一張短時間有效、只能上傳一個檔案的票證（create_upload_url），再分塊上傳。"
 
 [mcp_connect.copy]
 button = "複製"
