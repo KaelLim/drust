@@ -809,6 +809,243 @@ impl AccountMcp {
     }
 }
 
+/// The outer tool that issues a one-upload ticket for a tenant.
+#[allow(dead_code)]
+pub(crate) const CREATE_UPLOAD_URL: &str = "create_upload_url";
+
+/// A validated `create_upload_url` request. Carries no credential.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct UploadPlan {
+    pub max_bytes: i64,
+    pub path: Option<String>,
+    pub public: bool,
+    /// The tus `Upload-Metadata` value the ticket accepts, built here so the
+    /// caller never has to encode it.
+    pub metadata: String,
+}
+
+/// Why a `create_upload_url` request was refused after the tenant check.
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct UploadRefusal {
+    pub code: &'static str,
+    pub message: String,
+}
+
+/// The arguments `create_upload_url` reads. `tenant` is ignored here, and no
+/// key outside the inputSchema reaches this point (the unknown-argument check
+/// already refused it), so the struct takes plain serde fields only.
+#[derive(serde::Deserialize)]
+struct CreateUploadUrlArgs {
+    size: u64,
+    filename: Option<String>,
+    path: Option<String>,
+    visibility: Option<String>,
+    content_type: Option<String>,
+}
+
+/// Validates a `create_upload_url` request, in order: storage configured,
+/// argument types, size within the tus limit, an exact visibility, the path
+/// grammar, the filename and content type lengths. The `Upload-Metadata`
+/// value always names the visibility and names the path only when one was
+/// given, the way the tus create handler and the ticket layer read it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn plan_upload(
+    args: &serde_json::Map<String, serde_json::Value>,
+    limits: &UploadLimits,
+) -> Result<UploadPlan, UploadRefusal> {
+    let refuse = |code: &'static str, message: String| UploadRefusal { code, message };
+    if !limits.storage_configured {
+        return Err(refuse(
+            "STORAGE_UNAVAILABLE",
+            "file storage is not configured on this server".to_string(),
+        ));
+    }
+    let a: CreateUploadUrlArgs = serde_json::from_value(serde_json::Value::Object(args.clone()))
+        .map_err(|e| {
+            refuse(
+                "INVALID_PARAMS",
+                format!("failed to deserialize parameters: {e}"),
+            )
+        })?;
+    let size = a.size;
+    let max_bytes = match i64::try_from(size) {
+        Ok(n) if size <= limits.max_bytes as u64 => n,
+        _ => {
+            return Err(refuse(
+                "UPLOAD_TOO_LARGE",
+                format!("size {size} exceeds limit {}", limits.max_bytes),
+            ));
+        }
+    };
+    let public = match a.visibility.as_deref() {
+        None | Some("private") => false,
+        Some("public") => true,
+        Some(_) => {
+            return Err(refuse(
+                "INVALID_VISIBILITY",
+                "visibility must be 'public' or 'private'".to_string(),
+            ));
+        }
+    };
+    if let Some(p) = a.path.as_deref() {
+        crate::storage::file_path::validate_file_path(p)
+            .map_err(|m| refuse(crate::storage::file_path::FILE_PATH_INVALID, m))?;
+    }
+    for (name, v) in [("filename", &a.filename), ("content_type", &a.content_type)] {
+        if v.as_ref().is_some_and(|s| s.is_empty() || s.len() > 255) {
+            return Err(refuse(
+                "INVALID_PARAMS",
+                format!("{name} must be 1..=255 bytes"),
+            ));
+        }
+    }
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    if let Some(f) = a.filename.as_deref() {
+        pairs.push(("filename", f));
+    }
+    if let Some(t) = a.content_type.as_deref() {
+        pairs.push(("filetype", t));
+    }
+    if let Some(p) = a.path.as_deref() {
+        pairs.push(("path", p));
+    }
+    pairs.push(("visibility", if public { "public" } else { "private" }));
+    let metadata = encode_upload_metadata(&pairs);
+    Ok(UploadPlan {
+        max_bytes,
+        path: a.path,
+        public,
+        metadata,
+    })
+}
+
+/// A tus `Upload-Metadata` value: `key base64(value)` pairs joined by `,`,
+/// standard base64 with padding, the encoding the tus handler decodes.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn encode_upload_metadata(pairs: &[(&str, &str)]) -> String {
+    use base64::Engine;
+    pairs
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "{k} {}",
+                base64::engine::general_purpose::STANDARD.encode(v)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `(upload_url, url_prefix)` of a tenant's tus routes: the create URL and
+/// the prefix a session's last `Location` segment is appended to. Both carry
+/// the configured public URL and base path.
+pub fn ticket_urls(cfg: &McpOauthConfig, tenant_id: &str) -> (String, String) {
+    (
+        cfg.endpoint_url(&format!("/t/{tenant_id}/uploads")),
+        cfg.endpoint_url(&format!("/t/{tenant_id}/uploads/")),
+    )
+}
+
+/// SQLite `datetime()` text (`YYYY-MM-DD HH:MM:SS`, UTC) as RFC 3339 UTC;
+/// anything else is returned unchanged.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn sqlite_utc_to_rfc3339(s: &str) -> String {
+    match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        Ok(t) => t
+            .and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        Err(_) => s.to_string(),
+    }
+}
+
+/// A POSIX shell script that uploads one file of exactly `size` bytes: one
+/// POST, then PATCHes of `chunk_max` bytes until the whole file is sent (one
+/// empty PATCH for an empty file). On a failed request it stops and names
+/// the offset to resume from.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn curl_example(
+    upload_url: &str,
+    url_prefix: &str,
+    authorization: &str,
+    size: i64,
+    metadata: &str,
+    chunk_max: usize,
+) -> String {
+    format!(
+        r#"FILE=./upload.bin  # the file to send: exactly {size} bytes
+AUTH='Authorization: {authorization}'
+LOC=$(curl -sS -D - -o /dev/null -X POST '{upload_url}' -H "$AUTH" -H 'Tus-Resumable: 1.0.0' -H 'Upload-Length: {size}' -H 'Upload-Metadata: {metadata}' | tr -d '\r' | awk 'tolower($1)=="location:"{{print $2}}')
+[ -n "$LOC" ] || {{ echo "POST failed: no Location header" >&2; exit 1; }}
+URL='{url_prefix}'"${{LOC##*/}}"
+CHUNK={chunk_max}; SIZE={size}; OFF=0
+while :; do
+  dd if="$FILE" bs="$CHUNK" skip=$((OFF / CHUNK)) count=1 2>/dev/null | curl -sS -f -o /dev/null -X PATCH "$URL" -H "$AUTH" -H 'Tus-Resumable: 1.0.0' -H 'Content-Type: application/offset+octet-stream' -H "Upload-Offset: $OFF" --data-binary @- || {{ echo "PATCH failed at offset $OFF; HEAD $URL for Upload-Offset, then resume" >&2; exit 1; }}
+  OFF=$((OFF + CHUNK)); [ "$OFF" -ge "$SIZE" ] && break
+done
+"#
+    )
+}
+
+/// The `create_upload_url` reply for a ticket presented as `authorization`
+/// (`Bearer <ticket>`): the tus create and append requests, the ticket's
+/// limits (`create_by` rendered as RFC 3339 UTC), a curl script and a note on
+/// what the ticket cannot do.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn upload_reply_with(
+    cfg: &McpOauthConfig,
+    tenant_id: &str,
+    plan: &UploadPlan,
+    authorization: &str,
+    create_by: &str,
+    limits: &UploadLimits,
+) -> serde_json::Value {
+    let (upload_url, url_prefix) = ticket_urls(cfg, tenant_id);
+    let curl = curl_example(
+        &upload_url,
+        &url_prefix,
+        authorization,
+        plan.max_bytes,
+        &plan.metadata,
+        limits.chunk_max_bytes,
+    );
+    serde_json::json!({
+        "upload_url": upload_url,
+        "create": {
+            "method": "POST",
+            "headers": {
+                "Authorization": authorization,
+                "Tus-Resumable": "1.0.0",
+                "Upload-Length": plan.max_bytes.to_string(),
+                "Upload-Metadata": plan.metadata,
+            },
+            "expect": "201 with a relative Location",
+        },
+        "append": {
+            "method": "PATCH",
+            "url_prefix": url_prefix,
+            "headers": {
+                "Authorization": "same",
+                "Tus-Resumable": "1.0.0",
+                "Content-Type": "application/offset+octet-stream",
+                "Upload-Offset": "<offset>",
+            },
+            "chunk_max_bytes": limits.chunk_max_bytes,
+            "resume": "HEAD the same URL for Upload-Offset",
+        },
+        "ticket": {
+            "max_bytes": plan.max_bytes,
+            "path": plan.path,
+            "visibility": if plan.public { "public" } else { "private" },
+            "create_by": sqlite_utc_to_rfc3339(create_by),
+            "expires_after_create_secs": limits.session_ttl_secs,
+        },
+        "curl_example": curl,
+        "notes": "This ticket opens ONE upload of at most max_bytes; it cannot list, read, sign or publish other files.",
+    })
+}
+
 impl ServerHandler for AccountMcp {
     /// The per-tenant server's capabilities (nothing that pushes) and the
     /// account-level instructions.
@@ -2679,5 +2916,287 @@ mod precheck_tests {
             serde_json::to_string(&finish_account_call(Ok(ok)).unwrap()).unwrap(),
             before
         );
+    }
+}
+
+#[cfg(test)]
+mod upload_tool_tests {
+    use super::*;
+    use serde_json::{Map, Value, json};
+
+    fn limits() -> UploadLimits {
+        UploadLimits {
+            storage_configured: true,
+            max_bytes: 100,
+            chunk_max_bytes: 4,
+            session_ttl_secs: 86_400,
+        }
+    }
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn plan_upload_refuses_when_storage_is_not_configured() {
+        let l = UploadLimits {
+            storage_configured: false,
+            ..limits()
+        };
+        let e = plan_upload(&args(json!({"tenant":"t","size":1})), &l).unwrap_err();
+        assert_eq!(e.code, "STORAGE_UNAVAILABLE");
+        assert_eq!(e.message, "file storage is not configured on this server");
+    }
+
+    #[test]
+    fn plan_upload_defaults_to_private_and_no_path() {
+        let p = plan_upload(&args(json!({"tenant":"t","size":10})), &limits()).unwrap();
+        assert_eq!(
+            (p.max_bytes, p.path.as_deref(), p.public),
+            (10, None, false)
+        );
+        let m = crate::tenant::uploads::session::parse_upload_metadata(&p.metadata);
+        assert_eq!(m.get("visibility").map(String::as_str), Some("private"));
+        assert!(
+            !m.contains_key("path") && !m.contains_key("filename") && !m.contains_key("filetype")
+        );
+    }
+
+    #[test]
+    fn plan_upload_accepts_size_zero_and_the_exact_limit() {
+        assert_eq!(
+            plan_upload(&args(json!({"tenant":"t","size":0})), &limits())
+                .unwrap()
+                .max_bytes,
+            0
+        );
+        assert_eq!(
+            plan_upload(&args(json!({"tenant":"t","size":100})), &limits())
+                .unwrap()
+                .max_bytes,
+            100
+        );
+    }
+
+    #[test]
+    fn plan_upload_rejects_size_over_the_limit() {
+        let e = plan_upload(&args(json!({"tenant":"t","size":101})), &limits()).unwrap_err();
+        assert_eq!(e.code, "UPLOAD_TOO_LARGE");
+        assert_eq!(e.message, "size 101 exceeds limit 100");
+    }
+
+    #[test]
+    fn plan_upload_rejects_a_mistyped_size() {
+        for bad in [
+            json!({"tenant":"t","size":"10"}),
+            json!({"tenant":"t","size":-1}),
+            json!({"tenant":"t","size":1.5}),
+            json!({"tenant":"t"}),
+        ] {
+            let e = plan_upload(&args(bad.clone()), &limits()).unwrap_err();
+            assert_eq!(e.code, "INVALID_PARAMS", "{bad}");
+            assert!(
+                e.message.starts_with("failed to deserialize parameters:"),
+                "{bad}: {}",
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn plan_upload_rejects_misspelt_visibility() {
+        for v in ["Public", "PRIVATE", "", "pub"] {
+            let e = plan_upload(
+                &args(json!({"tenant":"t","size":1,"visibility":v})),
+                &limits(),
+            )
+            .unwrap_err();
+            assert_eq!(e.code, "INVALID_VISIBILITY", "{v}");
+            assert_eq!(e.message, "visibility must be 'public' or 'private'");
+        }
+        assert!(
+            plan_upload(
+                &args(json!({"tenant":"t","size":1,"visibility":"public"})),
+                &limits()
+            )
+            .unwrap()
+            .public
+        );
+    }
+
+    #[test]
+    fn plan_upload_rejects_an_empty_or_invalid_path() {
+        let e =
+            plan_upload(&args(json!({"tenant":"t","size":1,"path":""})), &limits()).unwrap_err();
+        assert_eq!(e.code, "FILE_PATH_INVALID");
+        assert_eq!(e.message, "path must not be empty (omit the field instead)");
+        for bad in ["/a", "a/", "a//b", "a/../b"] {
+            assert_eq!(
+                plan_upload(&args(json!({"tenant":"t","size":1,"path":bad})), &limits())
+                    .unwrap_err()
+                    .code,
+                "FILE_PATH_INVALID",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_upload_rejects_overlong_filename_and_content_type() {
+        let long = "a".repeat(256);
+        let e = plan_upload(
+            &args(json!({"tenant":"t","size":1,"filename":long})),
+            &limits(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            ("INVALID_PARAMS", "filename must be 1..=255 bytes")
+        );
+        let e = plan_upload(
+            &args(json!({"tenant":"t","size":1,"filename":""})),
+            &limits(),
+        )
+        .unwrap_err();
+        assert_eq!(e.message, "filename must be 1..=255 bytes");
+        let e = plan_upload(
+            &args(json!({"tenant":"t","size":1,"content_type":"a".repeat(256)})),
+            &limits(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            ("INVALID_PARAMS", "content_type must be 1..=255 bytes")
+        );
+    }
+
+    #[test]
+    fn upload_metadata_round_trips_through_the_tus_parser() {
+        let p = plan_upload(
+            &args(json!({"tenant":"t","size":3,"filename":"報告 v1,final.txt",
+            "path":"docs/季報/q3.txt","visibility":"public","content_type":"text/plain"})),
+            &limits(),
+        )
+        .unwrap();
+        assert!(p.metadata.split(',').all(|kv| kv.split(' ').count() == 2));
+        let m = crate::tenant::uploads::session::parse_upload_metadata(&p.metadata);
+        assert_eq!(m["filename"], "報告 v1,final.txt");
+        assert_eq!(m["filetype"], "text/plain");
+        assert_eq!(m["path"], "docs/季報/q3.txt");
+        assert_eq!(m["visibility"], "public");
+        assert_eq!(p.path.as_deref(), Some("docs/季報/q3.txt"));
+        // key order is fixed: filename, filetype, path, visibility
+        let keys: Vec<&str> = p
+            .metadata
+            .split(',')
+            .map(|kv| kv.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(keys, ["filename", "filetype", "path", "visibility"]);
+    }
+
+    #[test]
+    fn ticket_urls_follow_the_default_base() {
+        let cfg = McpOauthConfig::for_tests("https://drust.test");
+        assert_eq!(
+            ticket_urls(&cfg, "blog"),
+            (
+                "https://drust.test/drust/t/blog/uploads".to_string(),
+                "https://drust.test/drust/t/blog/uploads/".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn create_by_is_rendered_as_rfc3339_utc() {
+        assert_eq!(
+            sqlite_utc_to_rfc3339("2026-11-17 10:15:00"),
+            "2026-11-17T10:15:00Z"
+        );
+        assert_eq!(
+            sqlite_utc_to_rfc3339("2026-11-17T10:15:00Z"),
+            "2026-11-17T10:15:00Z"
+        );
+        assert_eq!(sqlite_utc_to_rfc3339("garbage"), "garbage");
+    }
+
+    #[test]
+    fn upload_reply_has_the_contract_shape() {
+        let cfg = McpOauthConfig::for_tests("https://drust.test");
+        let auth = format!("Bearer drust_upl_{}", "A".repeat(43));
+        let p = plan_upload(
+            &args(json!({"tenant":"blog","size":10,"path":"a/b.txt"})),
+            &limits(),
+        )
+        .unwrap();
+        let r = upload_reply_with(&cfg, "blog", &p, &auth, "2026-11-17 10:15:00", &limits());
+        let keys: Vec<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "upload_url",
+                "create",
+                "append",
+                "ticket",
+                "curl_example",
+                "notes"
+            ]
+        );
+        assert_eq!(r["upload_url"], "https://drust.test/drust/t/blog/uploads");
+        assert_eq!(r["create"]["method"], "POST");
+        assert_eq!(r["create"]["headers"]["Authorization"], auth.as_str());
+        assert_eq!(r["create"]["headers"]["Tus-Resumable"], "1.0.0");
+        assert_eq!(r["create"]["headers"]["Upload-Length"], "10");
+        assert_eq!(
+            r["create"]["headers"]["Upload-Metadata"],
+            p.metadata.as_str()
+        );
+        assert_eq!(r["create"]["expect"], "201 with a relative Location");
+        assert_eq!(r["append"]["method"], "PATCH");
+        assert_eq!(
+            r["append"]["url_prefix"],
+            "https://drust.test/drust/t/blog/uploads/"
+        );
+        assert_eq!(
+            r["append"]["headers"],
+            json!({"Authorization":"same","Tus-Resumable":"1.0.0",
+            "Content-Type":"application/offset+octet-stream","Upload-Offset":"<offset>"})
+        );
+        assert_eq!(r["append"]["chunk_max_bytes"], 4);
+        assert_eq!(r["append"]["resume"], "HEAD the same URL for Upload-Offset");
+        assert_eq!(
+            r["ticket"],
+            json!({"max_bytes":10,"path":"a/b.txt","visibility":"private",
+            "create_by":"2026-11-17T10:15:00Z","expires_after_create_secs":86400})
+        );
+        assert_eq!(
+            r["notes"],
+            "This ticket opens ONE upload of at most max_bytes; it cannot list, read, sign or publish other files."
+        );
+        let p0 = plan_upload(&args(json!({"tenant":"blog","size":0})), &limits()).unwrap();
+        assert_eq!(
+            upload_reply_with(&cfg, "blog", &p0, &auth, "x", &limits())["ticket"]["path"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn curl_example_sends_one_patch_for_an_empty_file() {
+        let s = curl_example(
+            "https://h/t/b/uploads",
+            "https://h/t/b/uploads/",
+            "Bearer X",
+            0,
+            "visibility cHJpdmF0ZQ==",
+            4,
+        );
+        assert!(s.contains("-X POST 'https://h/t/b/uploads'"));
+        assert!(s.contains("-H 'Upload-Length: 0'"));
+        assert!(s.contains("-H 'Upload-Metadata: visibility cHJpdmF0ZQ=='"));
+        assert!(s.contains("URL='https://h/t/b/uploads/'\"${LOC##*/}\""));
+        assert!(s.contains("CHUNK=4; SIZE=0; OFF=0"));
+        // the PATCH runs before the loop's exit test, so size 0 still sends exactly one PATCH
+        let patch = s.find("-X PATCH").unwrap();
+        let exit = s.find("[ \"$OFF\" -ge \"$SIZE\" ] && break").unwrap();
+        assert!(patch < exit);
+        assert!(!s.contains("DRUST_SERVICE_TOKEN"));
     }
 }
