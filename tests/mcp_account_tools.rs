@@ -700,3 +700,35 @@ async fn create_upload_url_without_storage_is_storage_unavailable_and_writes_no_
     );
     assert_eq!(tickets_in(&*h.meta.lock().await), 0);
 }
+
+#[tokio::test]
+async fn account_files_guide_and_descriptions_over_the_wire() {
+    let h = spin_up_account_mcp("acct-upl").await;
+    let (st, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc":"2.0","id":3,"method":"resources/read",
+            "params":{"uri":"drust://acct-upl/files-guide.md"}}),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let text = msgs[0]["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(text.contains("create_upload_url"));
+    assert!(text.contains("## 1. Uploading a file"));
+    assert!(!text.contains("DRUST_SERVICE_TOKEN"));
+    let (st, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let tools = msgs[0]["result"]["tools"].as_array().unwrap();
+    let desc = |n: &str| -> String {
+        let t: Vec<_> = tools.iter().filter(|t| t["name"] == n).collect();
+        assert_eq!(t.len(), 1, "{n}");
+        t[0]["description"].as_str().unwrap().to_string()
+    };
+    assert!(desc("list_functions").contains("there is no function-deploy tool"));
+    assert!(desc("whoami").contains("To upload a file, call create_upload_url."));
+}

@@ -847,7 +847,7 @@ pub(crate) const ACCOUNT_TENANT_VAR: &str = "{tenant}";
 
 /// The account-level description of `files-guide.md`: the per-tenant one
 /// points at `whoami` for tokens, which this connection does not hand out.
-pub(crate) const ACCOUNT_FILES_GUIDE_DESC: &str = "How this tenant's file storage works: the two upload endpoints, the public/private visibility model, the per-prefix publish grant (public_upload_roles) that decides which non-service roles may upload with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the tenant's live grant list. Carries no credentials.";
+pub(crate) const ACCOUNT_FILES_GUIDE_DESC: &str = "How this tenant's file storage works: uploading with the create_upload_url tool, the public/private visibility model, the per-prefix publish grant (public_upload_roles) that decides which non-service roles may upload with visibility=public, how to fix FILE_PUBLIC_UPLOAD_DENIED, and the tenant's live grant list. Carries no credentials.";
 
 /// What `resources/templates/list` answers on the account-level endpoint:
 /// the ten static resources as `drust://{tenant}/<path>` templates, then the
@@ -931,20 +931,39 @@ pub(crate) fn files_guide_account_static(
     base: &str,
 ) -> Result<String, &'static str> {
     let t = files_guide_static(tenant_id, base);
-    let t = replace_once(
+    let head = format!(
+        r#"# Files — tenant `{tenant_id}`
+
+Two buckets and ONE rule about who may publish. This connection uploads with a
+per-file ticket from the `create_upload_url` tool; no key is on this page.
+
+## 1. Uploading a file
+
+Call `create_upload_url {{tenant, size}}` (optional `filename`, `path`, `visibility`,
+`content_type`). It returns a ticket for ONE resumable upload (tus 1.0) and the
+exact requests:
+
+1. `POST upload_url` with `create.headers` exactly as given: 201 with a relative
+   `Location`. Send `Upload-Metadata` unchanged; the ticket only accepts the path
+   and visibility it was issued for.
+2. `PATCH` `append.url_prefix` + the last segment of `Location`, once per chunk,
+   each at most `chunk_max_bytes`, with `Upload-Offset` = bytes sent so far.
+   An empty file still takes one empty PATCH. The last chunk finalizes the file.
+3. After a dropped connection, `HEAD` the same URL and continue from its
+   `Upload-Offset`.
+
+The POST must happen within 15 minutes of issue; after it the ticket lives as long
+as the upload session. A ticket opens exactly one upload: it cannot list, read,
+sign, delete or publish other files, and the `/files` endpoint refuses it.
+Visibility is decided by `create_upload_url` (default `private`) and frozen on the
+upload. `path` is immutable after upload — there is no rename or move API.
+"#
+    );
+    let t = splice_once(
         &t,
-        "Tokens are\nnot on this page: call the `whoami` tool for the service / anon bearer.",
-        "This\nconnection holds no tenant key, so it cannot upload by itself (see §5).",
-    )?;
-    let t = replace_once(
-        &t,
-        "MCP has no upload tool by design — uploads are HTTP.",
-        "Uploads are HTTP and need a tenant key, which this connection does not hold.",
-    )?;
-    let t = replace_once(
-        &t,
-        " (service bearer) reports `Tus-Max-Size`.",
-        " reports `Tus-Max-Size`.",
+        "# Files — tenant `",
+        Some("there is no rename or move API.\n"),
+        &head,
     )?;
     let t = splice_once(
         &t,
@@ -956,9 +975,12 @@ pub(crate) fn files_guide_account_static(
         &t,
         "## 5. curl\n",
         None,
-        "## 5. Uploading from this connection\n\nThis MCP connection holds no tenant key and \
-         cannot upload by itself. Ask the user to upload the file through the tenant's Files \
-         page in the admin UI, or from a machine that holds the tenant's service key.\n",
+        "## 5. Uploading from this connection\n\nThe `curl_example` field of \
+         `create_upload_url` is a ready script for one file:\nset `FILE` to the file and run \
+         it. It POSTs once, then PATCHes chunks of\n`chunk_max_bytes` until the whole file is \
+         sent, and stops with a message naming\nthe offset to resume from if a request \
+         fails.\n\nTo change who may read or publish under a prefix, use the \
+         `set_file_policy` tool.\n",
     )
 }
 
@@ -1115,6 +1137,40 @@ mod tests {
         }
         assert!(account.contains("## 5. Uploading from this connection"));
         assert!(account.contains("## 4. Fixing `FILE_PUBLIC_UPLOAD_DENIED`"));
+    }
+
+    #[test]
+    fn account_files_guide_teaches_the_ticket() {
+        let g = files_guide_account_static("blog", "https://h").unwrap();
+        for want in [
+            "# Files — tenant `blog`",
+            "## 1. Uploading a file",
+            "create_upload_url",
+            "An empty file still takes one empty PATCH.",
+            "the `/files` endpoint refuses it",
+            "## 2. The visibility model",
+            "## 5. Uploading from this connection",
+            "`curl_example`",
+        ] {
+            assert!(g.contains(want), "{want}");
+        }
+        for bad in [
+            "DRUST_SERVICE_TOKEN",
+            "MCP has no upload tool",
+            "## 1. Upload endpoints",
+            "## 5. curl",
+            "cannot upload by itself",
+            "Authorization: Bearer",
+            "(service bearer)",
+        ] {
+            assert!(!g.contains(bad), "{bad}");
+        }
+        assert!(!ACCOUNT_FILES_GUIDE_DESC.contains("two upload endpoints"));
+        // the per-tenant guide is unchanged
+        assert!(
+            files_guide_static("blog", "https://h")
+                .contains("MCP has no upload tool by design — uploads are HTTP.")
+        );
     }
 
     #[test]

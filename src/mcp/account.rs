@@ -88,7 +88,7 @@ TOOL GROUPS (tools/list has each tool's full schema):
   Cron: create_cron_job, list_cron_jobs, set_cron_job_active, delete_cron_job
   Write log: recent_writes — writes made through this endpoint
 
-UPLOADS: this connection carries no tenant key, and no tool here uploads files or edge-function .wasm yet: ask the user to upload them in the admin UI.
+UPLOADS: create_upload_url {tenant, size} returns a one-file ticket and a curl recipe: POST, then PATCH chunks of at most chunk_max_bytes. This connection holds no tenant key; the user deploys edge function .wasm files (admin UI, Functions page).
 
 RESOURCES: read drust://<tenant>/schema.md, …/openapi.json, …/types.ts, …/files-guide.md and single records via resources/templates/list; list_tenants gives each tenant's schema.md URI; resources/list is empty on purpose.
 
@@ -285,7 +285,7 @@ pub(crate) const DESCRIPTION_OVERRIDES: &[(&str, &str, &str)] = &[
     (
         "whoami",
         "Use this to surface credentials needed for surfaces with no MCP tool — most importantly the multipart file upload endpoint. Tokens minted before v1.1c only stored the hash; their `plaintext` field is null and require an admin reroll to recover. ",
-        "",
+        "To upload a file, call create_upload_url. ",
     ),
     (
         "get_schema_overview",
@@ -330,7 +330,7 @@ pub(crate) const DESCRIPTION_OVERRIDES: &[(&str, &str, &str)] = &[
     (
         "list_functions",
         "There is NO MCP upload tool by design — POST the .wasm to /t/<tenant>/functions (multipart: name, wasm, triggers, description) with the service bearer, at whoami's `endpoints.rest_base` + `functions`.",
-        "There is NO MCP upload tool, and this connection carries no tenant key: ask the user to upload the .wasm on the tenant's functions page in the admin UI, which shows the upload command.",
+        "This connection cannot deploy a function: there is no function-deploy tool and it carries no tenant key. Ask the user to deploy the .wasm themselves; the tenant's functions page in the admin UI shows the upload command.",
     ),
     (
         "invoke_function",
@@ -3756,5 +3756,40 @@ mod upload_tool_tests {
                 "create_upload_url must not build rows itself: {n}"
             );
         }
+    }
+
+    const UPLOADS: &str = "UPLOADS: create_upload_url {tenant, size} returns a one-file ticket and a curl recipe: POST, then PATCH chunks of at most chunk_max_bytes. This connection holds no tenant key; the user deploys edge function .wasm files (admin UI, Functions page).";
+
+    #[test]
+    fn account_instructions_teach_the_upload_ticket() {
+        let s = AccountMcp::instructions();
+        assert!(s.contains(UPLOADS));
+        assert!(s.contains("Files: create_upload_url, list_files"));
+        assert!(!s.contains("no tool here uploads files") && !s.contains("service key"));
+    }
+
+    #[test]
+    fn upload_related_descriptions_point_at_what_this_connection_can_do() {
+        let d = |n: &str| {
+            account_tool(n)
+                .unwrap()
+                .description
+                .as_deref()
+                .unwrap()
+                .to_string()
+        };
+        let who = d("whoami");
+        assert!(who.contains("To upload a file, call create_upload_url."));
+        assert!(!who.contains("surface credentials needed for surfaces with no MCP tool"));
+        let lf = d("list_functions");
+        assert!(
+            lf.contains("there is no function-deploy tool")
+                && lf.contains("shows the upload command")
+        );
+        assert!(!lf.contains("There is NO MCP upload tool") && !lf.contains("service bearer"));
+        let inv = d("invoke_function");
+        assert!(inv.contains("test-invoke form") && !inv.contains("POST /t/"));
+        let cron = d("list_cron_jobs");
+        assert!(cron.contains("cron page in the admin UI") && !cron.contains("service bearer"));
     }
 }
