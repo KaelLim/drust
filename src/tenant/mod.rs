@@ -763,17 +763,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
         .with_state(auth_state.clone());
 
-    // v1.31.7 — WebSocket / SSE sub-router. These two routes accept the
-    // bearer via `?token=` (browsers' native WebSocket / EventSource APIs
-    // can't set custom headers), so the `ws_query_token_adapter` MUST run
-    // BEFORE `bearer_auth_layer` to rewrite the query into an Authorization
-    // header. axum applies router-level `.layer(...)` outermost (= runs
-    // first); per-route `.layer(...)` is INNER (= runs after the outer
-    // router layer). Putting both on `core` reversed the desired order and
-    // every WS upgrade with `?token=` got rejected as `UNAUTHENTICATED`.
-    // The fix: isolate these two routes in their own sub-router, applying
-    // `bearer_auth_layer` INNER + `ws_query_token_adapter` OUTER, then
-    // merge.
     // The retired per-tenant MCP path: one 410 for every tenant id, method
     // and credential. Outside `core`, so no bearer layer, rate limit or
     // audit row runs and the answer reveals nothing about the tenant or
@@ -789,6 +778,17 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         )
     };
 
+    // v1.31.7 — WebSocket / SSE sub-router. These two routes accept the
+    // bearer via `?token=` (browsers' native WebSocket / EventSource APIs
+    // can't set custom headers), so the `ws_query_token_adapter` MUST run
+    // BEFORE `bearer_auth_layer` to rewrite the query into an Authorization
+    // header. axum applies router-level `.layer(...)` outermost (= runs
+    // first); per-route `.layer(...)` is INNER (= runs after the outer
+    // router layer). Putting both on `core` reversed the desired order and
+    // every WS upgrade with `?token=` got rejected as `UNAUTHENTICATED`.
+    // The fix: isolate these two routes in their own sub-router, applying
+    // `bearer_auth_layer` INNER + `ws_query_token_adapter` OUTER, then
+    // merge.
     let ws_router = Router::new()
         .route(
             "/t/{tenant}/records/{coll}/subscribe",
