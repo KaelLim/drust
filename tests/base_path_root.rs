@@ -8,6 +8,8 @@
 //! (`set` -> `base_path` / `base` / `cookie_path`), not just the pure inner
 //! helpers covered by the `src/base_path.rs` unit tests.
 
+mod helpers;
+
 #[test]
 fn empty_base_drops_the_prefix() {
     // First base_path mutation in this process: empty prefix = root mount.
@@ -222,6 +224,24 @@ async fn account_mcp_urls_drop_the_prefix() {
     let prm: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(prm["resource"], "https://drust.test/mcp");
     assert_eq!(prm["authorization_servers"][0], "https://drust.test");
+}
+
+#[tokio::test]
+async fn retired_tenant_mcp_path_names_the_root_endpoint() {
+    drust::base_path::set("");
+    let h = helpers::spin_up_account_mcp("t1").await;
+    let (s, _, b) = helpers::http_raw(
+        &h.app,
+        "POST",
+        "/t/t1/mcp",
+        &[],
+        Some(helpers::mcp_init("2025-06-18")),
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::GONE);
+    let text = String::from_utf8(b).unwrap();
+    assert!(text.contains("https://drust.test/mcp"), "{text}");
+    assert!(!text.contains("/drust/"), "{text}");
 }
 
 #[test]

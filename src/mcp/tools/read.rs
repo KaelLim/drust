@@ -95,9 +95,9 @@ pub struct ListRecordsArgs {
     pub select: Option<Vec<String>>,
 }
 
-/// MCP `list_records` impl. Service-only at the transport layer
-/// (`MCP_USER_DENIED` covers user tokens in `mcp_dispatch`); this
-/// function therefore has no auth branching. owner_field is bypassed
+/// MCP `list_records` impl. Service-only at the transport layer (the
+/// account-level endpoint acts as service for a caller its tenant check
+/// admitted); this function therefore has no auth branching. owner_field is bypassed
 /// (`None`) to match the service-key REST behaviour.
 pub async fn list_records(
     s: &DrustMcp,

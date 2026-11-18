@@ -9,8 +9,8 @@ mod helpers;
 
 use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use helpers::{
-    http_raw, mcp_call, mcp_init, mcp_rpc, mcp_tool_text, seed_mcp_access, seed_upload_ticket,
-    spin_up_account_mcp, spin_up_ticket_harness,
+    mcp_call, mcp_rpc, mcp_tool_text, seed_mcp_access, seed_upload_ticket, spin_up_account_mcp,
+    spin_up_ticket_harness,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -119,62 +119,6 @@ fn extra_of(row: &Value) -> Value {
 fn tools_call(name: &str, args: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
            "params": {"name": name, "arguments": args}})
-}
-
-/// One tools/call on the per-tenant endpoint `/t/<tid>/mcp`, authenticated
-/// with the tenant's service key. That endpoint is stateful: initialize, keep
-/// the session id, acknowledge, then call. Returns the tools/call response
-/// message.
-async fn legacy_call(app: &axum::Router, tid: &str, svc: &str, tool: &str, args: Value) -> Value {
-    let path = format!("/t/{tid}/mcp");
-    let auth = format!("Bearer {svc}");
-    let (s, hd, _) = http_raw(
-        app,
-        "POST",
-        &path,
-        &[("authorization", auth.as_str())],
-        Some(mcp_init("2024-11-05")),
-    )
-    .await;
-    assert_eq!(s, axum::http::StatusCode::OK, "per-tenant initialize");
-    let sid = hd
-        .get("mcp-session-id")
-        .expect("per-tenant initialize sets a session id")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let hs = [
-        ("authorization", auth.as_str()),
-        ("mcp-session-id", sid.as_str()),
-    ];
-    http_raw(
-        app,
-        "POST",
-        &path,
-        &hs,
-        Some(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
-    )
-    .await;
-    let (s, _, body) = http_raw(
-        app,
-        "POST",
-        &path,
-        &hs,
-        Some(json!({"jsonrpc": "2.0", "id": 2,
-            "method": "tools/call", "params": {"name": tool, "arguments": args}})),
-    )
-    .await;
-    assert_eq!(
-        s,
-        axum::http::StatusCode::OK,
-        "per-tenant tools/call {tool}"
-    );
-    String::from_utf8_lossy(&body)
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:"))
-        .filter_map(|d| serde_json::from_str::<Value>(d.trim()).ok())
-        .find(|m| m["id"] == 2)
-        .expect("per-tenant tools/call answered")
 }
 
 #[tokio::test]
@@ -569,56 +513,6 @@ async fn account_egress_set_row_has_no_token_hint() {
         r[0]["actor_admin_id"].is_null(),
         "set_allowlist takes no actor"
     );
-}
-
-#[tokio::test]
-async fn legacy_endpoint_broadcast_and_egress_rows_keep_the_service_hint() {
-    audit_path();
-    let h = spin_up_account_mcp("aud-legacy").await;
-    legacy_call(
-        &h.app,
-        &h.tid,
-        &h.svc,
-        "broadcast",
-        json!({"room": "lobby", "payload": {"n": 1}}),
-    )
-    .await;
-    legacy_call(
-        &h.app,
-        &h.tid,
-        &h.svc,
-        "broadcast",
-        json!({"room": "_system_x", "payload": {"n": 1}}),
-    )
-    .await;
-    legacy_call(
-        &h.app,
-        &h.tid,
-        &h.svc,
-        "set_egress_allowlist",
-        json!({"entries": [{"system": "webhook", "uri": "https://a.com"}]}),
-    )
-    .await;
-    let q = |cond: &str| format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND {cond}");
-    let rows = [
-        rows_eventually(
-            &q("op = 'broadcast.publish' AND status = 'ok'"),
-            "aud-legacy",
-            1,
-        )
-        .await,
-        rows_eventually(
-            &q("op = 'broadcast.publish' AND status = 'error'"),
-            "aud-legacy",
-            1,
-        )
-        .await,
-        rows_eventually(&q("op = 'tenant.egress.set'"), "aud-legacy", 1).await,
-    ];
-    for r in &rows {
-        assert_eq!(r[0]["token_hint"], "service");
-        assert!(r[0]["actor_admin_id"].is_null());
-    }
 }
 
 #[tokio::test]

@@ -4126,7 +4126,8 @@ impl ServerHandler for DrustMcpService {
 
     // --- MCP Resources (v1.56, M2). Hand-written (rmcp has no resource macro);
     // thin wrappers over `crate::mcp::resources` — the tenant comes from the
-    // per-tenant `self.state`, role is always Service (mcp_dispatch-gated), so
+    // per-tenant `self.state`, role is always Service (the account-level
+    // endpoint acts as service for a caller its tenant check admitted), so
     // no request-context plumbing is needed. See src/mcp/resources.rs.
     async fn list_resources(
         &self,
@@ -4164,7 +4165,8 @@ impl ServerHandler for DrustMcpService {
 
     // --- MCP Prompts (v1.56, M3). Hand-written (no prompt macro); thin wrappers
     // over `crate::mcp::prompts`. Tenant comes from `self.state`; role is always
-    // Service (mcp_dispatch-gated). See src/mcp/prompts.rs.
+    // Service (the account-level endpoint acts as service for a caller its
+    // tenant check admitted). See src/mcp/prompts.rs.
     async fn list_prompts(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,

@@ -171,7 +171,7 @@ async fn mcp_access_is_refused_on_every_other_plane() {
         ("GET", "/t/t1/realtime", 401, "UNAUTHENTICATED"),
         ("GET", "/t/t1/files", 401, "UNAUTHENTICATED"),
         ("POST", "/t/t1/uploads", 401, "UNAUTHENTICATED"),
-        ("POST", "/t/t1/mcp", 401, "UNAUTHENTICATED"),
+        ("POST", "/t/t1/mcp", 410, "MCP_ENDPOINT_MOVED"),
         ("POST", "/t/t1/query", 401, "UNAUTHENTICATED"),
         (
             "GET",

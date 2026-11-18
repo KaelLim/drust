@@ -32,6 +32,42 @@ pub(crate) fn mcp_error(status: StatusCode, message: &str, error_code: &str) -> 
     resp
 }
 
+/// The `error_code` of the retired per-tenant path's 410.
+pub(crate) const MOVED_CODE: &str = "MCP_ENDPOINT_MOVED";
+const MOVED_DISABLED: &str = "MOVED: MCP is now one account-level OAuth endpoint, not enabled on this server yet; ask the operator";
+/// The longest body a client is expected to show in one line.
+const MOVED_BODY_MAX: usize = 160;
+
+/// What the retired `/t/<id>/mcp` tells a client: the commands that move it
+/// to the account-level endpoint, the longest form whose body fits
+/// `MOVED_BODY_MAX` bytes (the URL is never cut); disabled, a sentence with
+/// no URL. Reads nothing but the config.
+pub(crate) fn moved_message(cfg: &McpOauthConfig) -> String {
+    if !cfg.enabled() {
+        return MOVED_DISABLED.to_string();
+    }
+    let url = cfg.resource_url();
+    let forms = [
+        format!(
+            "MOVED: claude mcp remove <name>; claude mcp add --transport http drust {url} (no --header)"
+        ),
+        format!("MOVED: claude mcp remove <name>; claude mcp add --transport http drust {url}"),
+        format!("MOVED: claude mcp add --transport http drust {url}"),
+    ];
+    let fits = |m: &str| {
+        serde_json::json!({ "message": m, "error_code": MOVED_CODE })
+            .to_string()
+            .len()
+            <= MOVED_BODY_MAX
+    };
+    forms.iter().find(|m| fits(m)).unwrap_or(&forms[2]).clone()
+}
+
+/// The 410 every request to the retired per-tenant path gets.
+pub(crate) fn endpoint_moved(cfg: &McpOauthConfig) -> Response {
+    mcp_error(StatusCode::GONE, &moved_message(cfg), MOVED_CODE)
+}
+
 /// The Host check's answer. A missing or malformed Host is `Rejected` (421),
 /// never left to rmcp's plain-text 400.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -677,5 +713,63 @@ mod tests {
         assert_eq!(got.0, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_slice(&got.2).unwrap();
         assert_eq!(v["len"], MCP_BODY_LIMIT);
+    }
+
+    const H10: &[u8] = br#"{"message":"MOVED: MCP is now one account-level OAuth endpoint, not enabled on this server yet; ask the operator","error_code":"MCP_ENDPOINT_MOVED"}"#;
+
+    async fn moved_body(cfg: &McpOauthConfig) -> (StatusCode, Vec<u8>) {
+        let r = endpoint_moved(cfg);
+        let s = r.status();
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        (
+            s,
+            axum::body::to_bytes(r.into_body(), 4096)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+    }
+
+    #[tokio::test]
+    async fn moved_disabled_is_h10_and_names_no_url() {
+        let (s, b) = moved_body(&McpOauthConfig::disabled()).await;
+        assert_eq!(s, StatusCode::GONE);
+        assert_eq!(b, H10);
+        assert!(!String::from_utf8(b).unwrap().contains("://"));
+    }
+
+    #[tokio::test]
+    async fn moved_enabled_fits_160_bytes_for_a_short_url_and_never_cuts_it() {
+        for url in [
+            "https://a.io",
+            "https://drust.test",
+            "https://mcp.example.org",
+            "https://a-much-longer-host-name.example.org",
+        ] {
+            let cfg = McpOauthConfig::for_tests(url);
+            let (s, b) = moved_body(&cfg).await;
+            let text = String::from_utf8(b).unwrap();
+            assert_eq!(s, StatusCode::GONE);
+            assert!(text.starts_with(r#"{"message":"MOVED:"#), "{text}");
+            assert!(
+                text.ends_with(r#"","error_code":"MCP_ENDPOINT_MOVED"}"#),
+                "{text}"
+            );
+            assert!(
+                text.contains(&cfg.resource_url()),
+                "the URL is never cut: {text}"
+            );
+            if cfg.resource_url().len() <= 41 {
+                assert!(text.len() <= 160, "{} bytes: {text}", text.len());
+            }
+        }
+        // the longest form that fits is chosen
+        let short = McpOauthConfig::for_tests("https://a.io");
+        assert!(
+            moved_message(&short).ends_with(" (no --header)"),
+            "{}",
+            moved_message(&short)
+        );
     }
 }

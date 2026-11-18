@@ -1,8 +1,9 @@
 //! MCP Resources (v1.56, M2) — the URI parser + a thin router that projects
 //! tenant knowledge into `drust://<tenant>/<path>` resources by calling the SAME
 //! `src/mcp/tools/*` reader functions the tools use (zero new SQL, zero new
-//! enforcement). MCP is service-only (gated in `mcp_dispatch` before the
-//! handler), so every read runs at `AuthCtx::Service` via `&DrustMcp`.
+//! enforcement). MCP is service-only (the account-level endpoint acts as
+//! service for a caller its tenant check admitted), so every read runs at
+//! `AuthCtx::Service` via `&DrustMcp`.
 //!
 //! The router logic lives in pure helpers (`parse_resource_uri`,
 //! `render_resource`, `static_resource_list`) tested directly; the thin

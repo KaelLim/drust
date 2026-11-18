@@ -9,9 +9,10 @@
 //! lives in `_system_collection_meta.fts_indexes_json` and is the operator-facing
 //! identity `describe_collection` / the `$fts` operand resolve against.
 //!
-//! These three tools are reachable only over `/t/<id>/mcp`, which is
-//! service-only by route dispatch (anon → `WRITE_DENIED`, user →
-//! `MCP_USER_DENIED`); there is no per-tool role check, matching `create_index`.
+//! These three tools are reachable only over the account-level `/mcp`, which
+//! accepts an MCP OAuth access token only and runs every tool as service for
+//! a tenant its caller can see; there is no per-tool role check, matching
+//! `create_index`.
 
 use crate::mcp::server::DrustMcp;
 use crate::mcp::tools::schema::{SYSTEM_COLUMNS, identifier};

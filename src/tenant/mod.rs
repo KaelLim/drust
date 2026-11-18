@@ -11,7 +11,6 @@ pub use webhook_dispatcher::WebhookDispatcher;
 pub mod auth_cache;
 pub mod file_caps;
 pub mod file_policy_routes;
-pub mod mcp_dispatch;
 pub mod oauth_admin_routes;
 pub mod oauth_config;
 pub mod oauth_routes;
@@ -56,6 +55,8 @@ pub struct TenantStack {
     /// v1.31 broadcast rooms config (payload cap, subscriber caps).
     /// Cloneable; tests use `RoomsConfig::test_defaults()`.
     pub rooms_cfg: rooms::RoomsConfig,
+    /// The management plane's MCP eviction handle. The tenant router mounts
+    /// no MCP route.
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
     pub webhooks: Arc<WebhookDispatcher>,
@@ -252,7 +253,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // write-RPC route closures for the transitional `quota::read_tier` lookup
     // (Task 5 will move REST onto a bearer-CTE request extension).
     let quota_meta = auth_state.meta.clone();
-    let mcp = state.mcp.clone();
     let cors = build_cors_layer(&state.cors_origins);
     let rec_body_limit = max_record_body_bytes();
     // Captured before `state.files` is moved into files_router below; feeds the
@@ -560,13 +560,6 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
                 .patch(webhook_routes::patch_handler)
                 .delete(webhook_routes::delete_handler),
         )
-        .route(
-            "/t/{tenant}/mcp",
-            any({
-                let mcp = mcp.clone();
-                move |ext, path, req| mcp_dispatch::dispatch(mcp.clone(), ext, path, req)
-            }),
-        )
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             router::bearer_auth_layer,
@@ -781,6 +774,21 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     // The fix: isolate these two routes in their own sub-router, applying
     // `bearer_auth_layer` INNER + `ws_query_token_adapter` OUTER, then
     // merge.
+    // The retired per-tenant MCP path: one 410 for every tenant id, method
+    // and credential. Outside `core`, so no bearer layer, rate limit or
+    // audit row runs and the answer reveals nothing about the tenant or
+    // the token.
+    let moved_router = {
+        let cfg = auth_state.mcp_oauth.clone();
+        Router::new().route(
+            "/t/{tenant}/mcp",
+            any(move || {
+                let cfg = cfg.clone();
+                async move { crate::mgmt::mcp_oauth::route_layer::endpoint_moved(&cfg) }
+            }),
+        )
+    };
+
     let ws_router = Router::new()
         .route(
             "/t/{tenant}/records/{coll}/subscribe",
@@ -845,6 +853,10 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
         .merge(cron_router)
         .merge(egress_router)
         .merge(auth_router)
+        // `moved_router` is merged before `ws_router`: the last merged
+        // router's default fallback becomes the app's, and only the layered
+        // one answers the NOT_FOUND JSON.
+        .merge(moved_router)
         .merge(ws_router);
     // CORS layer goes OUTSIDE bearer_auth_layer (= applied last) so OPTIONS
     // preflight is intercepted by tower_http before reaching auth, returning

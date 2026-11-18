@@ -165,8 +165,8 @@ pub async fn set_self_register(
 /// #955 — the SECOND obligation of this station, in lockstep with its REST
 /// twin `mgmt::tenants::crud::patch_publish_policy`. A live rooms WS
 /// connection captures its `TenantPublishPolicy` ONCE at upgrade and never
-/// re-reads it, so a tenant turning `allow_anon_publish` off over
-/// `/t/<id>/mcp` — the natural way to stop publish abuse — would otherwise
+/// re-reads it, so a tenant turning `allow_anon_publish` off over the
+/// account-level `/mcp` — the natural way to stop publish abuse — would otherwise
 /// leave every existing socket publishing under the OLD flag until it
 /// disconnected on its own. A call that MOVES the effective `(user, anon)`
 /// pair therefore evicts `bus_rooms`, which bumps the eviction epoch and
@@ -183,7 +183,7 @@ pub async fn set_self_register(
 /// this doc, `src/mcp/handler.rs` and `tests/auth_cache_mcp_publish_policy.rs`
 /// all stated that a `#[tool]` method is "a private `impl DrustMcp` fn no
 /// integration test can call". That is FALSE: `#[tool]` wrappers are reachable
-/// over `/t/<id>/mcp` by JSON-RPC `tools/call`, which is exactly how
+/// only over the account-level `/mcp` by JSON-RPC `tools/call`, which is exactly how
 /// `tests/admin_users.rs` drives `revoke_user_sessions` — whose #952 evict sits
 /// in such a wrapper arm. Left standing, that sentence would tell the next
 /// author a wrapper-arm evict is ungateable and push a conditional somewhere
