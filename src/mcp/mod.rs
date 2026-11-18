@@ -1,4 +1,5 @@
 pub mod account;
+pub(crate) mod account_audit;
 pub mod error_code;
 pub mod handler;
 pub mod http_registry;

@@ -335,7 +335,7 @@ mod source_pins {
     /// therefore use the words.
     #[test]
     fn plaintext_code_never_reaches_logs_or_audit() {
-        let files: [(&str, &str, &[&str], usize); 5] = [
+        let files: [(&str, &str, &[&str], usize); 6] = [
             (
                 "consent.rs",
                 include_str!("consent.rs"),
@@ -397,6 +397,12 @@ mod source_pins {
                     "cookie",
                 ],
                 7,
+            ),
+            (
+                "account_audit.rs",
+                include_str!("../../mcp/account_audit.rs"),
+                &["token", "access", "bearer", "ticket", "secret", "password"],
+                4,
             ),
         ];
         for (name, src, banned, min) in files {
