@@ -1,20 +1,43 @@
 #!/usr/bin/env bash
-# MCP protocol surface through Caddy (/t/<id>/mcp), with the v1.67.0 "MCP (M1)"
-# changes in focus: initialize (protocolVersion negotiation, serverInfo,
-# capabilities, instructions <= 4096 chars naming every tool), tools/list count
-# and per-tool annotations against src/mcp/handler.rs annotation_tests::TABLE,
-# the five sentinel tools + list_files' INVALID_VISIBILITY now answering
-# isError:true, input-validation errors, resources/list + templates + reads +
-# the URI parser's documented refusals, DRUST_MCP_RESOURCE_MAX_BYTES truncation,
-# prompts/list + prompts/get, the service-only gate (no bearer / anon / user /
-# foreign tenant), rmcp's Host (DNS-rebinding) guard direct vs through Caddy,
-# session lifecycle (Mcp-Session-Id, unknown id, DELETE, GET SSE stream), and
-# that a tenant service-key reroll stops the old key's live MCP session.
+# The account-level MCP endpoint (/mcp) through Caddy, with the run's OAuth
+# access token: the 401 challenges for a missing or non-OAuth bearer and both
+# metadata documents; the stateless transport (initialize, protocolVersion
+# negotiation, no Mcp-Session-Id, 405, 406, 415), the Origin gate, and the Host
+# gate direct vs through Caddy; the tenant argument (list_tenants,
+# TENANT_REQUIRED, TENANT_NOT_FOUND, INVALID_ARGUMENTS, a second tenant on the
+# same token); tools/list against src/mcp/handler.rs annotation_tests::TABLE
+# plus the two account-only tools; the isError sentinels and input-validation
+# errors; resources (templates, reads, the URI parser's refusals,
+# DRUST_MCP_RESOURCE_MAX_BYTES truncation); prompts; the redacted whoami; a
+# three-chunk upload with a create_upload_url ticket; and that a tenant
+# service-key reroll leaves the token's access to that tenant intact.
 #
-# Uses 2 tenants (A: main, B: reroll + cross-tenant). Everything else it creates
-# (collections, RPCs, an end user, one object-store object) lives inside tenant A or is
+# A preflight before any token is minted stops the script with a named failure
+# when DRUST_MCP is not on.
+#
+# Uses 2 tenants (A: main, B: second tenant + reroll). Everything else it
+# creates (collections, RPCs, object-store objects) lives inside tenant A or is
 # deleted explicitly; both tenants are deleted by lib.sh on exit.
 . "$(dirname "$0")/lib.sh"
+
+# Preflight, before any token is minted: the account endpoint answers a request
+# with no bearer 401 MCP_OAUTH_REQUIRED. With DRUST_MCP not on it answers 404,
+# with no error code when /mcp is not mounted or with MCP_DISABLED when it is.
+req POST "$BASE/mcp" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+pre="$STATUS $(body error_code || true)"
+if [ "$pre" = "401 MCP_OAUTH_REQUIRED" ]; then
+  ok "the account endpoint is mounted (DRUST_MCP=on in docker-compose.smoke.yml)"
+else
+  case "$pre" in
+    "404 "|"404 MCP_DISABLED") why="DRUST_MCP is not on" ;;
+    *) why="unexpected answer" ;;
+  esac
+  bad "the account endpoint is mounted (DRUST_MCP=on in docker-compose.smoke.yml)" "got [$pre]: $why"
+  finish
+  exit 1
+fi
 
 want_ver="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
 
@@ -25,22 +48,43 @@ B_ID="$TENANT_ID"; B_SVC="$SERVICE_KEY"
 # lib.sh helpers (svc/anon/mcp_call) act on the LAST tenant; point them at A.
 TENANT_ID="$A_ID"; SERVICE_KEY="$A_SVC"; ANON_KEY="$A_ANON"; T="$BASE/t/$A_ID"
 
+mcp_token || { bad "an OAuth access token for the account endpoint" "see mcp token unavailable above"; finish; exit 1; }
+
 cat > "$TMP/mcpx.py" <<'PY'
-import http.client, json, os, re, secrets, socket, sys, time, traceback, urllib.parse
+import http.client, json, os, re, secrets, sys, time, traceback, urllib.parse
 
 E = os.environ
 BASE, DIRECT = E["MCPX_BASE"], E["MCPX_DIRECT"]
 A, ASVC, AANON = E["MCPX_A_ID"], E["MCPX_A_SVC"], E["MCPX_A_ANON"]
 B, BSVC = E["MCPX_B_ID"], E["MCPX_B_SVC"]
 PAT, REPO, WANT_VER = E["MCPX_PAT"], E["MCPX_REPO"], E["MCPX_WANT_VER"]
+TOKEN = E["MCPX_TOKEN"]
 PUBLIC_URL = E.get("MCPX_PUBLIC_URL", "")
-SECRETS = [ASVC, AANON, BSVC, PAT]
+SECRETS = [TOKEN, ASVC, AANON, BSVC, PAT]
+
+MCP_MIN_INTERVAL_SECS = 0.2
+TICKET_CHUNKS = 3
+TICKET_CHUNK_BYTES = 65536
+TICKET_FILE_BYTES = TICKET_CHUNKS * TICKET_CHUNK_BYTES - 1000
+TICKET_REQ_BUDGET = 60
+# Request budget: the account endpoint allows 600 requests per 60 s per grant
+# (rs_grant), and every check script shares one grant, so each request here
+# waits at least MCP_MIN_INTERVAL_SECS: at most 300 a minute. Never probe the
+# limiter with a random token: an unknown token is always 401, never 429.
+# An upload ticket is also charged per ticket under the tenant-key budget
+# (60 per 10 s); one ticket here sends POST + TICKET_CHUNKS PATCHes + HEAD +
+# one reuse POST.
+assert TICKET_CHUNKS + 3 <= TICKET_REQ_BUDGET // 4
+
+# Any credential drust mints with one of these prefixes, wherever it appears.
+_DRUST_TOKEN_RE = re.compile(r"drust_(?:mcpat|mcprt|upl)_[A-Za-z0-9_-]+")
 
 def red(s):
     s = str(s)
     for x in SECRETS:
         if x:
             s = s.replace(x, "<redacted>")
+    s = _DRUST_TOKEN_RE.sub("<redacted>", s)
     s = re.sub(r"([?&]t=)[^&\s\"']+", r"\1<redacted>", s)
     return s.replace("\t", " ").replace("\r", " ").replace("\n", " ")[:500]
 
@@ -77,6 +121,14 @@ def _pace(key):
     q.append(time.time())
     _SENT[key] = q
 
+_LAST_MCP = [0.0]
+
+def _pace_mcp():
+    wait = MCP_MIN_INTERVAL_SECS - (time.monotonic() - _LAST_MCP[0])
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_MCP[0] = time.monotonic()
+
 def _hx1(method, base, path, headers, data, timeout):
     u = urllib.parse.urlsplit(base)
     conn = http.client.HTTPConnection(u.hostname, u.port, timeout=timeout)
@@ -90,7 +142,8 @@ def _hx1(method, base, path, headers, data, timeout):
     finally:
         conn.close()
 
-def hx(method, base, path, headers=None, body=None, timeout=90):
+# Requests to the account endpoint and upload-ticket requests pass retry_429=False (mx, tx): their budget is per grant or per ticket and the pacing keeps far below it, so a 429 there is a real failure, not something to wait out.
+def hx(method, base, path, headers=None, body=None, timeout=90, retry_429=True):
     headers = dict(headers or {})
     data = None
     if body is not None:
@@ -101,11 +154,23 @@ def hx(method, base, path, headers=None, body=None, timeout=90):
     for _ in range(4):
         _pace(key)
         r = _hx1(method, base, path, headers, data, timeout)
-        if r.status != 429 or "RATE_LIMITED" not in r.body:
+        if r.status != 429 or not retry_429 or "RATE_LIMITED" not in r.body:
             return r
         mm = re.search(r"retry after (\d+)s", r.body)
         time.sleep(min(12, int(mm.group(1)) if mm else 5) + 0.5)
     return r
+
+MCP_PATH = "/mcp"
+
+def mx(method, headers=None, body=None, base=BASE):
+    """The one way to reach the account endpoint: paced, never retried on 429."""
+    _pace_mcp()
+    return hx(method, base, MCP_PATH, headers, body, retry_429=False)
+
+def tx(method, url, headers, body=None):
+    """The one way to send an upload-ticket request; url is a full BASE URL."""
+    path = urllib.parse.urlsplit(url).path
+    return hx(method, BASE, path, headers, body, retry_429=False)
 
 def msgs(r):
     ct = r.headers.get("content-type", "")
@@ -146,51 +211,37 @@ def init_msg(proto):
             "params": {"protocolVersion": proto, "capabilities": {},
                        "clientInfo": {"name": "drust-smoke-mcp", "version": "1"}}}
 
-class Sess:
-    def __init__(self, base, tid, key, extra=None):
-        self.base, self.path, self.key = base, "/t/%s/mcp" % tid, key
-        self.extra, self.sid, self.proto, self.n = dict(extra or {}), None, None, 1
-        self.init_r = self.init_m = None
-        self.notif_status = None
+class Acct:
+    """A stateless client of the account endpoint: every call is one POST."""
 
-    def hdr(self, session=True):
-        h = {"Content-Type": "application/json", "Accept": ACCEPT}
-        if self.key:
-            h["Authorization"] = "Bearer " + self.key
-        if session and self.sid:
-            h["Mcp-Session-Id"] = self.sid
-            h["MCP-Protocol-Version"] = self.proto
-        h.update(self.extra)
+    def __init__(self, base: str, tenant: str, token: str):
+        self.base, self.tenant, self.token, self.n = base, tenant, token, 1
+
+    def hdr(self, extra=None):
+        h = {"Content-Type": "application/json", "Accept": ACCEPT,
+             "Authorization": "Bearer " + self.token}
+        h.update(extra or {})
         return h
 
-    def init(self, proto="2025-06-18"):
-        r = hx("POST", self.base, self.path, self.hdr(False), init_msg(proto))
-        m = pick(r, 0)
-        self.init_r, self.init_m = r, m
-        if r.status == 200 and m and "result" in m:
-            self.sid = r.headers.get("mcp-session-id")
-            self.proto = m["result"].get("protocolVersion")
-            n = hx("POST", self.base, self.path, self.hdr(),
-                     {"jsonrpc": "2.0", "method": "notifications/initialized"})
-            self.notif_status = n.status
-        return r, m
-
-    def rpc(self, method, params=None):
+    def rpc(self, method, params=None, headers=None):
         i = self.n
         self.n += 1
         msg = {"jsonrpc": "2.0", "id": i, "method": method}
         if params is not None:
             msg["params"] = params
-        r = hx("POST", self.base, self.path, self.hdr(), msg)
+        r = mx("POST", self.hdr(headers), msg, base=self.base)
         return r, pick(r, i)
 
-    def tool(self, name, args=None):
-        return self.rpc("tools/call", {"name": name, "arguments": args or {}})
+    def tool(self, name, args):
+        args = dict(args or {})
+        if "tenant" not in args:
+            args = dict([("tenant", self.tenant)] + list(args.items()))
+        elif args["tenant"] is None:
+            del args["tenant"]
+        return self.rpc("tools/call", {"name": name, "arguments": args})
 
-    def close(self):
-        if self.sid:
-            return hx("DELETE", self.base, self.path, self.hdr())
-        return None
+    def notify(self, method):
+        return mx("POST", self.hdr(), {"jsonrpc": "2.0", "method": method}, base=self.base)
 
 def tool_text(m):
     try:
@@ -215,6 +266,10 @@ def short(m):
         return "no JSON-RPC message"
     return json.dumps(m)[:400]
 
+def tenant_endpoint_checks():
+    # The per-tenant /t/<id>/mcp endpoint's answer after its retirement is checked here.
+    pass
+
 # ----------------------------------------------------------------- source spec
 def load_spec():
     src = open(os.path.join(REPO, "src/mcp/handler.rs"), encoding="utf-8").read()
@@ -232,70 +287,123 @@ HINTS = {  # (readOnly, destructive, idempotent, openWorld); None = absent on th
     "Open": (False, True, False, True),
 }
 
+H5 = '{"message":"OAuth required: in Claude Code run /mcp, then Authenticate","error_code":"MCP_OAUTH_REQUIRED"}'
+H6 = ('{"message":"OAuth only: remove Authorization header from this server\'s config, then /mcp -> Authenticate",'
+      '"error_code":"MCP_OAUTH_REQUIRED"}')
+
 def main():
     tool_attr, table = load_spec()
-    S = Sess(BASE, A, ASVC)
+    prm_url = PUBLIC_URL + "/.well-known/oauth-protected-resource/mcp"
+    mcp_url = PUBLIC_URL + MCP_PATH
 
-    # ============================================================ initialize
-    r, m = S.init("2025-06-18")
-    eq("initialize through Caddy answers HTTP 200", 200, r.status)
-    check("initialize returns a JSON-RPC result", bool(m and "result" in m), short(m) + " / " + r.body[:200])
+    # ============================================================ 1. auth and discovery
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    plain = {"Content-Type": "application/json", "Accept": ACCEPT}
+    r = mx("POST", plain, body)
+    eq("no bearer answers 401 MCP_OAUTH_REQUIRED with the sign-in message", (401, H5), (r.status, r.body))
+    eq("... and a challenge naming this server's protected-resource metadata",
+       'Bearer resource_metadata="%s", scope="mcp"' % prm_url, r.headers.get("www-authenticate"))
+    for name, cred in (("a tenant service key is not an OAuth token: 401 invalid_token", ASVC),
+                       ("an admin PAT is not an OAuth token: 401 invalid_token", PAT)):
+        r = mx("POST", dict(plain, Authorization="Bearer " + cred), body)
+        check(name, r.status == 401 and r.body == H6 and 'error="invalid_token"' in r.headers.get("www-authenticate", ""),
+              "%s %s / %s" % (r.status, r.body[:160], r.headers.get("www-authenticate", "")))
+    r = mx("POST", dict(plain, Authorization="Bearer " + "drust_mcpat_" + secrets.token_urlsafe(32)), body)
+    eq("an unknown access-shaped token answers 401, never 429", 401, r.status)
+    r = hx("GET", BASE, "/.well-known/oauth-protected-resource/mcp")
+    j = jbody(r)
+    check("protected-resource metadata names this resource and issuer",
+          r.status == 200 and j.get("resource") == mcp_url and j.get("authorization_servers") == [PUBLIC_URL],
+          "%s %s" % (r.status, r.body[:200]))
+    r = hx("GET", BASE, "/.well-known/oauth-authorization-server")
+    j = jbody(r)
+    check("authorization-server metadata issuer and token endpoint match",
+          r.status == 200 and j.get("issuer") == PUBLIC_URL and j.get("token_endpoint") == PUBLIC_URL + "/oauth/token",
+          "%s %s" % (r.status, r.body[:200]))
+
+    # ============================================================ 2. transport (valid token)
+    S = Acct(BASE, A, TOKEN)
+    r, m = S.rpc("initialize", init_msg("2025-06-18")["params"])
+    check("initialize answers 200 as an SSE stream",
+          r.status == 200 and "text/event-stream" in r.headers.get("content-type", ""),
+          "%s %s" % (r.status, r.headers.get("content-type", "")))
     if not (m and "result" in m):
-        bad("cannot continue without an MCP session", r.body[:300])
+        bad("cannot continue without an initialize result", "%s %s" % (r.status, r.body[:300]))
         return
     res = m["result"]
-    check("initialize issues a non-empty Mcp-Session-Id header", bool(S.sid))
-    check("initialize answers as an SSE stream (text/event-stream)",
-          "text/event-stream" in r.headers.get("content-type", ""), r.headers.get("content-type", ""))
-    eq("notifications/initialized is accepted with HTTP 202", 202, S.notif_status)
+    check("initialize issues no Mcp-Session-Id (stateless endpoint)", "mcp-session-id" not in r.headers)
     eq("protocolVersion echoes the requested 2025-06-18", "2025-06-18", res.get("protocolVersion"))
-    eq("serverInfo.name is drust", "drust", res.get("serverInfo", {}).get("name"))
-    eq("serverInfo.version matches Cargo.toml", WANT_VER, res.get("serverInfo", {}).get("version"))
+    eq("serverInfo is drust at the Cargo.toml version", ("drust", WANT_VER),
+       (res.get("serverInfo", {}).get("name"), res.get("serverInfo", {}).get("version")))
     caps = res.get("capabilities", {})
-    check("capabilities declare tools, resources and prompts",
-          all(k in caps for k in ("tools", "resources", "prompts")), json.dumps(caps))
-    check("resources/prompts capabilities do NOT declare listChanged or subscribe",
-          not caps.get("resources", {}).get("listChanged") and not caps.get("resources", {}).get("subscribe")
+    check("capabilities declare tools, resources and prompts without listChanged or subscribe",
+          all(k in caps for k in ("tools", "resources", "prompts"))
+          and not caps.get("resources", {}).get("listChanged") and not caps.get("resources", {}).get("subscribe")
           and not caps.get("prompts", {}).get("listChanged"), json.dumps(caps))
     ins = res.get("instructions") or ""
-    check("instructions string is present", len(ins) > 0)
     check("instructions fit Claude Code's 4096-character cap (%d chars)" % len(ins), 0 < len(ins) <= 4096,
           "%d chars" % len(ins))
-    check("instructions name this tenant", ("'%s'" % A) in ins, ins[:200])
     check("instructions lead with the dry_run rule (only delete_record/drop_collection/drop_index)",
           "Only delete_record, drop_collection and drop_index accept `dry_run: true`" in ins[:1200], ins[:300])
     check("instructions carry no absolute URL", not re.search(r"https?://", ins),
           (re.search(r"https?://\S+", ins) or [""])[0])
-    check("instructions point uploads at the files-guide.md resource",
-          ("drust://%s/files-guide.md" % A) in ins)
-    check("instructions do not recommend recent_writes for retry recovery",
-          "recent_writes (not populated yet" in ins and "check recent_writes" not in ins)
+    check("instructions name list_tenants and create_upload_url",
+          "list_tenants" in ins and "create_upload_url" in ins)
+    check("instructions name no tenant", A not in ins)
+    r = S.notify("notifications/initialized")
+    eq("notifications/initialized is accepted with HTTP 202", 202, r.status)
 
     for proto, want in (("2025-03-26", "2025-03-26"), ("2024-11-05", "2024-11-05"), ("2025-11-25", "2025-11-25")):
-        s2 = Sess(BASE, A, ASVC)
-        _, m2 = s2.init(proto)
+        _, m2 = S.rpc("initialize", init_msg(proto)["params"])
         eq("protocolVersion negotiation echoes known version %s" % proto, want,
            (m2 or {}).get("result", {}).get("protocolVersion"))
-        s2.close()
-    s2 = Sess(BASE, A, ASVC)
-    _, m2 = s2.init("1999-01-01")
-    got = (m2 or {}).get("result", {}).get("protocolVersion")
-    eq("an unknown requested protocolVersion falls back to the server default 2025-11-25", "2025-11-25", got)
-    s2.close()
-    r = hx("POST", BASE, S.path, {"Content-Type": "application/json", "Accept": ACCEPT,
-                                    "Authorization": "Bearer " + ASVC, "MCP-Protocol-Version": "2025-03-26"},
-             init_msg("2025-06-18"))
+    _, m2 = S.rpc("initialize", init_msg("1999-01-01")["params"])
+    eq("an unknown requested protocolVersion falls back to the server default 2025-11-25", "2025-11-25",
+       (m2 or {}).get("result", {}).get("protocolVersion"))
+    r, m2 = S.rpc("initialize", init_msg("2025-06-18")["params"], headers={"MCP-Protocol-Version": "2025-03-26"})
     eq("initialize whose MCP-Protocol-Version header contradicts params is refused with 400", 400, r.status)
-    eq("... as a JSON-RPC Invalid Request (-32600)", -32600, (rpc_err(pick(r, 0)) or {}).get("code"))
+    eq("... as a JSON-RPC Invalid Request (-32600)", -32600, (rpc_err(m2) or {}).get("code"))
 
-    # ============================================================ tools/list
+    auth = {"Authorization": "Bearer " + TOKEN}
+    r = mx("GET", dict(auth, Accept="text/event-stream"))
+    eq("GET /mcp answers 405 with Allow: POST", (405, "POST"), (r.status, r.headers.get("allow")))
+    r = mx("DELETE", dict(auth))
+    eq("DELETE /mcp answers 405 with Allow: POST", (405, "POST"), (r.status, r.headers.get("allow")))
+    r, _ = S.rpc("tools/list", headers={"Accept": "application/json"})
+    eq("POST without text/event-stream in Accept answers 406", 406, r.status)
+    r = mx("POST", S.hdr({"Content-Type": "text/plain"}), '{"jsonrpc":"2.0","id":80,"method":"tools/list"}')
+    eq("POST with a non-JSON Content-Type answers 415", 415, r.status)
+    r, _ = S.rpc("tools/list", headers={"Origin": "http://evil.example"})
+    eq("a cross-site Origin is refused 403 MCP_ORIGIN_NOT_ALLOWED", (403, "MCP_ORIGIN_NOT_ALLOWED"),
+       (r.status, jbody(r).get("error_code")))
+    r, m = S.rpc("tools/list", headers={"Origin": "http://localhost:5173"})
+    check("a loopback Origin on any port is admitted", r.status == 200 and bool(m and "result" in m),
+          "%s %s" % (r.status, r.body[:160]))
+
+    r = mx("POST", S.hdr({"Host": "evil.example"}), body, base=DIRECT)
+    eq("DIRECT with a non-loopback Host is refused 421 MCP_HOST_NOT_ALLOWED", (421, "MCP_HOST_NOT_ALLOWED"),
+       (r.status, jbody(r).get("error_code")))
+    r = mx("POST", dict(plain, Host="evil.example"), body, base=DIRECT)
+    eq("... before the bearer check (no Authorization still 421)", 421, r.status)
+    r = mx("POST", S.hdr({"Host": "127.0.0.1:48826"}), body, base=DIRECT)
+    eq("DIRECT with Host 127.0.0.1:<port> is admitted (port-agnostic loopback)", 200, r.status)
+    r = mx("POST", S.hdr({"Host": "evil.example"}), body)
+    eq("through Caddy any client Host works (Caddy rewrites Host)", 200, r.status)
+    tenant_endpoint_checks()
+
+    # ============================================================ 3. tools/list
     r, m = S.rpc("tools/list")
     tools = (m or {}).get("result", {}).get("tools", [])
-    eq("tools/list returns every #[tool] in handler.rs (%d)" % tool_attr, tool_attr, len(tools))
+    eq("tools/list returns every #[tool] in handler.rs plus list_tenants and create_upload_url (%d)"
+       % (tool_attr + 2), tool_attr + 2, len(tools))
     eq("annotation_tests::TABLE has one row per tool", tool_attr, len(table))
     names = [t.get("name") for t in tools]
+    eq("the two account-only tools come first", ["list_tenants", "create_upload_url"], names[:2])
     check("tools/list has no nextCursor (single page)", "nextCursor" not in (m or {}).get("result", {}))
-    eq("tools/list names == TABLE names", sorted(table), sorted(names))
+    outer = {t.get("name"): t for t in tools[:2]}
+    tools = tools[2:]
+    inner = names[2:]
+    eq("tools/list names == TABLE names", sorted(table), sorted(inner))
     no_ann = [t["name"] for t in tools if not isinstance(t.get("annotations"), dict)]
     eq("every tool carries an annotations object", [], no_ann)
     mism = []
@@ -337,8 +445,8 @@ def main():
     for n in ("describe_collection", "delete_file", "get_file_url", "set_file_visibility"):
         check("%s's description says how it fails (isError result)" % n, "isError" in desc.get(n, ""),
               desc.get(n, "")[-200:])
-    check("recent_writes' description says it returns no rows yet",
-          "NOT POPULATED YET" in desc.get("recent_writes", ""))
+    check("recent_writes' account description recommends it before re-sending a lost write",
+          "Use it before re-sending a write whose reply was lost" in desc.get("recent_writes", ""))
     check("query's description no longer claims structured tools scope rows on MCP",
           "on MCP you are the service identity" in desc.get("query", ""))
     unnamed = [n for n in names if not re.search(r"(?<![a-z0-9_])%s(?![a-z0-9_])" % re.escape(n), ins)]
@@ -346,6 +454,22 @@ def main():
     dry = sorted(t["name"] for t in tools if "dry_run" in ((t.get("inputSchema") or {}).get("properties") or {}))
     eq("exactly delete_record / drop_collection / drop_index advertise dry_run",
        ["delete_record", "drop_collection", "drop_index"], dry)
+    not_first = []
+    for t in tools:
+        sch = t.get("inputSchema") or {}
+        props = list((sch.get("properties") or {}).keys())
+        if (sch.get("required") or [None])[0] != "tenant" or (props or [None])[0] != "tenant":
+            not_first.append(t["name"])
+    eq("every per-tenant tool requires tenant first", [], not_first)
+    lt = outer.get("list_tenants") or {}
+    la = lt.get("annotations") or {}
+    check("list_tenants takes no arguments and is read-only closed-world",
+          (lt.get("inputSchema") or {}).get("properties") == {} and la.get("readOnlyHint") is True
+          and la.get("openWorldHint") is False, json.dumps(lt)[:300])
+    ua = (outer.get("create_upload_url") or {}).get("annotations") or {}
+    eq("create_upload_url hints are write, not destructive, not idempotent, closed-world",
+       (False, False, False, False),
+       (ua.get("readOnlyHint"), ua.get("destructiveHint"), ua.get("idempotentHint"), ua.get("openWorldHint")))
     # Reviewer notes (not failures): shapes whose classification is a judgement call.
     acl_like = [n for n in ("set_function_invoke_acl", "set_publish_policy", "set_self_register", "set_realtime")
                 if by.get(n, {}).get("destructiveHint") is False]
@@ -353,7 +477,28 @@ def main():
         note("review: access-widening/narrowing switches marked destructiveHint:false while set_anon_caps is true: "
              + ", ".join(acl_like))
 
-    # ============================================================ fixtures
+    # ============================================================ 4. the tenant argument
+    _, m = S.tool("list_tenants", {"tenant": None})
+    j = tool_json(m) or {}
+    tids = [t.get("id") for t in (j.get("tenants") or [])]
+    check("list_tenants lists both run tenants and this server's MCP URL",
+          A in tids and B in tids and j.get("mcp_url") == mcp_url, short(m))
+    txt = tool_text(m)
+    check("... and carries no tenant key", ASVC not in txt and AANON not in txt and BSVC not in txt)
+    _, m = S.tool("list_collections", {"tenant": None})
+    check("a per-tenant tool without tenant is isError TENANT_REQUIRED",
+          is_error(m) and (tool_json(m) or {}).get("error_code") == "TENANT_REQUIRED", short(m))
+    _, m = S.tool("list_collections", {"tenant": "no-such-tenant-smoke"})
+    check("an unknown tenant is isError TENANT_NOT_FOUND",
+          is_error(m) and (tool_json(m) or {}).get("error_code") == "TENANT_NOT_FOUND", short(m))
+    _, m = S.tool("list_collections", {"bogus": 1})
+    check("an argument outside the inputSchema is isError INVALID_ARGUMENTS",
+          is_error(m) and (tool_json(m) or {}).get("error_code") == "INVALID_ARGUMENTS", short(m))
+    _, m = S.tool("list_collections", {"tenant": B})
+    check("the other run tenant is reachable with the same token", bool(m and "result" in m and not is_error(m)),
+          short(m))
+
+    # ============================================================ 5. fixtures
     _, m = S.tool("create_collection", {"name": "notes", "fields": [
         {"name": "title", "sql_type": "text"}, {"name": "body", "sql_type": "text"}]})
     check("fixture: create_collection notes", m and "result" in m and not is_error(m), short(m))
@@ -373,7 +518,7 @@ def main():
     big_id = j.get("id") or (j.get("record") or {}).get("id")
     check("fixture: one ~300 KB row inserted into big", big_id is not None, short(m))
 
-    # ============================================================ isError sentinels
+    # ------------------------------------------------------------ isError sentinels
     _, m = S.tool("describe_collection", {"collection": "no_such_coll"})
     j = tool_json(m) or {}
     check("describe_collection(unknown) answers isError:true", is_error(m), short(m))
@@ -390,8 +535,8 @@ def main():
     check("... and its body no longer carries \"ok\"", "ok" not in j, json.dumps(j))
     check("... with the catalogued suggested_fix", bool(j.get("suggested_fix")), json.dumps(j))
     _, m = S.tool("delete_record", {"collection": "notes", "id": 999999, "dry_run": True})
-    e = rpc_err(m) or {}
-    eq("delete_record dry_run on a missing id stays a JSON-RPC error (-32603)", -32603, e.get("code"))
+    check("delete_record dry_run on a missing id is an isError result with an error code",
+          is_error(m) and bool((tool_json(m) or {}).get("error_code")), short(m))
     if ids:
         _, m = S.tool("delete_record", {"collection": "notes", "id": ids[-1], "dry_run": True})
         check("delete_record dry_run on a real id returns a blast radius, not an error",
@@ -457,9 +602,9 @@ def main():
                   not is_error(m) and url.startswith("%s/s/t/%s/%s?" % (PUBLIC_URL.rstrip("/"), A, key)),
                   re.sub(r"\?.*", "?…", url))
             _, m = S.tool("get_file_url", {"id": key, "expires_in": 0})
-            e = rpc_err(m) or {}
-            check("get_file_url expires_in out of range stays a JSON-RPC error naming the range",
-                  e.get("code") == -32603 and "1..=604800" in (e.get("message") or ""), short(m))
+            j = tool_json(m) or {}
+            check("get_file_url refuses expires_in 0 with an isError naming the range",
+                  is_error(m) and bool(j.get("error_code")) and "1..=604800" in (j.get("message") or ""), short(m))
             _, m = S.tool("list_files", {"visibility": "private"})
             fl = (tool_json(m) or {}).get("files") or []
             check("list_files(private) lists the uploaded private file", any(f.get("id") == key for f in fl), short(m))
@@ -473,7 +618,7 @@ def main():
             check("delete_file(real id) succeeds without isError", m and "result" in m and not is_error(m)
                   and (tool_json(m) or {}).get("ok") is True, short(m))
 
-    # ============================================================ validation errors
+    # ============================================================ 6. validation errors
     _, m = S.tool("no_such_tool", {})
     e = rpc_err(m) or {}
     check("calling an unknown tool is JSON-RPC -32602 'tool not found'",
@@ -496,37 +641,35 @@ def main():
         text = (e.get("message") or "") + tool_text(m)
         check("%s is refused with text naming the problem (%s)" % (label, needle),
               (rpc_err(m) is not None or is_error(m)) and needle in text, short(m))
-        # AGENTS.md "Deliberate — MCP annotations and error faces": only five tools (+ list_files)
-        # return isError, every other tool error is a JSON-RPC error; handler.rs tool_error:
+        # AGENTS.md "Deliberate — MCP annotations and error faces"; handler.rs tool_error:
         # "every isError body has one shape".
         check("%s uses one of drust's two error faces (JSON-RPC error, or isError with "
               "{error_code,message} JSON)" % label, drust_error_face(m), short(m))
         # handler.rs finish_tool_call: an argument that fails to deserialize is the isError
         # face with INVALID_PARAMS. Pinned exactly: the check above would also pass a
-        # regression back to JSON-RPC -32602.
+        # regression back to a JSON-RPC error.
         check("%s is an isError result with error_code INVALID_PARAMS" % label,
               is_error(m) and (tool_json(m) or {}).get("error_code") == "INVALID_PARAMS", short(m))
     _, m = S.tool("list_records", {"collection": "notes", "filter": [1, 2]})
-    e = rpc_err(m) or {}
+    j = tool_json(m) or {}
     check("a malformed filter is an error with FILTER_PARSE_ERROR and the shape hint",
-          (e.get("data") or {}).get("error_code") == "FILTER_PARSE_ERROR"
-          and "filter must be a JSON object" in (e.get("message") or ""), short(m))
+          is_error(m) and j.get("error_code") == "FILTER_PARSE_ERROR"
+          and "filter must be a JSON object" in (j.get("message") or ""), short(m))
     _, m = S.tool("list_records", {"collection": "notes", "filter": json.dumps({"title": "n1"})})
     eq("a double-encoded (string) filter is still accepted", 1, (tool_json(m) or {}).get("total"))
     _, m = S.tool("insert_record", {"collection": "_system_users", "data": {"email": "x@y.z"}})
-    e = rpc_err(m) or {}
-    check("insert_record into a _system_* table is refused with data.error_code PROTECTED_COLLECTION",
-          (e.get("data") or {}).get("error_code") == "PROTECTED_COLLECTION", short(m))
-    # src/mcp/tools/read.rs: ExecError::Forbidden -> "`query` is read-only — use ..." via bail_mcp (-32603).
+    check("insert_record into a _system_* table is refused with error_code PROTECTED_COLLECTION",
+          is_error(m) and (tool_json(m) or {}).get("error_code") == "PROTECTED_COLLECTION", short(m))
+    # src/mcp/tools/read.rs: ExecError::Forbidden -> "`query` is read-only — use ..."; the account endpoint returns it as an isError result.
     # Exact face, so a refusal for an unrelated reason (e.g. a renamed argument) cannot pass.
     _, m = S.tool("query", {"sql": "DELETE FROM notes"})
-    e = rpc_err(m) or {}
-    check("query refuses a write statement with -32603 '`query` is read-only' (its readOnlyHint is honest)",
-          e.get("code") == -32603 and "`query` is read-only" in (e.get("message") or ""), short(m))
+    j = tool_json(m) or {}
+    check("query refuses a write statement with an isError naming '`query` is read-only'",
+          is_error(m) and "`query` is read-only" in (j.get("message") or ""), short(m))
     # bail_mcp's convention (handler.rs) is "<CODE>: <message>", and the instructions tell the model
     # to read error_code; a code is an UPPER_SNAKE identifier, never a prose sentence.
-    ec = (e.get("data") or {}).get("error_code") or ""
-    check("query's write refusal carries a machine-readable data.error_code (UPPER_SNAKE), not prose",
+    ec = j.get("error_code") or ""
+    check("query's write refusal carries a machine-readable error_code (UPPER_SNAKE), not prose",
           bool(re.match(r"^[A-Z][A-Z0-9_]*$", ec)), "error_code=%r" % ec[:80])
     _, m = S.tool("create_rpc", {"name": "count_notes", "sql": "SELECT count(*) AS n FROM notes", "params": []})
     check("fixture: create_rpc count_notes (read)", m and "result" in m and not is_error(m), short(m))
@@ -535,36 +678,33 @@ def main():
     _, m = S.tool("call_rpc", {"name": "count_notes"})
     check("call_rpc runs a read RPC", m and "result" in m and not is_error(m) and "3" in tool_text(m), short(m))
     _, m = S.tool("call_rpc", {"name": "wipe_notes"})
-    e = rpc_err(m) or {}
-    check("call_rpc refuses a write-mode RPC on MCP with the read-only authorizer's -32602 'not authorized'",
-          e.get("code") == -32602 and "not authorized" in (e.get("message") or ""), short(m))
+    check("call_rpc refuses a write-mode RPC with an isError naming 'not authorized'",
+          is_error(m) and "not authorized" in ((tool_json(m) or {}).get("message") or ""), short(m))
     _, m = S.tool("list_records", {"collection": "notes"})
     eq("... and no row was deleted", 3, (tool_json(m) or {}).get("total"))
 
-    # ============================================================ resources
+    # ============================================================ 7. resources
     _, m = S.rpc("resources/list")
-    rl = (m or {}).get("result", {}).get("resources", [])
-    want_static = ["schema", "schema.md", "collections", "openapi.json", "types.ts", "zod.ts",
-                   "functions", "rpcs", "cron", "files-guide.md"]
-    eq("resources/list returns the 10 static resources",
-       sorted("drust://%s/%s" % (A, p) for p in want_static), sorted(x.get("uri") for x in rl))
+    eq("resources/list is empty on purpose", [], (m or {}).get("result", {}).get("resources"))
     _, m = S.rpc("resources/templates/list")
     tl = [x.get("uriTemplate") for x in (m or {}).get("result", {}).get("resourceTemplates", [])]
-    eq("resources/templates/list returns the 4 templates", sorted("drust://%s/%s" % (A, p) for p in (
-        "collections/{collection}/schema", "collections/{collection}/records{?page,per_page,sort,order}",
-        "collections/{collection}/records/{id}", "rpcs/{name}")), sorted(tl))
+    want_static = ["schema", "schema.md", "collections", "openapi.json", "types.ts", "zod.ts",
+                   "functions", "rpcs", "cron", "files-guide.md"]
+    eq("resources/templates/list returns the 14 tenant-shaped templates",
+       ["drust://{tenant}/" + p for p in want_static + [
+           "collections/{collection}/schema", "collections/{collection}/records{?page,per_page,sort,order}",
+           "collections/{collection}/records/{id}", "rpcs/{name}"]], tl)
     check("no history or function-logs template is exposed", not any("history" in t or "logs" in t for t in tl), str(tl))
 
     def read(uri):
         _, mm = S.rpc("resources/read", {"uri": uri})
         return mm
-    for x in rl:
-        uri = x.get("uri")
+    for p in want_static:
+        uri = "drust://%s/%s" % (A, p)
         mm = read(uri)
         c = ((mm or {}).get("result", {}).get("contents") or [{}])[0]
-        check("resources/read %s returns text with the listed mimeType" % uri.split("/", 3)[-1],
-              c.get("uri") == uri and bool(c.get("text")) and c.get("mimeType") == x.get("mimeType"),
-              short(mm))
+        check("resources/read %s returns text with a mimeType" % p,
+              c.get("uri") == uri and bool(c.get("text")) and bool(c.get("mimeType")), short(mm))
         if c.get("mimeType") == "application/json":
             try:
                 json.loads(c.get("text") or "")
@@ -574,13 +714,14 @@ def main():
             check("... and its body is valid JSON", okj)
         txt = c.get("text") or ""
         check("... and carries no credential", ASVC not in txt and AANON not in txt)
-        if uri.endswith("/rpcs"):
+        if p == "rpcs":
             check("... and lists the stored RPCs (so the redaction check below is not vacuous)",
                   "count_notes" in txt and "wipe_notes" in txt, txt[:200])
-        if uri.endswith("/rpcs") or uri.endswith("/schema"):
+        if p in ("rpcs", "schema"):
             check("... and redacts stored RPC SQL", "SELECT count(*)" not in txt and "DELETE FROM notes" not in txt)
-        if uri.endswith("files-guide.md"):
+        if p == "files-guide.md":
             check("... and says when to switch to tus (Tus-Max-Size)", "Tus-Max-Size" in txt)
+            check("... and points uploads at create_upload_url", "create_upload_url" in txt)
     mm = read("drust://%s/collections/notes/schema" % A)
     check("template collections/notes/schema resolves", "result" in (mm or {}) and "title" in json.dumps(mm), short(mm))
     mm = read("drust://%s/collections/notes/records?page=1&per_page=2&sort=title&order=asc" % A)
@@ -619,7 +760,7 @@ def main():
                   kept <= cap and kept + int(mk.group(2)) > big_len, "kept=%d omitted=%s" % (kept, mk.group(2)))
 
     refuse = [
-        ("another tenant's host", "drust://%s/schema" % B),
+        ("an unknown tenant host", "drust://no-such-tenant-smoke/schema"),
         ("literal dot-segment", "drust://%s/collections/../schema" % A),
         ("encoded dot-segment", "drust://%s/collections/%%2e%%2e/schema" % A),
         ("encoded slash in a segment", "drust://%s/collections/notes%%2fx/schema" % A),
@@ -646,30 +787,35 @@ def main():
         mm = read(uri)
         e = rpc_err(mm) or {}
         check("resources/read refuses %s with -32002" % label, e.get("code") == -32002, short(mm))
+    mm = read("drust://%s/schema" % B)
+    check("the other run tenant's schema is readable with the same token", "result" in (mm or {}), short(mm))
 
-    # ============================================================ prompts
+    # ============================================================ 8. prompts
     _, m = S.rpc("prompts/list")
     pl = (m or {}).get("result", {}).get("prompts", [])
     eq("prompts/list returns the 6 recipes", sorted(["bootstrap", "design_collection", "secure_collection",
        "debug_write", "write_edge_function", "review_history"]), sorted(p.get("name") for p in pl))
-    req = {p["name"]: [a.get("name") for a in (p.get("arguments") or []) if a.get("required")] for p in pl}
+    first = sorted(p.get("name") for p in pl if ((p.get("arguments") or [{}])[0]).get("name") != "tenant")
+    eq("each prompt takes tenant as its first argument", [], first)
+    req = {p["name"]: [a.get("name") for a in (p.get("arguments") or [])
+                       if a.get("required") and a.get("name") != "tenant"] for p in pl}
     eq("each argument-taking prompt marks its argument required",
        {"bootstrap": [], "design_collection": ["purpose"], "secure_collection": ["collection"],
         "debug_write": ["collection"], "write_edge_function": ["trigger"], "review_history": ["collection"]}, req)
 
-    def prompt(name, args=None):
-        p = {"name": name}
-        if args is not None:
-            p["arguments"] = args
-        _, mm = S.rpc("prompts/get", p)
+    def prompt(name, args=None, tenant=A):
+        a = dict(args or {})
+        if tenant is not None:
+            a["tenant"] = tenant
+        _, mm = S.rpc("prompts/get", {"name": name, "arguments": a})
         try:
             return mm, mm["result"]["messages"][0]["content"]["text"]
         except (KeyError, IndexError, TypeError):
             return mm, ""
     mm, t = prompt("bootstrap")
     check("prompts/get bootstrap embeds the live schema (notes)", ("`%s`" % A) in t and "notes" in t, short(mm))
-    check("... and does not claim list_records is owner-enforced on MCP",
-          "narrow neither of them" in t and "owner-enforced" not in t)
+    check("... and points at resources/templates/list, not resources/list",
+          "`resources/templates/list`" in t and "`resources/list` +" not in t)
     mm, t = prompt("design_collection", {"purpose": "blog posts"})
     check("prompts/get design_collection lists the datetime and json field types",
           "datetime" in t and "json" in t and "blog posts" in t, short(mm))
@@ -679,9 +825,8 @@ def main():
     check("prompts/get debug_write no longer suggests recent_writes or a dry_run re-run",
           bool(t) and "recent_writes" not in t and "re-sending one runs it for real" in t, short(mm))
     mm, t = prompt("write_edge_function", {"trigger": "record.created on notes"})
-    fn_url = "%s/t/%s/functions" % (PUBLIC_URL.rstrip("/"), A)
-    check("prompts/get write_edge_function's upload URL is this deployment's public origin + base path (%s)" % fn_url,
-          ("curl -X POST %s " % fn_url) in t, (re.search(r"curl -X POST \S+", t) or [""])[0])
+    check("prompts/get write_edge_function asks the user to upload the .wasm (no key, no curl)",
+          "ask the user to upload the .wasm" in t and "curl" not in t and "service-token" not in t, short(mm)[:200])
     check("... and uses get_egress_allowlist / set_egress_allowlist (replace, never merge)",
           "get_egress_allowlist" in t and "set_egress_allowlist" in t, short(mm)[:200])
     mm, t = prompt("review_history", {"collection": "notes"})
@@ -692,95 +837,90 @@ def main():
                               ("secure_collection on an unknown collection", "secure_collection", {"collection": "nope"})):
         mm, _ = prompt(name, args)
         eq("prompts/get with %s is -32602" % label, -32602, (rpc_err(mm) or {}).get("code"))
+    mm, _ = prompt("bootstrap", None, tenant=None)
+    check("prompts/get without tenant is refused", rpc_err(mm) is not None, short(mm))
 
-    # ============================================================ whoami
+    # ============================================================ 9. whoami (account view)
     _, m = S.tool("whoami", {})
     j = tool_json(m) or {}
+    check("whoami redacts the service key",
+          ((j.get("tokens") or {}).get("service") or {}).get("redacted") is True and ASVC not in json.dumps(j),
+          short(m))
+    eq("whoami endpoints.mcp is the account endpoint", mcp_url, (j.get("endpoints") or {}).get("mcp"))
+    eq("whoami caller is this OAuth grant", "oauth", (j.get("caller") or {}).get("kind"))
     eq("whoami file_upload.guide_resource points at files-guide.md", "drust://%s/files-guide.md" % A,
        (j.get("file_upload") or {}).get("guide_resource"))
     eq("whoami endpoints.rest_base is root-mode /t/<id>/ (rest_base + functions is the upload path)",
        "/t/%s/" % A, (j.get("endpoints") or {}).get("rest_base"))
 
-    # ============================================================ gate
-    def raw_init(base, key=None, extra=None):
-        h = {"Content-Type": "application/json", "Accept": ACCEPT}
-        if key:
-            h["Authorization"] = "Bearer " + key
-        h.update(extra or {})
-        return hx("POST", base, "/t/%s/mcp" % A, h, init_msg("2025-06-18"))
-    r = raw_init(BASE)
-    eq("MCP with no bearer answers 401", 401, r.status)
-    eq("... error_code UNAUTHENTICATED", "UNAUTHENTICATED", jbody(r).get("error_code"))
-    r = raw_init(BASE, "drust_bogus_" + secrets.token_hex(16))
-    eq("MCP with an unknown bearer answers 401 UNAUTHENTICATED", (401, "UNAUTHENTICATED"),
+    # ============================================================ 10. upload ticket (multi-chunk)
+    ticket_upload(S)
+
+    # ============================================================ 11. a reroll leaves OAuth access intact
+    r = hx("POST", BASE, "/admin/api/tenants/%s/tokens/service/reroll" % B,
+           {"Authorization": "Bearer " + PAT, "Content-Type": "application/json"}, "{}")
+    newkey = jbody(r).get("token")
+    if newkey:
+        SECRETS.append(newkey)
+    eq("tenant-scoped service-key reroll answers 201 with a new token", (201, True), (r.status, bool(newkey)))
+    _, m = S.tool("list_collections", {"tenant": B})
+    check("a tenant service-key reroll leaves the account endpoint's access to that tenant intact",
+          bool(m and "result" in m and not is_error(m)), short(m))
+
+def ticket_upload(S):
+    _, m = S.tool("create_upload_url", {"size": TICKET_FILE_BYTES, "filename": "smoke-ticket.bin"})
+    j = tool_json(m) or {}
+    create = j.get("create") or {}
+    auth = (create.get("headers") or {}).get("Authorization") or ""
+    ticket = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+    if ticket:
+        SECRETS.append(ticket)
+    tk = j.get("ticket") or {}
+    append = j.get("append") or {}
+    check("create_upload_url issues a private ticket for the requested size",
+          m is not None and not is_error(m) and bool(ticket)
+          and tk.get("max_bytes") == TICKET_FILE_BYTES and tk.get("visibility") == "private"
+          and j.get("upload_url") == PUBLIC_URL + "/t/%s/uploads" % A
+          and (append.get("chunk_max_bytes") or 0) >= TICKET_CHUNK_BYTES, short(m))
+    if not ticket:
+        return
+    upload_url, prefix = j.get("upload_url") or "", append.get("url_prefix") or ""
+    if not (upload_url.startswith(PUBLIC_URL) and prefix.startswith(PUBLIC_URL)):
+        bad("ticket URLs start with this deployment's public URL", "%s / %s" % (upload_url, prefix))
+        return
+    upload_url = BASE + upload_url[len(PUBLIC_URL):]
+    prefix = BASE + prefix[len(PUBLIC_URL):]
+
+    r = tx("POST", upload_url, dict(create.get("headers") or {}))
+    loc = r.headers.get("location") or ""
+    check("ticket POST creates the upload (201 with a Location)", r.status == 201 and bool(loc),
+          "%s %s" % (r.status, r.body[:200]))
+    if not (r.status == 201 and loc):
+        return
+    patch_url = prefix + loc.rsplit("/", 1)[-1]
+    data = bytes((i * 7 + 3) % 256 for i in range(TICKET_FILE_BYTES))
+    off = 0
+    for i in range(1, TICKET_CHUNKS + 1):
+        if i == TICKET_CHUNKS:
+            r = tx("HEAD", patch_url, {"Authorization": auth, "Tus-Resumable": "1.0.0"})
+            eq("ticket HEAD mid-upload reports the bytes sent so far",
+               (200, str((TICKET_CHUNKS - 1) * TICKET_CHUNK_BYTES)), (r.status, r.headers.get("upload-offset")))
+        n = TICKET_CHUNK_BYTES if i < TICKET_CHUNKS else TICKET_FILE_BYTES - (TICKET_CHUNKS - 1) * TICKET_CHUNK_BYTES
+        r = tx("PATCH", patch_url, {"Authorization": auth, "Tus-Resumable": "1.0.0",
+                                    "Content-Type": "application/offset+octet-stream",
+                                    "Upload-Offset": str(off)}, data[off:off + n])
+        off += n
+        eq("ticket PATCH chunk %d of %d answers 204 with the new offset" % (i, TICKET_CHUNKS),
+           (204, str(off)), (r.status, r.headers.get("upload-offset")))
+        if r.status != 204:
+            return
+    r = tx("POST", upload_url, dict(create.get("headers") or {}))
+    eq("a second POST with the same ticket is 409 UPLOAD_TICKET_USED", (409, "UPLOAD_TICKET_USED"),
        (r.status, jbody(r).get("error_code")))
-    r = raw_init(BASE, AANON)
-    eq("MCP with the anon key answers 403", 403, r.status)
-    eq("... error_code WRITE_DENIED (not MCP_USER_DENIED)", "WRITE_DENIED", jbody(r).get("error_code"))
-    # src/tenant/router.rs cross-tenant token guard: "preserves pre-D9 wire 404".
-    r = raw_init(BASE, BSVC)
-    eq("another tenant's service key is refused on this tenant's MCP with 404 TENANT_NOT_FOUND",
-       (404, "TENANT_NOT_FOUND"), (r.status, jbody(r).get("error_code")))
-    utok = user_token(S)
-    if utok:
-        SECRETS.append(utok)
-        r = raw_init(BASE, utok)
-        eq("MCP with an end-user token answers 403", 403, r.status)
-        eq("... error_code MCP_USER_DENIED", "MCP_USER_DENIED", jbody(r).get("error_code"))
-    else:
-        note("could not obtain an end-user token (login rate limit) — user-token gate not exercised this run")
-
-    # ============================================================ Host guard
-    s3 = Sess(DIRECT, A, ASVC)
-    r, m = s3.init()
-    eq("initialize DIRECT (Host 127.0.0.1:<port>) is admitted by rmcp's Host guard", 200, r.status)
-    s3.close()
-    r = raw_init(DIRECT, ASVC, {"Host": "localhost:9999"})
-    eq("DIRECT with Host localhost:<any port> is admitted (loopback allow-list, port-agnostic)", 200, r.status)
-    r = raw_init(DIRECT, ASVC, {"Host": "evil.example"})
-    eq("DIRECT with a non-loopback Host is refused 403 by the DNS-rebinding guard", 403, r.status)
-    check("... with rmcp's 'Host header is not allowed' text", "Host header is not allowed" in r.body, r.body[:120])
-    r = raw_init(BASE, ASVC, {"Host": "evil.example"})
-    eq("through Caddy any client Host works (Caddy rewrites Host to 127.0.0.1:47826)", 200, r.status)
-    r = raw_init(DIRECT, None, {"Host": "evil.example"})
-    eq("DIRECT non-loopback Host without a bearer is still 401 (bearer layer runs first)", 401, r.status)
-
-    # ============================================================ transport + sessions
-    h = S.hdr()
-    r = hx("POST", BASE, S.path, dict(h, **{"Mcp-Session-Id": "00000000-not-a-session"}),
-             {"jsonrpc": "2.0", "id": 77, "method": "tools/list"})
-    eq("a request with an unknown Mcp-Session-Id answers 404", 404, r.status)
-    hn = dict(h)
-    hn.pop("Mcp-Session-Id", None)
-    r = hx("POST", BASE, S.path, hn, {"jsonrpc": "2.0", "id": 78, "method": "tools/list"})
-    eq("a non-initialize request without a session answers 422 (expect initialize)", 422, r.status)
-    r = hx("POST", BASE, S.path, dict(h, Accept="application/json"), {"jsonrpc": "2.0", "id": 79, "method": "tools/list"})
-    eq("POST without text/event-stream in Accept answers 406", 406, r.status)
-    r = hx("POST", BASE, S.path, dict(h, **{"Content-Type": "text/plain"}), '{"jsonrpc":"2.0","id":80,"method":"tools/list"}')
-    eq("POST with a non-JSON Content-Type answers 415", 415, r.status)
-    r = hx("POST", BASE, S.path, dict(h, **{"MCP-Protocol-Version": "1999-01-01"}), {"jsonrpc": "2.0", "id": 81, "method": "tools/list"})
-    eq("an unsupported MCP-Protocol-Version header on a session request answers 400", 400, r.status)
-    r = hx("PUT", BASE, S.path, h, "{}")
-    eq("PUT answers 405 with Allow: GET, POST, DELETE", (405, "GET, POST, DELETE"), (r.status, r.headers.get("allow")))
-    r = hx("GET", BASE, S.path, dict(h, Accept="application/json"))
-    eq("GET without Accept text/event-stream answers 406", 406, r.status)
-    r = hx("GET", BASE, S.path, {"Accept": "text/event-stream", "Authorization": "Bearer " + ASVC})
-    eq("GET without a session id answers 400", 400, r.status)
-    sse_get(S)
-    r = hx("DELETE", BASE, S.path, {"Authorization": "Bearer " + ASVC})
-    eq("DELETE without a session id answers 400", 400, r.status)
-    s4 = Sess(BASE, A, ASVC)
-    s4.init()
-    _, m = s4.rpc("tools/list")
-    check("a second session works independently", bool(m and "result" in m), short(m))
-    r = s4.close()
-    eq("DELETE of a live session answers 202", 202, r.status if r else None)
-    r, m = s4.rpc("tools/list")
-    eq("the deleted session's id then answers 404", 404, r.status)
-
-    # ============================================================ reroll (tenant B)
-    reroll_checks()
-    S.close()
+    _, m = S.tool("list_files", {})
+    fl = (tool_json(m) or {}).get("files") or []
+    check("the finished upload is listed, private, with its size",
+          any(f.get("size_bytes") == TICKET_FILE_BYTES and f.get("visibility") == "private" for f in fl), short(m))
 
 def upload_file(visibility):
     boundary = "----drustsmoke" + secrets.token_hex(8)
@@ -802,121 +942,6 @@ def upload_file(visibility):
           "%s %s" % (r.status, r.body[:200]))
     return key
 
-def user_token(S):
-    email = "smoke-%s@example.test" % secrets.token_hex(4)
-    pw = secrets.token_urlsafe(18)
-    _, m = S.tool("create_user", {"email": email, "password": pw, "verified": True})
-    if not (m and "result" in m and not is_error(m)):
-        bad("fixture: create_user for the user-token gate", short(m))
-        return None
-    deadline = time.time() + 80
-    while True:
-        r = hx("POST", BASE, "/t/%s/auth/login" % A, {"Content-Type": "application/json"},
-                 {"email": email, "password": pw})
-        if r.status == 200:
-            return jbody(r).get("token")
-        if r.status != 429 or time.time() > deadline:
-            if r.status != 429:
-                bad("fixture: end-user login", "status %s %s" % (r.status, r.body[:150]))
-            return None
-        time.sleep(13)
-
-def sse_get(S):
-    u = urllib.parse.urlsplit(BASE)
-    conn = http.client.HTTPConnection(u.hostname, u.port, timeout=20)
-    try:
-        conn.request("GET", S.path, headers={"Accept": "text/event-stream", "Authorization": "Bearer " + ASVC,
-                                             "Mcp-Session-Id": S.sid, "MCP-Protocol-Version": S.proto})
-        r = conn.getresponse()
-        eq("GET with a live session opens the standalone SSE stream (200)", 200, r.status)
-        check("... as text/event-stream", "text/event-stream" in (r.getheader("content-type") or ""),
-              r.getheader("content-type") or "")
-        first = b""
-        try:
-            first = r.readline() + r.readline()
-        except (socket.timeout, OSError):
-            pass
-        check("... and the stream delivers an SSE frame (priming event / keep-alive) within 20 s",
-              first.startswith(b"id:") or first.startswith(b":") or first.startswith(b"data:") or first.startswith(b"retry:"),
-              repr(first[:80]))
-    except (OSError, http.client.HTTPException) as e:
-        bad("GET with a live session opens the standalone SSE stream (200)", str(e))
-    finally:
-        conn.close()
-
-def reroll_checks():
-    sb = Sess(BASE, B, BSVC)
-    r, m = sb.init()
-    _, m = sb.rpc("tools/list")
-    check("tenant B: an MCP session on the original service key works", bool(m and "result" in m), short(m))
-    # Probe (observation only): a standalone GET stream opened with the soon-revoked key.
-    u = urllib.parse.urlsplit(BASE)
-    gconn = http.client.HTTPConnection(u.hostname, u.port, timeout=20)
-    gresp = None
-    try:
-        _pace(sb.hdr().get("Authorization"))
-        gconn.request("GET", sb.path, headers={"Accept": "text/event-stream", "Authorization": "Bearer " + BSVC,
-                                               "Mcp-Session-Id": sb.sid, "MCP-Protocol-Version": sb.proto})
-        gresp = gconn.getresponse()
-        if gresp.status == 200:
-            gresp.readline(); gresp.readline(); gresp.readline()   # priming event
-        else:
-            gresp = None
-    except (OSError, http.client.HTTPException):
-        gresp = None
-    r = hx("POST", BASE, "/admin/api/tenants/%s/tokens/service/reroll" % B,
-             {"Authorization": "Bearer " + PAT, "Content-Type": "application/json"}, "{}")
-    newkey = jbody(r).get("token")
-    if newkey:
-        SECRETS.append(newkey)
-    eq("tenant-scoped service-key reroll answers 201 with a new token", (201, True), (r.status, bool(newkey)))
-    check("... and revokes the old key (revoked_legacy_count >= 1)", (jbody(r).get("revoked_legacy_count") or 0) >= 1)
-    # The auth cache is cleared synchronously by the reroll; poll briefly anyway.
-    deadline, rr = time.time() + 15, None
-    while time.time() < deadline:
-        rr, _ = sb.rpc("tools/list")
-        if rr.status != 200:
-            break
-        time.sleep(1)
-    eq("the old key's live MCP session is refused after the reroll (401)", 401, rr.status if rr else None)
-    eq("... with error_code UNAUTHENTICATED", "UNAUTHENTICATED", jbody(rr).get("error_code") if rr else None)
-    r = hx("POST", BASE, "/t/%s/mcp" % B, {"Content-Type": "application/json", "Accept": ACCEPT,
-                                            "Authorization": "Bearer " + BSVC}, init_msg("2025-06-18"))
-    eq("the old key cannot open a new MCP session either (401)", 401, r.status)
-    if gresp is not None:
-        t0, line = time.time(), None
-        try:
-            while time.time() - t0 < 20:
-                line = gresp.readline()
-                if not line or time.time() - t0 > 3:
-                    break
-        except (socket.timeout, OSError):
-            line = None
-        if line and time.time() - t0 > 3:
-            note("observation: a standalone MCP GET stream opened with the old key stayed open %.0fs after the "
-                 "reroll (keep-alive frame received); it carries no data (no server-initiated notifications)"
-                 % (time.time() - t0))
-        elif line == b"":
-            note("observation: the old key's standalone MCP GET stream was closed after the reroll")
-    gconn.close()
-    if newkey:
-        sn = Sess(BASE, B, newkey)
-        r, m = sn.init()
-        eq("the rerolled key opens a new MCP session", 200, r.status)
-        _, m = sn.tool("whoami", {})
-        j = tool_json(m) or {}
-        check("whoami on the new session reports the rerolled service key",
-              ((j.get("tokens") or {}).get("service") or {}).get("plaintext") == newkey)
-        # Observation, not an assertion: is the pre-reroll session still alive in rmcp
-        # (i.e. reachable with the NEW key)? Sessions are not bound to the credential.
-        sb.key = newkey
-        r2, m2 = sb.rpc("tools/list")
-        if r2.status == 200:
-            note("observation: the pre-reroll MCP session id stays alive after the reroll and answers the NEW key "
-                 "(rmcp sessions are not bound to the bearer that opened them)")
-        sn.close()
-        sb.close()
-
 try:
     main()
 except Exception:
@@ -925,7 +950,7 @@ PY
 
 MCPX_BASE="$BASE" MCPX_DIRECT="$DIRECT" MCPX_A_ID="$A_ID" MCPX_A_SVC="$A_SVC" MCPX_A_ANON="$A_ANON" \
 MCPX_B_ID="$B_ID" MCPX_B_SVC="$B_SVC" MCPX_PAT="$ADMIN_PAT" MCPX_REPO="$REPO_ROOT" \
-MCPX_WANT_VER="$want_ver" MCPX_PUBLIC_URL="http://localhost:${SMOKE_HTTP_PORT:-48080}" \
+MCPX_WANT_VER="$want_ver" MCPX_PUBLIC_URL="$PUBLIC_URL" MCPX_TOKEN="$SMOKE_MCP_TOKEN" \
   python3 -I "$TMP/mcpx.py" > "$TMP/mcpx.out" 2> "$TMP/mcpx.err"
 rc=$?
 

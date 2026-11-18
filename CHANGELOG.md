@@ -312,6 +312,19 @@ personal API token card on the settings page is renamed.
   grant revoked after the snapshot, like admin PATs, and re-arms every refresh token rotated
   after it.
 
+### Smoke stack (developer tooling)
+
+- **The smoke checks use the account-level MCP endpoint.** `deploy/smoke/` no longer calls
+  `/t/<id>/mcp`: setup steps with a REST or admin JSON route (policies, owner field, end
+  users, self-registration, publish flags) use it, and every other MCP call goes to `/mcp`
+  with an OAuth access token that `run-all.sh` obtains once per run through the
+  authorization code flow with PKCE and revokes on exit. `50-mcp.sh` checks the endpoint
+  itself: the 401 challenges, the metadata documents, the stateless transport, the Host and
+  Origin gates, the `tenant` argument, and a multi-chunk upload with a `create_upload_url`
+  ticket. The smoke override turns `DRUST_MCP` on by default, and `SMOKE_DRUST_MCP=off`
+  before `deploy/smoke/up.sh` starts the stack with it off; nothing outside
+  `deploy/smoke/` changes.
+
 ## v1.67.0 — 2026-11-15
 
 Fixes from the access-gate convergence review (E track). One new environment variable,
