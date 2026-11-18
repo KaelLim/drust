@@ -200,20 +200,6 @@ SELECT a.role
  WHERE g.id = ?1 AND g.admin_id = ?2 AND g.revoked_at IS NULL
    AND g.idle_expires_at > datetime('now') AND g.absolute_expires_at > datetime('now')";
 
-/// The grant-and-admin liveness conditions every grant-anchored query must
-/// carry, alias-free, in step with `find_grant_by_access` in the MCP OAuth
-/// store. Each such query has a test asserting it contains all of them, so a
-/// new invalidation condition cannot reach the auth layer without reaching
-/// the per-call checks too.
-#[cfg(test)]
-pub(crate) const GRANT_LIVE_CLAUSES: [&str; 5] = [
-    ".id = g.admin_id",
-    ".created_at = g.admin_created_at",
-    "g.revoked_at IS NULL",
-    "g.idle_expires_at > datetime('now')",
-    "g.absolute_expires_at > datetime('now')",
-];
-
 /// Which incarnation of a tenant a check admitted: its owner and its
 /// `created_at`, so a later check can tell a soft delete or an id recycle by
 /// another owner from the tenant it first saw.
@@ -323,6 +309,20 @@ pub(crate) fn visible_tenants_for_admin(
     };
     Ok(Some(VisibleTenants { role, tenants }))
 }
+
+/// The grant-and-admin liveness conditions every grant-anchored query must
+/// carry, alias-free, in step with `find_grant_by_access` in the MCP OAuth
+/// store. Each such query has a test asserting it contains all of them, so a
+/// new invalidation condition cannot reach the auth layer without reaching
+/// the per-call checks too.
+#[cfg(test)]
+pub(crate) const GRANT_LIVE_CLAUSES: [&str; 5] = [
+    ".id = g.admin_id",
+    ".created_at = g.admin_created_at",
+    "g.revoked_at IS NULL",
+    "g.idle_expires_at > datetime('now')",
+    "g.absolute_expires_at > datetime('now')",
+];
 
 #[cfg(test)]
 mod tests {

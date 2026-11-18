@@ -635,6 +635,9 @@ fn f() {
             &mut files,
         );
         files.push(manifest.join("src/mcp/account.rs"));
+        files.push(manifest.join("src/mcp/account_audit.rs"));
+        files.push(manifest.join("src/tenant/uploads/ticket.rs"));
+        files.push(manifest.join("src/mgmt/tenant_authz.rs"));
         assert!(
             files.len() > 20,
             "scan found too few files: {}",
