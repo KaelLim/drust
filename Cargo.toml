@@ -110,7 +110,7 @@ resolver = "2"
 # `autotests = false` (top of file) turns off cargo's tests/*.rs auto-discovery,
 # so every test binary is listed below: the merged group harnesses
 # (tests/g_<group>.rs, each `#[path]`-including its member files unchanged) plus
-# the 14 standalone targets that must keep a process to themselves — 8 isolation
+# the 15 standalone targets that must keep a process to themselves — 9 isolation
 # exceptions, plus 6 backed out of a harness on a merge collision (each one's
 # reason is recorded below; a collision is resolved by backing the file out,
 # never by editing the test). tests/helpers.rs is deliberately not a target — it
@@ -259,3 +259,10 @@ path = "tests/query_executor.rs"
 [[test]]
 name = "webhook_concurrency"
 path = "tests/webhook_concurrency.rs"
+[[test]]
+# Isolation exception: asserts on the contents of audit rows in the DB it
+# installs through the first-write-wins `audit_db::init_globals` OnceLock, so
+# it cannot share a binary with another installer. It was never merged into a
+# harness, so it is not one of the six backouts.
+name = "mcp_account_audit"
+path = "tests/mcp_account_audit.rs"

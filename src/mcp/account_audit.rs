@@ -14,7 +14,6 @@
 //! A row carries the tool name, the error code, the duration, the grant id
 //! and a collection name: never an argument value, a message, a token, a hash
 //! or an address.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use serde_json::{Map, Value, json};
 
@@ -35,8 +34,10 @@ pub(crate) enum DeniedSurface<'a> {
     /// A `tools/call` of this tool name.
     Tool(&'a str),
     /// A `resources/read` of this URI.
+    #[cfg_attr(not(test), allow(dead_code))]
     Resource(&'a str),
     /// A `prompts/get` of this prompt name.
+    #[cfg_attr(not(test), allow(dead_code))]
     Prompt(&'a str),
     /// The upload-URL tool.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -168,6 +169,7 @@ pub(crate) fn denied_entry(
 
 /// One resource read that passed the tenant check. The URI is kept only when
 /// the resource parser accepts it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resource_read_entry(
     tenant: &str,
     caller: &McpCaller,

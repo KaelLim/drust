@@ -22,6 +22,10 @@ use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
+use crate::mcp::account_audit::{
+    DeniedSurface, audit_collection, audit_op, call_entry, denied_entry, requested_tenant,
+    result_error_code,
+};
 use crate::mcp::error_code::mcp_error_code;
 use crate::mcp::handler::{
     DrustMcpService, INSTRUCTIONS_MAX_CHARS, finish_tool_call, server_capabilities, tool_error,
@@ -32,6 +36,7 @@ use crate::mgmt::mcp_oauth::config::McpOauthConfig;
 use crate::mgmt::tenant_authz::{
     AdminTenantAccess, TenantIncarnation, tenant_access_for_admin, visible_tenants_for_admin,
 };
+use crate::safety::audit::AuditEntry;
 
 /// The protocol revisions drust implements, oldest first. `initialize` echoes
 /// a requested revision found here and answers the newest one otherwise. Never
@@ -124,11 +129,20 @@ pub(crate) enum Denied {
     Internal,
 }
 
+impl Denied {
+    /// The `error_code` of the host audit row a refusal writes.
+    pub(crate) fn audit_code(&self) -> &'static str {
+        match self {
+            Denied::Required => "TENANT_REQUIRED",
+            Denied::NotFound => "TENANT_NOT_FOUND",
+            Denied::Internal => "INTERNAL",
+        }
+    }
+}
+
 /// Holds a DrustMcp, which carries the URL-signing secret: never derive Debug.
 pub(crate) struct Resolved {
     pub mcp: DrustMcp,
-    // Read by tests only until per-call audit rows carry the tenant id.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub tenant_id: String,
     /// What the second visibility check saw.
     // Read by tests only until the upload ticket binds to the incarnation.
@@ -393,6 +407,17 @@ impl From<Denied> for ToolDenied {
 }
 
 impl ToolDenied {
+    /// The `error_code` of the host audit row this refusal writes; `None`
+    /// writes no row (an unknown tool, or a request with no caller).
+    pub(crate) fn audit_code(&self) -> Option<&'static str> {
+        match self {
+            ToolDenied::Internal | ToolDenied::UnknownTool => None,
+            ToolDenied::TenantRequired => Some("TENANT_REQUIRED"),
+            ToolDenied::InvalidArguments(_) => Some("INVALID_ARGUMENTS"),
+            ToolDenied::TenantNotFound => Some("TENANT_NOT_FOUND"),
+        }
+    }
+
     /// The answer on the wire: an unknown tool is rmcp's own JSON-RPC
     /// "tool not found"; every other refusal is the one isError body.
     pub(crate) fn into_call_result(self) -> Result<CallToolResult, McpError> {
@@ -489,6 +514,64 @@ pub(crate) fn finish_account_call(
             tool_error(&code, e.message.into_owned(), fix)
         }
         other => other,
+    }
+}
+
+/// How an account-level `tools/call` ended, as far as its audit row cares.
+pub(crate) enum CallOutcome<'a> {
+    /// [`precheck`] refused it.
+    Prechecked(&'a ToolDenied),
+    /// `resolve_tenant` refused it.
+    Unresolved(&'a Denied),
+    /// It was forwarded to `tenant` after the tenant check.
+    Ran {
+        tenant: &'a str,
+        error_code: Option<&'a str>,
+        ms: u64,
+    },
+}
+
+/// The one audit row an account-level `tools/call` writes, or `None`.
+/// `list_tenants` never writes one (its answer belongs to no tenant, and that
+/// holds for its refusals too), nor does a refusal without an audit code. A
+/// refusal is a host row naming the requested tenant; only a call that passed
+/// the tenant check writes a row in that tenant. `args` are the arguments as
+/// the caller sent them, `tenant` included.
+pub(crate) fn tool_call_entry(
+    caller: &McpCaller,
+    tool: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    outcome: CallOutcome<'_>,
+) -> Option<AuditEntry> {
+    if tool == LIST_TENANTS {
+        return None;
+    }
+    let denied = |code: &str| {
+        denied_entry(
+            Some(caller.admin_id()),
+            Some(caller.grant_id()),
+            DeniedSurface::Tool(tool),
+            requested_tenant(args),
+            code,
+        )
+    };
+    match outcome {
+        CallOutcome::Prechecked(d) => d.audit_code().map(denied),
+        // Not through `ToolDenied::from`: it turns Internal into a refusal
+        // without a code.
+        CallOutcome::Unresolved(d) => Some(denied(d.audit_code())),
+        CallOutcome::Ran {
+            tenant,
+            error_code,
+            ms,
+        } => Some(call_entry(
+            tenant,
+            &audit_op(tool, args),
+            caller,
+            error_code,
+            ms,
+            audit_collection(tool, args),
+        )),
     }
 }
 
@@ -664,6 +747,12 @@ impl AccountMcp {
         }
     }
 
+    /// Queues one audit row. Never blocks the call and never fails it: the
+    /// writer drops rows under backpressure. Called with no meta guard held.
+    async fn audit_row(&self, entry: AuditEntry) {
+        crate::safety::audit::write_entry(&self.inner.log_dir, &entry).await;
+    }
+
     /// An outer tool: `list_tenants` through [`finish_account_call`], so its
     /// failure is the isError `INTERNAL` body; any other name is rmcp's own
     /// "tool not found", answered before meta is read.
@@ -731,26 +820,56 @@ impl ServerHandler for AccountMcp {
         };
         // Omitted and `null` arguments are both an empty map.
         let mut args = request.arguments.take().unwrap_or_default();
-        let kind = match precheck(Some(&caller), &request.name, &args) {
+        let name = request.name.to_string();
+        let kind = match precheck(Some(&caller), &name, &args) {
             Ok(k) => k,
-            Err(d) => return d.into_call_result(),
+            Err(d) => {
+                if let Some(e) = tool_call_entry(&caller, &name, &args, CallOutcome::Prechecked(&d))
+                {
+                    self.audit_row(e).await;
+                }
+                return d.into_call_result();
+            }
         };
-        if let Precheck::Outer(name) = kind {
-            return self.run_outer(&caller, name).await;
+        if let Precheck::Outer(outer) = kind {
+            return self.run_outer(&caller, outer).await;
         }
         let resolved = match self.resolve_tenant(&caller, args.get("tenant")).await {
             Ok(r) => r,
-            Err(d) => return ToolDenied::from(d).into_call_result(),
+            Err(d) => {
+                if let Some(e) = tool_call_entry(&caller, &name, &args, CallOutcome::Unresolved(&d))
+                {
+                    self.audit_row(e).await;
+                }
+                return ToolDenied::from(d).into_call_result();
+            }
         };
+        let t0 = std::time::Instant::now();
+        let tenant_id = resolved.tenant_id.clone();
+        // The audit row reads the arguments as sent (`tenant`, `dry_run`).
+        let sent = args.clone();
         args.shift_remove("tenant");
         request.arguments = Some(args);
         let svc = DrustMcpService::for_account(resolved.mcp, &caller, &self.inner.cfg);
         // The router is rebuilt for every call; only the tool list is cached.
-        finish_account_call(
+        let out = finish_account_call(
             DrustMcpService::tool_router()
                 .call(ToolCallContext::new(&svc, request, context))
                 .await,
-        )
+        );
+        let code = match &out {
+            Ok(r) => result_error_code(r),
+            Err(_) => Some("INTERNAL".into()),
+        };
+        let outcome = CallOutcome::Ran {
+            tenant: &tenant_id,
+            error_code: code.as_deref(),
+            ms: t0.elapsed().as_millis() as u64,
+        };
+        if let Some(e) = tool_call_entry(&caller, &name, &sent, outcome) {
+            self.audit_row(e).await;
+        }
+        out
     }
 }
 
@@ -2206,6 +2325,133 @@ mod precheck_tests {
             json!({"error_code":"INTERNAL","message":"internal error"}),
             "same body as ToolDenied::Internal"
         );
+    }
+
+    #[test]
+    fn denial_audit_codes() {
+        assert_eq!(ToolDenied::Internal.audit_code(), None);
+        assert_eq!(ToolDenied::UnknownTool.audit_code(), None);
+        assert_eq!(
+            ToolDenied::TenantRequired.audit_code(),
+            Some("TENANT_REQUIRED")
+        );
+        assert_eq!(
+            ToolDenied::InvalidArguments(vec!["x".into()]).audit_code(),
+            Some("INVALID_ARGUMENTS")
+        );
+        assert_eq!(
+            ToolDenied::TenantNotFound.audit_code(),
+            Some("TENANT_NOT_FOUND")
+        );
+        assert_eq!(Denied::Required.audit_code(), "TENANT_REQUIRED");
+        assert_eq!(Denied::NotFound.audit_code(), "TENANT_NOT_FOUND");
+        assert_eq!(Denied::Internal.audit_code(), "INTERNAL");
+    }
+
+    #[test]
+    fn tool_call_entry_follows_the_audit_table() {
+        let args = a(json!({"tenant":"blog","collection":"posts","data":{"title":"v"}}));
+        let lt = a(json!({"tenant":"blog"}));
+        let bad = ToolDenied::InvalidArguments(vec!["tenant".into()]);
+        assert!(
+            tool_call_entry(&c(), "list_tenants", &lt, CallOutcome::Prechecked(&bad)).is_none()
+        );
+        assert!(
+            tool_call_entry(
+                &c(),
+                "list_tenants",
+                &lt,
+                CallOutcome::Ran {
+                    tenant: "blog",
+                    error_code: None,
+                    ms: 1
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            tool_call_entry(
+                &c(),
+                "insert_record",
+                &args,
+                CallOutcome::Prechecked(&ToolDenied::UnknownTool)
+            )
+            .is_none()
+        );
+        assert!(
+            tool_call_entry(
+                &c(),
+                "insert_record",
+                &args,
+                CallOutcome::Prechecked(&ToolDenied::Internal)
+            )
+            .is_none()
+        );
+        let extra = ToolDenied::InvalidArguments(vec!["dry_run".into()]);
+        let d = tool_call_entry(
+            &c(),
+            "insert_record",
+            &args,
+            CallOutcome::Prechecked(&extra),
+        )
+        .unwrap();
+        assert_eq!(
+            (d.tenant.as_str(), d.op.as_str(), d.error_code.as_deref()),
+            ("-", "mcp_denied", Some("INVALID_ARGUMENTS"))
+        );
+        assert_eq!(
+            Value::Object(d.extra),
+            json!({"surface":"tool","name":"insert_record","requested_tenant":"blog","grant_id":70})
+        );
+        for (den, code) in [
+            (Denied::Required, "TENANT_REQUIRED"),
+            (Denied::NotFound, "TENANT_NOT_FOUND"),
+            (Denied::Internal, "INTERNAL"),
+        ] {
+            let e = tool_call_entry(&c(), "insert_record", &args, CallOutcome::Unresolved(&den))
+                .unwrap();
+            assert_eq!(
+                (e.tenant.as_str(), e.error_code.as_deref()),
+                ("-", Some(code))
+            );
+        }
+        let r = tool_call_entry(
+            &c(),
+            "insert_record",
+            &args,
+            CallOutcome::Ran {
+                tenant: "blog",
+                error_code: Some("X"),
+                ms: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                r.tenant.as_str(),
+                r.op.as_str(),
+                r.status.as_str(),
+                r.duration_ms
+            ),
+            ("blog", "insert_record", "error", 9)
+        );
+        assert_eq!(
+            Value::Object(r.extra),
+            json!({"grant_id":70,"collection":"posts"})
+        );
+        let dry = a(json!({"tenant":"blog","collection":"posts","id":1,"dry_run":true}));
+        let p = tool_call_entry(
+            &c(),
+            "delete_record",
+            &dry,
+            CallOutcome::Ran {
+                tenant: "blog",
+                error_code: None,
+                ms: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(p.op, "delete_record.dry_run");
     }
 
     #[test]

@@ -1,0 +1,621 @@
+//! Audit rows written by the account-level MCP endpoint (`/mcp`).
+//!
+//! Own binary: asserts on audit-row contents in the DB it installs through
+//! the first-write-wins `audit_db::init_globals` OnceLock. Every test uses its
+//! own tenant id and filters on it, because the tests share one audit file.
+
+#[path = "helpers.rs"]
+mod helpers;
+
+use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
+use helpers::{
+    http_raw, mcp_call, mcp_init, mcp_rpc, mcp_tool_text, seed_mcp_access, spin_up_account_mcp,
+};
+use serde_json::{Value, json};
+use std::path::PathBuf;
+
+/// Installs the global writer once, on its own thread so it outlives every
+/// test's runtime, and returns the audit DB path.
+fn audit_path() -> &'static PathBuf {
+    static AUDIT_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    AUDIT_PATH.get_or_init(|| {
+        let dir = Box::new(tempfile::tempdir().unwrap());
+        let path = dir.path().join("test_mcp_account_audit.sqlite");
+        let conn = open_audit_db_write(&path).unwrap();
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("test-mcp-account-audit-writer".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build writer runtime");
+                rt.block_on(async move {
+                    let writer = AuditWriter::new(conn);
+                    drust::safety::audit_db::init_globals(writer);
+                    let _ = tx_ready.send(());
+                    std::future::pending::<()>().await;
+                });
+            })
+            .expect("spawn audit writer thread");
+        rx_ready.recv().expect("audit writer init signal");
+        let path_clone = path.clone();
+        Box::leak(dir);
+        path_clone
+    })
+}
+
+/// Rows now, no waiting, as JSON objects keyed by column name.
+fn rows_now(sql: &str, p1: &str) -> Vec<Value> {
+    let conn = open_audit_db_read(audit_path()).unwrap();
+    let mut stmt = conn.prepare(sql).unwrap();
+    let names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
+    let rows = stmt
+        .query_map([p1], |r| {
+            let mut o = serde_json::Map::new();
+            for (i, n) in names.iter().enumerate() {
+                let v = match r.get_ref(i)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => json!(n),
+                    rusqlite::types::ValueRef::Real(f) => json!(f),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
+                    rusqlite::types::ValueRef::Blob(_) => Value::String("<blob>".into()),
+                };
+                o.insert(n.clone(), v);
+            }
+            Ok(Value::Object(o))
+        })
+        .unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+/// Polls every 50 ms for up to 5 s until `sql` (one `?1` param) returns
+/// exactly `want` rows; panics at once if it returns more, and on timeout.
+async fn rows_eventually(sql: &str, p1: &str, want: usize) -> Vec<Value> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let rows = rows_now(sql, p1);
+        assert!(
+            rows.len() <= want,
+            "{} rows, want {want}: {sql} [{p1}]",
+            rows.len()
+        );
+        if rows.len() == want {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out with {} rows, want {want}: {sql} [{p1}]",
+            rows.len()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// recent_writes as the tool computes it, read straight from the writer's file.
+async fn recent(
+    tenant: &str,
+    collection: Option<&str>,
+) -> Vec<drust::safety::recent_writes::RecentWrite> {
+    let conn = std::sync::Arc::new(tokio::sync::Mutex::new(
+        open_audit_db_read(audit_path()).unwrap(),
+    ));
+    drust::safety::recent_writes::query_recent(&conn, tenant, 50, collection, None)
+        .await
+        .unwrap()
+}
+
+const COLS: &str = "tenant, token_hint, op, status, error_code, auth_method, actor_admin_id, \
+                    actor_email_snapshot, extra";
+const POSTS: &str = r#"{"name": "posts", "fields": [{"name": "title", "sql_type": "text"}]}"#;
+
+fn extra_of(row: &Value) -> Value {
+    serde_json::from_str(row["extra"].as_str().expect("extra is set")).unwrap()
+}
+
+fn tools_call(name: &str, args: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+           "params": {"name": name, "arguments": args}})
+}
+
+/// One tools/call on the per-tenant endpoint `/t/<tid>/mcp`, authenticated
+/// with the tenant's service key. That endpoint is stateful: initialize, keep
+/// the session id, acknowledge, then call. Returns the tools/call response
+/// message.
+async fn legacy_call(app: &axum::Router, tid: &str, svc: &str, tool: &str, args: Value) -> Value {
+    let path = format!("/t/{tid}/mcp");
+    let auth = format!("Bearer {svc}");
+    let (s, hd, _) = http_raw(
+        app,
+        "POST",
+        &path,
+        &[("authorization", auth.as_str())],
+        Some(mcp_init("2024-11-05")),
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::OK, "per-tenant initialize");
+    let sid = hd
+        .get("mcp-session-id")
+        .expect("per-tenant initialize sets a session id")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let hs = [
+        ("authorization", auth.as_str()),
+        ("mcp-session-id", sid.as_str()),
+    ];
+    http_raw(
+        app,
+        "POST",
+        &path,
+        &hs,
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})),
+    )
+    .await;
+    let (s, _, body) = http_raw(
+        app,
+        "POST",
+        &path,
+        &hs,
+        Some(json!({"jsonrpc": "2.0", "id": 2,
+            "method": "tools/call", "params": {"name": tool, "arguments": args}})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        axum::http::StatusCode::OK,
+        "per-tenant tools/call {tool}"
+    );
+    String::from_utf8_lossy(&body)
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str::<Value>(d.trim()).ok())
+        .find(|m| m["id"] == 2)
+        .expect("per-tenant tools/call answered")
+}
+
+#[tokio::test]
+async fn allowed_tool_call_writes_one_row_in_that_tenant() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-call").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "create_collection",
+        serde_json::from_str(POSTS).unwrap(),
+    )
+    .await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "insert_record",
+        json!({"collection": "posts", "data": {"title": "value-7f3a"}}),
+    )
+    .await;
+    let r = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'insert_record'"),
+        "aud-call",
+        1,
+    )
+    .await;
+    let x = &r[0];
+    assert_eq!(x["token_hint"], "-");
+    assert_eq!(x["status"], "ok");
+    assert!(x["error_code"].is_null());
+    assert_eq!(x["auth_method"], "mcp_oauth");
+    assert_eq!(x["actor_admin_id"], json!(h.admin_id));
+    assert_eq!(
+        extra_of(x),
+        json!({"grant_id": h.grant_id, "collection": "posts"})
+    );
+    let c = rows_eventually(
+        "SELECT extra FROM audit WHERE tenant = ?1 AND op = 'create_collection'",
+        "aud-call",
+        1,
+    )
+    .await;
+    assert!(
+        c[0]["extra"]
+            .as_str()
+            .unwrap()
+            .contains("\"collection\":\"posts\"")
+    );
+    // no argument value and no credential anywhere in this tenant's rows
+    for row in rows_now(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
+        "aud-call",
+    ) {
+        let s = row.to_string();
+        assert!(!s.contains("value-7f3a"));
+        assert!(
+            !s.contains(h.access.as_str()),
+            "a row carries the access token"
+        );
+    }
+}
+
+#[tokio::test]
+async fn recent_writes_query_sees_account_writes() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-rw").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "create_collection",
+        serde_json::from_str(POSTS).unwrap(),
+    )
+    .await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "insert_record",
+        json!({"collection": "posts", "data": {"title": "a"}}),
+    )
+    .await;
+    rows_eventually(
+        "SELECT op FROM audit WHERE tenant = ?1 AND op = 'insert_record'",
+        "aud-rw",
+        1,
+    )
+    .await;
+    let got = recent("aud-rw", Some("posts")).await;
+    assert!(
+        got.iter()
+            .any(|w| w.op == "insert_record" && w.collection.as_deref() == Some("posts"))
+    );
+    assert!(got.iter().any(|w| w.op == "create_collection"));
+}
+
+#[tokio::test]
+async fn dry_runs_are_not_listed_as_writes() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-dry").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "create_collection",
+        serde_json::from_str(POSTS).unwrap(),
+    )
+    .await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "insert_record",
+        json!({"collection": "posts", "data": {"title": "keep"}}),
+    )
+    .await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "delete_record",
+        json!({"collection": "posts", "id": 1, "dry_run": true}),
+    )
+    .await;
+    let p = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'delete_record.dry_run'"),
+        "aud-dry",
+        1,
+    )
+    .await;
+    assert_eq!(p[0]["status"], "ok");
+    assert!(
+        !recent("aud-dry", None)
+            .await
+            .iter()
+            .any(|w| w.op == "delete_record"),
+        "a preview is listed as a delete"
+    );
+    let text = mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "list_records",
+        json!({"collection": "posts"}),
+    )
+    .await;
+    assert!(text.contains("keep"), "the preview changed nothing: {text}");
+}
+
+#[tokio::test]
+async fn failed_tool_call_is_recorded_with_its_code() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-fail").await;
+    let body: Value = serde_json::from_str(
+        &mcp_tool_text(
+            &h.app,
+            &h.access,
+            &h.tid,
+            "insert_record",
+            json!({"collection": "nope", "data": {"a": 1}}),
+        )
+        .await,
+    )
+    .unwrap();
+    assert!(body["error_code"].is_string(), "{body}");
+    let r = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'insert_record'"),
+        "aud-fail",
+        1,
+    )
+    .await;
+    assert_eq!(r[0]["status"], "error");
+    assert_eq!(r[0]["error_code"], body["error_code"]);
+    assert_eq!(
+        extra_of(&r[0]),
+        json!({"grant_id": h.grant_id, "collection": "nope"})
+    );
+}
+
+#[tokio::test]
+async fn member_denied_on_foreign_tenant_pollutes_nothing() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-deny").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "create_collection",
+        serde_json::from_str(POSTS).unwrap(),
+    )
+    .await;
+    let before = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
+        "aud-deny",
+        1,
+    )
+    .await
+    .len();
+    let rw_before = recent("aud-deny", None).await.len();
+    assert_eq!(rw_before, 1, "the owner's create_collection is listed");
+    let m = {
+        let g = h.meta.lock().await;
+        seed_mcp_access(&g, "member", "mallory-aud")
+    };
+    let text = mcp_tool_text(
+        &h.app,
+        &m.access,
+        "aud-deny",
+        "insert_record",
+        json!({"collection": "posts", "data": {"title": "planted"}}),
+    )
+    .await;
+    assert!(text.contains("TENANT_NOT_FOUND"));
+    let d = rows_eventually(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+             AND json_extract(extra, '$.requested_tenant') = ?1"
+        ),
+        "aud-deny",
+        1,
+    )
+    .await;
+    assert_eq!(d[0]["error_code"], "TENANT_NOT_FOUND");
+    assert_eq!(d[0]["actor_admin_id"], json!(m.admin_id));
+    assert_eq!(
+        extra_of(&d[0]),
+        json!({"surface": "tool", "name": "insert_record", "requested_tenant": "aud-deny", "grant_id": m.grant_id})
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        rows_now(
+            &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
+            "aud-deny"
+        )
+        .len(),
+        before
+    );
+    assert_eq!(recent("aud-deny", None).await.len(), rw_before);
+    let mine = rows_now(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE actor_admin_id = CAST(?1 AS INTEGER) AND tenant <> '-'"
+        ),
+        &m.admin_id.to_string(),
+    );
+    assert!(
+        mine.is_empty(),
+        "the denied member's identity landed in a tenant row"
+    );
+}
+
+#[tokio::test]
+async fn precheck_denials_are_host_rows() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-pre").await;
+    // An unknown top-level key: insert_record has no dry_run.
+    let text = mcp_tool_text(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "insert_record",
+        json!({"collection": "posts", "data": {"title": "a"}, "dry_run": true}),
+    )
+    .await;
+    assert!(text.contains("INVALID_ARGUMENTS"), "{text}");
+    let a = rows_eventually(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+             AND json_extract(extra, '$.requested_tenant') = ?1"
+        ),
+        "aud-pre",
+        1,
+    )
+    .await;
+    assert_eq!(a[0]["error_code"], "INVALID_ARGUMENTS");
+    assert_eq!(extra_of(&a[0])["name"], "insert_record");
+    // No tenant at all (mcp_call would inject one).
+    let (_, _, m) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        tools_call("list_collections", json!({})),
+    )
+    .await;
+    assert!(
+        m[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("TENANT_REQUIRED")
+    );
+    let b = rows_eventually(
+        &format!(
+            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+             AND json_extract(extra, '$.name') = ?1 AND error_code = 'TENANT_REQUIRED'"
+        ),
+        "list_collections",
+        1,
+    )
+    .await;
+    assert!(
+        extra_of(&b[0]).get("requested_tenant").is_none(),
+        "{}",
+        b[0]
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-pre").is_empty());
+}
+
+#[tokio::test]
+async fn list_tenants_and_unknown_tools_write_nothing() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-quiet").await;
+    for body in [
+        tools_call("list_tenants", json!({})),
+        tools_call("list_tenants", json!({"tenant": "aud-quiet"})),
+        tools_call("no_such_tool", json!({"tenant": "aud-quiet"})),
+    ] {
+        let (s, _, m) = mcp_rpc(&h.app, Some(&h.access), body).await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert!(!m.is_empty());
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-quiet").is_empty());
+    assert!(rows_now("SELECT op FROM audit WHERE op = ?1", "list_tenants").is_empty());
+    assert!(
+        rows_now(
+            "SELECT op FROM audit WHERE op = 'mcp_denied' \
+             AND json_extract(extra, '$.name') IN ('list_tenants', 'no_such_tool') \
+             AND json_extract(extra, '$.requested_tenant') = ?1",
+            "aud-quiet"
+        )
+        .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn account_broadcast_rows_carry_the_admin() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-bcast").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "broadcast",
+        json!({"room": "lobby", "payload": {"n": 1}}),
+    )
+    .await;
+    // the `_system_` prefix is reserved: PROTECTED_ROOM, written by the failure audit
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "broadcast",
+        json!({"room": "_system_x", "payload": {"n": 1}}),
+    )
+    .await;
+    let q = format!(
+        "SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'broadcast.publish' AND status = "
+    );
+    let ok = rows_eventually(&format!("{q}'ok'"), "aud-bcast", 1).await;
+    let err = rows_eventually(&format!("{q}'error'"), "aud-bcast", 1).await;
+    assert_eq!(err[0]["error_code"], "PROTECTED_ROOM");
+    for x in [&ok[0], &err[0]] {
+        assert_eq!(x["op"], "broadcast.publish");
+        assert_eq!(x["token_hint"], "-");
+        assert_eq!(x["actor_admin_id"], json!(h.admin_id));
+    }
+}
+
+#[tokio::test]
+async fn account_egress_set_row_has_no_token_hint() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-egress").await;
+    mcp_call(
+        &h.app,
+        &h.access,
+        &h.tid,
+        "set_egress_allowlist",
+        json!({"entries": [{"system": "webhook", "uri": "https://a.com"}]}),
+    )
+    .await;
+    let r = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'tenant.egress.set'"),
+        "aud-egress",
+        1,
+    )
+    .await;
+    assert_eq!(r[0]["op"], "tenant.egress.set");
+    assert_eq!(r[0]["status"], "ok");
+    assert_eq!(r[0]["token_hint"], "-");
+    assert!(
+        r[0]["actor_admin_id"].is_null(),
+        "set_allowlist takes no actor"
+    );
+}
+
+#[tokio::test]
+async fn legacy_endpoint_broadcast_and_egress_rows_keep_the_service_hint() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-legacy").await;
+    legacy_call(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        "broadcast",
+        json!({"room": "lobby", "payload": {"n": 1}}),
+    )
+    .await;
+    legacy_call(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        "broadcast",
+        json!({"room": "_system_x", "payload": {"n": 1}}),
+    )
+    .await;
+    legacy_call(
+        &h.app,
+        &h.tid,
+        &h.svc,
+        "set_egress_allowlist",
+        json!({"entries": [{"system": "webhook", "uri": "https://a.com"}]}),
+    )
+    .await;
+    let q = |cond: &str| format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND {cond}");
+    let rows = [
+        rows_eventually(
+            &q("op = 'broadcast.publish' AND status = 'ok'"),
+            "aud-legacy",
+            1,
+        )
+        .await,
+        rows_eventually(
+            &q("op = 'broadcast.publish' AND status = 'error'"),
+            "aud-legacy",
+            1,
+        )
+        .await,
+        rows_eventually(&q("op = 'tenant.egress.set'"), "aud-legacy", 1).await,
+    ];
+    for r in &rows {
+        assert_eq!(r[0]["token_hint"], "service");
+        assert!(r[0]["actor_admin_id"].is_null());
+    }
+}

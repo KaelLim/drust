@@ -20,8 +20,10 @@
 # collision. Those 6 are load-bearing, not leftovers: a collision is resolved by
 # backing the file out, NEVER by editing the test, and re-merging them brings
 # back a race-dependent failure (a first-write-wins global audit writer) that
-# can pass locally. `make groups` prints the live counts — 24 + 14; do not
-# reconcile that 14 against the spec's 8 by merging six binaries away.
+# can pass locally. One more isolation exception (mcp_account_audit, an
+# audit-row asserter that was never merged) has been added since, so
+# `make groups` prints 24 + 15; do not merge the six backouts away to match
+# the spec's 8.
 # Measured on the mcp group: 20 binaries → 1 is 189s → 15s build and 3.20GB →
 # 244MB of target/debug, with the same 137 tests.
 #

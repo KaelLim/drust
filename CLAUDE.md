@@ -56,9 +56,9 @@ Building needs `clang` + `libclang`: the rusqlite `preupdate_hook` feature force
 > [!TIP]
 > Cost here is COMPILE, not run. Every test binary statically links the drust lib +
 > wasmtime, so a bare `cargo test <name>` still compiles **all** of them — **only
-> `--test <name>` limits what compiles.** #925 merged 253 binaries into 38: 24 group
+> `--test <name>` limits what compiles.** There are 39 test binaries: 24 group
 > harnesses `tests/g_<group>.rs`, each `#[path]`-including its member files unchanged,
-> plus 14 targets that must keep a process to themselves. `make test-lib` (fast inner
+> plus 15 targets that must keep a process to themselves. `make test-lib` (fast inner
 > loop), `make test-<group>` (= `cargo test --lib --test g_<group>`; `make groups` lists
 > the groups with live member counts), `make test-all` (full gate). Per-task agents run `make
 > test-lib` plus the relevant group; only the final review runs `make test-all`.
@@ -68,7 +68,7 @@ Group membership is declared in the harness, not inferred from the filename, and
 so a new test file either joins its group harness with `#[path = "<file>.rs"] mod <file>;`
 or gets its own `[[test]]` entry, and build.rs's ninth gate
 (`build_support/test_targets_gate.rs`) fails the build on a file that is neither, or one
-registered twice. The group list, the 14 standalone targets and the collision rule are in
+registered twice. The group list, the 15 standalone targets and the collision rule are in
 [`.claude/rules/build-deploy.md`](.claude/rules/build-deploy.md) §Tests; per-file
 membership is the harnesses themselves.
 

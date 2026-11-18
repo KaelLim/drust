@@ -21,7 +21,7 @@ Bumping `Cargo.toml`'s version requires updating **and staging `Cargo.lock` in t
 
 ## Tests
 
-Cost here is COMPILE, not run: every test binary statically links the drust lib + wasmtime, so a bare `cargo test <name>` compiles all of them and only filters what *runs* — the classic trap. Only `--test <name>` limits what compiles. #925 (spec `docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md`) cut that from 253 binaries to **38**: 24 merged group harnesses plus 14 targets that must keep a process to themselves. Measured on the mcp group, 20 binaries → 1 was 189s → 15s of build and 3.20 GB → 244 MB of `target/debug`, running the same 137 tests.
+Cost here is COMPILE, not run: every test binary statically links the drust lib + wasmtime, so a bare `cargo test <name>` compiles all of them and only filters what *runs* — the classic trap. Only `--test <name>` limits what compiles. #925 (spec `docs/superpowers/specs/2026-08-13-test-binary-consolidation-design.md`) cut that from 253 binaries to 38 (24 merged group harnesses plus 14 standalone targets); with one isolation exception added since, there are now **39**: 24 group harnesses plus 15 targets that must keep a process to themselves. Measured on the mcp group, 20 binaries → 1 was 189s → 15s of build and 3.20 GB → 244 MB of `target/debug`, running the same 137 tests.
 
 A group harness is `tests/g_<group>.rs` and contains nothing but `#[path = "<member>.rs"] mod <member>;` lines, one per former standalone file. **Member files are neither moved nor edited** — `#[path]` keeps their own `#[path = "helpers.rs"] mod helpers;` resolving exactly as before, which is why physically relocating them was rejected. Run a group with `make test-<group>` (= `cargo test --lib --test g_<group>`); `make groups` lists the harnesses with live member counts and the standalone count; `make test-lib` and `make test-all` are unchanged. Per-task workflow agents run `make test-lib` + the relevant group; only the final review runs `make test-all`.
 
@@ -29,12 +29,13 @@ The 24 groups are admin, audit, auth, batch, cli, collection, cron, egress, file
 
 Every harness carries `#![allow(clippy::duplicate_mod)]`. Its N members each `#[path]`-include `helpers.rs`, and inside one crate clippy reads that as N duplicate modules, so `cargo clippy --all-targets -- -D warnings` goes red without it. Deduplicating instead would mean editing member files, which is exactly what the consolidation forbids. Where members use the shared `common/` or `webhooks_common/` directories, the harness declares `mod common;` / `mod webhooks_common;` once for the whole crate and those members say `use crate::common;` instead of `mod common;` — that mechanical rewrite (7 files) is the *only* in-file edit #925 permitted (spec 鐵律 2).
 
-These 14 keep their own binary and are run by name, `cargo test --test <name>`; no `make test-<group>` covers them:
+These 15 keep their own binary and are run by name, `cargo test --test <name>`; no `make test-<group>` covers them:
 
 | Standalone target | Why it is not merged |
 |---|---|
 | `admin_theme`, `cli_device_approval`, `config`, `deploy4_login_version`, `fts_deadline`, `query_executor`, `webhook_concurrency` | mutate process-global env via `std::env::set_var` / `remove_var` |
 | `base_path_root` | the base path is a first-write-wins `OnceLock` |
+| `mcp_account_audit` | asserts on audit-row contents in the DB it installs through the first-write-wins `audit_db::init_globals` `OnceLock`; never merged, so an isolation exception rather than a backout |
 | `admin_pat_bearer`, `admin_pat_reroll`, `tenant_quota_requests`, `audit_retention_no_drop`, `egress_http_fetch`, `rpc_v2_mutation` | merge collisions, backed out rather than edited (below) |
 
 **A merge collision is resolved by backing the file out of its harness, never by touching the test.** No serialization, no rewritten assert, no reordered setup — the file gets its own `[[test]]` entry back and the commit message records why (spec 鐵律 1). All six backouts so far are one failure mode, and it is race-dependent rather than deterministic: `safety::audit_db::init_globals` installs the global audit `WRITER` into a first-write-wins `OnceLock`, so when two members of a binary each install their own audit SQLite file and then assert on rows in it, only the race winner's file ever receives anything while the loser polls an empty DB and panics. A file that asserts on audit-row *contents* cannot share a binary with a second installer; one that merely needs *a* writer to exist (`admin_oauth` / `tenant_oauth`, via `common::oauth_helpers::ensure_test_audit_writer`) can. Expect any future collision to be some other process-global of the same shape.
