@@ -236,6 +236,57 @@ mod tests {
         assert!(cfg.prm_url().ends_with(PRM_PATH));
     }
 
+    /// The bare-metal proxy snippet: both root discovery rules rewrite to the
+    /// paths this crate mounts, keep the default Host, and write one
+    /// directive per line (Caddyfile has no `;` separator).
+    #[test]
+    fn caddy_snippet_forwards_both_root_discovery_paths() {
+        let lines: Vec<&str> = include_str!("../../../deploy/Caddyfile")
+            .lines()
+            .map(|l| l.split('#').next().unwrap_or_default().trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        let as_path = "/.well-known/oauth-authorization-server";
+        assert!(
+            include_str!("mod.rs").contains(&format!("\"{as_path}\"")),
+            "the AS metadata route moved; update this pin and deploy/Caddyfile"
+        );
+        for (public, target) in [
+            (format!("{as_path}/drust"), as_path.to_string()),
+            (
+                format!("/.well-known/oauth-protected-resource/drust{MCP_PATH}"),
+                PRM_PATH.to_string(),
+            ),
+        ] {
+            let head = format!("handle {public} {{");
+            let at = lines
+                .iter()
+                .position(|l| *l == head)
+                .unwrap_or_else(|| panic!("deploy/Caddyfile: no `{head}` block"));
+            let rewrite = format!("rewrite * {target}");
+            assert_eq!(
+                lines.get(at + 1).copied(),
+                Some(rewrite.as_str()),
+                "{public}"
+            );
+            assert_eq!(
+                lines.get(at + 2).copied(),
+                Some("reverse_proxy 127.0.0.1:47826 {"),
+                "{public}"
+            );
+            assert_eq!(
+                lines.get(at + 3).copied(),
+                Some("header_up Host \"127.0.0.1:47826\""),
+                "{public}"
+            );
+        }
+        let joined: Vec<&&str> = lines.iter().filter(|l| l.contains(';')).collect();
+        assert!(
+            joined.is_empty(),
+            "deploy/Caddyfile: one directive per line: {joined:?}"
+        );
+    }
+
     // A runtime only because MgmtState::test_default starts the function
     // executor.
     #[tokio::test]

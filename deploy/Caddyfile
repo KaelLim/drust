@@ -1,7 +1,27 @@
 # Drust — multi-tenant SQLite BaaS
+# Paste every block below into the same site block of /etc/caddy/Caddyfile.
 handle_path /drust/* {
     reverse_proxy 127.0.0.1:47826 {
-        header_up Host "127.0.0.1:47826"       # rmcp DNS-rebinding guard (MCP sub-route needs this)
+        header_up Host "127.0.0.1:47826"       # default Host, /mcp also accepts the public host
+        header_up X-Real-IP {remote_host}
+    }
+}
+
+# MCP OAuth discovery for a path-mounted issuer (RFC 8414 / RFC 9728 path-insert).
+# The TLS-terminating upstream must forward these two exact paths here too, and
+# no hop may answer them with a redirect (30x): Claude Code stops a redirected
+# OAuth request. Harmless on a binary without MCP (it answers 404).
+handle /.well-known/oauth-authorization-server/drust {
+    rewrite * /.well-known/oauth-authorization-server
+    reverse_proxy 127.0.0.1:47826 {
+        header_up Host "127.0.0.1:47826"
+        header_up X-Real-IP {remote_host}
+    }
+}
+handle /.well-known/oauth-protected-resource/drust/mcp {
+    rewrite * /.well-known/oauth-protected-resource/mcp
+    reverse_proxy 127.0.0.1:47826 {
+        header_up Host "127.0.0.1:47826"
         header_up X-Real-IP {remote_host}
     }
 }
