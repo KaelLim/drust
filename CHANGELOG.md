@@ -3,13 +3,14 @@
 **Breaking for every MCP user.** MCP moves from one endpoint per tenant to one endpoint for
 the whole account, `<DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`, and that endpoint accepts only
 an OAuth access token from the authorization server this release also adds. The per-tenant
-`/t/<id>/mcp` is retired: it answers `410 MCP_ENDPOINT_MOVED` to every request. A tenant
-key, an admin PAT or any other existing credential no longer works for MCP; REST, the admin
-UI and the admin API accept exactly the credentials they did before. Read **Upgrading**
-before deploying: a Compose deployment with an `https://` `DRUST_PUBLIC_URL` turns MCP on by
-itself, and the bare-metal host needs two new proxy rules first. The release also carries one
-always-on change to the admin password login. Five new tables in `meta.sqlite`, five new
-optional environment variables.
+`/t/<id>/mcp` is retired: it answers `410 MCP_ENDPOINT_MOVED` to every request (a CORS
+preflight may be answered by the CORS layer instead). A tenant key, an admin PAT or any other
+existing credential no longer works for MCP; REST, the admin UI and the admin API accept
+exactly the credentials they did before. Read **Upgrading** before deploying: a Compose
+deployment with an `https://` `DRUST_PUBLIC_URL` turns MCP on by itself, and the bare-metal
+host needs two new proxy rules first. The release also carries one always-on change to the
+admin password login. Five new tables in `meta.sqlite`, five new optional environment
+variables.
 
 ### Breaking: one account-level MCP endpoint, OAuth only
 
@@ -238,7 +239,8 @@ personal API token card on the settings page is renamed "Personal API token (RES
 API)" and says MCP clients do not use it; the reroll warnings for a personal token and a
 tenant key no longer mention `mcp.json`; the empty-collections hint no longer points at a
 per-tenant MCP server; the `admin.team.remove` audit row carries `revoked_mcp_grants`
-(always 0); and `meta.sqlite` holds the five new tables.
+(0 unless the removed admin still held a live grant from a time MCP was on); and
+`meta.sqlite` holds the five new tables.
 
 ### Security properties
 
