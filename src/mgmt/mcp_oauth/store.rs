@@ -14,12 +14,11 @@
 //!   3. no MCP request holds a connection or session open past a single
 //!      request.
 //!
-//! Today nothing accepts a `drust_mcpat_` token, so all three hold trivially.
-//! They are conditions the features that will consume these tokens must keep:
-//! the account-level MCP endpoint must stay stateless (no GET stream, no rmcp
-//! session, every request re-authenticated through `find_grant_by_access`),
-//! and an upload bound to a ticket must re-check the ticket and its grant on
-//! every tus PATCH. A feature that breaks any of them gives every caller of
+//! The account-level MCP endpoint keeps all three: it is stateless (no GET
+//! stream, no rmcp session), every request is authorized through
+//! `find_grant_by_access`, an MCP access token gets 401 on every other plane,
+//! and a tus upload bound to a ticket re-checks the ticket and its grant on
+//! every request. A feature that breaks any of them gives every caller of
 //! `revoke_mcp_grant` and `remove_admin` an eviction duty — CLAUDE.md
 //! invariants 4 / 5.
 //!
@@ -119,10 +118,9 @@ impl GrantOwner {
 /// on the lookup that built it. A `GrantRef` never authorizes an MCP call (that
 /// is `AccessGrant`). Every one — from `find_grant_for_revocation`,
 /// `find_grant_by_refresh`, a code replay or refresh reuse — may only feed
-/// `GrantOwner::holder`. Refresh
-/// reuse's (`RefreshState::holder`) exists only for a
-/// genuine, unrevoked, already-rotated refresh of a live grant whose admin
-/// still matches.
+/// `GrantOwner::holder`. Refresh reuse's (`RefreshState::holder`) exists only
+/// for a genuine, unrevoked, already-rotated refresh of a live grant whose
+/// admin still matches.
 #[derive(Debug)]
 pub struct GrantRef {
     grant_id: i64,
@@ -158,7 +156,9 @@ impl AccessGrant {
         self.admin_id
     }
 
-    /// `COALESCE(email, username)` of the grant's admin.
+    /// `COALESCE(email, username)` of the grant's admin. Display only (the
+    /// audit row's `actor_email_snapshot`): it is not unique, so never look
+    /// anything up or authorize by it — use the admin id.
     pub fn admin_label(&self) -> &str {
         &self.admin_label
     }

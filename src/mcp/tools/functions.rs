@@ -1,7 +1,8 @@
-//! v1.36 — MCP function tools. Service-only by MCP dispatch (transport
-//! rejects anon/user before any tool runs). NO upload tool by design —
-//! whoami/instructions point at the REST multipart route (file-upload
-//! convention).
+//! v1.36 — MCP function tools. Service-only by construction: they are
+//! reachable only through the account-level `/mcp`, which admits only an
+//! admin-tier OAuth caller and runs every tool as Service on a tenant that
+//! caller can see. NO upload tool by design: a `.wasm` is deployed from the
+//! admin UI's Functions page.
 
 use crate::mcp::server::DrustMcp;
 use serde_json::{Value, json};
@@ -54,7 +55,7 @@ pub async fn set_function_active(s: &DrustMcp, name: &str, active: bool) -> anyh
     Ok(json!({ "name": name, "active": active }))
 }
 
-/// Service-only (by MCP dispatch) config of the caller-identity invoke ACL.
+/// Service-only (account-level `/mcp` only) config of the caller-identity invoke ACL.
 /// Grant AND revoke both flow through `set_invoke_acl` — a missing name is
 /// `FN_NOT_FOUND`. Invalidates the trigger-binding cache so the new flags take
 /// effect on the next dispatch decision. Mirrors REST `PATCH …/functions/<name>`

@@ -2,10 +2,12 @@
 //! MCP endpoint: "Connect Claude Code" (`GET /admin/mcp`) and the owner-only
 //! connection diagnostics (`GET /admin/mcp/diagnostics`).
 //!
-//! Both pages are mounted only while `McpOauthConfig::enabled()`. Every URL and
-//! command they show is derived on the server from `McpOauthConfig` (and so
-//! from the process-global base path); the browser never assembles one from
-//! `window.location`. The handlers read nothing from the database.
+//! The connect page is mounted only while `McpOauthConfig::enabled()`; the
+//! diagnostics page is always mounted, on purpose, so that while MCP is off it
+//! can show the owner why. Every URL and command they show is derived on the
+//! server from `McpOauthConfig` (and so from the process-global base path); the
+//! browser never assembles one from `window.location`. The handlers read
+//! nothing from the database.
 //!
 //! Commands are POSIX shell examples only: the single-quoted JSON of `add-json`
 //! does not survive the Windows shells' quoting rules, which is why the

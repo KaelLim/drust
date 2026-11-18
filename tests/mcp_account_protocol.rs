@@ -1,9 +1,11 @@
 //! The account-level MCP endpoint (`/mcp`) at the protocol level, on the app
-//! assembled the way `main` assembles it: version negotiation, the empty
-//! server surface, the stateless SSE transport, the host list rmcp receives,
-//! the Origin gate, the challenge URL, metadata agreement, that paths near
-//! `/mcp` answer like a path that never existed, and that a disabled host
-//! answers `MCP_DISABLED` on `/mcp` and nothing on the metadata path.
+//! assembled the way `main` assembles it: version negotiation, the list
+//! methods the server answers (an empty `resources/list`, the resource
+//! templates, the prompts) and the ones it does not, the stateless SSE
+//! transport, the host list rmcp receives, the Origin gate, the challenge URL,
+//! metadata agreement, that paths near `/mcp` answer like a path that never
+//! existed, and that a disabled host answers `MCP_DISABLED` on `/mcp` and
+//! nothing on the metadata path.
 
 mod helpers;
 

@@ -28,7 +28,8 @@ struct FileMeta {
 }
 
 /// Toggle one tenant file between `public` and `private`. Service-only gating is
-/// the caller's responsibility (MCP dispatch / `require_service` / admin session).
+/// the caller's responsibility (the account-level `/mcp`, which runs every tool
+/// as Service / `require_service` / admin session).
 pub async fn change_visibility(
     garage: &GarageClient,
     pool: &SharedTenantPool,

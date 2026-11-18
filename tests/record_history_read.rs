@@ -220,9 +220,9 @@ async fn history_read_paginates() {
 // service-only REST config route `PUT .../audit`.
 // ---------------------------------------------------------------------------
 
-/// DrustMcp harness, same shape as `tests/mcp_write_schema.rs::svc` — the MCP
-/// endpoint is service-only by dispatch, so the tool fns are exercised
-/// directly (no bearer layering to re-prove here).
+/// DrustMcp harness, same shape as `tests/mcp_write_schema.rs::svc` — the
+/// account-level MCP endpoint runs every tool as Service, so the tool fns are
+/// exercised directly (no bearer layering to re-prove here).
 async fn mcp_svc(tenant: &str) -> (drust::mcp::server::DrustMcp, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();

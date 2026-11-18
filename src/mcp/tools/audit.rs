@@ -6,7 +6,9 @@
 //! SEE, so in-flight SSE connections are untouched). `get_record_history`
 //! reads `_system_record_history` with the same SQL + row shape as the REST
 //! `GET /t/<id>/collections/<coll>/history` handler. Both are service-only by
-//! MCP dispatch (`/mcp` rejects anon/user bearers).
+//! construction: they are reachable only through the account-level `/mcp`,
+//! which admits only an admin-tier OAuth caller and runs every tool as Service
+//! on a tenant that caller can see.
 
 use crate::mcp::server::DrustMcp;
 use crate::storage::schema::{collection_exists, is_protected_collection, write_audit_enabled};

@@ -1,6 +1,7 @@
 //! v1.56 M3 — MCP Prompts. `prompt_list` is pure; `render_prompt` embeds the
 //! tenant's live schema, so it runs against a real `DrustMcp` (same scaffold as
-//! tests/mcp_resources.rs). Prompts are service-only by MCP dispatch; these
+//! tests/mcp_resources.rs). Prompts are reachable only through the
+//! account-level `/mcp`, which admits only an admin-tier OAuth caller; these
 //! tests exercise the pure builders directly.
 
 #[path = "helpers.rs"]

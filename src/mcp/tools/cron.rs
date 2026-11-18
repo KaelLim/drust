@@ -1,5 +1,7 @@
-//! v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects
-//! anon/user before any tool runs — same posture as `set_audit_enabled`).
+//! v1.48 — MCP cron tools. Service-only by construction: they are reachable
+//! only through the account-level `/mcp`, which admits only an admin-tier
+//! OAuth caller and runs every tool as Service on a tenant that caller can see
+//! (same posture as `set_audit_enabled`).
 //! Thin adapters over the transport-agnostic `crate::cron::ops` cores; the
 //! `OpsError` → `"<CODE>: <message>"` mapping carries the SAME wire codes as
 //! the REST surface (`crate::cron::routes::map_ops_error`) so `bail_mcp`

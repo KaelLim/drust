@@ -14,7 +14,8 @@
 //! This is HTTP DiD layer 1. Layer 2 lives in the executor, which re-reads the
 //! row before running and refuses a non-`Privileged` caller whose matching flag
 //! is 0 — so flipping a flag off after the gate admitted a request still fails
-//! closed. MCP `invoke_function` stays service-only by MCP dispatch.
+//! closed. MCP `invoke_function` stays service-only: it is reachable only
+//! through the account-level `/mcp`, which runs every tool as Service.
 
 use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole};
 

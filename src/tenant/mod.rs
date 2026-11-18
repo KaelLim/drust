@@ -55,8 +55,9 @@ pub struct TenantStack {
     /// v1.31 broadcast rooms config (payload cap, subscriber caps).
     /// Cloneable; tests use `RoomsConfig::test_defaults()`.
     pub rooms_cfg: rooms::RoomsConfig,
-    /// The management plane's MCP eviction handle. The tenant router mounts
-    /// no MCP route.
+    /// Assigned at boot (the same `Arc` the management plane holds) and by the
+    /// test stacks, but read nowhere: the tenant router mounts no MCP route.
+    /// The eviction handle soft-delete and id recycle use is `TenantsState.mcp`.
     pub mcp: Arc<McpHttpRegistry>,
     pub files: Option<TenantFilesState>,
     pub webhooks: Arc<WebhookDispatcher>,

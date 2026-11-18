@@ -653,8 +653,8 @@ where
             // v1.32.5 — gate via shared helper. Default (both flags off)
             // preserves the historical service-only behavior; admin can
             // opt in user / anon publish via PATCH publish-policy. MCP
-            // `broadcast` does NOT consume this — MCP dispatch is already
-            // service-only by construction (defense in depth ≥ 2).
+            // `broadcast` does NOT consume this — every MCP tool already runs
+            // as Service through the account-level `/mcp` (defense in depth ≥ 2).
             match check_publish_allowed(ctx, policy) {
                 PublishGate::Allow => {}
                 PublishGate::DenyUser => {

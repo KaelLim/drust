@@ -38,7 +38,9 @@ impl McpCaller {
         self.grant_id
     }
 
-    /// `COALESCE(email, username)` of the grant's admin.
+    /// `COALESCE(email, username)` of the grant's admin. Display only (the
+    /// audit row's `actor_email_snapshot`): it is not unique, so never look
+    /// anything up or authorize by it — use the admin id.
     pub fn admin_label(&self) -> &str {
         &self.admin_label
     }

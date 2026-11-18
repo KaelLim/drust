@@ -731,11 +731,15 @@ pub fn move_tenant_to_trash(
 /// sweeps anything a request racing the soft-delete re-populated after it).
 /// Order and comments are the soft-delete sequence, unchanged.
 ///
-/// Known residual (recycle only): between `drop(conn)` and the first two
-/// statements below, an admin PAT (resolves to Service on the data plane)
-/// can already reach this id; if a racing request had left an old-incarnation
-/// pool cached, that request can see it and, at worst, re-insert it into the
-/// MCP cache after this sweep. Requires two races and a trusted caller.
+/// Known residual (recycle only): between `drop(conn)` and the pool eviction
+/// below, an admin PAT (resolves to Service on the data plane) or a call to
+/// the account-level MCP endpoint can already reach this id; if a request
+/// racing the soft-delete had left an old-incarnation pool in the tenant
+/// registry, `get_if_live` hands that pool out until `state.tenants.evict`
+/// drops it. Nothing on a request path fills the MCP registry's own cache
+/// (`McpRegistry::get_or_create` has no production caller), so nothing
+/// re-inserts the old pool after this sweep. Requires two races and a
+/// trusted caller.
 pub(crate) async fn evict_tenant_everywhere(state: &TenantsState, id: &str) {
     // Eviction order matters: pools first (release rusqlite Connection FDs
     // on the rename target so the inode + disk space release immediately),
@@ -915,8 +919,8 @@ pub struct PublishPolicyView {
 /// field may be omitted to leave it unchanged. Returns the current state
 /// of both flags after the update.
 ///
-/// MCP `broadcast` is service-only by MCP dispatch and is NOT affected
-/// by these flags.
+/// MCP `broadcast` runs as Service (the account-level `/mcp` admits only an
+/// admin-tier OAuth caller) and is NOT affected by these flags.
 ///
 /// #955 — a live rooms WS connection captures its `TenantPublishPolicy`
 /// ONCE at upgrade and never re-reads it, so before this a socket kept

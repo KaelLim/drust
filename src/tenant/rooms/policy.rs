@@ -112,7 +112,8 @@ pub fn check_payload_size(len: usize, max_bytes: usize) -> Result<(), &'static s
 /// v1.32.5 — per-tenant publish policy. Bound on every request by
 /// `bearer_auth_layer` so REST + WS handlers can gate without an
 /// extra meta.sqlite round-trip. MCP `broadcast` does NOT consume
-/// this — MCP dispatch is already service-only by construction.
+/// this — every MCP tool already runs as Service (the account-level `/mcp`
+/// admits only an admin-tier OAuth caller).
 ///
 /// Default for both fields is `false` (matches the column default in
 /// `meta.sqlite.tenants`). A fresh install or pre-v1.32.5 deployment
@@ -140,8 +141,8 @@ pub enum PublishGate {
 /// - `AuthCtx::User`    → `Allow` iff `policy.allow_user`
 /// - `AuthCtx::Anon`    → `Allow` iff `policy.allow_anon`
 ///
-/// MCP `broadcast` does NOT call this — it relies on MCP dispatch being
-/// service-only globally (second layer of defense-in-depth).
+/// MCP `broadcast` does NOT call this — it relies on the account-level `/mcp`
+/// running every tool as Service (second layer of defense-in-depth).
 pub fn check_publish_allowed(
     ctx: &crate::auth::middleware::AuthCtx,
     policy: &TenantPublishPolicy,

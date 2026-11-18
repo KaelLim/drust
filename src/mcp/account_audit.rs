@@ -11,9 +11,15 @@
 //! the write, so a row is keyed by the id string, not by the incarnation that
 //! was checked.
 //!
+//! One exception to the shape checks: an upload-ticket row
+//! ([`ticket_use_entry`]) takes its `op` from the request as received, the
+//! method and the path below `/t/<tenant>`, so a caller's segment after
+//! `/uploads/` is stored unchecked (the bearer layer's convention), and it
+//! carries the bearer layer's short `token_hint` of the ticket.
+//!
 //! A row carries the tool name, the error code, the duration, the grant id
-//! and a collection name: never an argument value, a message, a token, a hash
-//! or an address.
+//! and a collection name: never an argument value, a message, a whole token, a
+//! hash or an address.
 
 use serde_json::{Map, Value, json};
 

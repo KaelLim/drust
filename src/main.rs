@@ -772,10 +772,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %cfg.bind, "drust listening");
 
     // `with_graceful_shutdown` waits for EVERY in-flight connection to close, and
-    // several of ours never close on their own: MCP Streamable HTTP sessions,
-    // `/subscribe` SSE, WS rooms. Left unbounded, SIGTERM hung until systemd's
-    // TimeoutStopSec fired and SIGKILLed us — 8 of 10 stops on this host took
-    // exactly 90s. The cost is not the wait: SIGKILL skips `drain_writer()`
+    // several of ours never close on their own: `/subscribe` SSE and WS rooms
+    // (the account-level MCP endpoint is stateless and holds no session). Left
+    // unbounded, SIGTERM hung until systemd's TimeoutStopSec fired and
+    // SIGKILLed us — 8 of 10 stops on this host took exactly 90s. The cost is not the wait: SIGKILL skips `drain_writer()`
     // below, so the audit buffer this shutdown path exists to flush was lost on
     // precisely the restarts it was written to protect. Containers hard-kill even
     // sooner (k8s terminationGracePeriodSeconds 30s, Compose stop_grace_period 10s).

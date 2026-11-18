@@ -2,7 +2,8 @@
 //! `set_function_invoke_acl` + admin UI toggle). The invoke-ACL flags
 //! (`invoke_anon` / `invoke_user`) are default-deny and config is service-only:
 //! granting AND revoking both flow through the same surfaces, all gated to the
-//! service key (REST: `require_service_layer`; MCP: dispatch rejects anon/user).
+//! service key (REST: `require_service_layer`; MCP: the account-level `/mcp`
+//! admits only an admin-tier OAuth caller and runs every tool as Service).
 
 mod helpers;
 

@@ -175,7 +175,7 @@ async fn files_guide_carries_the_grant_model_and_no_credentials() {
             "the guide must explain the grant model — missing {needle:?}"
         );
     }
-    // (b) The two upload stations and the two buckets.
+    // (b) The ticket upload and the two buckets.
     for needle in [
         "create_upload_url",
         "tus 1.0",

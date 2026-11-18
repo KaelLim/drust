@@ -1,5 +1,7 @@
 //! MCP `set_realtime` tool — toggle SSE broadcast on one collection.
-//! Service-only at the MCP-dispatch layer; this helper performs the
+//! Service-only by construction (reachable only through the account-level
+//! `/mcp`, which admits only an admin-tier OAuth caller and runs every tool as
+//! Service on a tenant that caller can see); this helper performs the
 //! validation chain and writer transaction.
 
 use crate::mcp::server::DrustMcp;

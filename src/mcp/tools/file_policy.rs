@@ -12,11 +12,12 @@
 //! `CODE: why`, which is exactly the shape `handler::bail_mcp` splits on to
 //! populate `error_code`.
 //!
-//! **Service-only by dispatch.** These tools are reachable only over the
-//! account-level `/mcp`, which refuses every anon and user token before a tool
-//! runs, so there is no per-tool role check here — matching `set_policy` and the fts index tools. That is
-//! also why the LIST tool needs no read gate even though the registry is the
-//! tenant's file-access map: no untrusted caller can reach it.
+//! **Service-only by construction.** These tools are reachable only through
+//! the account-level `/mcp`, which admits only an admin-tier OAuth caller and
+//! runs every tool as Service on a tenant that caller can see, so there is no
+//! per-tool role check here — matching `set_policy` and the fts index tools.
+//! That is also why the LIST tool needs no read gate even though the registry
+//! is the tenant's file-access map: no untrusted caller can reach it.
 //!
 //! The clause arguments arrive as `serde_json::Value` and go through
 //! [`parse_filter_value`], never a bare `serde_json::from_value` — the v1.58.6

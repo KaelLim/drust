@@ -152,8 +152,9 @@ pub async fn set_self_register(
 /// Either argument may be `None` to leave that flag untouched. Returns the
 /// current state of both flags after the update.
 ///
-/// MCP `broadcast` does NOT consult these flags — MCP dispatch is service-only
-/// by construction. These flags only affect REST `POST /t/{tenant}/rooms/{room}`
+/// MCP `broadcast` does NOT consult these flags — every MCP tool runs as
+/// Service (the account-level `/mcp` admits only an admin-tier OAuth caller).
+/// These flags only affect REST `POST /t/{tenant}/rooms/{room}`
 /// and WS `op:publish` on `/t/{tenant}/realtime`.
 ///
 /// v1.35 hook 11 (MCP face) — `auth_cache` is the same seam as the hooks 7/8
@@ -189,16 +190,13 @@ pub async fn set_self_register(
 /// author a wrapper-arm evict is ungateable and push a conditional somewhere
 /// worse.
 ///
-/// Measured caveat, so nobody re-derives it the hard way: under every
-/// `helpers::spin_up_*` stack this particular tool stops inside the wrapper,
-/// because `McpRegistry::with_bus` passes `meta: None` — `tools/call
-/// set_publish_policy` returns "meta connection not available in this context"
-/// and never reaches this fn, leaving the epoch untouched. That is a harness
-/// gap, not a design constraint: a fixture that builds its registry with
-/// `Some(meta)` drives the wrapper fine, which is what
+/// Over `tools/call` the wrapper always reaches this fn: the account-level
+/// endpoint builds every `DrustMcp` through `McpRegistry::build_live`, which
+/// takes `meta` as a required argument (a registry's own `meta: None` would
+/// stop the wrapper with "meta connection not available in this context").
 /// `mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus`
-/// (`tests/auth_cache_mcp_publish_policy.rs`) does to pin WHICH bus the wrapper
-/// forwards. The rest of this station's tests call this fn directly, and
+/// (`tests/auth_cache_mcp_publish_policy.rs`) drives that path to pin WHICH bus
+/// the wrapper forwards. The rest of this station's tests call this fn directly, and
 /// therefore say nothing about that argument.
 ///
 /// `bus_rooms` is a REQUIRED parameter, not an `Option` like `auth_cache`:

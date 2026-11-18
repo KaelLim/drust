@@ -15,7 +15,7 @@
 //! on the router this returns would gate every unmatched admin path.
 //!
 //! `MgmtState::with_data_dir` always merges this router; disabled, it holds
-//! only `/mcp`, which answers H1. The metadata route sits outside the three
+//! only `/mcp`, which answers `404 MCP_DISABLED`. The metadata route sits outside the three
 //! gates on purpose: it reads no Host, no header and no database, like the
 //! authorization-server metadata.
 //!
@@ -70,7 +70,8 @@ pub fn account_routes(state: &MgmtState) -> Router {
     let cfg = state.mcp_oauth.clone();
     if !cfg.enabled() {
         // Disabled: no rmcp service and no metadata route. The entry gate's
-        // first check answers H1 on every method, before any Host check.
+        // first check answers `404 MCP_DISABLED` on every method, before any
+        // Host check.
         return Router::new()
             .route(
                 MCP_PATH,

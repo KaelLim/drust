@@ -384,8 +384,9 @@ async fn index_reloads_on_create_and_deactivate() {
 }
 
 // --- Task 7: MCP tools (direct-fn, the functions_invoke_acl_config.rs
-// pattern). MCP dispatch is service-only by construction, so no per-tool
-// role check is exercised here — the transport rejects anon/user bearers.
+// pattern). Every MCP tool runs as Service through the account-level `/mcp`,
+// so no per-tool role check is exercised here — that endpoint admits only an
+// admin-tier OAuth caller.
 
 /// MCP create/list/toggle/delete round-trip against a `DrustMcp` sharing the
 /// router's `CronState` (the `with_cron` plumbing main.rs uses): mutations

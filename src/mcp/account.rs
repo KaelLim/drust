@@ -1321,9 +1321,12 @@ impl ServerHandler for AccountMcp {
     /// One account-level `tools/call`: the caller from the request parts,
     /// [`precheck`], then an outer tool runs here and an inner tool's tenant is
     /// resolved, `tenant` is stripped and the call goes to that tenant's tool
-    /// router as the calling admin. Every result passes through
-    /// [`finish_account_call`]. No meta guard is held here: each lives inside
-    /// the function that takes it, never across the forwarded call.
+    /// router as the calling admin. The forwarded call's result and
+    /// `list_tenants`' pass through [`finish_account_call`]; a refusal from
+    /// [`precheck`] or `resolve_tenant` and `create_upload_url` build their
+    /// result themselves (an unknown tool stays rmcp's JSON-RPC "tool not
+    /// found"). No meta guard is held here: each lives inside the function
+    /// that takes it, never across the forwarded call.
     async fn call_tool(
         &self,
         mut request: CallToolRequestParams,

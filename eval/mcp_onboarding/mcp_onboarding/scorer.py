@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 # Mirrors the drust invariant: these MCP tools accept `dry_run: true` and
-# return would_* counts + blast radius (build_instructions RULES block +
-# DeleteRecordArgs / DropCollectionArgs / DropIndexArgs).
+# return would_* counts + blast radius (the server instructions, which the
+# retired per-tenant endpoint built in `build_instructions` and the account-level
+# `/mcp` serves as `ACCOUNT_INSTRUCTIONS`, + DeleteRecordArgs /
+# DropCollectionArgs / DropIndexArgs).
 DESTRUCTIVE_TOOLS = {"delete_record", "drop_collection", "drop_index"}
 
 

@@ -1087,8 +1087,9 @@ pub fn run_migrations(meta: &Connection, tenants_root: &Path) -> rusqlite::Resul
     )?;
     // v1.32.5 — opt-in publish policy. Default off keeps the historical
     // service-only gate; flipping a flag lets user / anon tokens call
-    // `op:publish` (WS) or POST /rooms/<r> (REST). MCP `broadcast` tool
-    // stays service-only by MCP dispatch — these flags do not loosen it.
+    // `op:publish` (WS) or POST /rooms/<r> (REST). The MCP `broadcast` tool
+    // runs as Service (the account-level `/mcp` admits only an admin-tier
+    // OAuth caller) — these flags do not loosen it.
     add_column_if_missing(
         meta,
         "tenants",

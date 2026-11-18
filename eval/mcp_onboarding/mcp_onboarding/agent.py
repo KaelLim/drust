@@ -7,6 +7,10 @@ tools, and bridges them into a manual Claude Messages API tool-use loop on
 
 Hitting 127.0.0.1 directly satisfies rmcp's DNS-rebinding guard, so NO Host
 header rewrite is needed (that is only required behind Caddy).
+
+That endpoint is retired: it now answers every request with
+`410 MCP_ENDPOINT_MOVED`, and the account-level `/mcp` accepts only an OAuth
+access token, so this loop does not run against the current server (README.md).
 """
 from __future__ import annotations
 

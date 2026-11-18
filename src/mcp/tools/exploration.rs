@@ -207,8 +207,8 @@ pub async fn whoami(s: &DrustMcp, view: WhoamiView) -> anyhow::Result<serde_json
 /// realtime_enabled, etc.) plus every RPC's metadata (name,
 /// description, params, anon_callable, sql).
 ///
-/// Service-key only (enforced at dispatch). LLM-friendly for
-/// connect-time "show me the data model" calls.
+/// Service-only by construction (reachable only through the account-level
+/// `/mcp`). LLM-friendly for connect-time "show me the data model" calls.
 pub async fn get_schema_overview(s: &DrustMcp) -> anyhow::Result<serde_json::Value> {
     let pool = s.inner().pool.clone();
     let collections = pool

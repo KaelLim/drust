@@ -28,14 +28,14 @@ generated_by: docs/gen-architecture.py
 | [`cron/`](#srccron) | 7 | 52 | 16 | 12 |
 | [`db/`](#srcdb) | 2 | 20 | 1 | 0 |
 | [`functions/`](#srcfunctions) | 10 | 70 | 39 | 20 |
-| [`mcp/`](#srcmcp) | 29 | 277 | 100 | 48 |
-| [`mgmt/`](#srcmgmt) | 69 | 597 | 218 | 146 |
+| [`mcp/`](#srcmcp) | 29 | 279 | 101 | 48 |
+| [`mgmt/`](#srcmgmt) | 69 | 598 | 218 | 146 |
 | [`oauth/`](#srcoauth) | 6 | 27 | 5 | 10 |
 | [`query/`](#srcquery) | 10 | 69 | 14 | 41 |
 | [`rpc/`](#srcrpc) | 8 | 66 | 33 | 16 |
 | [`safety/`](#srcsafety) | 8 | 51 | 2 | 23 |
-| [`storage/`](#srcstorage) | 18 | 192 | 24 | 111 |
-| [`tenant/`](#srctenant) | 39 | 307 | 137 | 86 |
+| [`storage/`](#srcstorage) | 18 | 193 | 24 | 111 |
+| [`tenant/`](#srctenant) | 39 | 307 | 137 | 87 |
 
 ## Group dependency graph
 
@@ -188,7 +188,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 ### `src/mcp/`
 
 - [`account.rs`](../src/mcp/account.rs) — The server handler behind the account-level MCP endpoint (`/mcp`). · 39 pub
-- [`account_audit.rs`](../src/mcp/account_audit.rs) — The audit rows the account-level MCP endpoint writes: one per tool call · 15 pub
+- [`account_audit.rs`](../src/mcp/account_audit.rs) — The audit rows the account-level MCP endpoint writes: one per tool call · 17 pub
 - [`error_code.rs`](../src/mcp/error_code.rs) — The one classifier behind MCP's JSON-RPC `data.error_code`. · 3 pub
 - [`handler.rs`](../src/mcp/handler.rs) — rmcp tool router and handler behind the account-level MCP endpoint — the · 59 pub
 - [`http_registry.rs`](../src/mcp/http_registry.rs) — The management plane's handle on the MCP state: one `McpRegistry`, shared · 1 pub
@@ -198,12 +198,12 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`server.rs`](../src/mcp/server.rs) — 3 pub
 - [`tools/audit.rs`](../src/mcp/tools/audit.rs) — v1.46 — MCP audit tools over the per-tenant record-history trail. · 2 pub
 - [`tools/batch.rs`](../src/mcp/tools/batch.rs) — M2 — batch insert (+ upsert, next task), service-only on both faces. · 8 pub
-- [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by MCP dispatch (transport rejects · 4 pub
+- [`tools/cron.rs`](../src/mcp/tools/cron.rs) — v1.48 — MCP cron tools. Service-only by construction: they are reachable · 4 pub
 - [`tools/exploration.rs`](../src/mcp/tools/exploration.rs) — 5 pub
 - [`tools/file_policy.rs`](../src/mcp/tools/file_policy.rs) — Files RLS (#950-B, v1.63) — the MCP face of the `_system_file_policy` · 6 pub
 - [`tools/files.rs`](../src/mcp/tools/files.rs) — Y-scope MCP file tools — list / delete / get_file_url / set_file_visibility. · 8 pub
 - [`tools/fts.rs`](../src/mcp/tools/fts.rs) — Wave 2 M3 — service-only FTS5 index lifecycle tools (create/drop/list). · 3 pub
-- [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by MCP dispatch (transport · 6 pub
+- [`tools/functions.rs`](../src/mcp/tools/functions.rs) — v1.36 — MCP function tools. Service-only by construction: they are · 6 pub
 - [`tools/index.rs`](../src/mcp/tools/index.rs) — 6 pub
 - [`tools/mod.rs`](../src/mcp/tools/mod.rs) — 19 pub
 - [`tools/oauth.rs`](../src/mcp/tools/oauth.rs) — Pure async helpers for the per-tenant OAuth-provider admin MCP tools · 4 pub
@@ -257,7 +257,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`mcp_oauth/rl.rs`](../src/mgmt/mcp_oauth/rl.rs) — In-memory limiters for the MCP OAuth authorization server (`/oauth/token`; · 17 pub
 - [`mcp_oauth/route_layer.rs`](../src/mgmt/mcp_oauth/route_layer.rs) — Entry gates for the account-level MCP endpoint: on/off switch, Host, Origin, body limit, SSE buffering header. · 9 pub
 - [`mcp_oauth/rs_layer.rs`](../src/mgmt/mcp_oauth/rs_layer.rs) — Bearer layer for the account-level MCP endpoint: accepts MCP OAuth access tokens only. · 3 pub
-- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives, token-to-grant lookups, · 38 pub
+- [`mcp_oauth/store.rs`](../src/mgmt/mcp_oauth/store.rs) — MCP OAuth grant store — revocation primitives, token-to-grant lookups, · 39 pub
 - [`mcp_oauth/sweep.rs`](../src/mgmt/mcp_oauth/sweep.rs) — Hourly MCP OAuth cleanup, run from the device-code reaper loop in main.rs. · 2 pub
 - [`mcp_oauth/token.rs`](../src/mgmt/mcp_oauth/token.rs) — `POST /oauth/token`: request validation, grant-type dispatch, the · 3 pub
 - [`mcp_oauth/tokens.rs`](../src/mgmt/mcp_oauth/tokens.rs) — MCP OAuth token primitives: the four credential families the authorization · 7 pub
@@ -363,7 +363,7 @@ _One line per file (its `//!` summary). Use `search_graph` / `get_code_snippet` 
 - [`schema_cache.rs`](../src/storage/schema_cache.rs) — 1 pub
 - [`search_names.rs`](../src/storage/search_names.rs) — Naming grammar + authoritative classification for the `_system_search_*` · 6 pub
 - [`signed_url.rs`](../src/storage/signed_url.rs) — Drust-minted, drust-served signed URLs for private file downloads. · 4 pub
-- [`tenant_db.rs`](../src/storage/tenant_db.rs) — 8 pub
+- [`tenant_db.rs`](../src/storage/tenant_db.rs) — 9 pub
 - [`visibility.rs`](../src/storage/visibility.rs) — In-place file visibility toggle (public <-> private). · 2 pub
 
 <a id="srctenant"></a>
