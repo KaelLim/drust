@@ -9,7 +9,7 @@
     mcp_client.py selftest                     check the pure helpers offline
 
 The endpoint is stateless: every call is one POST with the access token from
-SMOKE_MCP_TOKEN, no initialize and no Mcp-Session-Id. "call" prints the JSON-RPC
+SMOKE_MCP_TOKEN, no initialize and no session id. "call" prints the JSON-RPC
 message whose id matches and exits 0; otherwise it prints one JSON line
 {"http_status": N, "body": ...} and exits 1. A 429 is never retried.
 

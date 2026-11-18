@@ -2,7 +2,7 @@
 # The account-level MCP endpoint (/mcp) through Caddy, with the run's OAuth
 # access token: the 401 challenges for a missing or non-OAuth bearer and both
 # metadata documents; the stateless transport (initialize, protocolVersion
-# negotiation, no Mcp-Session-Id, 405, 406, 415), the Origin gate, and the Host
+# negotiation, no session id, 405, 406, 415), the Origin gate, and the Host
 # gate direct vs through Caddy; the tenant argument (list_tenants,
 # TENANT_REQUIRED, TENANT_NOT_FOUND, INVALID_ARGUMENTS, a second tenant on the
 # same token); tools/list against src/mcp/handler.rs annotation_tests::TABLE
