@@ -60,7 +60,7 @@ The chart's `deploy/helm/drust/tests/render_test.sh` also reads files outside th
 ## Caddy
 
 > [!WARNING]
-> **`header_up Host "127.0.0.1:47826"` is mandatory on the Caddy block** for `/drust/t/<tenant>/mcp` — rmcp's DNS-rebinding guard rejects non-loopback Hosts with a 403/421 that looks like a WAF. The bare-metal Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`. The Compose `/public/*` block talks to an S3 API path-style and keeps `Host {upstream_hostport}`. A vhost Host sent to RustFS with `RUSTFS_SERVER_DOMAINS` unset is parsed as path-style and 403s.
+> **`header_up Host "127.0.0.1:47826"` stays on the `/drust/*` block as the default.** The account-level `/mcp` checks Host before authentication and answers anything but `localhost`, `127.0.0.1`, `::1` or the host of `DRUST_PUBLIC_URL` with `421 MCP_HOST_NOT_ALLOWED` (CLAUDE.md Host CAUTION). The bare-metal Garage `/public/*` is the same family but routes by `Host: <bucket>.web.local`, so it needs `header_up Host "public.web.local"`, never `127.0.0.1:<port>`. The Compose `/public/*` block talks to an S3 API path-style and keeps `Host {upstream_hostport}`. A vhost Host sent to RustFS with `RUSTFS_SERVER_DOMAINS` unset is parsed as path-style and 403s.
 
 The `/public/*` block's `handle_response` matcher (CSP-sandboxing script-executing content types served straight out of the object store) has three traps:
 
@@ -73,15 +73,51 @@ it carries a one-time MCP authorization code (compensated by PKCE, a 300-second 
 and single use, but a log is not where it belongs). Default Caddy access logs do not record
 response headers; keep it that way for that path.
 
-**The RFC 8414 root rule for a path-mounted issuer is not configured on bare metal yet.**
-The host's `/drust/*` block serves the MCP OAuth AS metadata at
-`/drust/.well-known/oauth-authorization-server`; the root location
-`/.well-known/oauth-authorization-server/drust` has no proxy rule, so the metadata is
-reachable only under the base path (Compose serves drust at the root and needs no rule).
-To check whether the AS is enabled on a host: the boot log has one line beginning
-`MCP OAuth AS enabled` or `MCP OAuth AS disabled`, and `GET <DRUST_PUBLIC_URL><base
-path>/.well-known/oauth-authorization-server` answers 200 only when it is enabled (404
-otherwise).
+**MCP on bare metal: root rules, then `on`, then the release gate.** drust is mounted under
+`/drust`, so its OAuth issuer is `https://<host>/drust`, and RFC 8414 / RFC 9728 put the
+discovery documents at the ROOT with the path appended:
+`/.well-known/oauth-authorization-server/drust` and
+`/.well-known/oauth-protected-resource/drust/mcp`. Claude Code looks there first; without
+them it cannot find the authorization server. `DRUST_MCP=auto` therefore never enables MCP
+on a path-mounted host. The order:
+
+1. Paste the two root `handle` blocks from `deploy/Caddyfile` into the site block of
+   `/etc/caddy/Caddyfile`, next to `handle_path /drust/*`, then validate and reload (below).
+   The TLS upstream must forward the same two exact paths to this Caddy, and no hop may
+   answer them, or any `/drust/` OAuth path, with a redirect (`http`→`https`, a trailing
+   slash): Claude Code stops a redirected OAuth request. The rules are harmless on a binary
+   without MCP (404).
+2. Set `DRUST_MCP=on` in the `EnvironmentFile`, with `DRUST_PUBLIC_URL` the public
+   `https://` origin and no path.
+3. `cargo build --release`, `sudo systemctl restart drust`,
+   `curl -sI http://127.0.0.1:47826/health | grep -i x-drust`. The boot log has one line
+   beginning `MCP OAuth AS enabled`.
+4. From outside the host, with no credential in any request:
+   - `POST https://<host>/drust/mcp` with `Content-Type: application/json`,
+     `Accept: application/json, text/event-stream` and the body `{}` → `401` with
+     `WWW-Authenticate: Bearer resource_metadata="…`. `421` means the proxy's Host or
+     `DRUST_PUBLIC_URL` is wrong; `404 MCP_DISABLED` means MCP is not on; a plain-text or
+     HTML 404 means `/drust/*` is not forwarded.
+   - `GET` `https://<host>/drust/.well-known/oauth-protected-resource/mcp`,
+     `https://<host>/.well-known/oauth-protected-resource/drust/mcp`,
+     `https://<host>/.well-known/oauth-authorization-server/drust` and
+     `https://<host>/drust/.well-known/oauth-authorization-server` → `200` each, with no
+     redirect; each PRM's `resource` is exactly `https://<host>/drust/mcp` and each AS
+     document's `issuer` exactly `https://<host>/drust`.
+   - `POST https://<host>/drust/oauth/token` with an empty body → `400` with an OAuth
+     `{"error":…}` body and no redirect.
+   - `POST https://<host>/drust/t/<any id>/mcp` → `410`, body starting `{"message":"MOVED`.
+5. On the host: `POST http://127.0.0.1:47826/mcp` with `Host: wrong.example` → `421`.
+6. As an owner, open `/drust/admin/mcp/diagnostics` from the public origin; every check
+   passes.
+
+On any failure fix the rule, or set `DRUST_MCP=off` and restart (MCP pauses; grants are
+kept). On Compose the same checks run without `/drust`: the bundled Caddy's catch-all already
+forwards `/mcp`, `/oauth/*` and the root `/.well-known/*` paths, so each pair of PRM and AS
+URLs is one URL. Compose needs a TLS edge in front of Caddy and an `https://`
+`DRUST_PUBLIC_URL` instead, after which `auto` enables MCP by itself. To check whether MCP is
+enabled on either target: the boot log line beginning `MCP OAuth AS enabled` or
+`MCP OAuth AS disabled` (with the reason), or the owner-only diagnostics page.
 
 The bare-metal block's authoritative snippet is **`../garage/deploy/Caddyfile`**, not `drust/deploy/` — `/public/*` is Garage's route there; verified 2026-08-02 as byte-identical to the live `/etc/caddy/Caddyfile` apart from one space. The Compose block is `deploy/compose.Caddyfile`, a second lockstep partner pinned by `deploy/tests/compose_public_route_test.sh`. The on-hold k3s chart's `deploy/helm/drust/files/public-proxy.Caddyfile` carries a byte copy of the Compose `handle_path /public/*` block as of the chart's freeze; while the hold lasts it is not a lockstep partner, so edit the Compose block alone (§Tests). Per-service `deploy/Caddyfile` files are snippets pasted into the single `/etc/caddy/Caddyfile`; after editing it, `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy`.
 
@@ -127,6 +163,11 @@ Per-release checklist — run it before tagging, not after. It covers the two ac
    in `client_id` or `redirect_uris`, update the pinned copy and `pinned_on` in the same
    release. Claude Code has changed its redirect host before, and a stale pin shows up only as
    users stuck on the authorize error page.
+8. MCP. Bare metal: when a release touches MCP or OAuth routing, re-run steps 4–6 of the
+   release gate above. Compose: confirm the TLS edge and the `https://` `DRUST_PUBLIC_URL`,
+   and that the boot log line reads `MCP OAuth AS enabled` (or `disabled` with the reason you
+   expect). On both, open the owner-only diagnostics page from the public origin. A new path
+   that Claude Code discovers at the root needs its own bare-metal root rule.
 
 Resuming k3s — the chart-side work the hold skips, all of it, before the chart counts as a target again:
 
@@ -147,8 +188,12 @@ Resuming k3s — the chart-side work the hold skips, all of it, before the chart
 
 Grep the `x-drust` prefix, not `x-drust-version`. **`x-drust-boot-degraded: <n>`** is emitted only when best-effort boot maintenance missed on some tenant — a STRICT rebuild that held a table back, an egress backfill that failed. Those tenants serve normally and the job retries next boot, so this is not an outage and never fails a probe; it is deliberately a header and not part of the `/health` body, which is a liveness contract for k8s and Compose. Absent means clean. It exists because a per-tenant `tracing::error!` is not a signal anyone receives: one tenant's STRICT rebuild failed on 18 consecutive boots and was found by accident.
 
+**Never run `rmcp` at `debug` or `trace`.** `RUST_LOG` replaces the default
+`info,drust=debug,tower_http=info` filter as a whole, and rmcp's debug output records whole
+MCP requests and results, upload tickets included.
+
 > [!CAUTION]
-> **Shutdown grace is bounded in-process, and the bound must stay under the tightest supervisor's.** `axum::serve(..).with_graceful_shutdown(..)` waits for every in-flight connection, and MCP Streamable HTTP sessions, `/subscribe` SSE and WS rooms never close on their own — so before v1.58.3 SIGTERM hung until `TimeoutStopSec` fired and SIGKILLed the process (8 of 10 stops on this host took exactly 90s). The damage was not the wait: SIGKILL skips the post-`serve()` `drain_writer()`, so the audit buffer that the graceful path exists to flush was lost on precisely the restarts it was written to protect. `DRUST_SHUTDOWN_GRACE_SECS` (default 10) now caps the drain. Raising it above the tightest supervisor deadline — Compose `stop_grace_period` 10s, k8s `terminationGracePeriodSeconds` 30s, systemd `TimeoutStopSec` 90s — silently restores the old bug on that target.
+> **Shutdown grace is bounded in-process, and the bound must stay under the tightest supervisor's.** `axum::serve(..).with_graceful_shutdown(..)` waits for every in-flight connection, and `/subscribe` SSE and WS rooms never close on their own — so before v1.58.3 SIGTERM hung until `TimeoutStopSec` fired and SIGKILLed the process (8 of 10 stops on this host took exactly 90s). The damage was not the wait: SIGKILL skips the post-`serve()` `drain_writer()`, so the audit buffer that the graceful path exists to flush was lost on precisely the restarts it was written to protect. `DRUST_SHUTDOWN_GRACE_SECS` (default 10) now caps the drain. Raising it above the tightest supervisor deadline — Compose `stop_grace_period` 10s, k8s `terminationGracePeriodSeconds` 30s, systemd `TimeoutStopSec` 90s — silently restores the old bug on that target.
 
 ## Provenance
 

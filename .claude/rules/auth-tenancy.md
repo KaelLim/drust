@@ -25,9 +25,9 @@ covers them. This file is the **how**.
 ## Bearer resolution and the auth cache
 
 Per-tenant anon + service tokens live in `meta.sqlite`, hashed **and** stored plaintext
-alongside (so `whoami` and the admin UI can echo the key — this is why a backup archive is
-a secret store). Resolution happens in `bearer_auth_layer`, which also wires rate-limiting
-and audit; denials get `error_code: HTTP_<status>`.
+alongside (so the admin UI can echo the key and MCP `whoami` the anon key — this is why a
+backup archive is a secret store). Resolution happens in `bearer_auth_layer`, which also
+wires rate-limiting and audit; denials get `error_code: HTTP_<status>`.
 
 `src/tenant/auth_cache.rs` is a process-local invalidate-on-write `DashMap<token_hash,
 CachedAuth>` consulted **after** the rate-limit probe, so a hit skips the global `meta`
@@ -181,14 +181,14 @@ plane answers one 404. **The owner is bound in SQL; the type only forces you to 
 
 **No post-commit step**, as long as all three hold: MCP OAuth tokens are not in
 `tenant::auth_cache` or any other cache; they cannot open SSE or rooms streams; and no MCP
-request holds a connection or session open past a single request. Today no endpoint
-accepts a `drust_mcpat_` token, so all three hold trivially; they are the conditions the
-account-level MCP endpoint and ticket-bound uploads must keep when they ship: the endpoint
-stateless (no GET stream, no rmcp session, every request authorized through
-`find_grant_by_access`), and a tus upload bound to a ticket re-checking the ticket and its
-grant on every PATCH. A feature that breaks any of them gives every `revoke_mcp_grant`
-caller and `remove_admin` an eviction duty (CLAUDE.md invariants 4 and 5). `change_role`, owner transfer, tenant soft-delete and id recycling
-deliberately do NOT revoke grants: visibility is decided on every call.
+request holds a connection or session open past a single request. The account-level endpoint
+keeps all three: it is stateless (no GET stream, no rmcp session), every request is
+authorized through `find_grant_by_access`, an MCP access token gets 401 on every other plane
+(`mcp_access_is_refused_on_every_other_plane`), and a tus upload bound to a ticket re-checks
+the ticket and its grant on every request. A feature that breaks any of them gives every
+`revoke_mcp_grant` caller and `remove_admin` an eviction duty (CLAUDE.md invariants 4 and
+5). `change_role`, owner transfer, tenant soft-delete and id recycling deliberately do NOT
+revoke grants: visibility is decided on every call.
 
 **Child rows never vouch for themselves.** Every read of `_mcp_oauth_codes`,
 `_mcp_oauth_refresh`, `_mcp_oauth_access` or `_mcp_upload_tickets` that decides validity
@@ -207,13 +207,15 @@ t.deleted_at IS NULL`, so `tenant_created_at` is copied in SQL, and every ticket
 `tenants` on `id`, `created_at` and `deleted_at IS NULL` in addition to the grant and admin
 join. A tenant id is recyclable (the id-recycle branch of `make_tenant_inner` hard-deletes
 the soft-deleted row), and `tenant_created_at` is what keeps a ticket from resolving to the
-new tenant, the way `admin_created_at` does for admins. Like that layer, it does not hold
-for an id recycled within the same second (`created_at` is second precision), so the upload
-feature must also have the id-recycle branch delete that tenant id's tickets, as it already
-purges `quota_requests`. Accepted residual: a ticket carries
-`grant_id` only, so cutting one refresh branch (branch b below) does not reach a ticket
-minted through that branch; a nullable column naming the minting branch can be added
-through `add_column_if_missing` when tickets ship.
+new tenant, the way `admin_created_at` does for admins.
+Like that layer, it does not hold for an id recycled within the same second (`created_at` is
+second precision), which is why the id-recycle branch of `make_tenant_inner` also deletes
+that tenant id's `_mcp_upload_tickets` rows, as it purges `quota_requests`. Accepted
+residual: a ticket carries `grant_id` only, so cutting one refresh branch (branch b below)
+does not reach a ticket minted through that branch; what survives is one upload, capped by
+the ticket's `max_bytes` and the tenant's quota, until the ticket's `create_by` (15 minutes
+after issue) or, once bound, its upload session's expiry. Revoking the grant reaches it.
+Redemption is described in `.claude/rules/storage-files.md` §Upload tickets.
 
 **Three layers against `admins` rowid recycling**, in this order of strength:
 (1) `remove_admin` deletes the grants explicitly in its transaction; (2) the FK
@@ -599,6 +601,32 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
 - `RotateOutcome` holds `IssuedTokens` and derives no `Debug` (pin
   `rotate_outcome_does_not_derive_debug` in `refresh.rs`); tests use `matches!`.
 
+### The account-level endpoint (`/mcp`)
+
+`mcp_oauth_auth_layer` (`rs_layer.rs`) is the endpoint's whole authentication, inside
+`mcp_route_layer` and outside `mcp_body_buffer`:
+
+- It reads the first `Authorization` value only, checks its shape (`drust_mcpat_`, exact
+  length) before taking the `meta` lock, and makes ONE lookup, `store::find_grant_by_access`.
+  `None` — no header, a tenant key, an admin PAT, a user or anon token, an upload ticket, an
+  unknown or expired access token — is always `401 MCP_OAUTH_REQUIRED` with a
+  `WWW-Authenticate: Bearer resource_metadata="<prm_url>"…` challenge, never 429, and reads
+  no per-IP bucket: the hourly sweep deletes an expired access row, so an idle client's
+  expired token cannot be told from one never issued, and Claude Code refreshes only on a 401.
+- A valid token spends its grant's `rs_grant` budget (600 per 60 s; over it `429
+  RATE_LIMITED`) first and only then touches `last_used_at`, on the same `meta` guard, which
+  is released before rmcp runs.
+- Every `Authorization` value, `Cookie` and `Proxy-Authorization` is removed before the
+  request reaches rmcp, and the `McpCaller` built by `McpCaller::from_access` is inserted.
+  Refusals write no audit row; their logs are sampled.
+- Tenant resolution after that is `account::resolve_tenant` (CLAUDE.md invariants 7 and 21):
+  the grant-anchored `tenant_authz::tenant_access_for_admin` before the tenant is opened and
+  again after, requiring the same (owner, created_at). Known residual: an id soft-deleted and
+  recycled to the SAME owner within the same second passes both checks (`created_at` is
+  second precision). It has no authorization consequence — that caller may see both
+  incarnations — and the cached old-incarnation pool residual under "Admin request queues"
+  applies to it.
+
 ### Revoke UI (settings card, team page)
 
 `mcp_oauth::settings_routes` merges into `settings_router` and `mcp_oauth::team_routes` into
@@ -637,8 +665,9 @@ JOIN on the grant, so an orphan refresh is refused) and decides, in this order, 
 - **No post-commit step**: no auth-cache clear, no bus eviction, no `clear_admin_pat` — the
   three conditions under "Grants, revocation and cleanup" hold. A cache added for MCP tokens
   later must be evicted by these three handlers and every other `revoke_mcp_grant` caller.
-- **`DRUST_MCP` off is a pause, not a revocation**: the card and routes disappear, the grants
-  stay live and work again when it is turned back on. To cut a connection off, revoke it
+- **`DRUST_MCP` off is a pause, not a revocation**: the card, the connect page and the OAuth
+  routes disappear (`/mcp` stays mounted and answers 404 `MCP_DISABLED`), the grants stay
+  live and work again when it is turned back on. To cut a connection off, revoke it
   before turning MCP off or right after turning it back on. There is no boot-time revoke
   (invariant 1).
 
@@ -715,9 +744,9 @@ and explicitly recyclable, so the id-recycle hard purge in `mgmt::tenants::crud`
 tenant's `quota_requests` too — `decide_quota_request` resolves the stored `tenant_id` live,
 so a survivor would raise the *new* tenant's tier. The same rule covers process memory: a
 create that recycled an id runs `crud::evict_tenant_everywhere` after the meta lock is
-released, which drops the old incarnation's pool cache entry, both MCP cache layers and
-their live rmcp sessions, the SSE and rooms bus channels for the id, its auth-cache
-entries, its cron index entry, and bumps its egress-allowlist version. One residual window
+released, which drops the old incarnation's pool cache entry, its MCP registry cache entry,
+the SSE and rooms bus channels for the id, its auth-cache entries, its cron index entry, and
+bumps its egress-allowlist version. One residual window
 remains (the crud.rs doc on that function): between releasing the lock and the first
 evictions, an admin PAT request can already reach the id, and if a request racing the
 soft-delete had left an old-incarnation pool cached, it can see that pool and, at worst,
