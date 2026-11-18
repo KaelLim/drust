@@ -113,6 +113,8 @@ assert TICKET_CHUNKS + 3 <= TICKET_REQ_BUDGET // 4
 _DRUST_TOKEN_RE = re.compile(r"drust_(?:mcpat|mcprt|upl)_[A-Za-z0-9_-]+")
 
 def red(s):
+    """Mask every credential, then flatten and cut: a cut made first can leave
+    part of a credential that the masks no longer recognise."""
     s = str(s)
     for x in SECRETS:
         if x:
@@ -120,6 +122,10 @@ def red(s):
     s = _DRUST_TOKEN_RE.sub("<redacted>", s)
     s = re.sub(r"([?&]t=)[^&\s\"']+", r"\1<redacted>", s)
     return s.replace("\t", " ").replace("\r", " ").replace("\n", " ")[:500]
+
+def clip(s, n):
+    """At most n characters of s, masked before the cut."""
+    return red(s)[:n]
 
 def emit(kind, name, detail=""):
     sys.stdout.write("%s\t%s\t%s\n" % (kind, name.replace("\t", " "), red(detail)))
@@ -297,7 +303,7 @@ def rpc_err(m):
 def short(m):
     if m is None:
         return "no JSON-RPC message"
-    return json.dumps(m)[:400]
+    return clip(json.dumps(m), 400)
 
 def tenant_endpoint_checks():
     # The per-tenant /t/<id>/mcp endpoint's answer after its retirement is checked here.
@@ -307,7 +313,7 @@ def tenant_endpoint_checks():
                    body='{"jsonrpc":"2.0","id":1,"method":"initialize"}' if method == "POST" else None)
             name = "%s /t/%s/mcp" % (method, tenant)
             eq(name + " answers 410", 410, r.status)
-            check(name + " body starts with MOVED", r.body.startswith('{"message":"MOVED'), r.body[:120])
+            check(name + " body starts with MOVED", r.body.startswith('{"message":"MOVED'), clip(r.body, 120))
             check(name + " carries MCP_ENDPOINT_MOVED", '"error_code":"MCP_ENDPOINT_MOVED"' in r.body)
             eq(name + " is no-store", "no-store", r.headers.get("cache-control", "").lower())
 
@@ -348,19 +354,19 @@ def main():
                        ("an admin PAT is not an OAuth token: 401 invalid_token", PAT)):
         r = mx("POST", dict(plain, Authorization="Bearer " + cred), body)
         check(name, r.status == 401 and r.body == H6 and 'error="invalid_token"' in r.headers.get("www-authenticate", ""),
-              "%s %s / %s" % (r.status, r.body[:160], r.headers.get("www-authenticate", "")))
+              "%s %s / %s" % (r.status, clip(r.body, 160), r.headers.get("www-authenticate", "")))
     r = mx("POST", dict(plain, Authorization="Bearer " + "drust_mcpat_" + secrets.token_urlsafe(32)), body)
-    eq("an unknown access-shaped token answers 401, never 429", 401, r.status)
+    eq("an unknown access-shaped token answers 401", 401, r.status)
     r = hx("GET", BASE, "/.well-known/oauth-protected-resource/mcp")
     j = jbody(r)
     check("protected-resource metadata names this resource and issuer",
           r.status == 200 and j.get("resource") == mcp_url and j.get("authorization_servers") == [PUBLIC_URL],
-          "%s %s" % (r.status, r.body[:200]))
+          "%s %s" % (r.status, clip(r.body, 200)))
     r = hx("GET", BASE, "/.well-known/oauth-authorization-server")
     j = jbody(r)
     check("authorization-server metadata issuer and token endpoint match",
           r.status == 200 and j.get("issuer") == PUBLIC_URL and j.get("token_endpoint") == PUBLIC_URL + "/oauth/token",
-          "%s %s" % (r.status, r.body[:200]))
+          "%s %s" % (r.status, clip(r.body, 200)))
 
     # ============================================================ 2. transport (valid token)
     S = Acct(BASE, A, TOKEN)
@@ -369,7 +375,7 @@ def main():
           r.status == 200 and "text/event-stream" in r.headers.get("content-type", ""),
           "%s %s" % (r.status, r.headers.get("content-type", "")))
     if not (m and "result" in m):
-        bad("cannot continue without an initialize result", "%s %s" % (r.status, r.body[:300]))
+        bad("cannot continue without an initialize result", "%s %s" % (r.status, clip(r.body, 300)))
         return
     res = m["result"]
     check("initialize issues no Mcp-Session-Id (stateless endpoint)", "mcp-session-id" not in r.headers)
@@ -385,7 +391,7 @@ def main():
     check("instructions fit Claude Code's 4096-character cap (%d chars)" % len(ins), 0 < len(ins) <= 4096,
           "%d chars" % len(ins))
     check("instructions lead with the dry_run rule (only delete_record/drop_collection/drop_index)",
-          "Only delete_record, drop_collection and drop_index accept `dry_run: true`" in ins[:1200], ins[:300])
+          "Only delete_record, drop_collection and drop_index accept `dry_run: true`" in ins[:1200], clip(ins, 300))
     check("instructions carry no absolute URL", not re.search(r"https?://", ins),
           (re.search(r"https?://\S+", ins) or [""])[0])
     check("instructions name list_tenants and create_upload_url",
@@ -419,7 +425,7 @@ def main():
        (r.status, jbody(r).get("error_code")))
     r, m = S.rpc("tools/list", headers={"Origin": "http://localhost:5173"})
     check("a loopback Origin on any port is admitted", r.status == 200 and bool(m and "result" in m),
-          "%s %s" % (r.status, r.body[:160]))
+          "%s %s" % (r.status, clip(r.body, 160)))
 
     r = mx("POST", S.hdr({"Host": "evil.example"}), body, base=DIRECT)
     eq("DIRECT with a non-loopback Host is refused 421 MCP_HOST_NOT_ALLOWED", (421, "MCP_HOST_NOT_ALLOWED"),
@@ -506,7 +512,7 @@ def main():
     la = lt.get("annotations") or {}
     check("list_tenants takes no arguments and is read-only closed-world",
           (lt.get("inputSchema") or {}).get("properties") == {} and la.get("readOnlyHint") is True
-          and la.get("openWorldHint") is False, json.dumps(lt)[:300])
+          and la.get("openWorldHint") is False, clip(json.dumps(lt), 300))
     ua = (outer.get("create_upload_url") or {}).get("annotations") or {}
     eq("create_upload_url hints are write, not destructive, not idempotent, closed-world",
        (False, False, False, False),
@@ -711,7 +717,7 @@ def main():
     # to read error_code; a code is an UPPER_SNAKE identifier, never a prose sentence.
     ec = j.get("error_code") or ""
     check("query's write refusal carries a machine-readable error_code (UPPER_SNAKE), not prose",
-          bool(re.match(r"^[A-Z][A-Z0-9_]*$", ec)), "error_code=%r" % ec[:80])
+          bool(re.match(r"^[A-Z][A-Z0-9_]*$", ec)), "error_code=%r" % clip(ec, 80))
     _, m = S.tool("create_rpc", {"name": "count_notes", "sql": "SELECT count(*) AS n FROM notes", "params": []})
     check("fixture: create_rpc count_notes (read)", m and "result" in m and not is_error(m), short(m))
     _, m = S.tool("create_rpc", {"name": "wipe_notes", "sql": "DELETE FROM notes", "params": [], "mode": "write"})
@@ -757,7 +763,7 @@ def main():
         check("... and carries no credential", ASVC not in txt and AANON not in txt)
         if p == "rpcs":
             check("... and lists the stored RPCs (so the redaction check below is not vacuous)",
-                  "count_notes" in txt and "wipe_notes" in txt, txt[:200])
+                  "count_notes" in txt and "wipe_notes" in txt, clip(txt, 200))
         if p in ("rpcs", "schema"):
             check("... and redacts stored RPC SQL", "SELECT count(*)" not in txt and "DELETE FROM notes" not in txt)
         if p == "files-guide.md":
@@ -866,9 +872,9 @@ def main():
           bool(t) and "recent_writes" not in t and "re-sending one runs it for real" in t, short(mm))
     mm, t = prompt("write_edge_function", {"trigger": "record.created on notes"})
     check("prompts/get write_edge_function asks the user to upload the .wasm (no key, no curl)",
-          "ask the user to upload the .wasm" in t and "curl" not in t and "service-token" not in t, short(mm)[:200])
+          "ask the user to upload the .wasm" in t and "curl" not in t and "service-token" not in t, clip(short(mm), 200))
     check("... and uses get_egress_allowlist / set_egress_allowlist (replace, never merge)",
-          "get_egress_allowlist" in t and "set_egress_allowlist" in t, short(mm)[:200])
+          "get_egress_allowlist" in t and "set_egress_allowlist" in t, clip(short(mm), 200))
     mm, t = prompt("review_history", {"collection": "notes"})
     check("prompts/get review_history names get_record_history", "get_record_history" in t, short(mm))
     for label, name, args in (("an unknown prompt", "nope", None),
@@ -934,7 +940,7 @@ def ticket_upload(S):
     r = tx("POST", upload_url, dict(create.get("headers") or {}))
     loc = r.headers.get("location") or ""
     check("ticket POST creates the upload (201 with a Location)", r.status == 201 and bool(loc),
-          "%s %s" % (r.status, r.body[:200]))
+          "%s %s" % (r.status, clip(r.body, 200)))
     if not (r.status == 201 and loc):
         return
     patch_url = prefix + loc.rsplit("/", 1)[-1]
@@ -979,7 +985,7 @@ def upload_file(visibility):
              "get_file_url's signed arm and expires_in range not exercised")
         return None
     check("fixture: Mode-A upload of a %s file" % visibility, r.status in (200, 201) and bool(key),
-          "%s %s" % (r.status, r.body[:200]))
+          "%s %s" % (r.status, clip(r.body, 200)))
     return key
 
 try:
