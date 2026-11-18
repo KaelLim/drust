@@ -28,7 +28,7 @@ pub enum Command {
     Use(crate::commands::use_ctx::UseArgs),
     /// Data-plane record CRUD
     Records(crate::commands::records::RecordsArgs),
-    /// Collection read + index/config + schema mutation (schema mutation needs a server that still serves per-tenant MCP)
+    /// Collection read + index/config. create, add-field, drop and set-caps talk to the per-tenant MCP endpoint, which servers from this release on no longer serve: use the admin UI or an MCP client such as Claude Code
     Collections(crate::commands::collections::CollectionsArgs),
     /// Raw service-only SELECT (requires --unsafe)
     Query(crate::commands::query::QueryArgs),

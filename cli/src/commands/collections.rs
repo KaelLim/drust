@@ -1,4 +1,5 @@
-//! `drust collections …` — reads via REST, schema mutation via MCP tools/call (spec §6.1, D-1).
+//! `drust collections …` — reads via REST; schema mutation via tools/call on the per-tenant MCP
+//! endpoint, which servers from this release on answer with 410.
 use crate::cli::Cli;
 use crate::client::mcp;
 use crate::commands::records::finish;
@@ -21,23 +22,23 @@ pub enum CollectionsCmd {
     Openapi,
     Types,
     Zod,
-    /// create_collection via MCP
+    /// create_collection on the per-tenant MCP endpoint, which servers from this release on no longer serve: use the admin UI or an MCP client such as Claude Code
     Create {
         name: String,
         #[arg(long, default_value = "[]")]
         fields: String,
     },
-    /// add_field via MCP
+    /// add_field on the per-tenant MCP endpoint, which servers from this release on no longer serve: use the admin UI or an MCP client such as Claude Code
     AddField {
         coll: String,
         #[arg(long)]
         field: String,
     },
-    /// drop_collection via MCP
+    /// drop_collection on the per-tenant MCP endpoint, which servers from this release on no longer serve: use the admin UI or an MCP client such as Claude Code
     Drop {
         coll: String,
     },
-    /// set_anon_caps / set_user_caps via MCP
+    /// set_anon_caps / set_user_caps on the per-tenant MCP endpoint, which servers from this release on no longer serve: use the admin UI or an MCP client such as Claude Code
     SetCaps {
         coll: String,
         #[arg(long)]
