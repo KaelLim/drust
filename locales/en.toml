@@ -1056,7 +1056,7 @@ service_scopes = "Bypasses anon_caps and owner-field · use only in trusted back
 
 [tenant_api_keys.confirm]
 reroll_ok = "Reroll"
-reroll_text = "Rerolling immediately invalidates the current {role} key. Every website, Claude Code mcp.json, or automation script using this key will return 401 — you'll have to update the token on each client. Continue?"
+reroll_text = "Rerolling immediately invalidates the current {role} key. Every website or automation script using this key will return 401 — you will have to update the token on each client. Continue?"
 reroll_title = "Reroll key"
 
 [tenant_api_keys.head]
