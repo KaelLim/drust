@@ -1668,6 +1668,16 @@ pub async fn spin_up_account_mcp(tenant: &'static str) -> AccountMcpHarness {
 /// seeding (it is idempotent), which also backfills each admin's unlabeled UI
 /// PAT.
 pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness {
+    spin_up_account_mcp_limited(opts, None).await
+}
+
+/// [`spin_up_account_mcp_with`], with the tenant stack's per-key limiter
+/// replaced when `limiter` is given (it is the bucket a known upload ticket
+/// is charged to).
+pub async fn spin_up_account_mcp_limited(
+    opts: AccountMcpOpts,
+    limiter: Option<Arc<drust::safety::rate_limit::RateLimiter>>,
+) -> AccountMcpHarness {
     use drust::mgmt::mcp_oauth::config::McpOauthConfig;
     use drust::mgmt::mcp_oauth::rl::McpOauthLimiters;
     let dir = tempfile::tempdir().unwrap();
@@ -1718,6 +1728,9 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
     state.mcp_oauth = cfg.clone();
     state.mcp_oauth_rl = rl.clone();
+    if let Some(l) = limiter {
+        state.limiter = l;
+    }
     let bus_rooms = shared_bus_rooms(&mut state);
     let audit = Arc::new(Mutex::new(
         drust::safety::audit_db::open_audit_db_memory().unwrap(),

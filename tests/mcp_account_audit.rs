@@ -1037,3 +1037,113 @@ async fn create_upload_url_refused_after_resolve_audits_on_the_tenant() {
         .is_empty()
     );
 }
+
+// ─── refusals that write no row ─────────────────────────────────────────────
+
+/// The retired per-tenant path answers 410 before any Host or bearer check
+/// and records nothing, whatever the credential.
+#[tokio::test]
+async fn the_retired_per_tenant_path_writes_no_row() {
+    audit_path();
+    let h = spin_up_account_mcp("aud-moved").await;
+    let access = format!("Bearer {}", h.access);
+    let svc = format!("Bearer {}", h.svc);
+    for (method, auth) in [
+        ("POST", Some(access.as_str())),
+        ("POST", Some(svc.as_str())),
+        ("POST", None),
+        ("GET", Some(svc.as_str())),
+    ] {
+        let hd: Vec<(&str, &str)> = auth.map(|a| ("authorization", a)).into_iter().collect();
+        let body = (method == "POST").then(|| helpers::mcp_init("2025-06-18"));
+        let (s, _, _) = helpers::http_raw(&h.app, method, "/t/aud-moved/mcp", &hd, body).await;
+        assert_eq!(s, axum::http::StatusCode::GONE, "{method} {auth:?}");
+    }
+    fence(&h, "fence-moved").await;
+    let rows = rows_now(
+        "SELECT op FROM audit WHERE tenant = ?1 OR instr(op, ?1) > 0 \
+         OR instr(COALESCE(extra, ''), ?1) > 0",
+        "aud-moved",
+    );
+    assert!(rows.is_empty(), "{rows:?}");
+}
+
+/// Neither upload-ticket 429 records anything: the per-address miss bucket
+/// (unknown tickets) and the per-ticket bucket (a known ticket).
+#[tokio::test]
+async fn upload_ticket_rate_limits_write_no_row() {
+    use drust::mgmt::mcp_oauth::tokens::{TokenKind, new_token};
+    audit_path();
+    let h = spin_up_ticket_harness(&["aud-upl-miss"], true).await;
+    let mut limited = false;
+    for _ in 0..200 {
+        let u = new_token(TokenKind::UploadTicket);
+        let (s, _) = tus(
+            &h.app,
+            "POST",
+            "/t/aud-upl-miss/uploads",
+            &u,
+            &[("upload-length", "1")],
+            vec![],
+        )
+        .await;
+        if s == axum::http::StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+        assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+    }
+    assert!(limited, "the miss bucket never answered 429");
+    fence(&h, "fence-upl-miss").await;
+    let rows = rows_now(
+        "SELECT op FROM audit WHERE tenant = ?1 \
+         OR json_extract(extra, '$.requested_tenant') = ?1",
+        "aud-upl-miss",
+    );
+    assert!(rows.is_empty(), "{rows:?}");
+
+    // One request per ticket per minute: the second use of the same ticket
+    // is 429.
+    let k = helpers::spin_up_account_mcp_limited(
+        helpers::AccountMcpOpts {
+            admins: vec![("mcp-owner", "owner")],
+            tenants: vec![("aud-upl-known", Some(0))],
+            files: true,
+            mcp_enabled: true,
+        },
+        Some(std::sync::Arc::new(
+            drust::safety::rate_limit::RateLimiter::new(1, std::time::Duration::from_secs(60)),
+        )),
+    )
+    .await;
+    let t = upload_ticket_for(&k, "aud-upl-known").await;
+    let mut statuses = Vec::new();
+    for _ in 0..2 {
+        let (s, _) = tus(
+            &k.app,
+            "POST",
+            "/t/aud-upl-known/uploads",
+            &t,
+            &[("upload-length", "4")],
+            vec![],
+        )
+        .await;
+        statuses.push(s);
+    }
+    assert_eq!(
+        statuses,
+        [
+            axum::http::StatusCode::CREATED,
+            axum::http::StatusCode::TOO_MANY_REQUESTS
+        ]
+    );
+    fence(&k, "fence-upl-known").await;
+    let rows = rows_now(
+        "SELECT op, status FROM audit WHERE tenant = ?1 \
+         OR json_extract(extra, '$.requested_tenant') = ?1",
+        "aud-upl-known",
+    );
+    // Only the admitted create.
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["op"], "POST /uploads");
+}

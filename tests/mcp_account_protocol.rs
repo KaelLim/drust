@@ -111,6 +111,32 @@ async fn future_revision_in_header_and_body_still_gets_the_fallback() {
     );
 }
 
+/// A request after initialize that names a revision the transport does not
+/// know in `mcp-protocol-version` is refused with 400 (only initialize falls
+/// back to the newest revision).
+#[tokio::test]
+async fn unknown_revision_header_on_a_later_request_is_400() {
+    let h = helpers::spin_up_account_mcp("t1").await;
+    let auth = format!("Bearer {}", h.access);
+    let (s, _, b) = helpers::mcp_raw(
+        &h.app,
+        "POST",
+        &[
+            ("authorization", &auth),
+            ("mcp-protocol-version", "1999-01-01"),
+        ],
+        Some(req(2, "tools/list")),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&b)
+    );
+    assert!(!String::from_utf8_lossy(&b).contains("list_tenants"));
+}
+
 #[tokio::test]
 async fn shell_answers_the_spec_methods_and_no_others() {
     let h = helpers::spin_up_account_mcp("t1").await;
