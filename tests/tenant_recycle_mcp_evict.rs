@@ -1,9 +1,8 @@
-//! E5 — tenant soft-delete and id-recycle must retire the per-tenant MCP state
-//! as a whole: the outer rmcp service, the inner `McpRegistry` entry whose
-//! `DrustMcp` owns the tenant's `Arc<TenantPool>`, and every live rmcp session
-//! (each session task holds its own `DrustMcpService` → `DrustMcp` → pool).
+//! E5 — tenant soft-delete and id-recycle must retire the tenant's MCP state:
+//! the `McpRegistry` entry whose `DrustMcp` owns the tenant's
+//! `Arc<TenantPool>`.
 //!
-//! Before E5, soft-delete dropped only the outer service, so the old pool kept
+//! Before E5, soft-delete dropped only an outer service cache, so the old pool kept
 //! its SQLite connections open on the file just moved into `_trash`, and a
 //! create that recycled the id handed the NEW tenant's MCP that old pool —
 //! reading the previous tenant's rows while REST served the new database.
@@ -12,8 +11,8 @@
 //! `/mcp` for what a client sees after a soft delete or an id recycle.
 //!
 //! Every `get_or_create(..)` return value is dropped immediately (`let _ =` or
-//! a block): the outer service's factory closure captures the `DrustMcp`, so a
-//! binding would keep the pool alive past the eviction under test.
+//! a block): a binding would keep the `DrustMcp`, and with it the pool, alive
+//! past the eviction under test.
 
 mod helpers;
 
@@ -131,12 +130,11 @@ fn names(m: &Value) -> Vec<String> {
 #[tokio::test]
 async fn soft_delete_drops_the_inner_mcp_and_releases_the_pool() {
     let (state, inner, _d) = helpers::tenants_state_with_mcp("t1").await;
-    let _ = state.mcp.get_or_create("t1").await.unwrap();
+    let _ = inner.get_or_create("t1").await.unwrap();
     let weak = Arc::downgrade(&state.tenants.get_or_create("t1").unwrap());
     assert_eq!(inner.cached_count(), 1);
 
     assert_eq!(soft_delete(&state, 1, "t1").await, StatusCode::NO_CONTENT);
-    assert_eq!(state.mcp.cached_count(), 0, "outer MCP service not evicted");
     assert_eq!(inner.cached_count(), 0, "inner McpRegistry not evicted");
     assert!(
         weak.upgrade().is_none(),
@@ -147,7 +145,7 @@ async fn soft_delete_drops_the_inner_mcp_and_releases_the_pool() {
 #[tokio::test]
 async fn recycled_id_mcp_reads_the_new_database_not_the_trashed_one() {
     let (state, inner, d) = helpers::tenants_state_with_mcp("t1").await;
-    let _ = state.mcp.get_or_create("t1").await.unwrap();
+    let _ = inner.get_or_create("t1").await.unwrap();
     {
         let old = inner.get_or_create("t1").await.unwrap();
         plant_marker(&old.inner().pool).await;
@@ -246,13 +244,13 @@ async fn recycle_sweeps_state_that_reappeared_after_soft_delete() {
     // A request that raced the soft-delete re-opens a pool (rebuilding
     // `tenants/t1`) and populates MCP after the eviction ran.
     let r = state.tenants.get_or_create("t1").unwrap();
-    let _ = state.mcp.get_or_create("t1").await.unwrap();
+    let _ = inner.get_or_create("t1").await.unwrap();
     plant_marker(&r).await;
     drop(r);
 
     // A live neighbour on both layers (fresh id: its create evicts nothing).
     assert_eq!(create(&state, 1, "t2").await.status(), StatusCode::CREATED);
-    let _ = state.mcp.get_or_create("t2").await.unwrap();
+    let _ = inner.get_or_create("t2").await.unwrap();
     let t2_before = inner.get_or_create("t2").await.unwrap().inner();
 
     // 1 from the soft-delete above; the recycle must add exactly one more.
@@ -265,11 +263,6 @@ async fn recycle_sweeps_state_that_reappeared_after_soft_delete() {
         inner.cached_count(),
         1,
         "only t2 may remain in the inner registry"
-    );
-    assert_eq!(
-        state.mcp.cached_count(),
-        1,
-        "only t2 may remain in the outer registry"
     );
     let d1 = inner.get_or_create("t1").await.unwrap();
     let pool = d1.inner().pool.clone();
@@ -301,7 +294,7 @@ async fn recycle_sweeps_state_that_reappeared_after_soft_delete() {
 #[tokio::test]
 async fn create_on_a_live_id_evicts_nothing() {
     let (state, inner, _d) = helpers::tenants_state_with_mcp("t1").await;
-    let _ = state.mcp.get_or_create("t1").await.unwrap();
+    let _ = inner.get_or_create("t1").await.unwrap();
     let before = inner.get_or_create("t1").await.unwrap().inner();
     let h = state.bus_rooms.tenant_epoch_handle("t1");
     let e0 = h.load(SeqCst);

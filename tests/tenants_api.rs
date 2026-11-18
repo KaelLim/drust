@@ -103,10 +103,10 @@ async fn soft_delete_moves_to_trash() {
 /// Regression test for the soft-delete eviction sweep. Without this,
 /// TenantRegistry / McpHttpRegistry / EventBus would each retain Arc
 /// clones of the deleted tenant's state until process restart — pinning
-/// rusqlite Connection FDs against the renamed-to-_trash tenant dir,
-/// keeping MCP sessions alive, and leaking SSE broadcast channels. E5 — that
-/// includes the inner McpRegistry, whose DrustMcp holds the Arc<TenantPool>:
-/// evicting only the outer McpHttpRegistry service left the pool open.
+/// rusqlite Connection FDs against the renamed-to-_trash tenant dir and
+/// leaking SSE broadcast channels. E5 — the MCP cache entry is the inner
+/// McpRegistry's, whose DrustMcp holds the Arc<TenantPool>;
+/// `McpHttpRegistry::evict` must reach it.
 #[tokio::test]
 async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
     let dir = tempdir().unwrap();
@@ -131,10 +131,9 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
 
     // Populate all three caches.
     let _ = tenants.get_or_create("blog").unwrap();
-    let _ = mcp.get_or_create("blog").await.unwrap();
+    let _ = inner.get_or_create("blog").await.unwrap();
     let _rx = bus.subscribe("blog", "items");
     assert_eq!(tenants.cached_count(), 1);
-    assert_eq!(mcp.cached_count(), 1);
     assert_eq!(inner.cached_count(), 1);
     assert_eq!(bus.channel_count(), 1);
 
@@ -164,7 +163,6 @@ async fn soft_delete_evicts_pool_mcp_and_bus_caches() {
 
     // All three caches must be empty after soft-delete.
     assert_eq!(tenants.cached_count(), 0, "tenant pool not evicted");
-    assert_eq!(mcp.cached_count(), 0, "mcp service not evicted");
     assert_eq!(bus.channel_count(), 0, "sse channel not evicted");
     assert_eq!(inner.cached_count(), 0, "inner mcp registry not evicted");
 }

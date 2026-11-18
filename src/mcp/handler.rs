@@ -5731,9 +5731,9 @@ mod caller_tests {
         );
     }
 
-    // Production code builds the bare service-key identity only in the
-    // per-tenant registry; the one other hit is this module's fixture.
-    // Comments are skipped; the needle is assembled at runtime.
+    // Production code never builds the bare service-key identity; the one
+    // hit is this module's fixture. Comments are skipped; the needle is
+    // assembled at runtime.
     #[test]
     fn service_new_is_built_only_by_the_per_tenant_registry() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -5775,11 +5775,8 @@ mod caller_tests {
         hits.sort();
         assert_eq!(
             hits,
-            vec![
-                ("src/mcp/handler.rs".to_string(), 1),
-                ("src/mcp/http_registry.rs".to_string(), 1)
-            ],
-            "only the per-tenant registry (and the lib fixture) may build the service-key identity"
+            vec![("src/mcp/handler.rs".to_string(), 1)],
+            "only the lib fixture may build the service-key identity"
         );
     }
 

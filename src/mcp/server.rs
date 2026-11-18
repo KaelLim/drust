@@ -155,7 +155,8 @@ impl DrustMcp {
     }
 }
 
-/// Lazy cache of per-tenant MCP services. Entries are evicted through
+/// Lazy per-tenant `DrustMcp` cache (tests and the eviction hooks use it; the
+/// account-level endpoint builds per call with `build_live`). Entries are evicted through
 /// `McpHttpRegistry::evict` (soft-delete and id-recycle, via
 /// `mgmt::tenants::crud::evict_tenant_everywhere`); nothing else calls `evict`
 /// directly. The cache shares the global `TenantRegistry`
@@ -326,11 +327,14 @@ impl McpRegistry {
         self.cron = cron;
         self
     }
+    /// Creates the tenant's database on open: tests and eviction regressions
+    /// only, never a request path (a request opens through `build_live`,
+    /// which never creates).
     pub async fn get_or_create(&self, tenant_id: &str) -> anyhow::Result<DrustMcp> {
         if let Some(s) = self.services.get(tenant_id) {
             return Ok(s.clone());
         }
-        // Request path: the bearer CTE already resolved this tenant as live.
+        // Never on a request path: `tenants.get_or_create` creates a missing database.
         let pool = self.tenants.get_or_create(tenant_id)?;
         let svc = DrustMcp::new(
             tenant_id,

@@ -51,11 +51,9 @@ pub struct TenantsState {
     /// to invalidate the cache so REST/MCP requests pick up the change
     /// on the very next call.
     pub tenants: Arc<crate::storage::pool::TenantRegistry>,
-    /// Per-tenant MCP service registry. Used by soft_delete_tenant to
-    /// evict the cached `DrustMcpService` so in-flight sessions release,
-    /// and by the id-recycle create path (via `evict_tenant_everywhere`); its
-    /// `evict` cascades into the inner `McpRegistry` and closes the evicted
-    /// service's live sessions.
+    /// The MCP registry handle. Used by soft_delete_tenant and the id-recycle
+    /// create path (via `evict_tenant_everywhere`) to retire the tenant's
+    /// cached `DrustMcp`, which holds its pool.
     pub mcp: Arc<crate::mcp::http_registry::McpHttpRegistry>,
     /// SSE broadcast channels. Used by soft_delete_tenant to drop every
     /// channel keyed on the tenant.

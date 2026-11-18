@@ -739,8 +739,8 @@ pub fn move_tenant_to_trash(
 pub(crate) async fn evict_tenant_everywhere(state: &TenantsState, id: &str) {
     // Eviction order matters: pools first (release rusqlite Connection FDs
     // on the rename target so the inode + disk space release immediately),
-    // then MCP — BOTH layers plus the live rmcp sessions, since each holds
-    // its own `Arc<TenantPool>` clone — then SSE channels (subscribers
+    // then MCP — the MCP registry's cached `DrustMcp`, which holds its own
+    // `Arc<TenantPool>` clone — then SSE channels (subscribers
     // receive Closed on next recv).
     state.tenants.evict(id);
     state.mcp.evict(id);
