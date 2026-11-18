@@ -71,6 +71,44 @@ mod tests {
         assert!(!e.to_string().contains("claude mcp"), "{e}");
     }
 
+    /// The server's two 410 bodies, byte for byte (`moved_message` in the
+    /// server's `route_layer.rs`): MCP on with a short public URL, and MCP off.
+    const MOVED_BODIES: [&str; 2] = [
+        r#"{"message":"MOVED: claude mcp remove <name>; claude mcp add --transport http drust https://x.test/mcp (no --header)","error_code":"MCP_ENDPOINT_MOVED"}"#,
+        r#"{"message":"MOVED: MCP is now one account-level OAuth endpoint, not enabled on this server yet; ask the operator","error_code":"MCP_ENDPOINT_MOVED"}"#,
+    ];
+
+    #[tokio::test]
+    async fn call_tool_turns_the_servers_410_into_the_hint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for body in MOVED_BODIES {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/t/9f/mcp"))
+                .respond_with(
+                    ResponseTemplate::new(410)
+                        .insert_header("cache-control", "no-store")
+                        .set_body_raw(body, "application/json"),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = DrustClient::new(server.uri(), "svc");
+            let e = call_tool(&client, "9f", "create_collection", json!({"name": "c"}))
+                .await
+                .expect_err("a 410 is an error");
+            assert_eq!(
+                (e.status, e.error_code.as_str(), e.message.as_str()),
+                (410, "MCP_ENDPOINT_MOVED", MOVED_HINT),
+                "{body}"
+            );
+            assert_eq!(e.suggested_fix, None);
+            assert_eq!(e.exit_code(), 1);
+            assert!(!e.to_string().contains("MOVED:"), "{e}");
+        }
+    }
+
     #[test]
     fn other_errors_pass_through() {
         let e = moved_hint(ApiError::from_body(
