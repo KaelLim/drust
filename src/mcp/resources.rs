@@ -87,8 +87,27 @@ pub enum ResourceUri {
     Rpc { name: String },
 }
 
+/// `-32002` for a URI the caller cannot read, showing it only as
+/// [`shown_uri`](crate::mcp::account_audit::shown_uri) does: a URI that does not
+/// parse is `<invalid>`, any other is cut to `URI_MAX_CHARS`. rmcp logs every
+/// error response at WARN, so the caller's text is never echoed whole.
 pub(crate) fn not_found(uri: &str) -> McpError {
-    McpError::resource_not_found(format!("no such resource: {uri}"), None)
+    McpError::resource_not_found(
+        format!(
+            "no such resource: {}",
+            crate::mcp::account_audit::shown_uri(uri)
+        ),
+        None,
+    )
+}
+
+/// The parser's own refusal: the URI did not parse, so it is never shown (the
+/// same message [`not_found`] gives such a URI).
+fn unparsable() -> McpError {
+    McpError::resource_not_found(
+        format!("no such resource: {}", crate::mcp::account_audit::INVALID),
+        None,
+    )
 }
 
 /// A parsed-but-empty target (unknown collection / missing row / missing rpc)
@@ -119,28 +138,28 @@ fn map_reader_err(e: anyhow::Error) -> McpError {
 /// `identifier()` + protected-collection guard for a `{collection}` segment.
 /// Rejects `_system_*` (else the template becomes an existence oracle for
 /// protected tables) and any non-identifier → `-32002`.
-fn valid_collection(c: &str, raw: &str) -> Result<(), McpError> {
-    crate::mcp::tools::schema::identifier(c).map_err(|_| not_found(raw))?;
+fn valid_collection(c: &str) -> Result<(), McpError> {
+    crate::mcp::tools::schema::identifier(c).map_err(|_| unparsable())?;
     if crate::storage::schema::is_protected_collection(c) {
-        return Err(not_found(raw));
+        return Err(unparsable());
     }
     Ok(())
 }
 
 /// `identifier()` for a `{name}`/`{field}` segment (no collection-protection
 /// semantics — a stored RPC named `_system_*` would simply not resolve).
-fn valid_ident(name: &str, raw: &str) -> Result<(), McpError> {
-    crate::mcp::tools::schema::identifier(name).map_err(|_| not_found(raw))
+fn valid_ident(name: &str) -> Result<(), McpError> {
+    crate::mcp::tools::schema::identifier(name).map_err(|_| unparsable())
 }
 
 /// Parse a CANONICAL i64 (drust ids are `INTEGER PRIMARY KEY AUTOINCREMENT`).
 /// One row ⇒ exactly one URI: `05` / `+5` / ` 5` round-trip to a different
 /// string and are rejected, so SQLite affinity can never alias `/records/05`
 /// onto id 5 (codex D2).
-fn parse_canonical_i64(s: &str, raw: &str) -> Result<i64, McpError> {
-    let n: i64 = s.parse().map_err(|_| not_found(raw))?;
+fn parse_canonical_i64(s: &str) -> Result<i64, McpError> {
+    let n: i64 = s.parse().map_err(|_| unparsable())?;
     if n.to_string() != s {
-        return Err(not_found(raw));
+        return Err(unparsable());
     }
     Ok(n)
 }
@@ -154,36 +173,35 @@ fn parse_canonical_i64(s: &str, raw: &str) -> Result<i64, McpError> {
 #[allow(clippy::type_complexity)]
 fn parse_records_query(
     u: &url::Url,
-    raw: &str,
 ) -> Result<(Option<u32>, Option<u32>, Option<String>, Option<String>), McpError> {
     let Some(q) = u.query() else {
         return Ok((None, None, None, None));
     };
     if q.contains('%') || q.contains('+') {
-        return Err(not_found(raw));
+        return Err(unparsable());
     }
     let (mut page, mut per_page, mut sort, mut order) = (None, None, None, None);
     let mut seen = std::collections::HashSet::new();
     for (k, v) in u.query_pairs() {
         if !seen.insert(k.to_string()) {
-            return Err(not_found(raw)); // duplicate key
+            return Err(unparsable()); // duplicate key
         }
         match k.as_ref() {
-            "page" => page = Some(v.parse::<u32>().map_err(|_| not_found(raw))?.max(1)),
+            "page" => page = Some(v.parse::<u32>().map_err(|_| unparsable())?.max(1)),
             "per_page" => {
-                per_page = Some(v.parse::<u32>().map_err(|_| not_found(raw))?.clamp(1, 200))
+                per_page = Some(v.parse::<u32>().map_err(|_| unparsable())?.clamp(1, 200))
             }
             "sort" => {
-                valid_ident(v.as_ref(), raw)?; // list_records re-checks the field vs schema
+                valid_ident(v.as_ref())?; // list_records re-checks the field vs schema
                 sort = Some(v.to_string());
             }
             "order" => {
                 if v.as_ref() != "asc" && v.as_ref() != "desc" {
-                    return Err(not_found(raw));
+                    return Err(unparsable());
                 }
                 order = Some(v.to_string());
             }
-            _ => return Err(not_found(raw)), // unknown key
+            _ => return Err(unparsable()), // unknown key
         }
     }
     Ok((page, per_page, sort, order))
@@ -202,7 +220,7 @@ fn parse_records_query(
 /// `url` rewrote the input at all (dot-segments, an alias scheme case), it was
 /// not canonical → reject.
 pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, McpError> {
-    let u = url::Url::parse(raw).map_err(|_| not_found(raw))?;
+    let u = url::Url::parse(raw).map_err(|_| unparsable())?;
     // Authority + path canonicalization. `as_str()==raw` rejects EVERY url
     // rewrite — most importantly literal AND `%2e`-encoded dot-segments, both
     // of which url resolves before serializing (empirically confirmed on url
@@ -217,18 +235,18 @@ pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, Mcp
         || u.host_str() != Some(tenant_id)
         || u.as_str() != raw
     {
-        return Err(not_found(raw));
+        return Err(unparsable());
     }
     let segs: Vec<&str> = match u.path_segments() {
         Some(it) => it.collect(),
-        None => return Err(not_found(raw)),
+        None => return Err(unparsable()),
     };
     // Every segment: non-empty and %-free. `as_str()==raw` already killed
     // path-normalization; the no-`%` rule closes the encodings url KEEPS
     // verbatim (`%2f`, `%00`, `%5c`) so a segment can never smuggle a slash /
     // NUL / dot past the structural match below.
     if segs.iter().any(|s| s.is_empty() || s.contains('%')) {
-        return Err(not_found(raw));
+        return Err(unparsable());
     }
     let has_query = u.query().is_some();
     match segs.as_slice() {
@@ -245,14 +263,14 @@ pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, Mcp
         [p] if *p == FILES_GUIDE_PATH && !has_query => Ok(ResourceUri::FilesGuide),
         // ── M4 templates ──
         ["collections", c, "schema"] if !has_query => {
-            valid_collection(c, raw)?;
+            valid_collection(c)?;
             Ok(ResourceUri::CollectionSchema {
                 collection: c.to_string(),
             })
         }
         ["collections", c, "records"] => {
-            valid_collection(c, raw)?;
-            let (page, per_page, sort, order) = parse_records_query(&u, raw)?;
+            valid_collection(c)?;
+            let (page, per_page, sort, order) = parse_records_query(&u)?;
             Ok(ResourceUri::Records {
                 collection: c.to_string(),
                 page,
@@ -262,19 +280,19 @@ pub fn parse_resource_uri(raw: &str, tenant_id: &str) -> Result<ResourceUri, Mcp
             })
         }
         ["collections", c, "records", id] if !has_query => {
-            valid_collection(c, raw)?;
+            valid_collection(c)?;
             Ok(ResourceUri::Record {
                 collection: c.to_string(),
-                id: parse_canonical_i64(id, raw)?,
+                id: parse_canonical_i64(id)?,
             })
         }
         ["rpcs", name] if !has_query => {
-            valid_ident(name, raw)?;
+            valid_ident(name)?;
             Ok(ResourceUri::Rpc {
                 name: name.to_string(),
             })
         }
-        _ => Err(not_found(raw)),
+        _ => Err(unparsable()),
     }
 }
 

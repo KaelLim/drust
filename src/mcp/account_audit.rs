@@ -90,6 +90,18 @@ fn cut(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// The caller's URI as an error message may show it: [`safe_uri`], cut to
+/// `URI_MAX_CHARS`. rmcp logs every error response at WARN.
+pub(crate) fn shown_uri(s: &str) -> String {
+    cut(safe_uri(s), URI_MAX_CHARS)
+}
+
+/// A caller-supplied name as an error message may show it: an identifier cut
+/// to `COLLECTION_MAX_CHARS`, `<invalid>` otherwise.
+pub(crate) fn shown_name(s: &str) -> String {
+    safe_ident(s, COLLECTION_MAX_CHARS).unwrap_or_else(|| INVALID.to_string())
+}
+
 /// The success row shape shared by tool calls and resource reads, before
 /// its `extra` is filled in.
 fn tenant_row(

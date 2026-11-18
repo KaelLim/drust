@@ -152,7 +152,10 @@ pub async fn render_prompt(
                 .map_err(internal)?;
             if d.get("error_code").is_some() {
                 return Err(McpError::invalid_params(
-                    format!("no such collection: {coll}"),
+                    format!(
+                        "no such collection: {}",
+                        crate::mcp::account_audit::shown_name(&coll)
+                    ),
                     None,
                 ));
             }
@@ -231,7 +234,10 @@ pub async fn render_prompt(
             )))
         }
         other => Err(McpError::invalid_params(
-            format!("no such prompt: {other}"),
+            format!(
+                "no such prompt: {}",
+                crate::mcp::account_audit::shown_name(other)
+            ),
             None,
         )),
     }

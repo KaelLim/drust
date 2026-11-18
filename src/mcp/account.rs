@@ -3006,9 +3006,10 @@ mod precheck_tests {
             nf,
             json!({"code": -32002, "message": "no such resource: drust://x/schema"})
         );
+        // A URI that does not parse is never echoed.
         assert_eq!(
             serde_json::to_value(resource_denied_error(&Denied::Required, "drust:schema")).unwrap(),
-            json!({"code": -32002, "message": "no such resource: drust:schema"})
+            json!({"code": -32002, "message": "no such resource: <invalid>"})
         );
         assert_eq!(
             serde_json::to_value(resource_denied_error(&Denied::Internal, "u")).unwrap(),

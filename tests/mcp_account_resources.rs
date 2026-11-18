@@ -75,8 +75,9 @@ async fn prompt(
     (s, ct, m.swap_remove(0))
 }
 
-fn not_found(uri: &str) -> Value {
-    json!({"code": -32002, "message": format!("no such resource: {uri}")})
+/// The refusal of a resource read; `shown` is the URI as the message shows it.
+fn not_found(shown: &str) -> Value {
+    json!({"code": -32002, "message": format!("no such resource: {shown}")})
 }
 
 fn prompt_text(m: &Value) -> String {
@@ -122,7 +123,13 @@ async fn denied_resource_reads_match_a_bad_uri() {
     let mut first: Option<(StatusCode, String)> = None;
     for uri in &uris {
         let (s, ct, msg) = read(&h, &m.access, uri).await;
-        assert_eq!(msg["error"], not_found(uri), "{uri}");
+        // A URI that does not parse is never echoed back.
+        let shown = if uri.contains("Bad_Id") || uri.contains("no-such-path") {
+            "<invalid>"
+        } else {
+            uri.as_str()
+        };
+        assert_eq!(msg["error"], not_found(shown), "{uri}");
         match &first {
             None => first = Some((s, ct)),
             Some(f) => assert_eq!(&(s, ct), f, "{uri}"),
@@ -151,7 +158,7 @@ async fn odd_resource_uris_are_plain_not_found() {
         "not a uri",
     ] {
         let (s, ct, msg) = read(&h, &h.access, uri).await;
-        assert_eq!(msg["error"], not_found(uri), "{uri}");
+        assert_eq!(msg["error"], not_found("<invalid>"), "{uri}");
         assert_eq!(s, StatusCode::OK, "{uri}");
         match &first {
             None => first = Some((s, ct)),
@@ -378,4 +385,56 @@ async fn the_host_audit_key_answers_like_a_missing_tenant_even_when_a_row_has_it
     );
     assert_eq!(after.4["error"]["code"], -32002);
     assert_eq!(after.7["error"]["data"]["error_code"], "TENANT_NOT_FOUND");
+}
+
+/// rmcp logs every error response at WARN, so caller text in a resource or
+/// prompt error reaches the log: it is cut, and shown only when well-formed.
+/// A tenant the caller cannot see and one that does not exist still answer
+/// the same message for the same URI shape.
+#[tokio::test]
+async fn refusals_bound_the_caller_text_they_echo() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let m = member_world(&h).await;
+    let long = "c".repeat(10_000);
+    let foreign = format!("drust://acct-res/collections/{long}/schema");
+    let missing = format!("drust://nope-rrr/collections/{long}/schema");
+    let (_, _, a) = read(&h, &m.access, &foreign).await;
+    let (_, _, b) = read(&h, &m.access, &missing).await;
+    let msg = |v: &Value| v["error"]["message"].as_str().unwrap().to_string();
+    assert!(msg(&a).chars().count() <= 300, "{}", msg(&a).len());
+    assert!(msg(&a).starts_with("no such resource: drust://acct-res/collections/ccc"));
+    assert_eq!(msg(&a).replace("acct-res", "nope-rrr"), msg(&b));
+    assert_eq!(a["error"]["code"], b["error"]["code"]);
+
+    // A URI that does not parse is never echoed, on either refusal.
+    for uri in [
+        format!("drust://acct-res/{long}"),
+        format!("drust://mine-r/{long}"),
+        format!("not a uri {long}"),
+    ] {
+        let (_, _, r) = read(&h, &m.access, &uri).await;
+        assert_eq!(msg(&r), "no such resource: <invalid>", "{}", &uri[..40]);
+    }
+
+    // Prompt errors: an identifier is cut, anything else is not shown.
+    let (_, _, p) = prompt(
+        &h,
+        &m.access,
+        "secure_collection",
+        json!({"tenant": "mine-r", "collection": long}),
+    )
+    .await;
+    assert!(msg(&p).starts_with("no such collection: ccc"));
+    assert!(msg(&p).chars().count() <= 200, "{}", msg(&p).len());
+    let (_, _, p) = prompt(
+        &h,
+        &m.access,
+        "secure_collection",
+        json!({"tenant": "mine-r", "collection": "Bad Name!"}),
+    )
+    .await;
+    assert_eq!(msg(&p), "no such collection: <invalid>");
+    let (_, _, p) = prompt(&h, &m.access, &long, json!({"tenant": "mine-r"})).await;
+    assert!(msg(&p).starts_with("no such prompt: ccc"));
+    assert!(msg(&p).chars().count() <= 200, "{}", msg(&p).len());
 }
