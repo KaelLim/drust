@@ -961,7 +961,6 @@ UPDATE _mcp_upload_tickets SET bound_upload = NULL \
 /// `tenant_access_for_admin` first, and the INSERT binds that incarnation's
 /// `created_at`. `None` = the tenant is gone or another incarnation, or the
 /// grant or its admin is no longer live.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn issue_upload_ticket(
     conn: &Connection,
     caller: &crate::mgmt::mcp_oauth::caller::McpCaller,

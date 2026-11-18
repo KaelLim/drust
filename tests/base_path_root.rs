@@ -223,3 +223,16 @@ async fn account_mcp_urls_drop_the_prefix() {
     assert_eq!(prm["resource"], "https://drust.test/mcp");
     assert_eq!(prm["authorization_servers"][0], "https://drust.test");
 }
+
+#[test]
+fn account_ticket_urls_drop_the_prefix() {
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    assert_eq!(
+        drust::mcp::account::ticket_urls(&cfg, "blog"),
+        (
+            "https://drust.test/t/blog/uploads".to_string(),
+            "https://drust.test/t/blog/uploads/".to_string()
+        )
+    );
+}

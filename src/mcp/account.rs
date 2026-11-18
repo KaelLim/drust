@@ -35,6 +35,7 @@ use crate::mcp::handler::{
 use crate::mcp::server::{DrustMcp, McpRegistry};
 use crate::mgmt::mcp_oauth::caller::McpCaller;
 use crate::mgmt::mcp_oauth::config::McpOauthConfig;
+use crate::mgmt::mcp_oauth::store::{IssuedTicket, TicketRequest};
 use crate::mgmt::tenant_authz::{
     AdminTenantAccess, TenantIncarnation, tenant_access_for_admin, visible_tenants_for_admin,
 };
@@ -80,7 +81,7 @@ TOOL GROUPS (tools/list has each tool's full schema):
   Schema: list_collections, describe_collection, create_collection, add_field, create_index, set_description, create_fts_index, drop_fts_index, list_fts_indexes
   Access: set_anon_caps, set_user_caps, set_owner_field, set_realtime, set_audit_enabled, set_policy, get_policies, clear_policy
   RPCs: create_rpc, update_rpc, delete_rpc, list_rpc, call_rpc (read-only here)
-  Files: list_files, get_file_url, set_file_visibility, set_file_policy, list_file_policies, clear_file_policy, set_file_caps
+  Files: create_upload_url, list_files, get_file_url, set_file_visibility, set_file_policy, list_file_policies, clear_file_policy, set_file_caps
   Users: create_user, list_users, get_user, update_user, revoke_user_sessions, set_self_register, list_oauth_providers, set_oauth_provider, delete_oauth_provider, set_redirect_uris
   Integrations: create_webhook, list_webhooks, update_webhook, delete_webhook, set_egress_allowlist, get_egress_allowlist, broadcast, set_publish_policy
   Functions: list_functions, invoke_function, get_function_logs, set_function_active, set_function_invoke_acl, delete_function
@@ -105,8 +106,6 @@ pub struct UploadLimits {
 }
 
 /// What every request of the account-level server shares.
-// Fields gain readers as the tool surface lands.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AccountState {
     registry: Arc<McpRegistry>,
     meta: Arc<Mutex<Connection>>,
@@ -151,8 +150,6 @@ pub(crate) struct Resolved {
     pub mcp: DrustMcp,
     pub tenant_id: String,
     /// What the second visibility check saw.
-    // Read by tests only until the upload ticket binds to the incarnation.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub incarnation: TenantIncarnation,
 }
 
@@ -354,7 +351,7 @@ pub(crate) const DESCRIPTION_OVERRIDES: &[(&str, &str, &str)] = &[
 
 /// The tools only the account-level endpoint has; they run here, not in a
 /// tenant's tool router.
-pub(crate) const OUTER_TOOLS: &[&str] = &[LIST_TENANTS];
+pub(crate) const OUTER_TOOLS: &[&str] = &[LIST_TENANTS, CREATE_UPLOAD_URL];
 
 /// Every tool `tools/list` advertises on the account-level endpoint, built
 /// once: the outer tools in `OUTER_TOOLS` order, then the per-tenant tools in
@@ -369,6 +366,7 @@ pub(crate) fn account_tools() -> &'static [Tool] {
             .iter()
             .map(|n| match *n {
                 LIST_TENANTS => list_tenants_tool(),
+                CREATE_UPLOAD_URL => create_upload_url_tool(),
                 other => unreachable!("outer tool {other} has no definition"),
             })
             .collect();
@@ -807,15 +805,52 @@ impl AccountMcp {
             _ => ToolDenied::UnknownTool.into_call_result(),
         }
     }
+
+    /// `create_upload_url` after its tenant check: validate the request, then
+    /// re-check and issue under one meta guard, then build the reply.
+    async fn create_upload_url(
+        &self,
+        caller: &McpCaller,
+        resolved: Resolved,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, McpError> {
+        let plan = match plan_upload(args, &self.inner.uploads) {
+            Ok(p) => p,
+            Err(r) => return tool_error(r.code, r.message, None),
+        };
+        let req = TicketRequest {
+            tenant_id: &resolved.tenant_id,
+            max_bytes: plan.max_bytes,
+            path: plan.path.as_deref(),
+            public: plan.public,
+        };
+        let outcome = {
+            let c = self.inner.meta.lock().await;
+            issue_ticket_or_not_found(&c, caller, &resolved.incarnation, &req)
+        };
+        match outcome {
+            Err(d) => ToolDenied::from(d).into_call_result(),
+            Ok(t) => {
+                let body = upload_reply(
+                    &self.inner.cfg,
+                    &resolved.tenant_id,
+                    &plan,
+                    &t,
+                    &self.inner.uploads,
+                );
+                let text = serde_json::to_string(&body)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![Content::text(text)]))
+            }
+        }
+    }
 }
 
 /// The outer tool that issues a one-upload ticket for a tenant.
-#[allow(dead_code)]
 pub(crate) const CREATE_UPLOAD_URL: &str = "create_upload_url";
 
 /// A validated `create_upload_url` request. Carries no credential.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UploadPlan {
     pub max_bytes: i64,
     pub path: Option<String>,
@@ -827,7 +862,6 @@ pub(crate) struct UploadPlan {
 
 /// Why a `create_upload_url` request was refused after the tenant check.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct UploadRefusal {
     pub code: &'static str,
     pub message: String,
@@ -850,7 +884,6 @@ struct CreateUploadUrlArgs {
 /// grammar, the filename and content type lengths. The `Upload-Metadata`
 /// value always names the visibility and names the path only when one was
 /// given, the way the tus create handler and the ticket layer read it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn plan_upload(
     args: &serde_json::Map<String, serde_json::Value>,
     limits: &UploadLimits,
@@ -923,7 +956,6 @@ pub(crate) fn plan_upload(
 
 /// A tus `Upload-Metadata` value: `key base64(value)` pairs joined by `,`,
 /// standard base64 with padding, the encoding the tus handler decodes.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn encode_upload_metadata(pairs: &[(&str, &str)]) -> String {
     use base64::Engine;
     pairs
@@ -950,7 +982,6 @@ pub fn ticket_urls(cfg: &McpOauthConfig, tenant_id: &str) -> (String, String) {
 
 /// SQLite `datetime()` text (`YYYY-MM-DD HH:MM:SS`, UTC) as RFC 3339 UTC;
 /// anything else is returned unchanged.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn sqlite_utc_to_rfc3339(s: &str) -> String {
     match chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         Ok(t) => t
@@ -964,7 +995,6 @@ pub(crate) fn sqlite_utc_to_rfc3339(s: &str) -> String {
 /// POST, then PATCHes of `chunk_max` bytes until the whole file is sent (one
 /// empty PATCH for an empty file). On a failed request it stops and names
 /// the offset to resume from.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn curl_example(
     upload_url: &str,
     url_prefix: &str,
@@ -992,7 +1022,6 @@ done
 /// (`Bearer <ticket>`): the tus create and append requests, the ticket's
 /// limits (`create_by` rendered as RFC 3339 UTC), a curl script and a note on
 /// what the ticket cannot do.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn upload_reply_with(
     cfg: &McpOauthConfig,
     tenant_id: &str,
@@ -1044,6 +1073,90 @@ pub(crate) fn upload_reply_with(
         "curl_example": curl,
         "notes": "This ticket opens ONE upload of at most max_bytes; it cannot list, read, sign or publish other files.",
     })
+}
+
+const CREATE_UPLOAD_URL_DESCRIPTION: &str = "Issue a short-lived ticket for ONE resumable (tus 1.0) upload into this tenant's file storage, and return the exact requests: POST to create the upload, then PATCH chunks of at most chunk_max_bytes, HEAD to resume. The POST must happen within 15 minutes; after it the ticket stays valid for that one upload until its session expires. The ticket cannot list, read, sign, delete or publish other files. visibility defaults to private and is fixed here. Every call issues a new ticket. Errors: TENANT_REQUIRED, TENANT_NOT_FOUND, STORAGE_UNAVAILABLE, UPLOAD_TOO_LARGE, FILE_PATH_INVALID, INVALID_VISIBILITY, INVALID_PARAMS, INVALID_ARGUMENTS.";
+
+/// `create_upload_url` as `tools/list` advertises it: `tenant` and `size`
+/// required, and not read-only, destructive, idempotent or open-world.
+pub(crate) fn create_upload_url_tool() -> Tool {
+    let serde_json::Value::Object(schema) = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tenant": {"type": "string", "description": TENANT_PROPERTY_DESCRIPTION},
+            "size": {"type": "integer", "minimum": 0, "description": "Exact file size in bytes (the tus Upload-Length). 0 is allowed."},
+            "filename": {"type": "string", "description": "Original file name, 1-255 bytes. Its extension shapes the stored key; without it the file is stored as .bin."},
+            "path": {"type": "string", "description": "Logical path the file-policy prefix rules match, e.g. avatars/alice/me.png. Omit it for an unfiled upload; an empty string is refused."},
+            "visibility": {"type": "string", "enum": ["private", "public"], "description": "Default private. public puts the bytes in the public bucket, served without any per-file gate."},
+            "content_type": {"type": "string", "description": "MIME type sent as Upload-Metadata filetype, 1-255 bytes. Not enforced."}
+        },
+        "required": ["tenant", "size"]
+    }) else {
+        unreachable!("a JSON object literal")
+    };
+    Tool::new(
+        CREATE_UPLOAD_URL,
+        CREATE_UPLOAD_URL_DESCRIPTION,
+        Arc::new(schema),
+    )
+    .with_annotations(
+        ToolAnnotations::new()
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
+/// Re-checks visibility under the caller's meta guard: Allow with the same
+/// (owner, created_at) as resolve, else `Denied::NotFound`; then issues. A
+/// query error is `Denied::Internal` (one warn, no SQL).
+pub(crate) fn issue_ticket_or_not_found(
+    conn: &Connection,
+    caller: &McpCaller,
+    inc: &TenantIncarnation,
+    req: &TicketRequest<'_>,
+) -> Result<IssuedTicket, Denied> {
+    let run = || -> rusqlite::Result<Option<IssuedTicket>> {
+        match tenant_access_for_admin(conn, caller.grant_id(), caller.admin_id(), req.tenant_id)? {
+            AdminTenantAccess::Allow(now)
+                if now.owner == inc.owner && now.created_at == inc.created_at => {}
+            _ => return Ok(None),
+        }
+        crate::mgmt::mcp_oauth::store::issue_upload_ticket(conn, caller, inc, req)
+    };
+    match run() {
+        Ok(Some(t)) => Ok(t),
+        Ok(None) => Err(Denied::NotFound),
+        Err(e) => {
+            tracing::warn!(
+                error = %crate::error::sqlite_error_without_sql(&e),
+                grant_id = caller.grant_id(),
+                "create_upload_url: issuing an upload grant failed"
+            );
+            Err(Denied::Internal)
+        }
+    }
+}
+
+/// The `create_upload_url` reply for an issued ticket. The one place outside
+/// tests that reads a ticket's plaintext.
+pub(crate) fn upload_reply(
+    cfg: &McpOauthConfig,
+    tenant_id: &str,
+    plan: &UploadPlan,
+    issued: &IssuedTicket,
+    limits: &UploadLimits,
+) -> serde_json::Value {
+    let authorization = format!("Bearer {}", issued.plaintext());
+    upload_reply_with(
+        cfg,
+        tenant_id,
+        plan,
+        &authorization,
+        &sqlite_utc_to_rfc3339(&issued.create_by),
+        limits,
+    )
 }
 
 impl ServerHandler for AccountMcp {
@@ -1225,7 +1338,9 @@ impl ServerHandler for AccountMcp {
                 return d.into_call_result();
             }
         };
-        if let Precheck::Outer(outer) = kind {
+        if let Precheck::Outer(outer) = kind
+            && outer != CREATE_UPLOAD_URL
+        {
             return self.run_outer(&caller, outer).await;
         }
         let resolved = match self.resolve_tenant(&caller, args.get("tenant")).await {
@@ -1238,6 +1353,9 @@ impl ServerHandler for AccountMcp {
                 return ToolDenied::from(d).into_call_result();
             }
         };
+        if kind == Precheck::Outer(CREATE_UPLOAD_URL) {
+            return self.create_upload_url(&caller, resolved, &args).await;
+        }
         let t0 = std::time::Instant::now();
         let tenant_id = resolved.tenant_id.clone();
         // The audit row reads the arguments as sent (`tenant`, `dry_run`).
@@ -2268,8 +2386,16 @@ mod tool_surface_tests {
 
     /// (tool, readOnly, destructive, idempotent, openWorld) for each OUTER tool;
     /// inner tools are pinned by handler.rs annotation_tests.
-    const OUTER_ANNOTATIONS: &[(&str, Option<bool>, Option<bool>, Option<bool>, Option<bool>)] =
-        &[("list_tenants", Some(true), None, None, Some(false))];
+    const OUTER_ANNOTATIONS: &[(&str, Option<bool>, Option<bool>, Option<bool>, Option<bool>)] = &[
+        ("list_tenants", Some(true), None, None, Some(false)),
+        (
+            "create_upload_url",
+            Some(false),
+            Some(false),
+            Some(false),
+            Some(false),
+        ),
+    ];
     const FORBIDDEN: &[&str] = &[
         "the service bearer",
         "service-key holder",
@@ -2382,7 +2508,7 @@ mod tool_surface_tests {
             AccountMcp::tool_count(),
             DrustMcpService::tool_count() + OUTER_TOOLS.len()
         );
-        assert_eq!(AccountMcp::tool_count(), 77);
+        assert_eq!(AccountMcp::tool_count(), 78);
     }
 
     #[test]
@@ -3198,5 +3324,259 @@ mod upload_tool_tests {
         let exit = s.find("[ \"$OFF\" -ge \"$SIZE\" ] && break").unwrap();
         assert!(patch < exit);
         assert!(!s.contains("DRUST_SERVICE_TOKEN"));
+    }
+
+    use crate::mgmt::mcp_oauth::store;
+
+    #[test]
+    fn precheck_routes_create_upload_url_as_an_outer_tool() {
+        let c = McpCaller::for_tests(1, 1);
+        assert_eq!(
+            precheck(
+                Some(&c),
+                "create_upload_url",
+                &args(json!({"tenant":"t","size":1}))
+            ),
+            Ok(Precheck::Outer("create_upload_url"))
+        );
+        assert_eq!(
+            precheck(Some(&c), "create_upload_url", &args(json!({"size":1}))),
+            Err(ToolDenied::TenantRequired)
+        );
+        assert_eq!(
+            precheck(
+                Some(&c),
+                "create_upload_url",
+                &args(json!({"tenant":"t","size":1,"dry_run":true}))
+            ),
+            Err(ToolDenied::InvalidArguments(vec!["dry_run".to_string()]))
+        );
+    }
+
+    #[test]
+    fn create_upload_url_tool_schema_and_annotations() {
+        let t = create_upload_url_tool();
+        assert_eq!(t.name, "create_upload_url");
+        let s = serde_json::to_value(&*t.input_schema).unwrap();
+        let props: Vec<&str> = s["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            props,
+            [
+                "tenant",
+                "size",
+                "filename",
+                "path",
+                "visibility",
+                "content_type"
+            ]
+        );
+        assert_eq!(
+            s["properties"]["tenant"],
+            json!({"type":"string","description":"Tenant id (from list_tenants)."})
+        );
+        assert_eq!(s["required"], json!(["tenant", "size"]));
+        assert_eq!(
+            s["properties"]["visibility"]["enum"],
+            json!(["private", "public"])
+        );
+        assert_eq!(s["properties"]["size"]["minimum"], 0);
+        for k in ["allOf", "anyOf", "oneOf", "$ref"] {
+            assert!(s.get(k).is_none());
+        }
+        let a = t.annotations.unwrap();
+        assert_eq!(
+            (
+                a.read_only_hint,
+                a.destructive_hint,
+                a.idempotent_hint,
+                a.open_world_hint
+            ),
+            (Some(false), Some(false), Some(false), Some(false))
+        );
+        assert!(std::ptr::eq(
+            account_tool("create_upload_url").unwrap(),
+            &account_tools()[1]
+        ));
+    }
+
+    #[test]
+    fn upload_plaintext_is_read_exactly_once() {
+        use crate::tenant::rooms::srcpin::{code_only, prod_fn_body, production_half};
+        let needle = concat!(".plain", "text()");
+        let own = code_only(include_str!("account.rs"));
+        assert_eq!(
+            production_half(&own).matches(needle).count(),
+            1,
+            "account.rs"
+        );
+        let body = prod_fn_body(&own, "pub(crate) fn upload_reply(");
+        assert_eq!(
+            body.matches(needle).count(),
+            1,
+            "the one read must be in upload_reply"
+        );
+        for n in [
+            "call_entry",
+            "denied_entry",
+            "ticket_issued_entry",
+            "upload_audit_entry",
+            "write_entry",
+            "tracing::",
+            "log::",
+            "AuditEntry",
+            "with_extra",
+        ] {
+            assert!(
+                !body.contains(n),
+                "upload_reply must not reach a log or audit site: {n}"
+            );
+        }
+        let ticket = code_only(include_str!("../tenant/uploads/ticket.rs"));
+        assert_eq!(
+            production_half(&ticket).matches(needle).count(),
+            0,
+            "ticket.rs"
+        );
+        let st = code_only(include_str!("../mgmt/mcp_oauth/store.rs"));
+        assert_eq!(production_half(&st).matches(needle).count(), 1, "store.rs");
+        assert_eq!(
+            prod_fn_body(&st, "pub fn issue_upload_ticket_for_tests(")
+                .matches(needle)
+                .count(),
+            1,
+            "store.rs reads it only in the test-build issuer"
+        );
+    }
+
+    #[test]
+    fn edge_guests_cannot_reach_account_tools() {
+        use crate::tenant::rooms::srcpin::code_only;
+        let wit = include_str!("../../sdk/edge-function-template/wit/world.wit");
+        for n in [
+            "upload-url",
+            "upload_url",
+            "list-tenants",
+            "list_tenants",
+            "upload-ticket",
+            "upload_ticket",
+        ] {
+            assert!(!wit.contains(n), "world.wit names {n}");
+        }
+        for (name, src) in [
+            ("runtime.rs", include_str!("../functions/runtime.rs")),
+            ("enforce.rs", include_str!("../functions/enforce.rs")),
+            ("executor.rs", include_str!("../functions/executor.rs")),
+        ] {
+            let code = code_only(src);
+            for n in [
+                "AccountMcp",
+                "issue_upload_ticket",
+                "create_upload_url",
+                "list_tenants",
+            ] {
+                assert!(!code.contains(n), "{name} names {n}");
+            }
+        }
+    }
+
+    /// meta with a member "m" owning tenant "blog" and an owner "o"; run_migrations adds
+    /// admins.role and tenants.owner_admin_id, which open_meta's SCHEMA_SQL does not have.
+    fn issue_fixture(
+        dir: &std::path::Path,
+    ) -> (rusqlite::Connection, McpCaller, TenantIncarnation, i64) {
+        let conn = crate::storage::meta::open_meta(&dir.join("meta.sqlite")).unwrap();
+        crate::db::migrations::run_migrations(&conn, dir).unwrap();
+        for (u, r) in [("m", "member"), ("o", "owner")] {
+            conn.execute(
+                "INSERT INTO admins (username, password_hash, role) VALUES (?1, '$oauth-only$', ?2)",
+                rusqlite::params![u, r],
+            )
+            .unwrap();
+        }
+        let id = |u: &str| -> i64 {
+            conn.query_row("SELECT id FROM admins WHERE username = ?1", [u], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let (m, o) = (id("m"), id("o"));
+        conn.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES ('blog', 'Blog', ?1)",
+            [m],
+        )
+        .unwrap();
+        let seeded = store::seed_access_for_tests(&conn, m).unwrap();
+        let grant = store::find_grant_by_access(&conn, &seeded.access)
+            .unwrap()
+            .unwrap();
+        let caller = McpCaller::from_access(&grant);
+        let inc = match tenant_access_for_admin(&conn, caller.grant_id(), m, "blog").unwrap() {
+            AdminTenantAccess::Allow(i) => i,
+            _ => panic!("the owner must see its tenant"),
+        };
+        (conn, caller, inc, o)
+    }
+    fn tickets(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM _mcp_upload_tickets", [], |r| r.get(0))
+            .unwrap()
+    }
+    const REQ: TicketRequest<'static> = TicketRequest {
+        tenant_id: "blog",
+        max_bytes: 1,
+        path: None,
+        public: false,
+    };
+
+    #[test]
+    fn issue_writes_one_ticket_bound_to_the_incarnation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, caller, inc, _) = issue_fixture(dir.path());
+        assert!(issue_ticket_or_not_found(&conn, &caller, &inc, &REQ).is_ok());
+        let at: String = conn
+            .query_row(
+                "SELECT tenant_created_at FROM _mcp_upload_tickets",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((tickets(&conn), at), (1, inc.created_at.clone()));
+    }
+
+    #[test]
+    fn a_recycled_tenant_between_resolve_and_issue_gets_tenant_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, caller, inc, _) = issue_fixture(dir.path());
+        // the id is recycled after resolve: same id, a different incarnation (no sleep across seconds)
+        conn.execute(
+            "UPDATE tenants SET created_at = datetime(created_at, '+1 second') WHERE id = 'blog'",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            issue_ticket_or_not_found(&conn, &caller, &inc, &REQ),
+            Err(Denied::NotFound)
+        ));
+        assert_eq!(tickets(&conn), 0);
+    }
+
+    #[test]
+    fn a_tenant_transferred_between_resolve_and_issue_gets_tenant_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (conn, caller, inc, other) = issue_fixture(dir.path());
+        conn.execute(
+            "UPDATE tenants SET owner_admin_id = ?1 WHERE id = 'blog'",
+            [other],
+        )
+        .unwrap();
+        assert!(matches!(
+            issue_ticket_or_not_found(&conn, &caller, &inc, &REQ),
+            Err(Denied::NotFound)
+        ));
+        assert_eq!(tickets(&conn), 0);
     }
 }

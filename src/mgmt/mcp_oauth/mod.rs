@@ -229,6 +229,12 @@ mod source_pins {
         let mut out = Vec::new();
         let mut i = 0;
         while i < b.len() {
+            // Every opener is ASCII, so a byte inside a multi-byte character
+            // starts nothing (and `code[i..]` would not be a valid slice).
+            if !code.is_char_boundary(i) {
+                i += 1;
+                continue;
+            }
             let boundary = i == 0 || !is_ident(b[i - 1]);
             let rest = &code[i..];
             // Macros and calls whose arguments reach a log or an audit row.
@@ -335,7 +341,7 @@ mod source_pins {
     /// therefore use the words.
     #[test]
     fn plaintext_code_never_reaches_logs_or_audit() {
-        let files: [(&str, &str, &[&str], usize); 8] = [
+        let files: [(&str, &str, &[&str], usize); 9] = [
             (
                 "consent.rs",
                 include_str!("consent.rs"),
@@ -416,6 +422,19 @@ mod source_pins {
                 include_str!("../../tenant/uploads/ticket.rs"),
                 &["presented", "ticket", "bearer", "ticket_hash", "hash"],
                 12,
+            ),
+            (
+                "account.rs",
+                include_str!("../../mcp/account.rs"),
+                &[
+                    "issued",
+                    "bearer",
+                    "reply",
+                    "plaintext",
+                    "ticket",
+                    "authorization",
+                ],
+                1,
             ),
         ];
         for (name, src, banned, min) in files {

@@ -43,7 +43,7 @@ async fn tools_list_is_the_inner_tools_plus_list_tenants() {
     .await;
     assert_eq!(st, 200);
     let tools = msgs[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 77);
+    assert_eq!(tools.len(), 78);
     for t in tools {
         let name = t["name"].as_str().unwrap();
         if name == "list_tenants" {
@@ -284,7 +284,8 @@ async fn every_tenant_tool_refuses_an_invisible_tenant_identically() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .filter(|n| n != "list_tenants")
         .collect();
-    assert_eq!(names.len(), 76);
+    // 76 inner tools plus create_upload_url, the one outer tool that takes a tenant.
+    assert_eq!(names.len(), 77);
     let want = not_found();
     for n in &names {
         for t in [h.tid.as_str(), "nope"] {
@@ -593,4 +594,109 @@ async fn disabling_realtime_over_the_account_endpoint_closes_anon_streams() {
         ended.is_ok(),
         "the anon stream stayed open after realtime was disabled"
     );
+}
+
+fn tickets_in(c: &rusqlite::Connection) -> i64 {
+    c.query_row("SELECT COUNT(*) FROM _mcp_upload_tickets", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_upload_url_is_listed_with_its_schema_and_annotations() {
+    let h = spin_up_account_mcp("acct-upl").await;
+    let (st, _, msgs) = mcp_rpc(
+        &h.app,
+        Some(&h.access),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let tools = msgs[0]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 78);
+    let t: Vec<_> = tools
+        .iter()
+        .filter(|t| t["name"] == "create_upload_url")
+        .collect();
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0]["inputSchema"]["required"], json!(["tenant", "size"]));
+    for (k, v) in [
+        ("readOnlyHint", false),
+        ("destructiveHint", false),
+        ("idempotentHint", false),
+        ("openWorldHint", false),
+    ] {
+        assert_eq!(t[0]["annotations"][k], v, "{k}");
+    }
+}
+
+#[tokio::test]
+async fn create_upload_url_denial_is_byte_identical_to_other_tools() {
+    // files: false on purpose: a tenant the caller cannot see must answer TENANT_NOT_FOUND,
+    // never STORAGE_UNAVAILABLE, so the storage check cannot become an existence oracle.
+    let h = spin_up_account_mcp_with(AccountMcpOpts {
+        admins: vec![("mcp-owner", "owner"), ("upl-member", "member")],
+        tenants: vec![("acct-upl", Some(1)), ("theirs", Some(0))],
+        files: false,
+        mcp_enabled: true,
+    })
+    .await;
+    let m = &h.accesses[1];
+    {
+        let c = h.meta.lock().await;
+        c.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id, deleted_at) VALUES ('gone','Gone',?1,datetime('now'))",
+            [m.admin_id],
+        )
+        .unwrap();
+    }
+    let up = |t: &str| json!({"tenant": t, "size": 1});
+    for t in ["theirs", "gone", "nope", "Bad Id!"] {
+        let a = call(&h, &m.access, "create_upload_url", Some(up(t))).await;
+        let b = call(
+            &h,
+            &m.access,
+            "list_collections",
+            Some(json!({"tenant": t})),
+        )
+        .await;
+        assert_eq!(a["result"], b["result"], "{t}");
+        assert_eq!(err_body(&a)["error_code"], "TENANT_NOT_FOUND", "{t}");
+    }
+    // the member's own tenant passes resolve and stops at storage
+    assert_eq!(
+        err_body(&call(&h, &m.access, "create_upload_url", Some(up("acct-upl"))).await)["error_code"],
+        "STORAGE_UNAVAILABLE"
+    );
+    // transferred away: the next call is the same TENANT_NOT_FOUND as a tenant that never existed
+    {
+        let c = h.meta.lock().await;
+        c.execute(
+            "UPDATE tenants SET owner_admin_id = ?1 WHERE id = 'acct-upl'",
+            [h.admin_id],
+        )
+        .unwrap();
+    }
+    let a = call(&h, &m.access, "create_upload_url", Some(up("acct-upl"))).await;
+    let b = call(&h, &m.access, "create_upload_url", Some(up("nope"))).await;
+    assert_eq!(a["result"], b["result"]);
+    assert_eq!(err_body(&a)["error_code"], "TENANT_NOT_FOUND");
+    assert_eq!(tickets_in(&*h.meta.lock().await), 0);
+}
+
+#[tokio::test]
+async fn create_upload_url_without_storage_is_storage_unavailable_and_writes_no_ticket() {
+    let h = spin_up_account_mcp("acct-upl").await; // files: false
+    let r = call(
+        &h,
+        &h.access,
+        "create_upload_url",
+        Some(json!({"tenant": h.tid, "size": 1})),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], true);
+    assert_eq!(
+        r["result"]["content"][0]["text"],
+        r#"{"error_code":"STORAGE_UNAVAILABLE","message":"file storage is not configured on this server"}"#
+    );
+    assert_eq!(tickets_in(&*h.meta.lock().await), 0);
 }

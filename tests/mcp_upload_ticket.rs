@@ -964,3 +964,261 @@ async fn unbound_ticket_past_create_by_is_401() {
         (StatusCode::UNAUTHORIZED, Some(MSG))
     );
 }
+
+// ─── create_upload_url, end to end ──────────────────────────────────────────
+
+async fn upl_harness() -> AccountMcpHarness {
+    helpers::spin_up_account_mcp_with(helpers::AccountMcpOpts {
+        admins: vec![("mcp-owner", "owner")],
+        tenants: vec![("upl-e2e", Some(0))],
+        files: true,
+        mcp_enabled: true,
+    })
+    .await
+}
+
+/// The tools/call result of create_upload_url with `args`.
+async fn upl_call(h: &AccountMcpHarness, args: Value) -> Value {
+    let m = helpers::mcp_call(&h.app, &h.access, &h.tid, "create_upload_url", args).await;
+    m["result"].clone()
+}
+
+/// Calls create_upload_url through mcp_call and parses the reply JSON (content[0].text).
+async fn issue(h: &AccountMcpHarness, args: Value) -> Value {
+    let r = upl_call(h, args).await;
+    assert_ne!(r["isError"], true, "create_upload_url refused");
+    serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// The isError body of a refused create_upload_url call.
+async fn issue_err(h: &AccountMcpHarness, args: Value) -> Value {
+    let r = upl_call(h, args).await;
+    assert_eq!(r["isError"], true, "{r}");
+    serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// Absolute URL from the reply → router path: strip helpers::MCP_PUBLIC_URL, then drust::base_path::base_path().
+fn router_path(url: &str) -> String {
+    url.strip_prefix(helpers::MCP_PUBLIC_URL)
+        .and_then(|p| p.strip_prefix(drust::base_path::base_path()))
+        .unwrap_or_else(|| panic!("not a URL of this server: {url}"))
+        .to_string()
+}
+
+/// One request with exactly `headers` (name, value) and `body`.
+async fn tus_send(
+    h: &AccountMcpHarness,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> (StatusCode, HeaderMap) {
+    let mut b = Request::builder().method(method).uri(uri);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let resp = h
+        .app
+        .clone()
+        .oneshot(b.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    (resp.status(), resp.headers().clone())
+}
+
+/// POSTs with exactly reply["create"]["headers"]; returns (status, Location header).
+async fn tus_create(h: &AccountMcpHarness, reply: &Value) -> (StatusCode, Option<String>) {
+    let hs: Vec<(&str, &str)> = reply["create"]["headers"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str().unwrap()))
+        .collect();
+    let uri = router_path(reply["upload_url"].as_str().unwrap());
+    let (st, hd) = tus_send(h, "POST", &uri, &hs, vec![]).await;
+    let loc = hd.get("location").map(|v| v.to_str().unwrap().to_string());
+    (st, loc)
+}
+
+/// PATCHes one chunk with the reply's append headers ("same" → the create Authorization).
+async fn tus_patch(
+    h: &AccountMcpHarness,
+    reply: &Value,
+    location: &str,
+    offset: u64,
+    chunk: &[u8],
+) -> StatusCode {
+    let off = offset.to_string();
+    let hs: Vec<(&str, &str)> = reply["append"]["headers"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| {
+            let v = match (k.as_str(), v.as_str().unwrap()) {
+                ("Authorization", "same") => reply["create"]["headers"]["Authorization"]
+                    .as_str()
+                    .unwrap(),
+                ("Upload-Offset", _) => off.as_str(),
+                (_, v) => v,
+            };
+            (k.as_str(), v)
+        })
+        .collect();
+    let last = location.rsplit('/').next().unwrap();
+    let url = format!("{}{last}", reply["append"]["url_prefix"].as_str().unwrap());
+    tus_send(h, "PATCH", &router_path(&url), &hs, chunk.to_vec())
+        .await
+        .0
+}
+
+/// GET /t/{tid}/files with the tenant's service key (h.svc); returns the rows array.
+async fn list_files(h: &AccountMcpHarness) -> Vec<Value> {
+    let auth = format!("Bearer {}", h.svc);
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/t/{}/files", h.tid))
+                .header("authorization", auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    v["files"].as_array().expect("a files array").clone()
+}
+
+fn tickets_in(c: &rusqlite::Connection) -> i64 {
+    c.query_row("SELECT COUNT(*) FROM _mcp_upload_tickets", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_upload_url_end_to_end_multi_chunk() {
+    let h = upl_harness().await;
+    let r = issue(
+        &h,
+        serde_json::json!({"tenant": h.tid, "size":10,"filename":"報告 v1,final.txt","path":"docs/q3/report.txt"}),
+    )
+    .await;
+    assert_eq!(
+        r["upload_url"],
+        format!(
+            "{}{}/t/{}/uploads",
+            helpers::MCP_PUBLIC_URL,
+            drust::base_path::base_path(),
+            h.tid
+        )
+    );
+    let (st, loc) = tus_create(&h, &r).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let loc = loc.unwrap();
+    assert_eq!(
+        tus_patch(&h, &r, &loc, 0, b"0123").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        tus_patch(&h, &r, &loc, 4, b"4567").await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(tus_patch(&h, &r, &loc, 8, b"89").await.is_success());
+    let rows = list_files(&h).await;
+    assert_eq!(rows.len(), 1);
+    let f = &rows[0];
+    assert_eq!(f["original_name"], "報告 v1,final.txt");
+    assert_eq!(f["size_bytes"], 10);
+    assert_eq!(f["path"], "docs/q3/report.txt");
+    assert_eq!(f["visibility"], "private");
+    assert_eq!(f["uploader"], "service");
+}
+
+#[tokio::test]
+async fn create_upload_url_empty_file_finalizes_with_one_empty_patch() {
+    let h = upl_harness().await;
+    let r = issue(
+        &h,
+        serde_json::json!({"tenant": h.tid, "size":0,"filename":"empty.txt"}),
+    )
+    .await;
+    let (st, loc) = tus_create(&h, &r).await;
+    assert_eq!(st, StatusCode::CREATED);
+    assert!(tus_patch(&h, &r, &loc.unwrap(), 0, b"").await.is_success());
+    let rows = list_files(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["original_name"], "empty.txt");
+    assert_eq!(rows[0]["size_bytes"], 0);
+}
+
+#[tokio::test]
+async fn create_upload_url_twice_issues_two_independent_tickets() {
+    let h = upl_harness().await;
+    let a = issue(&h, serde_json::json!({"tenant": h.tid, "size":1})).await;
+    let b = issue(&h, serde_json::json!({"tenant": h.tid, "size":1})).await;
+    assert_ne!(
+        a["create"]["headers"]["Authorization"],
+        b["create"]["headers"]["Authorization"]
+    );
+    assert_eq!(tus_create(&h, &b).await.0, StatusCode::CREATED); // the second works first
+    assert_eq!(tus_create(&h, &a).await.0, StatusCode::CREATED); // the first is unaffected
+    assert_eq!(tickets_in(&*h.meta.lock().await), 2);
+}
+
+#[tokio::test]
+async fn create_upload_url_public_finalizes_public() {
+    let h = upl_harness().await;
+    assert_eq!(
+        issue_err(
+            &h,
+            serde_json::json!({"tenant": h.tid, "size":1,"visibility":"Public"})
+        )
+        .await["error_code"],
+        "INVALID_VISIBILITY"
+    );
+    assert_eq!(tickets_in(&*h.meta.lock().await), 0); // no silent private ticket
+    let r = issue(
+        &h,
+        serde_json::json!({"tenant": h.tid, "size":1,"filename":"p.txt","visibility":"public"}),
+    )
+    .await;
+    assert_eq!(r["ticket"]["visibility"], "public");
+    let (st, loc) = tus_create(&h, &r).await;
+    assert_eq!(st, StatusCode::CREATED);
+    assert!(tus_patch(&h, &r, &loc.unwrap(), 0, b"x").await.is_success());
+    let rows = list_files(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["original_name"], "p.txt");
+    assert_eq!(rows[0]["visibility"], "public");
+}
+
+#[tokio::test]
+async fn create_upload_url_rejects_size_over_the_limit() {
+    let h = upl_harness().await;
+    // the harness's large_upload_max_bytes is the MgmtState default 2 GiB
+    let b = issue_err(
+        &h,
+        serde_json::json!({"tenant": h.tid, "size": 2_147_483_649u64}),
+    )
+    .await;
+    assert_eq!(b["error_code"], "UPLOAD_TOO_LARGE");
+    assert_eq!(tickets_in(&*h.meta.lock().await), 0);
+}
+
+#[tokio::test]
+async fn create_upload_url_mistyped_size_writes_no_ticket() {
+    let h = upl_harness().await;
+    let b = issue_err(&h, serde_json::json!({"tenant": h.tid, "size":"10"})).await;
+    assert_eq!(b["error_code"], "INVALID_PARAMS");
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("failed to deserialize parameters:")
+    );
+    assert_eq!(tickets_in(&*h.meta.lock().await), 0);
+}
