@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TENANT: &str = "snap";
-const PINNED: &str = "765e43bda925e2bd3825c0a56b9eca8f92b75ea4b226a20ea042af9bfbba5499";
+const PINNED: &str = "dbd3f5c129dc3a6595dc4a1c8fd623fb3c570297f0c2d3997bf7d2fc95be6e66";
 
 async fn rpc(h: &helpers::AccountMcpHarness, method: &str, params: Value) -> Value {
     let (status, _, mut m) = helpers::mcp_rpc(

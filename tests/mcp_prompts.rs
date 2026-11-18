@@ -158,10 +158,12 @@ async fn write_edge_function_embeds_the_wit_contract_and_egress_gotcha() {
     );
 }
 
-/// M1 (B2, B5): `insert_record` / `update_record` have no `dry_run`, and
-/// `recent_writes` is not populated yet — neither may be offered as a fix.
+/// `insert_record` / `update_record` have no `dry_run`, so it may not be
+/// offered as a fix; a lost reply is checked the way the instructions say, with
+/// `recent_writes`, and a failure is read from the isError result (this endpoint
+/// never answers a tool failure as a JSON-RPC error).
 #[tokio::test]
-async fn debug_write_makes_no_dry_run_or_recent_writes_promise() {
+async fn debug_write_makes_no_dry_run_promise_and_matches_the_instructions() {
     let d = tempfile::tempdir().unwrap();
     let s = svc(&d).await;
     let r = render_prompt(&s, "debug_write", &args(&[("collection", "posts")]))
@@ -172,7 +174,12 @@ async fn debug_write_makes_no_dry_run_or_recent_writes_promise() {
         !body.contains("Re-run the write with `dry_run: true`"),
         "debug_write: {body}"
     );
-    assert!(!body.contains("recent_writes"), "debug_write: {body}");
+    assert!(
+        body.contains("check `recent_writes`"),
+        "debug_write: {body}"
+    );
+    assert!(!body.contains("JSON-RPC error"), "debug_write: {body}");
+    assert!(body.contains("isError result"), "debug_write: {body}");
     assert!(body.contains("suggested_fix"), "debug_write: {body}");
     assert!(body.contains("list_records"), "debug_write: {body}");
 }

@@ -1217,8 +1217,9 @@ impl DrustMcpService {
         its service key (id, created_at, and how_to_get: the admin UI page \
         where the user can copy it; the key itself never appears here), \
         `caller` (this OAuth grant), the account-level MCP URL, the relative \
-        REST/files/rpc endpoint paths, and the configured \
-        `max_upload_bytes`. To upload a file, call create_upload_url. \
+        REST/files/rpc endpoint paths, and `limits.max_upload_bytes` (the \
+        multipart limit, which this connection cannot use). To upload a \
+        file, call create_upload_url. \
         `file_upload` names the `drust://<tenant>/files-guide.md` resource — \
         read it before uploading files, it is where the upload endpoints, the \
         visibility model and the publish grant are explained."
@@ -3200,8 +3201,9 @@ impl DrustMcpService {
         - allow_user_publish=true: logged-in end-users (drust_user_*) may publish. \
         - allow_anon_publish=true: the public anon bearer may publish — treat \
           as public-write; per-tenant rate-limit still applies. \
-        MCP `broadcast` is service-only regardless of these flags (MCP \
-        dispatch enforces). Returns {allow_user_publish, allow_anon_publish} \
+        MCP `broadcast` ignores these flags: it is reachable only through the \
+        account-level endpoint, which runs it as Service on a tenant the \
+        caller can see. Returns {allow_user_publish, allow_anon_publish} \
         with the post-update state. NOT_FOUND if the tenant is missing."
     )]
     async fn set_publish_policy(
@@ -3651,11 +3653,13 @@ impl DrustMcpService {
         annotations(read_only_hint = true, open_world_hint = false),
         description = "Recent write events recorded in this tenant's audit log \
         (ts/op/collection/status/error_code), newest first: record writes, \
-        schema changes and call_rpc calls made through this endpoint, one row \
-        per call that reached the tenant. Use it before re-sending a write \
-        whose reply was lost. A dry_run preview is not listed. Not listed \
-        either: file, user and settings changes, and writes made over REST; \
-        check those with the matching list tool. Rows can lag by about a \
+        create/drop_collection, add/drop_field, create/drop_index and \
+        call_rpc calls made through this endpoint, one row per call that \
+        reached the tenant. Use it before re-sending a write whose reply was \
+        lost. A dry_run preview is not listed. Not listed either: other \
+        schema changes (policies, caps, owner_field, descriptions, full-text \
+        indexes), file, user and settings changes, and writes made over REST; \
+        check those with the matching list or describe tool. Rows can lag by about a \
         second and the audit log drops rows under heavy load, so an empty \
         result is a hint, not proof."
     )]

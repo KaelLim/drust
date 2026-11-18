@@ -58,7 +58,7 @@ pub(crate) const ACCOUNT_INSTRUCTIONS: &str = r#"drust — one MCP endpoint for 
 START HERE:
   1. list_tenants — the tenants you can see.
   2. get_schema_overview {tenant} — every collection (fields, indexes, owner_field, caps, RLS policies) and stored RPC, in one call.
-  Every tool except list_tenants needs a `tenant` argument: an id from list_tenants. TENANT_NOT_FOUND means the tenant does not exist or you cannot see it; call list_tenants again. INVALID_ARGUMENTS means you passed an argument that is not in the tool's inputSchema.
+  Every tool except list_tenants needs a `tenant` argument: an id from list_tenants. TENANT_NOT_FOUND means the tenant does not exist or you cannot see it; call list_tenants again. INVALID_ARGUMENTS means you passed a top-level argument that is not in the tool's inputSchema; keys nested inside an argument are not checked.
 
 RULES THAT PREVENT DATA DAMAGE:
   • Only delete_record, drop_collection and drop_index accept `dry_run: true` — a preview that changes nothing; run it before the real call. Every other tool rejects `dry_run` with INVALID_ARGUMENTS, including insert_record, update_record, insert_records, upsert_records, drop_field and delete_file.
@@ -1085,7 +1085,7 @@ pub(crate) fn upload_reply_with(
     })
 }
 
-const CREATE_UPLOAD_URL_DESCRIPTION: &str = "Issue a short-lived ticket for ONE resumable (tus 1.0) upload into this tenant's file storage, and return the exact requests: POST to create the upload, then PATCH chunks of at most chunk_max_bytes, HEAD to resume. The POST must happen within 15 minutes; after it the ticket stays valid for that one upload until its session expires. The ticket cannot list, read, sign, delete or publish other files. visibility defaults to private and is fixed here. Every call issues a new ticket. Errors: TENANT_REQUIRED, TENANT_NOT_FOUND, STORAGE_UNAVAILABLE, UPLOAD_TOO_LARGE, FILE_PATH_INVALID, INVALID_VISIBILITY, INVALID_PARAMS, INVALID_ARGUMENTS.";
+const CREATE_UPLOAD_URL_DESCRIPTION: &str = "Issue a short-lived ticket for ONE resumable (tus 1.0) upload into this tenant's file storage, and return the exact requests: POST to create the upload, then PATCH chunks of at most chunk_max_bytes, HEAD to resume. The POST must happen within 15 minutes; after it the ticket stays valid for that one upload until its session expires. The ticket cannot list, read, sign, delete or publish other files. visibility defaults to private and is fixed here. Every call issues a new ticket. The size cap is not whoami's limits.max_upload_bytes (the multipart limit, which this connection cannot use): a larger size is refused with UPLOAD_TOO_LARGE, whose message states the cap. Errors: TENANT_REQUIRED, TENANT_NOT_FOUND, STORAGE_UNAVAILABLE, UPLOAD_TOO_LARGE, FILE_PATH_INVALID, INVALID_VISIBILITY, INVALID_PARAMS, INVALID_ARGUMENTS.";
 
 /// `create_upload_url` as `tools/list` advertises it: `tenant` and `size`
 /// required, and not read-only, destructive, idempotent or open-world.

@@ -176,12 +176,12 @@ pub async fn render_prompt(
                 "A write to `{coll}` (tenant `{t}`) is failing. Work it methodically:\n\
                  1. `describe_collection {coll}` — confirm field names, types, NOT NULL, CHECK \
                     constraints (min/max/enum/max_length) and foreign keys.\n\
-                 2. Read the failed call's `error_code` and `suggested_fix` (the JSON-RPC error's \
-                    `data`, or the JSON text of an isError result). Of the record tools only \
+                 2. Read the failed call's `error_code` and `suggested_fix` (the JSON text of its \
+                    isError result). Of the record tools only \
                     `delete_record` has `dry_run`; `insert_record` / `update_record` do not, so \
                     re-sending one runs it for real.\n\
-                 3. If an earlier attempt's reply was lost, check with `list_records` (or \
-                    `get_record_history`) whether it already committed before writing again.\n\
+                 3. If an earlier attempt's reply was lost, check `recent_writes` (or re-read \
+                    with `list_records`) whether it already committed before writing again.\n\
                  4. Usual causes: a CHECK / enum / max_length violation, a missing FK parent, a \
                     missing required field, or a service insert that did not populate `owner_field` \
                     on an owner-scoped collection."

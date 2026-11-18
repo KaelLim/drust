@@ -188,8 +188,8 @@ pub async fn whoami(s: &DrustMcp, view: WhoamiView) -> anyhow::Result<serde_json
             "granted_prefixes": granted_prefixes,
         },
         "broadcast": {
-            "note": "v1.31: publish via MCP tool `broadcast` or REST POST rooms_publish_rest \
-                     (service-only). Subscribe via WS upgrade at realtime_ws + send \
+            "note": "v1.31: publish via MCP tool `broadcast`. Subscribe via WS upgrade at \
+                     realtime_ws + send \
                      {\"op\":\"subscribe\",\"room\":\"<name>\"} on the multiplex socket.",
         },
     });
