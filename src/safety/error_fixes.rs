@@ -116,10 +116,6 @@ pub const SUGGESTED_FIXES: &[(&str, &str)] = &[
         "Table exceeds DRUST_INDEX_LARGE_TABLE_ROWS rows. Retry with `force: true` to bypass the guard (will lock the table briefly).",
     ),
     (
-        "MCP_USER_DENIED",
-        "End-user tokens (`drust_user_*`) cannot use MCP. Use REST `/records` / `/list` / `/search` endpoints, or a stored RPC.",
-    ),
-    (
         "NOT_NULL_VIOLATION",
         "A required field was missing or null. Describe the collection to see its required fields, and send a value for each.",
     ),
