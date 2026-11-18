@@ -362,7 +362,7 @@ impl ToolDenied {
             ToolDenied::TenantNotFound => tool_error(
                 "TENANT_NOT_FOUND",
                 "tenant not found".to_string(),
-                Some("call list_tenants".to_string()),
+                Some(LIST_TENANTS_FIX.to_string()),
             ),
             ToolDenied::InvalidArguments(keys) => tool_error(
                 "INVALID_ARGUMENTS",
@@ -420,11 +420,15 @@ pub(crate) fn precheck(
     Ok(kind)
 }
 
+/// The `suggested_fix` of every TENANT_NOT_FOUND this endpoint answers.
+const LIST_TENANTS_FIX: &str = "call list_tenants";
+
 /// Every account-level tool result on its way out: the per-tenant
 /// `finish_tool_call` first, then every JSON-RPC error left except "tool not
 /// found" becomes the one isError body, keeping its `error_code` and
 /// `suggested_fix` (a code is classified from the message when the error
-/// carries none).
+/// carries none; a TENANT_NOT_FOUND with no fix or the catalogue's gets this
+/// endpoint's own).
 pub(crate) fn finish_account_call(
     r: Result<CallToolResult, McpError>,
 ) -> Result<CallToolResult, McpError> {
@@ -440,6 +444,17 @@ pub(crate) fn finish_account_call(
                 .and_then(|d| d.get("suggested_fix"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
+            // An inner tool's TENANT_NOT_FOUND (a meta read that lost a race
+            // with a soft delete) carries the catalogue's REST advice, which
+            // names a URL path this client never sees.
+            let fix = if code == "TENANT_NOT_FOUND"
+                && fix.as_deref().is_none_or(|f| {
+                    crate::safety::error_fixes::lookup("TENANT_NOT_FOUND") == Some(f)
+                }) {
+                Some(LIST_TENANTS_FIX.to_string())
+            } else {
+                fix
+            };
             tool_error(&code, e.message.into_owned(), fix)
         }
         other => other,
@@ -2790,6 +2805,34 @@ mod precheck_tests {
             ToolDenied::TenantNotFound
         );
         assert_eq!(ToolDenied::from(Denied::Internal), ToolDenied::Internal);
+    }
+
+    /// An inner tool's TENANT_NOT_FOUND (its meta read lost a race with a soft
+    /// delete) carries the account endpoint's fix, never REST's "URL path"
+    /// advice; a contextual fix of its own is kept.
+    #[test]
+    fn finish_account_call_gives_an_inner_tenant_not_found_the_account_fix() {
+        let rest = crate::safety::error_fixes::lookup("TENANT_NOT_FOUND").unwrap();
+        for e in [
+            McpError::internal_error("tenant 'blog' not found in meta.sqlite", None),
+            McpError::internal_error("x", Some(json!({"error_code":"TENANT_NOT_FOUND"}))),
+            McpError::internal_error(
+                "x",
+                Some(json!({"error_code":"TENANT_NOT_FOUND","suggested_fix":rest})),
+            ),
+        ] {
+            let b = body(&finish_account_call(Err(e)).unwrap());
+            assert_eq!(b["error_code"], "TENANT_NOT_FOUND", "{b}");
+            assert_eq!(b["suggested_fix"], "call list_tenants", "{b}");
+        }
+        let own = McpError::internal_error(
+            "x",
+            Some(json!({"error_code":"TENANT_NOT_FOUND","suggested_fix":"contextual"})),
+        );
+        assert_eq!(
+            body(&finish_account_call(Err(own)).unwrap())["suggested_fix"],
+            "contextual"
+        );
     }
 
     #[test]
