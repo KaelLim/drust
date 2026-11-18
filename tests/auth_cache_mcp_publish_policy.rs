@@ -12,7 +12,7 @@
 // #955 gave the SAME station a second obligation, and this file pins it on
 // this face for the same reason it pins hook 11 here: a live rooms WS socket
 // captures its `TenantPublishPolicy` once at upgrade, so turning
-// `allow_anon_publish` OFF over `/t/<id>/mcp` — the natural way for a tenant
+// `allow_anon_publish` OFF over the account-level `/mcp` — the natural way for a tenant
 // to stop publish abuse — must close those sockets, exactly as the REST PATCH
 // does (`tests/auth_cache_publish_policy.rs`).
 mod helpers;
@@ -134,14 +134,13 @@ async fn mcp_set_publish_policy_noop_call_still_clears_nothing_foreign() {
 /// `mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus` below, which
 /// drives the wrapper over `tools/call`.
 ///
-/// Driving the wrapper needs a registry built with `Some(meta)`: the standard
-/// helper ctor `McpRegistry::with_bus` passes `meta: None`, so under every
-/// `helpers::spin_up_*` stack `tools/call set_publish_policy` short-circuits
-/// with `-32603 "meta connection not available in this context"` and leaves the
-/// epoch at 0. That is why the wrapper test below carries its own fixture
-/// instead of reusing a helper. An earlier version of this comment said no
-/// integration test could reach a `#[tool]` method at all; that was false and
-/// is corrected here (#955 T3 round 2).
+/// Driving the wrapper needs a `DrustMcp` built with `Some(meta)`: the
+/// account-level endpoint builds one per call through `McpRegistry::build_live`,
+/// which always passes the meta handle, so the wrapper test below runs on
+/// `helpers::spin_up_account_mcp`. (The per-tenant helper ctor
+/// `McpRegistry::with_bus` passes `meta: None`, under which `tools/call
+/// set_publish_policy` short-circuits with "meta connection not available in
+/// this context" and leaves the epoch at 0.)
 #[tokio::test]
 async fn mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not() {
     let dir = tempfile::tempdir().unwrap();
@@ -200,7 +199,7 @@ async fn mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not() {
     );
 }
 
-// ═══ #955 — the `#[tool]` WRAPPER's bus, driven over `/t/<id>/mcp` ═══════════
+// ═══ #955 — the `#[tool]` WRAPPER's bus, driven over the account-level `/mcp` ═
 //
 // Everything above calls `mcp::tools::owner_field::set_publish_policy`
 // directly, handing it a `RoomBus` the test owns. That proves the FN evicts on
@@ -220,236 +219,10 @@ async fn mcp_set_publish_policy_real_change_evicts_rooms_noop_does_not() {
 // the call and the captured handle never moves — re-measured for all three
 // wrapper arms, one mutant at a time (`left: 0, right: 1`).
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
-use tower::ServiceExt;
-
-/// A tenant router whose MCP registry carries `Some(meta)` — required for
-/// `set_publish_policy`'s wrapper to get past its meta short-circuit — and
-/// whose registry, auth state and stack all share ONE `RoomBus` (the
-/// production wiring, see `helpers::shared_bus_rooms`).
-///
-/// Returns that shared bus so the test can capture an epoch handle from the
-/// side a WS socket would, never from anything the registry hands back.
-async fn spin_up_publish_policy_mcp(
-    tid: &str,
-) -> (axum::Router, String, RoomBus, tempfile::TempDir) {
-    use drust::auth::bearer::{generate_token, hash_token};
-    use drust::mcp::http_registry::McpHttpRegistry;
-    use drust::mcp::server::McpRegistry;
-    use drust::storage::pool::TenantRegistry;
-    use drust::tenant::router::TenantAuthState;
-    use drust::tenant::{TenantStack, build_tenant_router, events::EventBus};
-
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().to_path_buf();
-    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
-        rusqlite::params![tid],
-    )
-    .unwrap();
-    let service = generate_token();
-    conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, role) VALUES (?1, ?2, 'service')",
-        rusqlite::params![tid, hash_token(&service)],
-    )
-    .unwrap();
-    let _ = drust::storage::tenant_db::open_write(&data, tid).unwrap();
-    drust::db::migrations::run_migrations(&conn, &data).unwrap();
-
-    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
-    let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
-    let meta_arc = Arc::new(Mutex::new(conn));
-
-    // The auth state is built FIRST so its bus can be threaded into the MCP
-    // registry and the stack below — one instance, three consumers, exactly as
-    // `src/main.rs` wires it.
-    let mut state = TenantAuthState::test_default(meta_arc.clone(), tenants.clone());
-    let bus_rooms = helpers::shared_bus_rooms(&mut state);
-    let mcp_reg = Arc::new(McpRegistry::with_bus_and_storage(
-        tenants.clone(),
-        bus.clone(),
-        webhooks.clone(),
-        None,
-        String::new(),
-        Arc::new([0u8; 32]),
-        Some(meta_arc.clone()),
-        52_428_800,
-        1_000_000,
-        Arc::new(Mutex::new(
-            drust::safety::audit_db::open_audit_db_memory().unwrap(),
-        )),
-        bus_rooms.clone(),
-        drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
-        drust::tenant::rooms::RoomsConfig::test_defaults(),
-        Arc::new(drust::tenant::auth_cache::AuthCache::new(
-            Duration::from_secs(10),
-            200_000,
-        )),
-        drust::functions::dispatcher::FunctionDispatcher::new(
-            tenants.clone(),
-            tokio::sync::mpsc::channel(8).0,
-            drust::functions::FnConfig::test_default(),
-        ),
-    ));
-    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
-    let stack = TenantStack {
-        auth: state,
-        bus: bus.clone(),
-        bus_rooms: bus_rooms.clone(),
-        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
-        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: Arc::new(McpHttpRegistry::new(mcp_reg)),
-        files: None,
-        webhooks,
-        functions,
-        functions_exec,
-        fn_cfg,
-        cron: Arc::new(drust::cron::CronState::test_default()),
-        cors_origins: Vec::new(),
-    };
-    let app = build_tenant_router(stack);
-    (app, service, bus_rooms, dir)
-}
-
-fn mcp_req_with_session(
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    body: serde_json::Value,
-) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<serde_json::Value> {
-    let ct = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    if ct.starts_with("text/event-stream") {
-        let mut out = Vec::new();
-        for line in text.lines() {
-            if let Some(data) = line.strip_prefix("data:") {
-                let trimmed = data.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str(trimmed) {
-                    out.push(v);
-                }
-            }
-        }
-        out
-    } else if text.is_empty() {
-        vec![]
-    } else {
-        vec![serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)]
-    }
-}
-
-/// initialize + notifications/initialized → the session id.
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"}
-                }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(init_resp.status(), StatusCode::OK, "MCP initialize failed");
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize must set mcp-session-id")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(init_resp).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &session_id,
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    session_id
-}
-
-/// `tools/call` one tool; returns the parsed `content[0].text`, and PANICS if
-/// the call did not produce one — a JSON-RPC error (the `-32603` meta
-/// short-circuit above all) must never read as a quiet "no epoch moved".
-async fn mcp_call_tool_json(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    session_id: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> serde_json::Value {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        session_id,
-        serde_json::json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} HTTP status: {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    let text = msgs
-        .iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "tools/call {name} returned no result content — the tool errored, so any \
-                 assertion about its side effects below would be vacuous: {msgs:?}"
-            )
-        });
-    serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("tools/call {name} content is not JSON ({e}): {text}"))
-}
+// The account harness hands ONE `RoomBus` to the stack, its auth state and
+// the MCP registry whose `build_live` serves every call (`h.bus_rooms`), as
+// `src/main.rs` wires it; the epoch handle is captured from that bus, the side
+// a WS socket would read, never from anything the registry hands back.
 
 /// #955, EXECUTED — the `#[tool]` wrapper hands the tool fn the STACK's bus.
 ///
@@ -467,20 +240,17 @@ async fn mcp_call_tool_json(
 /// tenant` / error paths, which never reach the evict at all.
 #[tokio::test]
 async fn mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus() {
-    let tid = "t-ppwrap";
-    let (app, svc, bus_rooms, _dir) = spin_up_publish_policy_mcp(tid).await;
+    let h = helpers::spin_up_account_mcp("t-ppwrap").await;
 
     // Captured BEFORE the call, from the stack's bus — the same handle a live
     // socket holds from its upgrade until it closes.
-    let epoch = bus_rooms.tenant_epoch_handle(tid);
+    let epoch = h.bus_rooms.tenant_epoch_handle(&h.tid);
     let e0 = epoch.load(SeqCst);
 
-    let sid = mcp_init(&app, tid, &svc).await;
-    let v = mcp_call_tool_json(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let v = helpers::mcp_tool_json(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_publish_policy",
         serde_json::json!({"allow_anon_publish": true}),
     )
@@ -498,11 +268,10 @@ async fn mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus() {
     );
 
     // Same value again: the wrapper still forwards, the fn still declines.
-    let v = mcp_call_tool_json(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let v = helpers::mcp_tool_json(
+        &h.app,
+        &h.access,
+        &h.tid,
         "set_publish_policy",
         serde_json::json!({"allow_anon_publish": true}),
     )
@@ -527,21 +296,19 @@ async fn mcp_tools_call_set_publish_policy_evicts_the_stacks_own_bus() {
 /// a scan of the handler's source text.
 #[tokio::test]
 async fn mcp_tools_call_user_revocations_evict_the_stacks_own_bus() {
-    let tid = "t-ppwrap-users";
-    let (app, svc, bus_rooms, _dir) = spin_up_publish_policy_mcp(tid).await;
+    let h = helpers::spin_up_account_mcp("t-ppwrap-users").await;
+    helpers::account_allow_self_register(&h).await;
 
-    let epoch = bus_rooms.tenant_epoch_handle(tid);
+    let epoch = h.bus_rooms.tenant_epoch_handle(&h.tid);
     let e0 = epoch.load(SeqCst);
-    let sid = mcp_init(&app, tid, &svc).await;
 
     // `revoke_user_sessions` is documented safe on an unknown user (revoked: 0)
     // and evicts on every Ok — the blunt tenant-wide evict #952 chose because
     // there is no per-user room index. No seeding needed.
-    let v = mcp_call_tool_json(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let v = helpers::mcp_tool_json(
+        &h.app,
+        &h.access,
+        &h.tid,
         "revoke_user_sessions",
         serde_json::json!({"user_id": "u-nobody"}),
     )
@@ -554,11 +321,10 @@ async fn mcp_tools_call_user_revocations_evict_the_stacks_own_bus() {
     );
 
     // `delete_user` evicts only on Ok, so it needs a real user.
-    let u = mcp_call_tool_json(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let u = helpers::mcp_tool_json(
+        &h.app,
+        &h.access,
+        &h.tid,
         "create_user",
         serde_json::json!({"email": "w@x.com", "password": "longpassword"}),
     )
@@ -573,11 +339,10 @@ async fn mcp_tools_call_user_revocations_evict_the_stacks_own_bus() {
         "creating a user revokes nothing and must not evict"
     );
 
-    let v = mcp_call_tool_json(
-        &app,
-        tid,
-        &svc,
-        &sid,
+    let v = helpers::mcp_tool_json(
+        &h.app,
+        &h.access,
+        &h.tid,
         "delete_user",
         serde_json::json!({"user_id": uid}),
     )
