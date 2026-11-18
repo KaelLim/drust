@@ -246,7 +246,7 @@ async fn disabled_paths_answer_like_a_path_that_never_existed() {
 }
 
 #[tokio::test]
-async fn auto_mode_mounts_nothing_in_ma0() {
+async fn auto_under_a_base_path_mounts_nothing() {
     let cfg = McpOauthConfig::from_parts(
         &McpOauthEnv {
             mode: Some("auto"),
@@ -257,9 +257,29 @@ async fn auto_mode_mounts_nothing_in_ma0() {
         [1; 32],
         [2; 32],
     );
-    assert_eq!(cfg.disabled_reason(), Some(&DisabledReason::AutoBeforeMa1d));
+    assert_eq!(
+        cfg.disabled_reason(),
+        Some(&DisabledReason::AutoPathMounted)
+    );
     let fx = fixture_with(cfg).await;
     assert_nothing_mounted(&fx.app).await;
+}
+
+/// Only the config decision: building the app needs an empty process-global
+/// base path, which `base_path_root` covers.
+#[test]
+fn auto_with_an_empty_base_and_https_is_enabled() {
+    let cfg = McpOauthConfig::from_parts(
+        &McpOauthEnv {
+            mode: Some("auto"),
+            public_url: Some(PUBLIC_URL),
+            ..Default::default()
+        },
+        "",
+        [1; 32],
+        [2; 32],
+    );
+    assert!(cfg.enabled(), "{:?}", cfg.disabled_reason());
 }
 
 #[tokio::test]

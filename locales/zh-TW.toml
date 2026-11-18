@@ -978,7 +978,8 @@ hint = "這裡出現轉址代表有 proxy 在轉址，例如 http 轉 https 或�
 
 [mcp_diag.reason]
 mode_off = "DRUST_MCP 是 off。"
-auto = "DRUST_MCP 是 auto（預設），在這個版本不會開啟 MCP。請設 DRUST_MCP=on。"
+auto_https = "DRUST_MCP 為 auto（預設），auto 只在 DRUST_PUBLIC_URL 是公開主機的 https:// 網址時才開啟 MCP。請設定它，或設 DRUST_MCP=on。"
+auto_path = "DRUST_MCP 為 auto（預設），drust 掛在 base path 底下時 auto 不會開啟 MCP。確認反向代理有轉送根目錄的探索路徑後，再設 DRUST_MCP=on。"
 invalid_mode = "DRUST_MCP 的值不是 auto、on、off 之一，視為 off。"
 public_url_missing = "DRUST_MCP 是 on，但 DRUST_PUBLIC_URL 是空的。請設成公開的 https origin。"
 public_url_invalid = "DRUST_PUBLIC_URL 必須是單純的 origin（scheme://host[:port]），主機或 port 之後不能有任何東西。"

@@ -900,7 +900,22 @@ async fn authorize_absent_when_disabled() {
         [1; 32],
         [2; 32],
     );
+    // auto under a base path stays off; the same env with an empty base
+    // enables, so the base path is what keeps it off here.
     assert!(!auto.enabled());
+    assert!(
+        McpOauthConfig::from_parts(
+            &McpOauthEnv {
+                mode: Some("auto"),
+                public_url: Some(PUBLIC_URL),
+                ..Default::default()
+            },
+            "",
+            [1; 32],
+            [2; 32],
+        )
+        .enabled()
+    );
     for (what, fx) in [
         ("off", fixture(false).await),
         ("auto", fixture_with(auto).await),

@@ -61,9 +61,11 @@ pub enum McpMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisabledReason {
     ModeOff,
-    /// `auto` (or unset) does not enable MCP until the account-level `/mcp`
-    /// endpoint ships.
-    AutoBeforeMa1d,
+    /// `auto` (or unset) without an https DRUST_PUBLIC_URL on a non-loopback host.
+    AutoNeedsHttpsPublicUrl,
+    /// `auto` (or unset) while DRUST_BASE_PATH is set: the root discovery
+    /// paths need proxy routes first, so a path-mounted host must opt in with `on`.
+    AutoPathMounted,
     /// Unknown `DRUST_MCP` value (at most 32 chars of it) -> off + error log.
     InvalidMode(String),
     PublicUrlMissing,
@@ -133,10 +135,10 @@ impl McpOauthConfig {
         )
     }
 
-    /// Pure. `base_path` is used ONLY to validate characters; issuer()/resource_url()/
-    /// endpoint_url()/is_our_resource() read the process-global base path at call
-    /// time, so passing "" here does not give an empty-base issuer in a `/drust`
-    /// process.
+    /// Pure. `base_path` decides whether `auto` may enable (it may not when
+    /// non-empty) and is validated for characters under `on`;
+    /// issuer()/resource_url()/endpoint_url()/is_our_resource() still read the
+    /// process-global base path at call time.
     pub fn from_parts(
         env: &McpOauthEnv<'_>,
         base_path: &str,
@@ -157,14 +159,24 @@ impl McpOauthConfig {
             idle_days = max_days;
         }
 
-        // Check order: mode -> public URL -> base path. A mode other than `on`
-        // never looks at the URL, so its reason is not masked by a URL problem.
+        // Check order: mode -> public URL -> base path. `off` and an invalid
+        // mode never look at the URL, so their reason is not masked by a URL problem.
         // A disabled config keeps an empty origin: nothing may build a URL from it.
         let off = |mode, reason| (mode, Some(reason), String::new(), false);
         let (mode, disabled, origin, loopback_http) = match parse_mode(env.mode) {
             Err(v) => off(McpMode::Off, DisabledReason::InvalidMode(v)),
             Ok(McpMode::Off) => off(McpMode::Off, DisabledReason::ModeOff),
-            Ok(McpMode::Auto) => off(McpMode::Auto, DisabledReason::AutoBeforeMa1d),
+            Ok(McpMode::Auto) => match normalize_public_url(env.public_url) {
+                // `auto` enables only on an https origin on a non-loopback host
+                Ok((origin, false)) if !origin_is_loopback(&origin) => {
+                    if base_path.is_empty() {
+                        (McpMode::Auto, None, origin, false)
+                    } else {
+                        off(McpMode::Auto, DisabledReason::AutoPathMounted)
+                    }
+                }
+                _ => off(McpMode::Auto, DisabledReason::AutoNeedsHttpsPublicUrl),
+            },
             Ok(McpMode::On) => match normalize_public_url(env.public_url) {
                 Err(reason) => off(McpMode::On, reason),
                 Ok(_) if !base_path_ok(base_path) => {
@@ -430,8 +442,9 @@ impl McpOauthConfig {
     pub fn boot_log_lines(&self) -> Vec<String> {
         let status = match &self.disabled {
             None => format!(
-                "MCP OAuth AS enabled (DRUST_MCP=on): issuer={} resource={} access_ttl={}s \
+                "MCP OAuth AS enabled (DRUST_MCP={}): issuer={} resource={} access_ttl={}s \
                  refresh_grace={}s idle={}d max={}d allowed_hosts=[{}]",
+                mode_name(self.mode),
                 self.issuer(),
                 self.resource_url(),
                 self.access_ttl_secs,
@@ -441,9 +454,15 @@ impl McpOauthConfig {
                 self.allowed_hosts().join(",")
             ),
             Some(DisabledReason::ModeOff) => "MCP OAuth AS disabled: DRUST_MCP=off".to_string(),
-            Some(DisabledReason::AutoBeforeMa1d) => "MCP OAuth AS disabled: DRUST_MCP=auto \
-                 (the default) does not enable it in this release; the account-level /mcp \
-                 endpoint has not shipped. Do not set DRUST_MCP=on outside development."
+            Some(DisabledReason::AutoNeedsHttpsPublicUrl) => {
+                "MCP OAuth AS disabled: DRUST_MCP=auto \
+                 (the default) enables it only when DRUST_PUBLIC_URL is an https:// origin on a \
+                 non-loopback host; set it, or set DRUST_MCP=on"
+                    .to_string()
+            }
+            Some(DisabledReason::AutoPathMounted) => "MCP OAuth AS disabled: DRUST_MCP=auto \
+                 (the default) does not enable it while DRUST_BASE_PATH is set; forward the root \
+                 discovery paths in the proxy, then set DRUST_MCP=on"
                 .to_string(),
             Some(DisabledReason::InvalidMode(v)) => format!(
                 "MCP OAuth AS disabled: DRUST_MCP={v:?} is not one of auto|on|off; treated as off"
@@ -481,6 +500,14 @@ fn random_key() -> [u8; 32] {
     k
 }
 
+fn mode_name(m: McpMode) -> &'static str {
+    match m {
+        McpMode::Auto => "auto",
+        McpMode::On => "on",
+        McpMode::Off => "off",
+    }
+}
+
 fn parse_mode(raw: Option<&str>) -> Result<McpMode, String> {
     let t = raw.map(str::trim).unwrap_or("");
     if t.is_empty() {
@@ -494,7 +521,8 @@ fn parse_mode(raw: Option<&str>) -> Result<McpMode, String> {
     }
 }
 
-/// Ok((origin, loopback_http)). Never returns or logs the raw input: it may carry userinfo.
+/// Ok((origin, insecure_http)); insecure http is accepted only on a loopback
+/// host. Never returns or logs the raw input: it may carry userinfo.
 fn normalize_public_url(raw: Option<&str>) -> Result<(String, bool), DisabledReason> {
     let t = raw.map(str::trim).unwrap_or("");
     if t.is_empty() {
@@ -518,16 +546,34 @@ fn normalize_public_url(raw: Option<&str>) -> Result<(String, bool), DisabledRea
     if u.fragment().is_some() {
         return Err(DisabledReason::PublicUrlInvalid("fragment"));
     }
-    let loopback = match u.host() {
-        Some(Host::Domain(d)) => d == "localhost",
-        Some(Host::Ipv4(a)) => a == std::net::Ipv4Addr::LOCALHOST,
-        Some(Host::Ipv6(a)) => a == std::net::Ipv6Addr::LOCALHOST,
+    let loopback = match host_is_loopback(&u) {
+        Some(b) => b,
         None => return Err(DisabledReason::PublicUrlInvalid("host")),
     };
     if !https && !loopback {
         return Err(DisabledReason::InsecureHttp);
     }
     Ok((u.origin().ascii_serialization(), !https))
+}
+
+/// `None` when the URL has no host; otherwise whether that host is a
+/// loopback name or address.
+fn host_is_loopback(u: &Url) -> Option<bool> {
+    match u.host() {
+        Some(Host::Domain(d)) => Some(d == "localhost"),
+        Some(Host::Ipv4(a)) => Some(a == std::net::Ipv4Addr::LOCALHOST),
+        Some(Host::Ipv6(a)) => Some(a == std::net::Ipv6Addr::LOCALHOST),
+        None => None,
+    }
+}
+
+/// Whether a normalized origin names a loopback host. An origin that does not
+/// parse counts as loopback, so `auto` fails closed and stays off.
+fn origin_is_loopback(origin: &str) -> bool {
+    Url::parse(origin)
+        .ok()
+        .and_then(|u| host_is_loopback(&u))
+        .unwrap_or(true)
 }
 
 /// `bp` is the NORMALIZED base (`base_path::normalize`: "" or "/seg[/seg…]", no
@@ -670,7 +716,7 @@ mod tests {
     // ---- mode ----
 
     #[test]
-    fn mode_unset_or_auto_is_auto_and_disabled_in_this_release() {
+    fn mode_unset_or_auto_is_auto() {
         for raw in [
             None,
             Some(""),
@@ -679,14 +725,138 @@ mod tests {
             Some("AUTO"),
             Some(" Auto "),
         ] {
+            // `with_mode` passes an https URL and the "/drust" base path, so
+            // the URL qualifies and the base path keeps `auto` off.
             let c = with_mode(raw);
             assert_eq!(c.mode(), McpMode::Auto, "{raw:?}");
             assert_eq!(
                 c.disabled_reason(),
-                Some(&DisabledReason::AutoBeforeMa1d),
+                Some(&DisabledReason::AutoPathMounted),
                 "{raw:?}"
             );
             assert!(!c.enabled(), "{raw:?}");
+        }
+    }
+
+    fn auto_with(url: Option<&str>, base: &str) -> McpOauthConfig {
+        McpOauthConfig::from_parts(
+            &McpOauthEnv {
+                mode: Some("auto"),
+                public_url: url,
+                ..Default::default()
+            },
+            base,
+            ENV_KEY,
+            CSRF_KEY,
+        )
+    }
+
+    #[test]
+    fn auto_enables_with_an_https_public_url_and_no_base_path() {
+        for raw in [None, Some(""), Some("auto"), Some(" AUTO ")] {
+            let c = McpOauthConfig::from_parts(
+                &McpOauthEnv {
+                    mode: raw,
+                    public_url: Some("https://drust.test"),
+                    ..Default::default()
+                },
+                "",
+                ENV_KEY,
+                CSRF_KEY,
+            );
+            assert_eq!(c.mode(), McpMode::Auto, "{raw:?}");
+            assert!(c.enabled(), "{raw:?}");
+            assert_eq!(c.disabled_reason(), None);
+        }
+    }
+
+    #[test]
+    fn auto_needs_an_https_public_url_on_a_public_host() {
+        for url in [
+            None,
+            Some(""),
+            Some("not a url"),
+            Some("http://drust.test"),
+            Some("http://127.0.0.1:47826"),
+            Some("http://localhost"),
+            // https on a loopback host is a development setup, not a public one
+            Some("https://localhost"),
+            Some("https://127.0.0.1:47826"),
+            Some("https://[::1]"),
+        ] {
+            let c = auto_with(url, "");
+            assert!(!c.enabled(), "{url:?}");
+            assert_eq!(
+                c.disabled_reason(),
+                Some(&DisabledReason::AutoNeedsHttpsPublicUrl),
+                "{url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_still_accepts_an_https_loopback_origin() {
+        let c = McpOauthConfig::from_parts(
+            &McpOauthEnv {
+                mode: Some("on"),
+                public_url: Some("https://localhost"),
+                ..Default::default()
+            },
+            "",
+            ENV_KEY,
+            CSRF_KEY,
+        );
+        assert!(
+            c.enabled(),
+            "explicit on is the operator's choice and stays unchanged"
+        );
+    }
+
+    #[test]
+    fn auto_never_enables_under_a_base_path() {
+        for base in ["/drust", "/x"] {
+            let c = auto_with(Some("https://drust.test"), base);
+            assert!(!c.enabled(), "{base}");
+            assert_eq!(
+                c.disabled_reason(),
+                Some(&DisabledReason::AutoPathMounted),
+                "{base}"
+            );
+        }
+        // the URL is judged first: a bad URL under a base path names the URL
+        assert_eq!(
+            auto_with(None, "/drust").disabled_reason(),
+            Some(&DisabledReason::AutoNeedsHttpsPublicUrl)
+        );
+    }
+
+    #[test]
+    fn boot_log_names_the_mode_that_enabled_it() {
+        let c = auto_with(Some("https://drust.test"), "");
+        assert!(
+            c.boot_log_lines()[0].starts_with("MCP OAuth AS enabled (DRUST_MCP=auto): "),
+            "{:?}",
+            c.boot_log_lines()
+        );
+        let p = auto_with(Some("https://drust.test"), "/drust");
+        assert!(
+            p.boot_log_lines()[0].starts_with("MCP OAuth AS disabled: DRUST_MCP=auto"),
+            "{:?}",
+            p.boot_log_lines()
+        );
+        let n = auto_with(None, "");
+        assert!(
+            n.boot_log_lines()[0].starts_with("MCP OAuth AS disabled: DRUST_MCP=auto"),
+            "{:?}",
+            n.boot_log_lines()
+        );
+        // the raw DRUST_PUBLIC_URL never reaches a disabled boot line
+        let leaky = auto_with(Some("https://u:p@drust.test"), "");
+        for line in leaky.boot_log_lines() {
+            assert!(
+                !line.contains("u:p") && !line.contains("drust.test"),
+                "{line}"
+            );
         }
     }
 
@@ -746,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_is_decided_before_the_url_is_looked_at() {
+    fn mode_off_is_decided_before_the_url_is_looked_at() {
         let off = fixed(&McpOauthEnv {
             mode: Some("off"),
             public_url: Some("ftp://x"),
@@ -760,7 +930,7 @@ mod tests {
         });
         assert_eq!(
             auto.disabled_reason(),
-            Some(&DisabledReason::AutoBeforeMa1d)
+            Some(&DisabledReason::AutoNeedsHttpsPublicUrl)
         );
     }
 

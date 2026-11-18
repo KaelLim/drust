@@ -958,7 +958,8 @@ hint = "A redirect here means a proxy redirects, for example http to https or a 
 
 [mcp_diag.reason]
 mode_off = "DRUST_MCP is off."
-auto = "DRUST_MCP is auto (the default), which leaves MCP off on this build. Set DRUST_MCP=on."
+auto_https = "DRUST_MCP is auto (the default), and auto turns MCP on only when DRUST_PUBLIC_URL is an https:// address on a public host. Set it, or set DRUST_MCP=on."
+auto_path = "DRUST_MCP is auto (the default), and auto never turns MCP on while drust is mounted under a base path. Make sure the proxy forwards the root discovery paths, then set DRUST_MCP=on."
 invalid_mode = "DRUST_MCP has a value other than auto, on or off, so it is treated as off."
 public_url_missing = "DRUST_MCP is on but DRUST_PUBLIC_URL is empty. Set it to the public https origin."
 public_url_invalid = "DRUST_PUBLIC_URL must be a bare origin, scheme://host[:port], with nothing after the host or port."

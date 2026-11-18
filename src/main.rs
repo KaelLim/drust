@@ -888,7 +888,9 @@ fn log_mcp_oauth_boot(cfg: &drust::mgmt::mcp_oauth::config::McpOauthConfig) {
         return;
     };
     match cfg.disabled_reason() {
-        None | Some(R::ModeOff) | Some(R::AutoBeforeMa1d) => tracing::info!("{status}"),
+        None | Some(R::ModeOff) | Some(R::AutoNeedsHttpsPublicUrl) | Some(R::AutoPathMounted) => {
+            tracing::info!("{status}")
+        }
         Some(_) => tracing::error!("{status}"),
     }
     for line in rest {

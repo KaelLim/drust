@@ -212,7 +212,8 @@ pub fn diagnostics_json(cfg: &McpOauthConfig) -> Option<serde_json::Value> {
 pub fn disabled_reason_key(r: &DisabledReason) -> &'static str {
     match r {
         DisabledReason::ModeOff => "mcp_diag.reason.mode_off",
-        DisabledReason::AutoBeforeMa1d => "mcp_diag.reason.auto",
+        DisabledReason::AutoNeedsHttpsPublicUrl => "mcp_diag.reason.auto_https",
+        DisabledReason::AutoPathMounted => "mcp_diag.reason.auto_path",
         DisabledReason::InvalidMode(_) => "mcp_diag.reason.invalid_mode",
         DisabledReason::PublicUrlMissing => "mcp_diag.reason.public_url_missing",
         DisabledReason::PublicUrlInvalid(_) => "mcp_diag.reason.public_url_invalid",
@@ -588,7 +589,11 @@ mod tests {
             (cfg(Some("off"), None, "/drust"), DisabledReason::ModeOff),
             (
                 cfg(Some("auto"), Some("https://drust.test"), "/drust"),
-                DisabledReason::AutoBeforeMa1d,
+                DisabledReason::AutoPathMounted,
+            ),
+            (
+                cfg(Some("auto"), None, "/drust"),
+                DisabledReason::AutoNeedsHttpsPublicUrl,
             ),
             (
                 cfg(Some("sideways-x"), None, "/drust"),
@@ -624,7 +629,7 @@ mod tests {
             assert!(!en.s(k).starts_with("!!"), "{k} missing in en");
             keys.insert(k);
         }
-        assert_eq!(keys.len(), 7, "one key per variant");
+        assert_eq!(keys.len(), 8, "one key per variant");
         assert_eq!(
             disabled_reason_detail(&DisabledReason::PublicUrlInvalid("userinfo")),
             Some("userinfo")
@@ -826,6 +831,7 @@ mod tests {
                 None,
                 None,
             ),
+            (cfg(Some("auto"), None, "/drust"), None, None),
             (
                 cfg(Some("sideways-x"), None, "/drust"),
                 Some("sideways-x"),

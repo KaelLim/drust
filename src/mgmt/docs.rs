@@ -264,6 +264,7 @@ mod tests {
             .map(|d| format!("{}{}", "MA", d))
             .collect();
         needles.push(["docs", "superpowers", "plans"].join("/"));
+        needles.push(format!("{}{}", "Ma", "1d"));
         needles
     }
 
