@@ -1,13 +1,72 @@
 ## Unreleased
 
-This release adds the OAuth 2.1 authorization server that a later account-level MCP endpoint
-will use, and one always-on change to the admin password login. The authorization server is
-**off by default** and stays off unless an operator sets `DRUST_MCP=on`: with `DRUST_MCP`
-unset, `auto` or `off`, no new route is mounted and no page changes. Three things still
-differ with MCP off: the cross-site login refusal below, the release notes the admin UI
-shows, and one new field in the `admin.team.remove` audit row. Five new, empty tables in
-`meta.sqlite` and five new optional environment variables; no deploy file needs a change.
-**Nothing accepts an MCP access token yet**: do not set `DRUST_MCP=on` outside development.
+**Breaking for every MCP user.** MCP moves from one endpoint per tenant to one endpoint for
+the whole account, `<DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`, and that endpoint accepts only
+an OAuth access token from the authorization server this release also adds. The per-tenant
+`/t/<id>/mcp` is retired: it answers `410 MCP_ENDPOINT_MOVED` to every request. A tenant
+key, an admin PAT or any other existing credential no longer works for MCP; REST, the admin
+UI and the admin API accept exactly the credentials they did before. Read **Upgrading**
+before deploying: a Compose deployment with an `https://` `DRUST_PUBLIC_URL` turns MCP on by
+itself, and the bare-metal host needs two new proxy rules first. The release also carries one
+always-on change to the admin password login. Five new tables in `meta.sqlite`, five new
+optional environment variables.
+
+### Breaking: one account-level MCP endpoint, OAuth only
+
+- **Endpoint.** `POST <base>/mcp` is Streamable HTTP without sessions: every request is
+  answered on its own (JSON, or an SSE response with a 15-second keep-alive), with no session
+  id and no GET stream. It checks, in order: MCP enabled (`404 MCP_DISABLED` otherwise),
+  `Host` (`421 MCP_HOST_NOT_ALLOWED` unless `localhost`, `127.0.0.1`, `::1` or the host of
+  `DRUST_PUBLIC_URL`), a browser `Origin` (`403 MCP_ORIGIN_NOT_ALLOWED` unless it is the
+  public origin or loopback), the body size (`413 MCP_BODY_TOO_LARGE` over 16 MiB), then the
+  bearer: anything but a live MCP access token is `401 MCP_OAUTH_REQUIRED` with a
+  `WWW-Authenticate: Bearer resource_metadata=…` challenge.
+- **Discovery.** `GET <base>/.well-known/oauth-protected-resource/mcp` serves RFC 9728
+  protected-resource metadata: `resource` is the endpoint URL, `authorization_servers` the
+  issuer.
+- **Tools.** 78 tools: the 76 tenant tools, each with a required `tenant` argument, plus
+  `list_tenants` (the tenants you can see, each with its `schema.md` resource URI) and
+  `create_upload_url`. An argument a tool's input schema does not list is rejected with
+  `INVALID_ARGUMENTS`, including `dry_run` on any tool but `delete_record`,
+  `drop_collection` and `drop_index`. Every tool failure is an `isError` result carrying
+  `error_code` and, when catalogued, `suggested_fix`. A tenant you cannot see answers
+  exactly like one that does not exist (`TENANT_NOT_FOUND`).
+- **Who sees what.** The caller is the admin who approved the connection: an owner or admin
+  sees every tenant, a member the tenants it owns. Visibility is decided again on every call,
+  so a role change, an owner transfer or a deleted tenant takes effect on the next call
+  without revoking anything. Inside a tenant the caller acts with the service role.
+- **`whoami`** returns the tenant's identity, the anon key and the REST and upload paths;
+  the service key is shown redacted, with where to get it.
+- **Resources and prompts.** `resources/list` is empty; `resources/templates/list` lists
+  every resource as `drust://{tenant}/…`. The six prompts take `tenant` as their first
+  argument.
+- **Uploads.** `create_upload_url` returns a short-lived ticket for one resumable (tus)
+  upload and the exact requests to run. The ticket works only on that upload's
+  `/t/<id>/uploads` routes, must be used within 15 minutes and lasts until the upload
+  session expires; its visibility is fixed when it is issued (default private). Edge-function
+  `.wasm` files are still deployed from the admin UI's Functions page; there is no MCP tool
+  for that.
+- **Audit.** Each tool call that passed its tenant check writes one row in that tenant's log
+  (`op` = the tool name, `auth_method` `mcp_oauth`, the admin as actor), so `recent_writes`
+  now lists the writes made through MCP. A successful resource read writes
+  `mcp.resource.read`. A refused tool call, resource read or prompt, and a refused upload
+  ticket that drust knows, each write one host-level `mcp_denied` row, never a row in a
+  tenant the caller cannot see. An unknown tool, a failed `list_tenants` and an unknown
+  ticket write no row, and neither does rendering a prompt.
+- **Rate limit.** 600 requests per 60 seconds per approved connection; over it,
+  `429 RATE_LIMITED`.
+- **Admin UI.** A **Connect Claude Code** page (`/admin/mcp`, every signed-in admin, while
+  MCP is on) gives the exact `claude mcp add` command for this server. An owner-only **MCP
+  diagnostics** page (`/admin/mcp/diagnostics`) runs the discovery checks from your browser
+  and, while MCP is off, says why. The API Keys page no longer shows MCP setup, and the
+  settings card for personal API tokens says they work on REST and the admin API only.
+- **Retired endpoint.** `/t/<id>/mcp` answers `410` with error code `MCP_ENDPOINT_MOVED` and
+  `Cache-Control: no-store`, for every tenant id and every method, before any credential is
+  read, so it reveals nothing about which tenants exist. Its message gives the two
+  `claude mcp` commands to run.
+- **CLI.** `drust collections create`, `add-field`, `drop` and `set-caps` used the retired
+  endpoint; on its `410` they print a hint to make schema changes in the admin UI or through
+  Claude Code.
 
 ### Changed (always on)
 
@@ -29,10 +88,10 @@ shows, and one new field in the `admin.team.remove` audit row. Five new, empty t
   Metadata, and plain-HTTP deployments on a non-localhost host that set
   `DRUST_DEV_NO_SECURE_COOKIES` (browsers send Fetch Metadata only to HTTPS or localhost).
 
-### New: MCP OAuth authorization server (only with `DRUST_MCP=on`)
+### New: MCP OAuth authorization server (only while MCP is enabled)
 
-Everything in this section is mounted only when `DRUST_MCP=on` and `DRUST_PUBLIC_URL` is a
-usable origin. Paths below are relative to `DRUST_BASE_PATH` (`/drust` on the bare-metal
+Everything in this section is mounted only while `DRUST_MCP` resolves to enabled (see
+Configuration). Paths below are relative to `DRUST_BASE_PATH` (`/drust` on the bare-metal
 host, the root in the Docker image).
 
 - **Metadata.** `GET /.well-known/oauth-authorization-server` serves RFC 8414 metadata.
@@ -103,7 +162,8 @@ host, the root in the Docker image).
   `404 ADMIN_NOT_FOUND`. The count covers every unrevoked grant under that admin id,
   including expired ones and any left by a previous holder of a recycled id. The account,
   its sessions and its PATs are untouched. Both pages accept the session cookie or a
-  `drust_pat_*` bearer. With MCP off, neither page changes and these routes are not mounted.
+  `drust_pat_*` bearer. With MCP off these routes are not mounted and the MCP connections
+  card and the Revoke MCP button do not appear.
 - **Removing an admin** (`DELETE /admin/team/{id}`) now deletes that admin's MCP grants in
   the same transaction. The `admin.team.remove` audit row gains `revoked_mcp_grants`, the
   number of grants still live at removal. It reads 0 on a host that never enabled MCP, and
@@ -124,26 +184,33 @@ host, the root in the Docker image).
 ### Configuration
 
 All five variables are optional and listed, commented out, in `deploy/drust.service`,
-`docker-compose.yml` and `.env.example`. `DRUST_MCP` governs only the account-level OAuth
-authorization server, never the per-tenant `/t/<id>/mcp` endpoint.
+`docker-compose.yml` and `.env.example`. `DRUST_MCP` turns the whole MCP surface on or off:
+the `/mcp` endpoint, its discovery documents, the authorization server and the connect page.
 
 | Variable | Default | Range | Meaning |
 |---|---|---|---|
-| `DRUST_MCP` | `auto` | `auto` \| `on` \| `off` | `auto` means off in this release |
+| `DRUST_MCP` | `auto` | `auto` \| `on` \| `off` | `auto` enables MCP only when `DRUST_PUBLIC_URL` is a non-loopback `https://` origin and `DRUST_BASE_PATH` is empty (the Docker image); `on` enables it whenever the values are usable; `off` disables it |
 | `DRUST_MCP_OAUTH_ACCESS_TTL_SECS` | 3600 | 900–86400 | access-token lifetime |
 | `DRUST_MCP_OAUTH_REFRESH_GRACE_SECS` | 60 | 0–300 | refresh retry grace; `0` gives the strictest reuse detection |
 | `DRUST_MCP_OAUTH_IDLE_DAYS` | 30 | 1–MAX_DAYS | a grant ends after this long unused |
 | `DRUST_MCP_OAUTH_MAX_DAYS` | 90 | 1–365 | a grant ends this long after approval, used or not |
 
 An out-of-range value is clamped and a value that is not a whole number falls back to the
-default, each with a boot warning. With `DRUST_MCP=on`, `DRUST_PUBLIC_URL` must be a bare
-`https://` origin (a loopback `http://` origin is accepted for development, with a warning)
-and `DRUST_BASE_PATH` must be a clean path. An unrecognised `DRUST_MCP` value, or with `on`
-an unusable `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH`, leaves MCP off and logs one `error`
-line; boot always continues. To check whether it is enabled: every boot logs one line
-beginning `MCP OAuth AS enabled` or `MCP OAuth AS disabled` (it never prints a rejected
-`DRUST_PUBLIC_URL`), and `GET <DRUST_PUBLIC_URL><DRUST_BASE_PATH>/.well-known/oauth-authorization-server`
-answers 200 only when it is enabled.
+default, each with a boot warning. With MCP enabled, `DRUST_PUBLIC_URL` must be a bare
+`https://` origin (with `on`, a loopback `http://` origin is accepted for development, with a
+warning) and `DRUST_BASE_PATH` must be a clean path. `DRUST_PUBLIC_URL` is the OAuth issuer
+and the origin of the MCP endpoint; `DRUST_PUBLIC_BASE_URL` stays the origin of file and
+signed URLs, including the ones MCP tools return. An unrecognised `DRUST_MCP` value, or with
+`on` an unusable `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH`, leaves MCP off and logs one
+`error` line; boot always continues. Every boot logs one line beginning
+`MCP OAuth AS enabled` or `MCP OAuth AS disabled` with the reason (it never prints a
+rejected `DRUST_PUBLIC_URL`), and the owner-only diagnostics page shows the same state.
+
+**With MCP off**, `/mcp` answers `404 MCP_DISABLED`, `/t/<id>/mcp` still answers `410`, and
+the owner-only diagnostics page exists to say why. No other MCP route, discovery document,
+OAuth endpoint or the connect page is mounted, and an upload ticket is an unknown bearer
+(`401`). Whether or not MCP is on, the API Keys page no longer shows MCP setup and the
+personal API token card on the settings page is renamed.
 
 ### Security properties
 
@@ -170,41 +237,80 @@ answers 200 only when it is enabled.
   client can choose its own key.
 - The resume and CSRF keys live only in memory, so a restart invalidates authorizations in
   progress; the user simply runs the client's login again.
+- **MCP is isolated from the other planes in both directions.** `/mcp` accepts no tenant
+  key, admin PAT, user or anon token, session cookie or upload ticket, and an MCP access
+  token gets `401` on REST, SSE, WebSocket rooms, files, uploads, the admin UI, the admin API
+  and the CLI endpoints. Before rmcp sees a request, every `Authorization` value, `Cookie`
+  and `Proxy-Authorization` header is removed.
+- An unknown or expired MCP access token always gets `401`, never `429`, so an idle client's
+  expired token always leads to a refresh; the lookup is one primary-key query.
+- Do not run the server with `rmcp` logging at `debug` or `trace`: it records whole MCP
+  requests and results, upload tickets included.
 - **Turning `DRUST_MCP` off pauses MCP; it revokes nothing.** Grants still inside their
   limits work again when it is turned back on. To cut a connection off, revoke it before
   turning MCP off or right after turning it back on, or remove the admin.
 
 ### Not included yet
 
-- The account-level MCP endpoint itself. No endpoint accepts a `drust_mcpat_` token, and
-  `DRUST_MCP=auto` mounts nothing.
-- The RFC 8414 root location for a path-mounted issuer
-  (`/.well-known/oauth-authorization-server/drust` on the bare-metal host). Today the
-  metadata is reachable only under the base path, and the root proxy rule ships with the
-  endpoint.
 - Any client other than Claude Code, dynamic client registration, and a live fetch of
   client metadata documents.
-- Anything that writes the new `_mcp_upload_tickets` table.
+- A sign-in for unattended jobs (CI, cron): use the REST API with a tenant key.
 
 ### Upgrading
 
+- **Docker / Compose: MCP may turn itself on.** `DRUST_MCP` defaults to `auto`, and a
+  Compose deployment whose `DRUST_PUBLIC_URL` is already a non-loopback `https://` origin
+  (for example for tenant OAuth providers) gets `/mcp`, `/oauth/*` and the discovery
+  documents as soon as it runs this release. To keep MCP off, set `DRUST_MCP=off` before
+  upgrading. To use it, put TLS in front of the bundled Caddy (it serves plain HTTP) and set
+  that `DRUST_PUBLIC_URL`; the Caddy catch-all already forwards every MCP path, so the proxy
+  file needs no change. Without an `https://` `DRUST_PUBLIC_URL`, MCP stays off.
+- **Bare metal (systemd + Caddy): MCP is off until you finish these steps.** `auto` never
+  enables MCP under `DRUST_BASE_PATH=/drust`. (1) Add the two root `/.well-known/*` `handle`
+  blocks from `deploy/Caddyfile` to the site block of `/etc/caddy/Caddyfile`, and have the
+  TLS upstream forward the same two paths; nothing on the way may redirect them. They can go
+  in before upgrading: an older binary answers 404. (2) Set `DRUST_MCP=on` and make sure
+  `DRUST_PUBLIC_URL` is the public `https://` origin. (3) Build, restart, check the `x-drust`
+  header, then run the release gate in `.claude/rules/build-deploy.md` from outside the host.
+  Keep the proxy from logging the `Location` of `/oauth/consent/approve` responses (it
+  carries a one-time code; Caddy's default access log does not record response headers).
+- **Every MCP user: reconnect.** The old per-tenant connections stop working (`410`).
+  Remove each old entry (`claude mcp remove <name>`, typically `drust-<tenant id>`), then add
+  the account endpoint once with
+  `claude mcp add --transport http --scope user drust <DRUST_PUBLIC_URL><DRUST_BASE_PATH>/mcp`
+  (no `--header`) and run `/mcp` → **Authenticate** in Claude Code. An entry that still sets
+  an `Authorization` header never switches to OAuth.
+- **Every MCP user: rename permission rules.** Rules, `allowedTools` lists and hooks that
+  name `mcp__drust-<tenant id>__*` must name `mcp__drust__*`. One rule now covers every
+  tenant you can see; approvals can no longer differ per tenant.
+- **Other MCP clients** (Codex, Cursor, Claude Desktop, Gemini CLI) are not supported yet:
+  drust accepts only Claude Code's registered client, and the admin UI no longer shows
+  header-based examples. Use the REST API for them.
+- **The drust CLI and the eval harness.** `drust collections create|add-field|drop|set-caps`
+  and `eval/mcp_onboarding` used the retired endpoint and now get `410` (the CLI prints a
+  hint). Make schema changes in the admin UI or through Claude Code.
+- **Keys that were in an MCP config.** A tenant service key or admin PAT once pasted into an
+  MCP client config stays valid on REST and the admin API; nothing revokes it. Reroll it from
+  its settings page if that config was shared.
+- **If you later change `DRUST_PUBLIC_URL` or `DRUST_BASE_PATH`**, every user must run `/mcp`
+  → **Clear authentication** and sign in again, or remove and re-add the server: Claude Code
+  keeps the old discovery result.
+- **If the upstream proxy cannot be changed yet** (bare metal), a Claude Code user can point
+  discovery at the base-path copy of the metadata instead of the root rules:
+  `claude mcp add-json drust '{"type":"http","url":"https://<host>/drust/mcp","oauth":{"authServerMetadataUrl":"https://<host>/drust/.well-known/oauth-authorization-server"}}'`.
+  It is still OAuth; the root rules remain the supported setup.
+- **Rollback.** Going back to the previous binary restores `/t/<id>/mcp`; users must add their
+  header-based entries back (the new `drust` entry gets a 404 there). The new tables stay and
+  are ignored. Staying on this binary with `DRUST_MCP=off` only disables MCP — it does not
+  bring header-based connections back.
 - **Both targets.** The first boot creates the five tables (`_mcp_oauth_grants`,
   `_mcp_oauth_codes`, `_mcp_oauth_refresh`, `_mcp_oauth_access`, `_mcp_upload_tickets`) in
-  `meta.sqlite`, whether or not `DRUST_MCP` is on. It only creates them: nothing is minted,
-  revoked or deleted at boot. No environment variable needs to be set and no deploy file
-  needs to change. Rolling back leaves the empty tables in place, and older binaries ignore
-  them. Backups include the tables; they hold hashes only.
+  `meta.sqlite`, whether or not MCP is on. It only creates them: nothing is minted, revoked
+  or deleted at boot. Older binaries ignore them. Backups include the tables; they hold
+  hashes only.
 - **After restoring a backup, revoke all MCP connections.** A restore brings back every
   grant revoked after the snapshot, like admin PATs, and re-arms every refresh token rotated
   after it.
-- **Bare metal (systemd + Caddy).** Nothing to do. If you enable MCP for development, the
-  routes live under `/drust/` through the existing `/drust/*` proxy block, and `issuer` ends
-  in `/drust`. Keep the proxy from logging the `Location` of `/oauth/consent/approve`
-  responses (it carries the one-time code; Caddy's default access log does not record
-  response headers).
-- **Docker / Compose.** Nothing to do. The image serves the routes at the root, and the
-  Compose Caddy's catch-all block already forwards `/oauth/*` and `/.well-known/*`. Enabling
-  MCP for development also requires `DRUST_PUBLIC_URL` in `docker-compose.yml`.
 
 ## v1.67.0 — 2026-11-15
 
