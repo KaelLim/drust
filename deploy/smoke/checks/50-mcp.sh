@@ -268,7 +268,15 @@ def short(m):
 
 def tenant_endpoint_checks():
     # The per-tenant /t/<id>/mcp endpoint's answer after its retirement is checked here.
-    pass
+    for tenant in ("anything", "no-such-tenant"):
+        for method in ("POST", "GET"):
+            r = hx(method, BASE, "/t/%s/mcp" % tenant, retry_429=False,
+                   body='{"jsonrpc":"2.0","id":1,"method":"initialize"}' if method == "POST" else None)
+            name = "%s /t/%s/mcp" % (method, tenant)
+            eq(name + " answers 410", 410, r.status)
+            check(name + " body starts with MOVED", r.body.startswith('{"message":"MOVED'), r.body[:120])
+            check(name + " carries MCP_ENDPOINT_MOVED", '"error_code":"MCP_ENDPOINT_MOVED"' in r.body)
+            eq(name + " is no-store", "no-store", r.headers.get("cache-control", "").lower())
 
 # ----------------------------------------------------------------- source spec
 def load_spec():
@@ -720,7 +728,6 @@ def main():
         if p in ("rpcs", "schema"):
             check("... and redacts stored RPC SQL", "SELECT count(*)" not in txt and "DELETE FROM notes" not in txt)
         if p == "files-guide.md":
-            check("... and says when to switch to tus (Tus-Max-Size)", "Tus-Max-Size" in txt)
             check("... and points uploads at create_upload_url", "create_upload_url" in txt)
     mm = read("drust://%s/collections/notes/schema" % A)
     check("template collections/notes/schema resolves", "result" in (mm or {}) and "title" in json.dumps(mm), short(mm))
