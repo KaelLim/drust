@@ -27,6 +27,9 @@ hex() { openssl rand -hex "$1"; }
 # existing secret is rotated.
 want_store="${SMOKE_STORE:-}"            # before .env is sourced, which would overwrite it
 want_mcp="${SMOKE_DRUST_MCP:-on}"        # likewise; absent means on, whatever .env recorded
+# run-all.sh treats only the exact string `off` as off, so refuse anything else
+# but `on` before .env or the stack is touched.
+case "$want_mcp" in on|off) ;; *) echo "SMOKE_DRUST_MCP must be on or off" >&2; exit 2 ;; esac
 umask 077
 [ -f "$env_file" ] || { : > "$env_file"; echo "generated $env_file"; }
 ensure() { grep -q "^$1=" "$env_file" || printf '%s=%s\n' "$1" "$2" >> "$env_file"; }
