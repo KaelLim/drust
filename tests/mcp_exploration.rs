@@ -142,13 +142,13 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         .await
         .unwrap();
 
-    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
     assert_eq!(v["tenant_id"], "blog");
     assert_eq!(v["tenant_name"], "Blog Tenant");
-    assert_eq!(v["tokens"]["service"]["plaintext"], "drust_svc_plain");
+    assert_eq!(v["tokens"]["service"]["redacted"], true);
     assert_eq!(v["tokens"]["anon"]["plaintext"], "drust_anon_plain");
-    assert_eq!(v["endpoints"]["mcp"], "/drust/t/blog/mcp");
-    assert_eq!(v["endpoints"]["files_upload"], "/drust/t/blog/files");
+    assert_eq!(v["endpoints"]["mcp"], MCP_URL);
+    assert!(v["endpoints"]["files_upload"].is_null());
     assert_eq!(
         v["endpoints"]["files_upload_resumable"],
         "/drust/t/blog/uploads"
@@ -193,7 +193,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         .with_writer(|c| c.execute_batch("DROP TABLE \"_system_file_policy\""))
         .await
         .unwrap();
-    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
     assert!(
         v["file_upload"]["granted_prefixes"].is_null(),
         "an unreadable registry must not render as the empty (healthy) list: {v}"
@@ -203,7 +203,7 @@ async fn whoami_returns_tenant_tokens_and_endpoints() {
         "…and the signpost still points somewhere useful"
     );
     assert_eq!(
-        v["tokens"]["service"]["plaintext"], "drust_svc_plain",
+        v["tokens"]["service"]["redacted"], true,
         "whoami's own job must survive a broken file registry"
     );
 }
@@ -213,7 +213,7 @@ async fn whoami_bails_when_meta_unavailable() {
     let d = tempfile::tempdir().unwrap();
     seed_tenant_fs(&d, "blog");
     let s = svc(&d).await; // built via McpRegistry::new (meta is None)
-    let err = whoami(&s, WhoamiView::Full).await.unwrap_err();
+    let err = whoami(&s, account_view()).await.unwrap_err();
     assert!(
         err.to_string().contains("META_UNAVAILABLE"),
         "expected META_UNAVAILABLE error, got: {err}"
@@ -232,10 +232,10 @@ fn account_view() -> WhoamiView {
 }
 
 #[tokio::test]
-async fn whoami_full_key_order_is_unchanged() {
+async fn whoami_key_order_is_fixed() {
     let d = tempfile::tempdir().unwrap();
     let (svc, _meta) = whoami_fixture(&d).await;
-    let v = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let v = whoami(&svc, account_view()).await.unwrap();
     let keys = |v: &serde_json::Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
     assert_eq!(
         keys(&v),
@@ -247,21 +247,45 @@ async fn whoami_full_key_order_is_unchanged() {
             "endpoints",
             "limits",
             "file_upload",
-            "broadcast"
+            "broadcast",
+            "caller"
         ]
     );
     assert_eq!(
         keys(&v["tokens"]["service"]),
-        ["id", "created_at", "plaintext"]
+        ["redacted", "id", "created_at", "how_to_get"]
     );
-    assert!(v.get("caller").is_none());
+    assert_eq!(
+        keys(&v["endpoints"]),
+        [
+            "rest_base",
+            "mcp",
+            "files_upload_resumable",
+            "rpc",
+            "realtime_ws",
+            "rooms_publish_rest"
+        ]
+    );
+}
+
+/// The newest live service row of `blog`, read straight from meta.
+async fn service_row(meta: &tokio::sync::Mutex<rusqlite::Connection>) -> (i64, String) {
+    meta.lock()
+        .await
+        .query_row(
+            "SELECT id, created_at FROM tokens WHERE tenant_id='blog' AND role='service' \
+             AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
 }
 
 #[tokio::test]
 async fn whoami_account_masks_the_service_key() {
     let d = tempfile::tempdir().unwrap();
-    let (svc, _meta) = whoami_fixture(&d).await;
-    let full = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let (svc, meta) = whoami_fixture(&d).await;
+    let (id, created_at) = service_row(&meta).await;
     let v = whoami(&svc, account_view()).await.unwrap();
     // The exact-equality assertions below are the masking guarantee: they fail
     // on any extra field and on any partial character of the key. The
@@ -272,8 +296,8 @@ async fn whoami_account_masks_the_service_key() {
         s,
         &serde_json::json!({
             "redacted": true,
-            "id": full["tokens"]["service"]["id"],
-            "created_at": full["tokens"]["service"]["created_at"],
+            "id": id,
+            "created_at": created_at,
             "how_to_get": KEYS_URL,
         })
     );
@@ -300,15 +324,12 @@ async fn whoami_account_masks_the_service_key() {
         Some("caller")
     );
 
-    // Everything else is the Full view's, value for value. `assert!` rather
-    // than `assert_eq!`: a failure must not print the Full view.
-    let mut rest = v.clone();
-    rest.as_object_mut().unwrap().remove("caller");
-    rest["tokens"]["service"] = full["tokens"]["service"].clone();
-    rest["endpoints"]["mcp"] = full["endpoints"]["mcp"].clone();
-    assert!(
-        rest == full,
-        "the account view differs from Full outside caller, tokens.service and endpoints.mcp"
+    assert_eq!(v["tenant_id"], "blog");
+    assert_eq!(v["tenant_name"], "Blog Tenant");
+    assert_eq!(v["limits"]["max_upload_bytes"], 12_345);
+    assert_eq!(
+        v["file_upload"]["guide_resource"],
+        "drust://blog/files-guide.md"
     );
 }
 
@@ -330,7 +351,6 @@ async fn whoami_account_without_a_live_service_key_reports_null() {
         v["tokens"]["service"]
     );
     assert_eq!(v["caller"]["grant_id"], 7);
-    assert!(whoami(&svc, WhoamiView::Full).await.unwrap()["tokens"]["service"].is_null());
 }
 
 #[tokio::test]
@@ -350,7 +370,7 @@ async fn whoami_account_legacy_null_plaintext_keeps_the_same_shape() {
 }
 
 #[tokio::test]
-async fn whoami_account_reports_the_same_token_row_as_full() {
+async fn whoami_account_reports_the_newest_service_row() {
     let d = tempfile::tempdir().unwrap();
     let (svc, meta) = whoami_fixture(&d).await;
     meta.lock()
@@ -361,16 +381,9 @@ async fn whoami_account_reports_the_same_token_row_as_full() {
             [],
         )
         .unwrap();
-    let full = whoami(&svc, WhoamiView::Full).await.unwrap();
+    let (id, _) = service_row(&meta).await;
     let v = whoami(&svc, account_view()).await.unwrap();
-    assert_eq!(
-        full["tokens"]["service"]["plaintext"],
-        "drust_svc_plain_second"
-    );
-    assert_eq!(
-        v["tokens"]["service"]["id"],
-        full["tokens"]["service"]["id"]
-    );
+    assert_eq!(v["tokens"]["service"]["id"], id);
     let text = v.to_string();
     assert!(
         !text.contains("drust_svc_plain"),

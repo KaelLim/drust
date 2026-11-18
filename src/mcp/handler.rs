@@ -615,23 +615,13 @@ pub struct SetCronJobActiveArgs {
 
 // --- Handler -----------------------------------------------------------
 
-/// Who is calling the tool layer. Deliberately no `Default`: every
-/// construction site picks one. Private to this module, so nothing outside
-/// it can assemble an account identity field by field.
-#[derive(Clone)]
-enum ToolCaller {
-    /// The per-tenant service key on `/t/<id>/mcp`, the only identity that
-    /// path has.
-    TenantKey,
-    /// A signed-in admin on the account-level endpoint. Built only through
-    /// `DrustMcpService::for_account`, and only after that admin's tenant
-    /// check allowed the call.
-    Account(AccountCall),
-}
-
-/// The account-level caller's identity and the URLs its answers point at:
-/// the account MCP URL from the OAuth config, and the API Keys page of the
-/// service's own tenant.
+/// Who is calling the tool layer: a signed-in admin on the account-level
+/// endpoint, with the URLs its answers point at (the account MCP URL from the
+/// OAuth config, and the API Keys page of the service's own tenant).
+/// Deliberately no `Default`, and private to this module, so nothing outside
+/// it can assemble an identity field by field. Built only through
+/// `DrustMcpService::for_account`, and only after that admin's tenant check
+/// allowed the call.
 #[derive(Clone)]
 struct AccountCall {
     admin_id: i64,
@@ -643,7 +633,7 @@ struct AccountCall {
 #[derive(Clone)]
 pub struct DrustMcpService {
     state: DrustMcp,
-    caller: ToolCaller,
+    caller: AccountCall,
 }
 
 impl DrustMcpService {
@@ -658,62 +648,58 @@ impl DrustMcpService {
         let api_keys_url =
             cfg.endpoint_url(&format!("/admin/tenants/{}/_api_keys", state.tenant_id()));
         Self {
-            caller: ToolCaller::Account(AccountCall {
+            caller: AccountCall {
                 admin_id: caller.admin_id(),
                 grant_id: caller.grant_id(),
                 mcp_url: cfg.resource_url().into(),
                 api_keys_url: api_keys_url.into(),
-            }),
+            },
             state,
         }
     }
 
     /// Record-history actor for a write made by this caller.
     fn actor(&self) -> crate::storage::record_history::AuditActor {
-        match &self.caller {
-            ToolCaller::TenantKey => crate::storage::record_history::AuditActor::service(),
-            ToolCaller::Account(_) => {
-                crate::storage::record_history::AuditActor::from_auth_ctx(&self.service_ctx())
-            }
-        }
+        crate::storage::record_history::AuditActor::from_auth_ctx(&self.service_ctx())
     }
 
     /// The service `AuthCtx` this caller acts as.
     fn service_ctx(&self) -> crate::auth::middleware::AuthCtx {
-        match &self.caller {
-            ToolCaller::TenantKey => crate::auth::middleware::AuthCtx::Service { admin_id: None },
-            ToolCaller::Account(c) => crate::auth::middleware::AuthCtx::Service {
-                admin_id: Some(c.admin_id),
-            },
+        crate::auth::middleware::AuthCtx::Service {
+            admin_id: Some(self.caller.admin_id),
         }
     }
 
-    /// `token_hint` for an audit row written by a tool.
+    /// `token_hint` for an audit row written by a tool: the host-level
+    /// sentinel, since this caller holds no tenant token.
     fn audit_hint(&self) -> &'static str {
-        match &self.caller {
-            ToolCaller::TenantKey => "service",
-            ToolCaller::Account(_) => "-",
-        }
+        "-"
     }
 
     /// `actor_admin_id` for an audit row written by a tool.
     fn audit_admin_id(&self) -> Option<i64> {
-        match &self.caller {
-            ToolCaller::TenantKey => None,
-            ToolCaller::Account(c) => Some(c.admin_id),
+        Some(self.caller.admin_id)
+    }
+
+    /// What `whoami` answers this caller with.
+    fn whoami_view(&self) -> crate::mcp::tools::exploration::WhoamiView {
+        crate::mcp::tools::exploration::WhoamiView::Account {
+            mcp_url: self.caller.mcp_url.to_string(),
+            api_keys_url: self.caller.api_keys_url.to_string(),
+            grant_id: self.caller.grant_id,
         }
     }
 
-    /// How much `whoami` may reveal to this caller.
-    fn whoami_view(&self) -> crate::mcp::tools::exploration::WhoamiView {
-        match &self.caller {
-            ToolCaller::TenantKey => crate::mcp::tools::exploration::WhoamiView::Full,
-            ToolCaller::Account(c) => crate::mcp::tools::exploration::WhoamiView::Account {
-                mcp_url: c.mcp_url.to_string(),
-                api_keys_url: c.api_keys_url.to_string(),
-                grant_id: c.grant_id,
-            },
-        }
+    /// A signed-in admin's identity for lib tests: the same constructor the
+    /// account-level endpoint uses, so tests exercise the only identity
+    /// production code has.
+    #[cfg(test)]
+    pub(crate) fn for_tests(state: DrustMcp) -> Self {
+        Self::for_account(
+            state,
+            &crate::mgmt::mcp_oauth::caller::McpCaller::for_tests(1, 1),
+            &crate::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://mcp.example.test"),
+        )
     }
 }
 
@@ -816,7 +802,7 @@ fn with_error_code(mut e: McpError, code: &str) -> McpError {
 
 /// The tool-EXECUTION-error face (MCP `isError: true`). Body is the JSON text
 /// `{"error_code", "message", "suggested_fix"?}` — the keys `bail_mcp` puts in
-/// JSON-RPC `data`, plus the message. The per-tenant `call_tool`
+/// JSON-RPC `data`, plus the message. The inner `call_tool`
 /// (`finish_tool_call`) converts rmcp's argument errors through THIS function,
 /// and the account-level `call_tool` (`crate::mcp::account`) extends that to every
 /// protocol error, so every isError body has one shape; do not fork it. `fix`: pass the fix the error already carries
@@ -1205,13 +1191,6 @@ mod finish_tool_call_tests {
 
 #[tool_router(vis = "pub(crate)")]
 impl DrustMcpService {
-    pub fn new(state: DrustMcp) -> Self {
-        Self {
-            state,
-            caller: ToolCaller::TenantKey,
-        }
-    }
-
     /// Number of MCP tools this service exposes, derived from the
     /// macro-generated router so it can never drift from reality.
     /// Cached: building the router walks every tool's schema once.
@@ -4039,10 +4018,11 @@ impl DrustMcpService {
 /// `account::instructions_tests`.
 pub(crate) const INSTRUCTIONS_MAX_CHARS: usize = 4096;
 
-/// The per-tenant server's declared capabilities: tools, resources and prompts,
-/// and nothing that pushes — no `listChanged`, no `subscribe`, no `logging`, no
-/// `tasks`. That absence is why an MCP session is outside CLAUDE.md invariant 5:
-/// its GET stream carries nothing, and every POST re-authenticates.
+/// The server's declared capabilities: tools, resources and prompts, and
+/// nothing that pushes — no `listChanged`, no `subscribe`, no `logging`, no
+/// `tasks`. That absence is why the account-level endpoint is outside
+/// CLAUDE.md invariant 5: it has no session and no GET stream, and every POST
+/// re-authenticates.
 /// `capabilities_tests::server_capabilities_declare_no_server_push` pins the
 /// exact JSON.
 pub(crate) fn server_capabilities() -> ServerCapabilities {
@@ -4971,7 +4951,7 @@ mod is_error_tests {
             None,
             None,
         );
-        (DrustMcpService::new(mcp.clone()), mcp, tmp)
+        (DrustMcpService::for_tests(mcp.clone()), mcp, tmp)
     }
 
     /// A caller-supplied fix wins over the catalogue; `None` falls back to it.
@@ -5291,8 +5271,8 @@ mod is_error_tests {
     }
 }
 
-/// Caller identity on `DrustMcpService`: the per-tenant service key keeps the
-/// bare service identity; an account-level caller carries its admin id.
+/// Caller identity on `DrustMcpService`: every caller is a signed-in admin
+/// and carries its admin id.
 #[cfg(test)]
 mod caller_tests {
     use super::is_error_tests::{body, posts, svc};
@@ -5311,23 +5291,6 @@ mod caller_tests {
             mcp,
             d,
         )
-    }
-
-    #[tokio::test]
-    async fn tenant_key_identity_is_the_bare_service_key() {
-        let (s, _mcp, _d) = svc("caller-tk", false).await;
-        assert!(matches!(s.caller, ToolCaller::TenantKey));
-        let a = s.actor();
-        assert_eq!(
-            (a.kind, a.id.as_deref(), a.hint.as_deref()),
-            ("service", None, None)
-        );
-        assert!(matches!(
-            s.service_ctx(),
-            crate::auth::middleware::AuthCtx::Service { admin_id: None }
-        ));
-        assert_eq!(s.audit_hint(), "service");
-        assert_eq!(s.audit_admin_id(), None);
     }
 
     #[tokio::test]
@@ -5351,9 +5314,7 @@ mod caller_tests {
     #[tokio::test]
     async fn for_account_builds_both_urls_from_the_config_and_the_state_tenant() {
         let (s, _mcp, _d) = account_svc("caller-urls").await;
-        let ToolCaller::Account(c) = &s.caller else {
-            panic!("for_account must build an account caller");
-        };
+        let c = &s.caller;
         let cfg = test_cfg();
         assert_eq!((c.admin_id, c.grant_id), (42, 7));
         assert_eq!(&*c.mcp_url, cfg.resource_url());
@@ -5374,11 +5335,17 @@ mod caller_tests {
         );
     }
 
-    // Production code never builds the bare service-key identity; the one
-    // hit is this module's fixture. Comments are skipped; the needle is
-    // assembled at runtime.
+    /// The service has one production constructor, `for_account`. Three
+    /// checks: no source file builds it through a bare `new`; the test
+    /// constructor `for_tests` exists once, right under `#[cfg(test)]`; and an
+    /// account identity is assembled in one place, so `for_tests` goes through
+    /// `for_account`. The real guarantee is the compiler's:
+    /// `McpCaller::for_tests` lives in a `#[cfg(test)]` impl, so a
+    /// `for_tests` that lost its `#[cfg(test)]` would not build outside tests.
+    /// The second check only makes that visible in review. Comments are
+    /// skipped and the needles are assembled at runtime.
     #[test]
-    fn service_new_is_built_only_by_the_per_tenant_registry() {
+    fn service_identity_has_one_constructor() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
@@ -5416,10 +5383,24 @@ mod caller_tests {
             })
             .collect();
         hits.sort();
+        assert!(hits.is_empty(), "a bare constructor is back: {hits:?}");
+
+        let code = crate::tenant::rooms::srcpin::code_only(include_str!("handler.rs"));
+        let for_tests = format!("{}{}", "fn for_", "tests(");
+        assert_eq!(code.matches(for_tests.as_str()).count(), 1, "{for_tests}");
+        let at = code.find(for_tests.as_str()).unwrap();
+        let before = code[..at]
+            .lines()
+            .rev()
+            .skip(1)
+            .map(str::trim)
+            .find(|l| !l.is_empty());
+        assert_eq!(before, Some("#[cfg(test)]"), "for_tests must be test-only");
+        let built = format!("{}{}", "caller: Account", "Call {");
         assert_eq!(
-            hits,
-            vec![("src/mcp/handler.rs".to_string(), 1)],
-            "only the lib fixture may build the service-key identity"
+            code.matches(built.as_str()).count(),
+            1,
+            "only for_account may assemble an account identity"
         );
     }
 
@@ -5496,21 +5477,6 @@ mod caller_tests {
     }
 
     #[tokio::test]
-    async fn tenant_key_single_record_writes_stay_unattributed() {
-        let (s, mcp, _d) = svc("caller-rec-tk", false).await;
-        posts(&mcp).await;
-        insert_update_delete(&s).await;
-        assert_eq!(
-            history(&mcp, "posts").await,
-            vec![
-                row("insert", None),
-                row("update", None),
-                row("delete", None)
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn account_insert_record_keeps_resource_link() {
         let (s, mcp, _d) = account_svc("caller-link").await;
         posts(&mcp).await;
@@ -5526,23 +5492,6 @@ mod caller_tests {
         assert_eq!(
             b["resource_link"],
             format!("drust://caller-link/collections/posts/records/{id}")
-        );
-
-        let (k, kmcp, _d2) = svc("caller-link-tk", false).await;
-        posts(&kmcp).await;
-        let kb = body(
-            &k.insert_record(Parameters(InsertRecordArgs {
-                collection: "posts".into(),
-                data: title("a"),
-            }))
-            .await
-            .unwrap(),
-        );
-        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
-        assert_eq!(
-            keys(&b),
-            keys(&kb),
-            "same top-level keys, in the same order, as the per-tenant path"
         );
     }
 
@@ -5629,8 +5578,6 @@ mod caller_tests {
     #[tokio::test]
     async fn whoami_view_follows_the_caller() {
         use crate::mcp::tools::exploration::WhoamiView;
-        let (k, _mcp, _d) = svc("caller-view", false).await;
-        assert_eq!(k.whoami_view(), WhoamiView::Full);
         let (a, _amcp, _ad) = account_svc("caller-view-acct").await;
         let cfg = test_cfg();
         assert_eq!(
@@ -5644,7 +5591,7 @@ mod caller_tests {
     }
 
     /// Every attribution site in the tool bodies takes its value from the
-    /// caller. The scan covers the `#[tool_router]` impl only (the tool
+    /// caller. The scan covers the `#[tool_router(vis = "pub(crate)")]` impl only (the tool
     /// bodies; the accessors live in a separate impl above it). Comments are
     /// skipped and the needles are assembled at runtime so this test does not
     /// match itself. A new tool that writes record history or an audit row
