@@ -238,4 +238,149 @@ mod tests {
             );
         }
     }
+
+    /// Tracked documents and deploy files that must never name a planning
+    /// label or the git-ignored planning directory. Paths are relative to the
+    /// repository root (this crate's manifest directory).
+    const LABEL_FREE_DOCS: &[&str] = &[
+        "CLAUDE.md",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "README.md",
+        "README.zh.md",
+        ".env.example",
+        "docker-compose.yml",
+        "deploy/Caddyfile",
+        "deploy/drust.service",
+        "docs/oauth-setup.md",
+        "eval/mcp_onboarding/README.md",
+    ];
+
+    /// The forbidden strings, assembled at run time so this file never
+    /// contains one of them.
+    fn planning_needles() -> Vec<String> {
+        let mut needles: Vec<String> = ["0", "1", "2"]
+            .iter()
+            .map(|d| format!("{}{}", "MA", d))
+            .collect();
+        needles.push(["docs", "superpowers", "plans"].join("/"));
+        needles
+    }
+
+    /// Files in `dir` whose extension is one of `exts`, descending into
+    /// subdirectories only when `deep`. Panics on an unreadable directory: a
+    /// walk that quietly covers less is a vacuous pass. A name with no
+    /// extension (such as `.env`) is never read.
+    fn files_with_ext(
+        dir: &std::path::Path,
+        exts: &[&str],
+        deep: bool,
+        out: &mut Vec<std::path::PathBuf>,
+    ) {
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| panic!("cannot walk {}: {e}", dir.display()))
+                .path();
+            if path.is_dir() {
+                if deep {
+                    files_with_ext(&path, exts, deep, out);
+                }
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e))
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    /// `path:line: needle` for every needle on every line of `files`.
+    fn label_hits_in(root: &std::path::Path, files: &[std::path::PathBuf]) -> Vec<String> {
+        let needles = planning_needles();
+        let mut hits = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let name = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            for (i, line) in text.lines().enumerate() {
+                for n in &needles {
+                    if line.contains(n.as_str()) {
+                        hits.push(format!("{name}:{}: `{n}`", i + 1));
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn tracked_docs_carry_no_planning_label() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<std::path::PathBuf> =
+            LABEL_FREE_DOCS.iter().map(|rel| root.join(rel)).collect();
+        let mut rules = Vec::new();
+        files_with_ext(&root.join(".claude/rules"), &["md"], false, &mut rules);
+        // Two levels only: the git-ignored run output below deploy/smoke is
+        // never walked, and the extensionless .env is never read.
+        let smoke_exts = ["sh", "py", "yml", "toml", "md"];
+        let mut smoke = Vec::new();
+        files_with_ext(&root.join("deploy/smoke"), &smoke_exts, false, &mut smoke);
+        files_with_ext(
+            &root.join("deploy/smoke/checks"),
+            &smoke_exts,
+            false,
+            &mut smoke,
+        );
+        assert!(
+            rules.len() >= 8 && smoke.len() >= 18,
+            "scanned too little: rules {}, smoke {}",
+            rules.len(),
+            smoke.len()
+        );
+        files.extend(rules);
+        files.extend(smoke);
+        let hits = label_hits_in(root, &files);
+        assert!(
+            hits.is_empty(),
+            "planning labels in tracked docs:\n{}",
+            hits.join("\n")
+        );
+    }
+
+    #[test]
+    fn source_carries_no_planning_label() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = vec![root.join("build.rs")];
+        let mut seen = Vec::new();
+        for (dir, exts, min) in [
+            ("src", &["rs"][..], 200),
+            ("src/mgmt/templates", &["html"][..], 40),
+            ("cli/src", &["rs"][..], 20),
+            ("tests", &["rs"][..], 250),
+            ("build_support", &["rs"][..], 2),
+            ("locales", &["toml"][..], 2),
+        ] {
+            let before = files.len();
+            files_with_ext(&root.join(dir), exts, true, &mut files);
+            seen.push(format!("{dir} {}", files.len() - before));
+            assert!(
+                files.len() - before >= min,
+                "scanned too little: {}",
+                seen.join(", ")
+            );
+        }
+        let hits = label_hits_in(root, &files);
+        assert!(
+            hits.is_empty(),
+            "planning labels in source:\n{}",
+            hits.join("\n")
+        );
+    }
 }

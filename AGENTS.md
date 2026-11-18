@@ -183,24 +183,24 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   `set_owner_field` / `set_realtime`, whose repeat re-evicts SSE subscribers) are
   deliberately retry-safe: a repeat converges to the same state; the extra eviction only
   makes subscribers reconnect and re-gate.
-- Only five tools (+ `list_files`) return `isError: true` for their own failures, and any
-  tool returns it for an argument that fails to deserialize (`INVALID_PARAMS`, reshaped
-  from rmcp ≥ 1.8 in `handler.rs::finish_tool_call`). Every other tool error is still a
-  JSON-RPC error, and since v1.67.0 always with a `data.error_code` from
-  `mcp::error_code::mcp_error_code`. Its output is a constant from its tables, or a
-  message's own leading `UPPER_SNAKE:` token — drust's prefix, as long as no message
-  starts with caller text, which is pinned for the tool-module literals but not for
-  verbatim forwards (none found today; the surface is service-only).
-  The blanket conversion is the planned account-level `call_tool` (MA1), which reuses
-  `finish_tool_call` / `tool_error`. `delete_record`'s dry_run miss and `get_file_url`'s
-  `expires_in` range stay `-32603` until then.
-- A per-tenant MCP session is not bound to the bearer that opened it. A key reroll or a
-  PAT revocation leaves its GET stream open, while every POST re-authenticates (old key →
-  401). Deliberate until MA1, which removes sessions: the server's capabilities are exactly
-  tools / resources / prompts with no push, so the stream carries nothing.
-  `server_capabilities_declare_no_server_push` fails the moment any capability is added,
-  and `mcp_sources_never_push` the moment code under `src/mcp/` names the peer (rmcp
-  does not stop a push the capabilities never declared).
+- On the account-level endpoint every tool failure is an `isError: true` result:
+  `account::finish_account_call` runs the shared `finish_tool_call` first and then turns
+  every remaining JSON-RPC error except "tool not found" into the same isError body, keeping
+  its `error_code` and `suggested_fix` (a code the error lacks is classified by
+  `mcp::error_code::mcp_error_code`). The inner tools keep their own shapes — five tools
+  (+ `list_files`) report failure as a sentinel object and the rest bail with a JSON-RPC
+  error — because edge functions, resources and prompts call them directly. A classified
+  code is a constant from the classifier's tables, or a message's own leading
+  `UPPER_SNAKE:` token — drust's prefix, as long as no message starts with caller text,
+  which is pinned for the tool-module literals but not for verbatim forwards (none found
+  today; the endpoint admits only an admin-tier OAuth caller).
+- The account-level MCP endpoint keeps no session: rmcp's Streamable HTTP runs stateless
+  (`account_http_config`: `with_stateful_mode(false)`, `NeverSessionManager`), so there is
+  no GET stream to outlive a revocation and every POST is authorized again through
+  `find_grant_by_access`. The server's capabilities are exactly tools / resources / prompts
+  with no push. `server_capabilities_declare_no_server_push` fails the moment any capability
+  is added, and `mcp_sources_never_push` the moment code under `src/mcp/` names the peer
+  (rmcp does not stop a push the capabilities never declared).
 - MCP native constraint codes (`UNIQUE_VIOLATION`, `NOT_NULL_VIOLATION`, `FK_VIOLATION`,
   `TYPE_MISMATCH`) ship ahead of REST on purpose (owner decision 2026-11-15): they are the
   names the deferred cross-face classifier reserves, so REST adopts them later without MCP
