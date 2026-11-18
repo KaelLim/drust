@@ -92,8 +92,8 @@ pub fn connect_commands(cfg: &McpOauthConfig) -> Option<ConnectCommands> {
 }
 
 /// One address the diagnostics page requests from the browser. `expect` names
-/// the check the page script runs on the answer: `challenge`, `prm`, `as` or
-/// `token_error`.
+/// the check the page script runs on the answer: `challenge`, `prm`, `as`,
+/// `token_error` or `moved`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagCheck {
     pub id: &'static str,
@@ -106,8 +106,8 @@ pub struct DiagCheck {
 
 /// The diagnostics check list, in table order, with every check whose URL
 /// equals an earlier one's dropped (the earlier one is kept). Empty while
-/// disabled. Under an empty base path that leaves `mcp`, `prm`, `as_root` and
-/// `token`.
+/// disabled. Under an empty base path that leaves `mcp`, `prm`, `as_root`,
+/// `token` and `old_endpoint`.
 pub fn diag_checks(cfg: &McpOauthConfig) -> Vec<DiagCheck> {
     let Some(o) = cfg.public_origin() else {
         return Vec::new();
@@ -174,6 +174,14 @@ pub fn diag_checks(cfg: &McpOauthConfig) -> Vec<DiagCheck> {
             "token_error",
             "mcp_diag.check.token.label",
             "mcp_diag.check.token.hint",
+        ),
+        check(
+            "old_endpoint",
+            "POST",
+            cfg.endpoint_url("/t/diagnostics/mcp"),
+            "moved",
+            "mcp_diag.check.old_endpoint.label",
+            "mcp_diag.check.old_endpoint.hint",
         ),
     ];
     let mut seen = HashSet::new();
@@ -521,6 +529,12 @@ mod tests {
                 "POST",
                 "https://drust.test/drust/oauth/token",
                 "token_error",
+            ),
+            (
+                "old_endpoint",
+                "POST",
+                "https://drust.test/drust/t/diagnostics/mcp",
+                "moved",
             ),
         ];
         assert_eq!(got.len(), want.len());

@@ -551,6 +551,7 @@ async fn diagnostics_json_matches_the_check_table() {
             "https://drust.test/.well-known/oauth-authorization-server/drust",
             "https://drust.test/drust/.well-known/oauth-authorization-server",
             "https://drust.test/drust/oauth/token",
+            "https://drust.test/drust/t/diagnostics/mcp",
         ]
     );
     assert!(!v.to_string().contains("drust_"));
@@ -558,7 +559,15 @@ async fn diagnostics_json_matches_the_check_table() {
         b.contains(&format!("<code>{}</code>", mo::RESOURCE))
             && b.contains(&format!("<code>{}</code>", mo::ISSUER))
     );
-    for id in ["mcp", "prm", "prm_root", "as_root", "as_base", "token"] {
+    for id in [
+        "mcp",
+        "prm",
+        "prm_root",
+        "as_root",
+        "as_base",
+        "token",
+        "old_endpoint",
+    ] {
         assert!(
             b.contains(&format!("data-diag-result=\"{id}\"")),
             "{id} row"

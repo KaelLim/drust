@@ -972,6 +972,10 @@ hint = "只有連接頁上手動設定 authServerMetadataUrl 的退路會用到�
 label = "token 端點對空請求回 OAuth 錯誤（400）"
 hint = "這裡出現轉址代表有 proxy 在轉址，例如 http 轉 https 或補結尾斜線。Claude Code 遇到任何轉址都會停止登入。"
 
+[mcp_diag.check.old_endpoint]
+label = "舊的 per-tenant 端點回 410"
+hint = "對舊的 per-tenant 路徑 /t/ID/mcp 發 POST 應回 410 MCP_ENDPOINT_MOVED。若不是，代表反向代理仍把舊路徑送到別處，或伺服器跑的仍是舊版程式。"
+
 [mcp_diag.reason]
 mode_off = "DRUST_MCP 是 off。"
 auto_https = "DRUST_MCP 為 auto（預設），auto 只在 DRUST_PUBLIC_URL 是公開主機的 https:// 網址時才開啟 MCP。請設定它，或設 DRUST_MCP=on。"

@@ -287,6 +287,10 @@ fn connect_and_diagnostics_urls_drop_the_prefix() {
                 "https://drust.test/.well-known/oauth-authorization-server".to_string()
             ),
             ("token", "https://drust.test/oauth/token".to_string()),
+            (
+                "old_endpoint",
+                "https://drust.test/t/diagnostics/mcp".to_string(),
+            ),
         ]
     );
     let v = drust::mgmt::mcp_oauth::connect::diagnostics_json(&cfg).unwrap();

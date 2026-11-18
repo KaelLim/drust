@@ -952,6 +952,10 @@ hint = "Used only by the manual authServerMetadataUrl fallback on the connect pa
 label = "Token endpoint answers an empty request with an OAuth error (400)"
 hint = "A redirect here means a proxy redirects, for example http to https or a trailing slash. Claude Code stops signing in on any redirect."
 
+[mcp_diag.check.old_endpoint]
+label = "The old per-tenant endpoint answers 410"
+hint = "A POST to the old per-tenant path /t/ID/mcp must answer 410 MCP_ENDPOINT_MOVED. Anything else means the proxy still sends the old path elsewhere, or this server runs an older binary."
+
 [mcp_diag.reason]
 mode_off = "DRUST_MCP is off."
 auto_https = "DRUST_MCP is auto (the default), and auto turns MCP on only when DRUST_PUBLIC_URL is an https:// address on a public host. Set it, or set DRUST_MCP=on."

@@ -145,6 +145,13 @@
       notes.push(challenged ? T.challenge_ok : T.challenge_missing);
       return { ok: challenged, notes: notes };
     }
+    if (c.expect === 'moved') {
+      return r.text().then(function (body) {
+        return { ok: r.status === 410 && body.indexOf('{"message":"MOVED') === 0, notes: notes };
+      }, function () {
+        return { ok: false, notes: notes };
+      });
+    }
     return r.json().then(function (j) {
       if (j === null || typeof j !== 'object') { j = {}; }
       var ok;
