@@ -483,11 +483,15 @@ mod build_live_tests {
         let tr = Arc::new(TenantRegistry::new(root.to_path_buf(), 2));
         let cron = fresh_cron_state();
         let (bus_rooms, bucket, rooms_cfg) = test_rooms_defaults();
+        let garage = Arc::new(GarageClient::from_store(
+            Arc::new(object_store::memory::InMemory::new()),
+            "private",
+        ));
         let reg = McpRegistry::with_bus_and_storage(
             tr.clone(),
             EventBus::new(),
             WebhookDispatcher::new(tr.clone(), None),
-            None,
+            Some(garage),
             String::new(),
             Arc::new([0u8; 32]),
             None,
@@ -552,6 +556,38 @@ mod build_live_tests {
         assert!(
             Arc::ptr_eq(&inner.pool, &ci.pool),
             "same TenantRegistry pool"
+        );
+        // Every shared handle is the registry's own: a fresh one here would
+        // detach the account endpoint's tools from the process state (the
+        // auth cache is what the invariant-4 hooks of the MCP tools clear).
+        assert!(
+            Arc::ptr_eq(
+                inner.auth_cache.as_ref().expect("auth_cache: Some"),
+                reg.auth_cache.as_ref().unwrap()
+            ),
+            "auth cache"
+        );
+        assert!(Arc::ptr_eq(&inner.webhooks, &reg.webhooks), "webhooks");
+        assert!(
+            Arc::ptr_eq(
+                inner.garage.as_ref().expect("garage: Some"),
+                reg.garage.as_ref().unwrap()
+            ),
+            "object-store client"
+        );
+        assert!(inner.bus.shares_channels_with(&reg.bus), "event bus");
+        assert!(
+            inner.bus_rooms.shares_channels_with(&reg.bus_rooms),
+            "room bus"
+        );
+        assert!(Arc::ptr_eq(&inner.bucket, &reg.bucket), "publish bucket");
+        assert!(
+            Arc::ptr_eq(&inner.audit_meta_read, &reg.audit_meta_read),
+            "audit reader"
+        );
+        assert!(
+            Arc::ptr_eq(&inner.url_sign_secret, &reg.url_sign_secret),
+            "url signing secret"
         );
         // never reads the cache: a second build_live is a fresh DrustMcp, not the cached one
         let again = reg.build_live("blog", m).unwrap();

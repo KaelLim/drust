@@ -414,6 +414,13 @@ impl RoomBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl RoomBus {
+        /// Whether `self` and `other` are handles on the same channel map.
+        pub(crate) fn shares_channels_with(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.channels, &other.channels)
+        }
+    }
     use std::sync::Arc;
 
     fn msg(s: &str) -> RoomMessage {

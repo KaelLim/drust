@@ -732,3 +732,48 @@ async fn account_files_guide_and_descriptions_over_the_wire() {
     assert!(desc("list_functions").contains("there is no function-deploy tool"));
     assert!(desc("whoami").contains("To upload a file, call create_upload_url."));
 }
+
+/// The account endpoint's tools clear the PROCESS auth cache: `build_live`
+/// must hand every call the registry's cache, or the invariant-4 hooks of the
+/// MCP tools clear a private one and stale grants keep serving.
+#[tokio::test]
+async fn account_tool_calls_clear_the_process_auth_cache() {
+    let h = spin_up_account_mcp("acct-cache").await;
+    let entry = |uid: &str| drust::tenant::auth_cache::CachedAuth::User {
+        tenant_id: h.tid.clone(),
+        user_id: uid.to_string(),
+        expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+        publish_user_allowed: false,
+        publish_anon_allowed: false,
+        file_caps: Default::default(),
+        quota_tier: 1,
+    };
+
+    h.auth_cache.insert("pub-h".to_string(), entry("u-pub"));
+    let r = call(
+        &h,
+        &h.access,
+        "set_publish_policy",
+        Some(json!({"tenant": h.tid, "allow_user_publish": true})),
+    )
+    .await;
+    ok_body(&r);
+    assert!(
+        h.auth_cache.get("pub-h").is_none(),
+        "set_publish_policy clears the tenant's cached entries"
+    );
+
+    h.auth_cache.insert("rev-h".to_string(), entry("u-rev"));
+    let r = call(
+        &h,
+        &h.access,
+        "revoke_user_sessions",
+        Some(json!({"tenant": h.tid, "user_id": "u-rev"})),
+    )
+    .await;
+    ok_body(&r);
+    assert!(
+        h.auth_cache.get("rev-h").is_none(),
+        "revoke_user_sessions clears the user's cached entries"
+    );
+}

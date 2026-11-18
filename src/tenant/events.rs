@@ -92,6 +92,13 @@ impl EventBus {
 mod tests {
     use super::*;
 
+    impl EventBus {
+        /// Whether `self` and `other` are handles on the same channel map.
+        pub(crate) fn shares_channels_with(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.channels, &other.channels)
+        }
+    }
+
     #[tokio::test]
     async fn evict_collection_drops_only_that_pair() {
         let bus = EventBus::new();

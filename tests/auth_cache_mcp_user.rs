@@ -6,7 +6,12 @@
 // and invalidate inside the fn — so the invalidation logic is exercised
 // directly here, and `with_bus_and_storage_threads_cache_into_inner` locks
 // the registry → `DrustMcpInner` wiring (a regression to `None` would
-// silently stop all MCP invalidations).
+// silently stop all MCP invalidations). That test reaches the registry through
+// `get_or_create`, which no request path calls; the account-level endpoint
+// builds every call through `McpRegistry::build_live`, whose wiring is pinned by
+// `build_live_wires_the_same_state_as_get_or_create_but_bypasses_the_cache`
+// (src/mcp/server.rs) and executed end to end by
+// `account_tool_calls_clear_the_process_auth_cache` (tests/mcp_account_tools.rs).
 mod helpers;
 
 use drust::storage::pool::TenantRegistry;
