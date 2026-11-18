@@ -1,4 +1,4 @@
-//! E4 (S-44) — a real `drop_collection` over `/t/<id>/mcp` closes the dropped
+//! E4 (S-44) — a real `drop_collection` over the account-level `/mcp` closes the dropped
 //! collection's live SSE streams.
 //!
 //! The subscribe handler gates once at connect and `publish` never re-checks
@@ -15,7 +15,6 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use helpers::{grab_pool, spin_up_dual_role_self_register};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::time::Duration;
@@ -23,115 +22,26 @@ use tower::ServiceExt;
 
 type SseEvents = Pin<Box<dyn futures::Stream<Item = eventsource_stream::Event> + Send>>;
 
-// ── MCP plumbing (private per file, as in tests/mcp_merged_tools.rs) ────────
+// ── MCP plumbing ────────────────────────────────────────────────────────────
 
-fn mcp_req_with_session(tid: &str, token: &str, sid: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", sid)
-        .body(Body::from(body.to_string()))
-        .unwrap()
+/// The account harness with self-registration on (the fixture these tests
+/// were written against had it on).
+async fn harness(t: &'static str) -> helpers::AccountMcpHarness {
+    let h = helpers::spin_up_account_mcp(t).await;
+    helpers::account_allow_self_register(&h).await;
+    h
 }
 
-async fn parse_mcp_response(resp: axum::response::Response) -> Vec<Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.strip_prefix("data:").unwrap_or(line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            out.push(v);
-        }
-    }
-    out
-}
-
-async fn mcp_init(app: &axum::Router, tid: &str, token: &str) -> String {
-    let init = Request::builder()
-        .method("POST")
-        .uri(format!("/t/{tid}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            json!({
-                "jsonrpc":"2.0","id":1,"method":"initialize",
-                "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                          "clientInfo":{"name":"test","version":"0"}}
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let r = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(r.status(), StatusCode::OK, "initialize failed");
-    let sid = r
-        .headers()
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    let _ = parse_mcp_response(r).await;
-    let ack = mcp_req_with_session(
-        tid,
-        token,
-        &sid,
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-    let _ = app.clone().oneshot(ack).await.unwrap();
-    sid
-}
-
-async fn mcp_call_tool(
-    app: &axum::Router,
-    tid: &str,
-    token: &str,
-    sid: &str,
-    name: &str,
-    args: Value,
-) -> String {
-    let call = mcp_req_with_session(
-        tid,
-        token,
-        sid,
-        json!({
-            "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}
-        }),
-    );
-    let resp = app.clone().oneshot(call).await.unwrap();
-    assert!(
-        resp.status().is_success(),
-        "tools/call {name} status {}",
-        resp.status()
-    );
-    let msgs = parse_mcp_response(resp).await;
-    msgs.iter()
-        .find_map(|m| {
-            m["result"]["content"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|c| c["text"].as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| serde_json::to_string(&msgs).unwrap())
+/// The first content text of a `tools/call` on the account endpoint.
+async fn tool(h: &helpers::AccountMcpHarness, name: &str, args: Value) -> String {
+    helpers::mcp_tool_text(&h.app, &h.access, &h.tid, name, args).await
 }
 
 // ── SSE + record plumbing (as in tests/policy_sse.rs) ───────────────────────
 
 /// `<coll>(status TEXT)` with anon select cap + realtime enabled.
-async fn seed_realtime(dir: &tempfile::TempDir, tenant: &str, coll: &'static str) {
-    let pool = grab_pool(tenant, dir).await;
+async fn seed_realtime(h: &helpers::AccountMcpHarness, coll: &'static str) {
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     pool.with_writer(move |c| {
         c.execute_batch(&format!(
             "CREATE TABLE {coll} (
@@ -231,37 +141,25 @@ fn record_status(ev: &eventsource_stream::Event) -> String {
 
 #[tokio::test]
 async fn drop_then_recreate_closes_old_anon_stream_and_new_rows_do_not_leak() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e4-drop-sse").await;
-    seed_realtime(&dir, &tid, "posts").await;
-    let mut events = open_stream(&app, &tid, &anon, "posts").await;
+    let h = harness("e4-drop-sse").await;
+    seed_realtime(&h, "posts").await;
+    let mut events = open_stream(&h.app, &h.tid, &h.anon, "posts").await;
 
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let dropped = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "drop_collection",
-        json!({"collection": "posts"}),
-    )
-    .await;
+    let dropped = tool(&h, "drop_collection", json!({"collection": "posts"})).await;
     assert!(
         dropped.contains("dropped_collection"),
         "drop failed: {dropped}"
     );
     // Recreate the same name through the production tool → realtime OFF.
-    let created = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let created = tool(
+        &h,
         "create_collection",
         json!({"name": "posts", "fields": [{"name": "status", "sql_type": "text"}]}),
     )
     .await;
     assert!(created.contains("posts"), "recreate failed: {created}");
 
-    insert_row(&app, &tid, &svc, "posts", "secret").await;
+    insert_row(&h.app, &h.tid, &h.svc, "posts", "secret").await;
 
     let next = tokio::time::timeout(Duration::from_secs(2), events.next()).await;
     match next {
@@ -274,7 +172,7 @@ async fn drop_then_recreate_closes_old_anon_stream_and_new_rows_do_not_leak() {
     }
 
     // A fresh connect gets the recreated table's own verdict.
-    let again = subscribe(&app, &tid, &anon, "posts").await;
+    let again = subscribe(&h.app, &h.tid, &h.anon, "posts").await;
     assert_eq!(again.status(), StatusCode::FORBIDDEN);
     let bytes = axum::body::to_bytes(again.into_body(), 1 << 16)
         .await
@@ -285,23 +183,19 @@ async fn drop_then_recreate_closes_old_anon_stream_and_new_rows_do_not_leak() {
 
 #[tokio::test]
 async fn drop_collection_dry_run_keeps_the_anon_stream() {
-    let (app, tid, svc, anon, dir) = spin_up_dual_role_self_register("e4-dry-sse").await;
-    seed_realtime(&dir, &tid, "posts").await;
-    let mut events = open_stream(&app, &tid, &anon, "posts").await;
+    let h = harness("e4-dry-sse").await;
+    seed_realtime(&h, "posts").await;
+    let mut events = open_stream(&h.app, &h.tid, &h.anon, "posts").await;
 
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let preview = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
+    let preview = tool(
+        &h,
         "drop_collection",
         json!({"collection": "posts", "dry_run": true}),
     )
     .await;
     assert!(preview.contains("would_drop"), "dry run failed: {preview}");
 
-    insert_row(&app, &tid, &svc, "posts", "still-live").await;
+    insert_row(&h.app, &h.tid, &h.svc, "posts", "still-live").await;
     let next = tokio::time::timeout(Duration::from_secs(2), events.next()).await;
     let ev = match next {
         Ok(Some(ev)) => ev,
@@ -310,7 +204,7 @@ async fn drop_collection_dry_run_keeps_the_anon_stream() {
     assert_eq!(ev.event, "created");
     assert_eq!(record_status(&ev), "still-live");
 
-    let pool = grab_pool(&tid, &dir).await;
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     let n: i64 = pool
         .with_reader(|c| {
             c.query_row(
@@ -326,27 +220,18 @@ async fn drop_collection_dry_run_keeps_the_anon_stream() {
 
 #[tokio::test]
 async fn service_stream_on_other_collection_survives_a_drop() {
-    let (app, tid, svc, _anon, dir) = spin_up_dual_role_self_register("e4-other-sse").await;
-    seed_realtime(&dir, &tid, "posts").await;
-    seed_realtime(&dir, &tid, "notes").await;
-    let mut notes = open_stream(&app, &tid, &svc, "notes").await;
+    let h = harness("e4-other-sse").await;
+    seed_realtime(&h, "posts").await;
+    seed_realtime(&h, "notes").await;
+    let mut notes = open_stream(&h.app, &h.tid, &h.svc, "notes").await;
 
-    let sid = mcp_init(&app, &tid, &svc).await;
-    let dropped = mcp_call_tool(
-        &app,
-        &tid,
-        &svc,
-        &sid,
-        "drop_collection",
-        json!({"collection": "posts"}),
-    )
-    .await;
+    let dropped = tool(&h, "drop_collection", json!({"collection": "posts"})).await;
     assert!(
         dropped.contains("dropped_collection"),
         "drop failed: {dropped}"
     );
 
-    insert_row(&app, &tid, &svc, "notes", "kept").await;
+    insert_row(&h.app, &h.tid, &h.svc, "notes", "kept").await;
     let next = tokio::time::timeout(Duration::from_secs(2), notes.next()).await;
     let ev = match next {
         Ok(Some(ev)) => ev,
