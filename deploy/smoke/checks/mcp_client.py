@@ -250,13 +250,6 @@ def failure_line(step, summary):
     return line
 
 
-def redact(s, secrets):
-    s = str(s)
-    for x in sorted((x for x in secrets if x), key=len, reverse=True):
-        s = s.replace(x, "<redacted>")
-    return s
-
-
 # ------------------------------------------------------------------ HTTP
 
 class Reply:

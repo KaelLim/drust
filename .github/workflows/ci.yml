@@ -78,6 +78,9 @@ jobs:
       - name: janitor has no hardcoded _trash retention (#935)
         run: bash deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh
 
+      - name: smoke MCP client self-test
+        run: python3 -I deploy/smoke/checks/mcp_client.py selftest
+
   # The k3s chart's render test is not on this every-push gate while the chart
   # is on hold: it lives in helm-chart.yml and runs only when deploy/helm/** (or
   # that workflow) changes, or by hand. See that file for why, and for what it

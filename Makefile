@@ -69,6 +69,7 @@ test-all: test-shell
 # key generator); its Docker part skips itself when docker is absent.
 # compose_public_route_test.sh pins the Compose /public/* Caddy block, and
 # janitor_no_hardcoded_trash_mtime_test.sh the bare-metal janitor (#935).
+# The smoke's MCP client checks its pure helpers offline (no stack needed).
 # backup_retention_test.sh runs LAST: three of its assertions need GNU bash and
 # GNU find, so on macOS it fails and make stops there. Anything after it would
 # never run on a Mac.
@@ -76,6 +77,7 @@ test-shell:
 	bash deploy/tests/compose_storage_test.sh
 	bash deploy/tests/compose_public_route_test.sh
 	bash deploy/tests/janitor_no_hardcoded_trash_mtime_test.sh
+	python3 -I deploy/smoke/checks/mcp_client.py selftest
 	bash deploy/tests/backup_retention_test.sh
 
 groups:
