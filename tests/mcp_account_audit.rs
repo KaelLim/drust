@@ -9,7 +9,8 @@ mod helpers;
 
 use drust::safety::audit_db::{AuditWriter, open_audit_db_read, open_audit_db_write};
 use helpers::{
-    http_raw, mcp_call, mcp_init, mcp_rpc, mcp_tool_text, seed_mcp_access, spin_up_account_mcp,
+    http_raw, mcp_call, mcp_init, mcp_rpc, mcp_tool_text, seed_mcp_access, seed_upload_ticket,
+    spin_up_account_mcp, spin_up_ticket_harness,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -718,4 +719,218 @@ async fn denied_resource_and_prompt_reads_are_host_rows() {
         )
         .is_empty()
     );
+}
+
+/// An upload ticket for `tenant` from the harness's own access token.
+async fn upload_ticket_for(h: &helpers::AccountMcpHarness, tenant: &str) -> String {
+    seed_upload_ticket(
+        &h.meta,
+        &h.access,
+        &drust::mgmt::mcp_oauth::store::TicketRequest {
+            tenant_id: tenant,
+            max_bytes: 4,
+            path: None,
+            public: false,
+        },
+    )
+    .await
+}
+
+/// One tus request with a ticket; status and headers.
+async fn tus(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    presented: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> (axum::http::StatusCode, axum::http::HeaderMap) {
+    use tower::ServiceExt;
+    let mut b = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("tus-resumable", "1.0.0")
+        .header("authorization", format!("Bearer {presented}"));
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let resp = app
+        .clone()
+        .oneshot(b.body(axum::body::Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    (resp.status(), resp.headers().clone())
+}
+
+const TICKET_DENIALS: &str = "SELECT tenant, token_hint, op, status, error_code, actor_admin_id, extra \
+     FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+     AND json_extract(extra, '$.surface') = 'upload_ticket' \
+     AND json_extract(extra, '$.requested_tenant') = ?1";
+
+#[tokio::test]
+async fn ticket_create_writes_one_attributed_row_on_its_tenant() {
+    audit_path();
+    let h = spin_up_ticket_harness(&["aud-upl-create"], true).await;
+    let t = upload_ticket_for(&h, "aud-upl-create").await;
+    let (s, hd) = tus(
+        &h.app,
+        "POST",
+        "/t/aud-upl-create/uploads",
+        &t,
+        &[("upload-length", "4")],
+        vec![],
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::CREATED);
+    let r = rows_eventually(
+        &format!("SELECT {COLS} FROM audit WHERE tenant = ?1 AND op = 'POST /uploads'"),
+        "aud-upl-create",
+        1,
+    )
+    .await;
+    let x = &r[0];
+    assert_eq!(x["status"], "ok");
+    let hint = x["token_hint"].as_str().unwrap();
+    assert!(hint.starts_with("drust_upl_") && hint.ends_with('\u{2026}'));
+    assert_eq!(x["auth_method"], "mcp_upload_ticket");
+    assert_eq!(x["actor_admin_id"], json!(h.admin_id));
+    assert_eq!(extra_of(x)["grant_id"], json!(h.grant_id));
+
+    let tok = hd["location"]
+        .to_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let (s, _) = tus(
+        &h.app,
+        "PATCH",
+        &format!("/t/aud-upl-create/uploads/{tok}"),
+        &t,
+        &[
+            ("upload-offset", "0"),
+            ("content-type", "application/offset+octet-stream"),
+        ],
+        b"abcd".to_vec(),
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::NO_CONTENT);
+    rows_eventually(
+        &format!(
+            "SELECT op FROM audit WHERE tenant = ?1 AND op = 'PATCH /uploads/{tok}' \
+             AND status = 'ok'"
+        ),
+        "aud-upl-create",
+        1,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn foreign_tenant_ticket_use_writes_only_a_host_denial() {
+    audit_path();
+    let h = spin_up_ticket_harness(&["aud-upl-a", "aud-upl-b"], true).await;
+    let t = upload_ticket_for(&h, "aud-upl-a").await;
+    let (s, _) = tus(
+        &h.app,
+        "POST",
+        "/t/aud-upl-b/uploads",
+        &t,
+        &[("upload-length", "4")],
+        vec![],
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+    let (s, _) = tus(
+        &h.app,
+        "PATCH",
+        "/t/aud-upl-b/uploads/0f8fad5b-d9cb-469f-a165-70867728950e",
+        &t,
+        &[("upload-offset", "0")],
+        vec![],
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+    let r = rows_eventually(TICKET_DENIALS, "aud-upl-b", 2).await;
+    for x in &r {
+        assert_eq!(extra_of(x)["grant_id"], json!(h.grant_id));
+        assert_eq!(x["actor_admin_id"], json!(h.admin_id));
+    }
+    // The writer is FIFO: anything written for aud-upl-b came before these.
+    assert_eq!(
+        rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-upl-b").len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn ticket_on_a_non_tus_route_is_a_host_denial() {
+    audit_path();
+    let h = spin_up_ticket_harness(&["aud-upl-other"], true).await;
+    let t = upload_ticket_for(&h, "aud-upl-other").await;
+    let (s, _) = tus(&h.app, "GET", "/t/aud-upl-other/files", &t, &[], vec![]).await;
+    assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+    let r = rows_eventually(TICKET_DENIALS, "aud-upl-other", 1).await;
+    assert_eq!(r[0]["actor_admin_id"], json!(h.admin_id));
+    assert_eq!(
+        rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-upl-other").len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn no_audit_row_carries_the_ticket_or_its_hash() {
+    use drust::mgmt::mcp_oauth::tokens::{TokenKind, hash};
+    audit_path();
+    let h = spin_up_ticket_harness(&["aud-upl-leak"], true).await;
+    let t = upload_ticket_for(&h, "aud-upl-leak").await;
+    let hashed = hash(TokenKind::UploadTicket, &t);
+    let (s, hd) = tus(
+        &h.app,
+        "POST",
+        "/t/aud-upl-leak/uploads",
+        &t,
+        &[("upload-length", "4")],
+        vec![],
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::CREATED);
+    let tok = hd["location"]
+        .to_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let (s, _) = tus(
+        &h.app,
+        "PATCH",
+        &format!("/t/aud-upl-leak/uploads/{tok}"),
+        &t,
+        &[
+            ("upload-offset", "0"),
+            ("content-type", "application/offset+octet-stream"),
+        ],
+        b"abcd".to_vec(),
+    )
+    .await;
+    assert_eq!(s, axum::http::StatusCode::NO_CONTENT);
+    let (s, _) = tus(&h.app, "GET", "/t/aud-upl-leak/files", &t, &[], vec![]).await;
+    assert_eq!(s, axum::http::StatusCode::UNAUTHORIZED);
+    rows_eventually(TICKET_DENIALS, "aud-upl-leak", 1).await;
+    let rows = rows_now(
+        "SELECT op, token_hint, extra, error_code FROM audit \
+         WHERE tenant = ?1 OR json_extract(extra, '$.requested_tenant') = ?1",
+        "aud-upl-leak",
+    );
+    assert!(rows.len() >= 3, "anti-vacuous: {} rows", rows.len());
+    let leaked = rows.iter().any(|row| {
+        ["op", "token_hint", "extra", "error_code"].iter().any(|k| {
+            row[*k]
+                .as_str()
+                .is_some_and(|v| v.contains(t.as_str()) || v.contains(hashed.as_str()))
+        })
+    });
+    assert!(!leaked, "an audit row carries the ticket or its hash");
 }

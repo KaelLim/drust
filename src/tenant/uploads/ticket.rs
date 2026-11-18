@@ -20,9 +20,10 @@
 //! through `quota::read_tier`, and the tokio mutex is not reentrant.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Request, State};
 use axum::http::{Extensions, HeaderMap, Method, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -32,13 +33,19 @@ use tower::ServiceExt;
 use crate::auth::bearer;
 use crate::auth::middleware::{AdminId, AuthCtx};
 use crate::error::json_error;
+use crate::mcp::account_audit::{DeniedSurface, denied_entry};
+use crate::mgmt::mcp_oauth::authorize::WarnSampler;
 use crate::mgmt::mcp_oauth::store::{self, TicketAttribution, TicketRow};
 use crate::mgmt::mcp_oauth::tokens::{self, TokenKind};
+use crate::mgmt::mcp_oauth::{envelope, rl};
 use crate::mgmt::tenant_authz::{AdminTenantAccess, tenant_access_for_admin};
 use crate::mgmt::tenant_files::TenantFilesState;
+use crate::safety::ip::ClientIp;
 use crate::storage::pool::SharedTenantPool;
 use crate::tenant::file_caps::{TenantFileCaps, file_caps_layer};
-use crate::tenant::router::{TenantAuthState, TenantRef, TokenRole, extract_bearer};
+use crate::tenant::router::{
+    TenantAuthState, TenantRef, TokenRole, extract_bearer, rate_limited_response,
+};
 
 /// The dispatch layer's state: the two stacks it needs and the ticket router,
 /// built once.
@@ -87,11 +94,20 @@ pub(crate) fn ticket_router(
 
 /// Which tus route a request is on, read from the raw path bytes (no decoding,
 /// no normalisation).
-#[cfg_attr(not(test), allow(dead_code))]
 enum TicketRoute<'a> {
     Create { tenant: &'a str },
     Session { tenant: &'a str, token: &'a str },
     Other { tenant: Option<&'a str> },
+}
+
+impl<'a> TicketRoute<'a> {
+    /// The tenant the path names, if it names one (for the denial row).
+    fn requested_tenant(&self) -> Option<&'a str> {
+        match self {
+            TicketRoute::Create { tenant } | TicketRoute::Session { tenant, .. } => Some(tenant),
+            TicketRoute::Other { tenant } => *tenant,
+        }
+    }
 }
 
 fn ticket_route<'a>(method: &Method, path: &'a str) -> TicketRoute<'a> {
@@ -117,7 +133,6 @@ fn ticket_route<'a>(method: &Method, path: &'a str) -> TicketRoute<'a> {
 }
 
 /// What the lookup block found.
-#[allow(dead_code)]
 enum Lookup {
     /// A live ticket, with its admin's current access to the ticket's tenant.
     Live {
@@ -280,6 +295,44 @@ fn log_db_error(stage: &'static str, e: &rusqlite::Error) {
     );
 }
 
+/// Samples the warning for unknown tickets: at most one per 60 s, with a
+/// count of the ones swallowed in between.
+static MISS_WARN: WarnSampler = WarnSampler::new();
+
+/// The row for a ticket request that passed every ticket check, on the
+/// ticket's tenant.
+fn audit_ticket_use(
+    tenant: &str,
+    row: &TicketRow,
+    hint: &str,
+    op: &str,
+    status: StatusCode,
+    ms: u64,
+) {
+    crate::safety::audit_db::try_send(&crate::mcp::account_audit::ticket_use_entry(
+        tenant,
+        row.admin_id,
+        row.grant_id,
+        hint,
+        op,
+        status,
+        ms,
+    ));
+}
+
+/// The host-level row for a known ticket refused before its tenant was
+/// established; answers the ticket 401.
+fn audit_ticket_denied(requested: Option<&str>, attr: &TicketAttribution) -> Response {
+    crate::safety::audit_db::try_send(&denied_entry(
+        attr.admin_id,
+        Some(attr.grant_id),
+        DeniedSurface::UploadTicket,
+        requested,
+        "UNAUTHENTICATED",
+    ));
+    unauthenticated()
+}
+
 /// The files-router layer. Only a well-formed ticket is handled here; any
 /// other request goes to `next` (the bearer stack) with no extra work.
 pub(crate) async fn upload_ticket_dispatch(
@@ -293,6 +346,7 @@ pub(crate) async fn upload_ticket_dispatch(
     if !tokens::looks_like(TokenKind::UploadTicket, &presented) {
         return next.run(req).await;
     }
+    let started = Instant::now();
     let hint = bearer::token_hint(&presented);
     let method = req.method().clone();
     let path = req.uri().path().to_owned();
@@ -321,28 +375,85 @@ pub(crate) async fn upload_ticket_dispatch(
             }
         }
     };
+
+    if matches!(lookup, Lookup::Unknown) {
+        // A miss: charged per client address, never written to the audit log.
+        let (mut parts, _body) = req.into_parts();
+        let ip = <ClientIp as FromRequestParts<()>>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap_or_else(|e| match e {});
+        if let Err(e) = d
+            .auth
+            .mcp_oauth_rl
+            .rs_miss_ip
+            .try_acquire(&rl::ticket_miss_ip_key(&ip))
+        {
+            return rate_limited_response(rl::retry_after_secs(e.0));
+        }
+        match envelope::now_unix().map_or(Some(0), |n| MISS_WARN.sample(n)) {
+            Some(n) => tracing::warn!(suppressed = n, "unknown upload ticket presented"),
+            None => tracing::debug!("unknown upload ticket presented"),
+        }
+        return unauthenticated();
+    }
+    // A known ticket, live or not: charged under its own key.
+    if let Err(e) = d.auth.limiter.try_acquire(&rl::ticket_key(&presented)) {
+        return rate_limited_response(rl::retry_after_secs(e.0));
+    }
     let (row, access) = match lookup {
         Lookup::Live { row, access } => (row, access),
-        Lookup::Known(_) | Lookup::Unknown => return unauthenticated(),
+        Lookup::Known(attr) => return audit_ticket_denied(route.requested_tenant(), &attr),
+        Lookup::Unknown => return unauthenticated(),
+    };
+    let attr = TicketAttribution {
+        grant_id: row.grant_id,
+        admin_id: Some(row.admin_id),
     };
 
     let path_tenant = match route {
         TicketRoute::Create { tenant } | TicketRoute::Session { tenant, .. } => tenant,
-        TicketRoute::Other { .. } => return unauthenticated(),
+        TicketRoute::Other { .. } => return audit_ticket_denied(route.requested_tenant(), &attr),
     };
     if path_tenant.as_bytes() != row.tenant_id.as_bytes()
         || matches!(access, AdminTenantAccess::Deny)
     {
-        return unauthenticated();
+        return audit_ticket_denied(route.requested_tenant(), &attr);
     }
     // Outside the meta lock: opening a pool may touch the disk.
     let Some(pool) = d.auth.registry.get_if_live(&row.tenant_id) else {
-        return unauthenticated();
+        return audit_ticket_denied(route.requested_tenant(), &attr);
     };
     if row.bound_upload.is_none() && !row.unbound_create_open {
-        return unauthenticated();
+        return audit_ticket_denied(route.requested_tenant(), &attr);
     }
 
+    let op = format!(
+        "{method} {}",
+        path.strip_prefix(&format!("/t/{}", row.tenant_id))
+            .unwrap_or(&path)
+    );
+    let resp = redeem(&d, req, &route, &row, hint.clone(), pool).await;
+    audit_ticket_use(
+        &row.tenant_id,
+        &row,
+        &hint,
+        &op,
+        resp.status(),
+        started.elapsed().as_millis() as u64,
+    );
+    resp
+}
+
+/// A live ticket on its own tenant's tus route: the create or session checks,
+/// then the re-route.
+async fn redeem(
+    d: &TicketDispatch,
+    req: Request,
+    route: &TicketRoute<'_>,
+    row: &TicketRow,
+    hint: String,
+    pool: SharedTenantPool,
+) -> Response {
     match route {
         TicketRoute::Create { .. } => {
             if row.bound_upload.is_some() {
@@ -402,7 +513,7 @@ pub(crate) async fn upload_ticket_dispatch(
         .await
         .unwrap_or_else(|e| match e {});
     if is_create {
-        finish_create(&d, &row.ticket_hash, &row.tenant_id, resp).await
+        finish_create(d, &row.ticket_hash, &row.tenant_id, resp).await
     } else {
         resp
     }
@@ -780,5 +891,77 @@ mod tests {
                 .is_none()
         );
         let _ = fx.grant_id;
+    }
+
+    #[tokio::test]
+    async fn known_tickets_are_charged_per_ticket() {
+        use axum::routing::get;
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let mut fx = dispatch_fixture(dir.path());
+        fx.auth.limiter = Arc::new(crate::safety::rate_limit::RateLimiter::new(
+            2,
+            std::time::Duration::from_secs(60),
+        ));
+        let live = {
+            let conn = fx.meta.lock().await;
+            conn.execute(
+                "UPDATE _mcp_upload_tickets SET revoked_at = datetime('now')",
+                [],
+            )
+            .unwrap();
+            let AdminTenantAccess::Allow(inc) =
+                tenant_access_for_admin(&conn, fx.grant_id, fx.admin_id, "t1").unwrap()
+            else {
+                panic!("the owner sees t1");
+            };
+            store::issue_upload_ticket(
+                &conn,
+                &crate::mgmt::mcp_oauth::caller::McpCaller::for_tests(fx.admin_id, fx.grant_id),
+                &inc,
+                &store::TicketRequest {
+                    tenant_id: "t1",
+                    max_bytes: 4,
+                    path: None,
+                    public: false,
+                },
+            )
+            .unwrap()
+            .expect("issued")
+            .plaintext()
+            .to_string()
+        };
+        let d = TicketDispatch::new(fx.auth.clone(), fx.files.clone());
+        let app = Router::new()
+            .route("/t/{tenant}/files", get(|| async { StatusCode::OK }))
+            .route_layer(from_fn_with_state(d, upload_ticket_dispatch));
+        let call = |presented: String| {
+            let app = app.clone();
+            async move {
+                let req = axum::http::Request::builder()
+                    .uri("/t/t1/files")
+                    .header(header::AUTHORIZATION, format!("Bearer {presented}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                app.oneshot(req).await.unwrap()
+            }
+        };
+        let revoked = fx.ticket.clone();
+        for _ in 0..2 {
+            assert_eq!(
+                call(revoked.clone()).await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let limited = call(revoked.clone()).await;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(limited.headers().get(header::RETRY_AFTER).is_some());
+        let body = axum::body::to_bytes(limited.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error_code"], "RATE_LIMITED");
+        // A second ticket has its own bucket.
+        assert_eq!(call(live).await.status(), StatusCode::UNAUTHORIZED);
     }
 }

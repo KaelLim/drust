@@ -335,7 +335,7 @@ mod source_pins {
     /// therefore use the words.
     #[test]
     fn plaintext_code_never_reaches_logs_or_audit() {
-        let files: [(&str, &str, &[&str], usize); 7] = [
+        let files: [(&str, &str, &[&str], usize); 8] = [
             (
                 "consent.rs",
                 include_str!("consent.rs"),
@@ -410,6 +410,12 @@ mod source_pins {
                 include_str!("store.rs"),
                 &["ticket", "token", "presented", "ticket_hash", "hash"],
                 0,
+            ),
+            (
+                "uploads/ticket.rs",
+                include_str!("../../tenant/uploads/ticket.rs"),
+                &["presented", "ticket", "bearer", "ticket_hash", "hash"],
+                12,
             ),
         ];
         for (name, src, banned, min) in files {

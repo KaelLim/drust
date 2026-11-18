@@ -680,3 +680,73 @@ async fn other_tenant_path_is_401() {
         );
     }
 }
+
+/// `n` fresh, well-formed tickets nobody issued, each answered 401.
+async fn unknown_misses(h: &AccountMcpHarness, n: usize) {
+    use drust::mgmt::mcp_oauth::tokens::{TokenKind, new_token};
+    for i in 0..n {
+        let u = new_token(TokenKind::UploadTicket);
+        let (s, _, v) = create(h, &u, 1, "").await;
+        assert_eq!(
+            (s, v["message"].as_str()),
+            (StatusCode::UNAUTHORIZED, Some(MSG)),
+            "miss {i}"
+        );
+    }
+}
+
+/// The next unknown ticket hits the exhausted miss bucket.
+async fn assert_miss_limited(h: &AccountMcpHarness) {
+    use drust::mgmt::mcp_oauth::tokens::{TokenKind, new_token};
+    let u = new_token(TokenKind::UploadTicket);
+    let (s, hd, v) = create(h, &u, 1, "").await;
+    assert_eq!(
+        (s, v["error_code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("RATE_LIMITED"))
+    );
+    let secs: u64 = hd["retry-after"].to_str().unwrap().parse().unwrap();
+    assert!(secs >= 1);
+}
+
+#[tokio::test]
+async fn unknown_tickets_charge_the_miss_bucket_and_known_ones_do_not() {
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    let known = ticket(&h, 4, None, false).await;
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "UPDATE _mcp_upload_tickets SET revoked_at = datetime('now')",
+            [],
+        )
+        .unwrap();
+    }
+    let (s, _, v) = create(&h, &known, 1, "").await;
+    assert_eq!(
+        (s, v["message"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some(MSG))
+    );
+    unknown_misses(&h, 60).await;
+    assert_miss_limited(&h).await;
+    let (s, _, v) = create(&h, &known, 1, "").await;
+    assert_eq!(
+        (s, v["message"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some(MSG))
+    );
+}
+
+#[tokio::test]
+async fn ticket_misses_do_not_throttle_the_account_endpoint() {
+    use drust::mgmt::mcp_oauth::tokens::{TokenKind, new_token};
+    let h = spin_up_ticket_harness(&["acme"], true).await;
+    unknown_misses(&h, 60).await;
+    assert_miss_limited(&h).await;
+    // The account-level bearer layer reads no per-IP bucket, so a ticket
+    // flood never reaches it. Green by construction; kept as a regression pin.
+    let (s, _, _) = helpers::mcp_rpc(
+        &h.app,
+        Some(&new_token(TokenKind::Access)),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}

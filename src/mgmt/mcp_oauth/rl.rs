@@ -98,6 +98,17 @@ pub fn code_key(code: &str) -> String {
     format!("code:{}", tokens::hash(TokenKind::Code, code))
 }
 
+/// Key for the upload-ticket miss bucket. That bucket is used by upload tickets only (the account-level MCP bearer layer reads no per-IP bucket); the "upl:" key space keeps the two apart if another consumer is ever added.
+pub fn ticket_miss_ip_key(ip: &ClientIp) -> String {
+    format!("upl:{}", client_ip_key(ip))
+}
+
+/// Per-ticket key. Takes the PLAINTEXT ticket and hashes it here, like
+/// [`code_key`], so no plaintext ticket is kept as a limiter key.
+pub fn ticket_key(ticket: &str) -> String {
+    format!("upl:{}", tokens::hash(TokenKind::UploadTicket, ticket))
+}
+
 /// Per-grant key.
 pub fn grant_key(grant_id: i64) -> String {
     format!("grant:{grant_id}")
@@ -259,5 +270,25 @@ mod tests {
         );
         assert!(!code_key(&c).contains(&c));
         assert_eq!(grant_key(42), "grant:42");
+    }
+
+    #[tokio::test]
+    async fn ticket_keys_are_their_own_key_space() {
+        let mut req = axum::http::Request::new(());
+        req.extensions_mut().insert(ConnectInfo(
+            "203.0.113.7:5000".parse::<SocketAddr>().unwrap(),
+        ));
+        let (mut parts, ()) = req.into_parts();
+        let ip = <ClientIp as FromRequestParts<()>>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(ticket_miss_ip_key(&ip), "upl:ip:203.0.113.7");
+        assert_ne!(ticket_miss_ip_key(&ip), client_ip_key(&ip));
+        let t = tokens::new_token(TokenKind::UploadTicket);
+        assert_eq!(
+            ticket_key(&t),
+            format!("upl:{}", tokens::hash(TokenKind::UploadTicket, &t))
+        );
+        assert!(!ticket_key(&t).contains(&t));
     }
 }

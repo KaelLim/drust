@@ -1035,7 +1035,6 @@ pub(crate) fn find_live_ticket(
 /// Who a known ticket belongs to, for the audit row of a refused one.
 /// `admin_id` is `Some` only while the grant's admin incarnation still
 /// matches the ticket's.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TicketAttribution {
     pub grant_id: i64,

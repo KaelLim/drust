@@ -28,6 +28,8 @@ pub(crate) const COLLECTION_MAX_CHARS: usize = 128;
 pub(crate) const URI_MAX_CHARS: usize = 256;
 /// What a caller-supplied string that fails its shape check is recorded as.
 pub(crate) const INVALID: &str = "<invalid>";
+/// `auth_method` of a request authenticated by an upload ticket.
+pub(crate) const UPLOAD_TICKET_AUTH_METHOD: &str = "mcp_upload_ticket";
 
 /// Where a refused account-level request came in.
 pub(crate) enum DeniedSurface<'a> {
@@ -41,7 +43,6 @@ pub(crate) enum DeniedSurface<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
     UploadTool,
     /// An upload request that presented a ticket.
-    #[cfg_attr(not(test), allow(dead_code))]
     UploadTicket,
 }
 
@@ -163,6 +164,35 @@ pub(crate) fn denied_entry(
     let mut e = AuditEntry::failure("-", "-", "mcp_denied", 0, code, code);
     e.actor_admin_id = admin_id;
     e.with_extra(Value::Object(extra))
+}
+
+/// One upload-ticket request that passed every ticket check, on the ticket's
+/// tenant. Status maps as in the bearer layer: 2xx and 3xx are `ok`, anything
+/// else is `HTTP_<status>`.
+pub(crate) fn ticket_use_entry(
+    tenant: &str,
+    admin_id: i64,
+    grant_id: i64,
+    token_hint: &str,
+    op: &str,
+    status: axum::http::StatusCode,
+    ms: u64,
+) -> AuditEntry {
+    let mut e = if status.is_success() || status.is_redirection() {
+        AuditEntry::success(tenant, token_hint, op, ms)
+    } else {
+        AuditEntry::failure(
+            tenant,
+            token_hint,
+            op,
+            ms,
+            &format!("HTTP_{}", status.as_u16()),
+            "",
+        )
+    };
+    e.auth_method = Some(UPLOAD_TICKET_AUTH_METHOD.to_string());
+    e.actor_admin_id = Some(admin_id);
+    e.with_extra(json!({"grant_id": grant_id}))
 }
 
 /// One resource read that passed the tenant check. The URI is kept only when
@@ -522,5 +552,55 @@ mod tests {
         assert_eq!(result_error_code(&long).as_deref(), Some("INTERNAL"));
         let lower = CallToolResult::error(vec![Content::text(r#"{"error_code":"not_a_code"}"#)]);
         assert_eq!(result_error_code(&lower).as_deref(), Some("INTERNAL"));
+    }
+
+    #[test]
+    fn ticket_use_entry_maps_status_like_the_bearer_layer() {
+        use axum::http::StatusCode;
+        let ok = ticket_use_entry(
+            "t1",
+            7,
+            9,
+            "drust_upl_ab\u{2026}",
+            "POST /uploads",
+            StatusCode::CREATED,
+            5,
+        );
+        assert_eq!(
+            (ok.status.as_str(), ok.error_code.as_deref(), ok.duration_ms),
+            ("ok", None, 5)
+        );
+        assert_eq!(
+            (ok.tenant.as_str(), ok.token_hint.as_str(), ok.op.as_str()),
+            ("t1", "drust_upl_ab\u{2026}", "POST /uploads")
+        );
+        assert_eq!(
+            (
+                ok.auth_method.as_deref(),
+                ok.actor_admin_id,
+                ok.actor_email_snapshot.as_deref()
+            ),
+            (Some("mcp_upload_ticket"), Some(7), None)
+        );
+        assert_eq!(Value::Object(ok.extra.clone()), json!({"grant_id": 9}));
+        let redirect = ticket_use_entry("t1", 7, 9, "h", "HEAD /uploads/x", StatusCode::FOUND, 0);
+        assert_eq!(redirect.status, "ok");
+        let nf = ticket_use_entry(
+            "t1",
+            7,
+            9,
+            "h",
+            "PATCH /uploads/x",
+            StatusCode::NOT_FOUND,
+            0,
+        );
+        assert_eq!(
+            (
+                nf.status.as_str(),
+                nf.error_code.as_deref(),
+                nf.error_message.as_deref()
+            ),
+            ("error", Some("HTTP_404"), Some(""))
+        );
     }
 }
