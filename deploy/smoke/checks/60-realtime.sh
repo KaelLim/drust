@@ -10,8 +10,9 @@
 #          streams, keepalive comments, admin-PAT stream admitted as service.
 #   WS   — upgrade through Caddy + direct, header and ?token= auth, subscribe /
 #          unsubscribe / op:ping / control ping / publish acks + fan-out, publish
-#          permission (service vs anon, per-tenant flag via set_publish_policy and
-#          the eviction a real flag change causes), payload cap (WS + REST), room
+#          permission (service vs anon, per-tenant flag turned on by the admin
+#          API and off by MCP set_publish_policy, and the eviction each real
+#          change causes), payload cap (WS + REST), room
 #          name validation, CONN_EVICTED + close 1008 after a token reroll for a
 #          busy socket (next frame) and an idle one (keepalive tick), server Ping.
 # E2' (admin-PAT SSE ends on that admin's revocation) is NOT exercised: a second
@@ -456,7 +457,9 @@ check_eq "REST publish by anon answers 403 PUBLISH_ANON_DENIED while the flag is
   "$STATUS $(body error_code)"
 
 # --- publish flag: a REAL change of allow_anon_publish evicts live sockets;
-# afterwards anon may publish; turning it back off denies again.
+# afterwards anon may publish; turning it back off denies again. On goes through
+# the admin API, off through MCP set_publish_policy on the account endpoint, so
+# each face's eviction closes a socket opened before its change.
 ws_bg flag <<J
 [{"id":"old","op":"open","c":"o","url":"$WSU","token_env":"RT_B_ANON"},
  {"op":"send","c":"o","json":{"op":"subscribe","room":"flag","ref":"s"}},
@@ -468,9 +471,10 @@ ws_bg flag <<J
  {"id":"new","op":"open","c":"n","url":"$WSU","token_env":"RT_B_ANON"},
  {"op":"send","c":"n","json":{"op":"publish","room":"flag","payload":{"by":"anon"},"ref":"p"}},
  {"id":"new_pub","op":"expect","c":"n","match":{"ref":"p"}},
- {"op":"close","c":"n"},
  {"op":"touch","path":"$TMP/flag.done1"},
  {"id":"wait_off","op":"wait_file","path":"$TMP/flag.off","timeout":60},
+ {"op":"send","c":"n","json":{"op":"ping","ref":"after_off"}},
+ {"id":"new_close","op":"expect_close","c":"n","timeout":15},
  {"id":"third","op":"open","c":"t","url":"$WSU","token_env":"RT_B_ANON"},
  {"op":"send","c":"t","json":{"op":"publish","room":"flag","payload":{"by":"anon"},"ref":"p"}},
  {"id":"third_pub","op":"expect","c":"t","match":{"ref":"p"}},
@@ -483,13 +487,17 @@ touch "$TMP/flag.on"
 for _ in $(seq 1 60); do [ -f "$TMP/flag.done1" ] && break; sleep 0.5; done
 anon POST /rooms/flag '{"by":"anon-rest"}'
 check_eq "REST publish by anon answers 200 once allow_anon_publish is on" 200 "$STATUS"
-admin PATCH "/admin/tenants/$TENANT_ID/publish-policy" '{"allow_anon_publish":false}'
-check_eq "admin PATCH publish-policy allow_anon_publish=false answers 200 false" "200 false" "$STATUS $(body allow_anon_publish)"
+mcp_call set_publish_policy '{"allow_anon_publish":false}'
+check_eq "MCP set_publish_policy allow_anon_publish=false succeeds and reports false" "false false" \
+  "$MCP_IS_ERROR $(printf '%s' "$MCP_TEXT" | json allow_anon_publish)"
 touch "$TMP/flag.off"
 ws_join flag
 check_eq "an anon socket opened before the flag flip is closed 1008 at its next frame" 1008 "$(wsr flag old_close.code)"
 check_contains "... and is told CONN_EVICTED before the close" CONN_EVICTED "$(wsr flag old_close.errors)"
 check_eq "a fresh anon socket may publish while allow_anon_publish is on (ack delivered_to)" ack "$(wsr flag new_pub.msg.kind)"
+check_eq "that socket is closed 1008 at its next frame once MCP set_publish_policy turns the flag off" 1008 \
+  "$(wsr flag new_close.code)"
+check_contains "... and is told CONN_EVICTED before the close" CONN_EVICTED "$(wsr flag new_close.errors)"
 check_eq "after turning the flag off a fresh anon socket is denied again" WS_PUBLISH_ANON_DENIED "$(wsr flag third_pub.msg.code)"
 
 # --- token reroll: busy socket (sends a frame) and idle socket (sends nothing)

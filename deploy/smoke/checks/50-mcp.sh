@@ -10,10 +10,15 @@
 # errors; resources (templates, reads, the URI parser's refusals,
 # DRUST_MCP_RESOURCE_MAX_BYTES truncation); prompts; the redacted whoami; a
 # three-chunk upload with a create_upload_url ticket; and that a tenant
-# service-key reroll leaves the token's access to that tenant intact.
+# service-key reroll leaves the token's access to that tenant intact; and one
+# meta-writing tool (set_self_register) through the account endpoint, checked
+# by its effect on /auth/register.
 #
 # A preflight before any token is minted stops the script with a named failure
-# when DRUST_MCP is not on.
+# when DRUST_MCP is not on. A stack that up.sh started with SMOKE_DRUST_MCP=off
+# (recorded in .env) is checked for the off state instead: /mcp answers 404
+# MCP_DISABLED, the retired /t/<id>/mcp 410 with the off message and no URL,
+# and the OAuth metadata, protected-resource metadata and token endpoint 404.
 #
 # Uses 2 tenants (A: main, B: second tenant + reroll). Everything else it
 # creates (collections, RPCs, object-store objects) lives inside tenant A or is
@@ -912,6 +917,38 @@ def main():
     _, m = S.tool("list_collections", {"tenant": B})
     check("a tenant service-key reroll leaves the account endpoint's access to that tenant intact",
           bool(m and "result" in m and not is_error(m)), short(m))
+
+    # ============================================================ 12. a meta write through the account endpoint
+    # set_self_register writes meta.sqlite; /auth/register shows its effect.
+    # Two MCP calls (paced as all others) and two register requests against
+    # the per-IP limit of 3 per 60 s that 40 and 70 also use, minutes apart.
+    _, m = S.tool("set_self_register", {"enabled": True})
+    check("set_self_register(true) through the account endpoint answers allow_self_register=true",
+          bool(m and not is_error(m)) and (tool_json(m) or {}).get("allow_self_register") is True, short(m))
+    pw = "smoke-pass-" + secrets.token_hex(8)
+    SECRETS.append(pw)
+    r = register("smoke-mcp-%s@example.com" % secrets.token_hex(6), pw)
+    eq("... after which /auth/register creates a user (201)", 201, r.status)
+    _, m = S.tool("set_self_register", {"enabled": False})
+    check("set_self_register(false) through the account endpoint answers allow_self_register=false",
+          bool(m and not is_error(m)) and (tool_json(m) or {}).get("allow_self_register") is False, short(m))
+    r = register("smoke-mcp-%s@example.com" % secrets.token_hex(6), pw)
+    eq("... after which /auth/register is refused 403 SELF_REGISTER_DISABLED", (403, "SELF_REGISTER_DISABLED"),
+       (r.status, jbody(r).get("error_code")))
+
+def register(email, pw):
+    """POST /auth/register on tenant A with no credential, backing off on the
+    per-IP 429 (about 70 s at most, as 70-admin does)."""
+    body = json.dumps({"email": email, "password": pw})
+    for i in range(14):
+        r = hx("POST", BASE, "/t/%s/auth/register" % A, {"Content-Type": "application/json"}, body,
+               retry_429=False)
+        if r.status != 429:
+            return r
+        if i == 0:
+            note("register answered 429 (per-IP bucket shared with other scripts): backing off up to ~70 s")
+        time.sleep(5)
+    return r
 
 def ticket_upload(S):
     _, m = S.tool("create_upload_url", {"size": TICKET_FILE_BYTES, "filename": "smoke-ticket.bin"})
