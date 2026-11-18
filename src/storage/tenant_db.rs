@@ -1,7 +1,13 @@
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
-const RESERVED_TENANT_IDS: &[&str] = &["admin", "system", "root", "public"];
+/// `-` is the tenant key every host-level audit row is stored under
+/// ([`HOST_AUDIT_KEY`]); a tenant holding it would read those rows through its
+/// own log view.
+const RESERVED_TENANT_IDS: &[&str] = &["admin", "system", "root", "public", HOST_AUDIT_KEY];
+
+/// The `tenant` value of a host-level audit row. Reserved as a tenant id.
+pub const HOST_AUDIT_KEY: &str = "-";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TenantIdError {
@@ -341,6 +347,25 @@ pub fn ensure_sqlite_vec_loaded() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tenant_id_tests {
+    use super::*;
+
+    /// `-` is the host audit key: a tenant holding it would read every
+    /// host-level audit row through its own log view. Only the exact string
+    /// is reserved.
+    #[test]
+    fn the_host_audit_key_is_reserved_and_its_neighbours_are_not() {
+        assert!(matches!(
+            validate_tenant_id("-"),
+            Err(TenantIdError::Reserved(ref s)) if s == "-"
+        ));
+        for ok in ["a-b", "-a", "a-", "--"] {
+            assert!(validate_tenant_id(ok).is_ok(), "{ok}");
+        }
+    }
 }
 
 #[cfg(test)]

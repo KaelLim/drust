@@ -27,7 +27,7 @@ fn rejects_over_52_chars() {
 
 #[test]
 fn rejects_reserved_names() {
-    for name in ["admin", "system", "root", "public"] {
+    for name in ["admin", "system", "root", "public", "-"] {
         assert!(validate_tenant_id(name).is_err(), "reserved: {name}");
     }
 }

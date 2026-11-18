@@ -634,3 +634,87 @@ async fn host_browse_pill_shows_tenant_name_not_uuid() {
         "pill must show name as text and id as title"
     );
 }
+
+/// A member session for a new admin row, straight into meta.sqlite.
+fn insert_member_session(data_dir: &std::path::Path, email: &str) -> (i64, String) {
+    let conn = rusqlite::Connection::open(data_dir.join("meta.sqlite")).unwrap();
+    conn.execute(
+        "INSERT INTO admins (username, password_hash, email, role) \
+         VALUES (?1, '$oauth-only$', ?1, 'member')",
+        rusqlite::params![email],
+    )
+    .unwrap();
+    let admin_id = conn.last_insert_rowid();
+    let token = {
+        use base64::Engine;
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    };
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+    conn.execute(
+        "INSERT INTO sessions (token, admin_id, expires_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![token, admin_id, expires_at.to_rfc3339()],
+    )
+    .unwrap();
+    (admin_id, format!("drust_session={token}"))
+}
+
+/// Host-level rows are stored under the tenant key `-`. A live tenant row with
+/// that id (one that predates the reservation) must not turn the per-tenant
+/// log views into a window on them: both answer their own not-found response
+/// to its owner, while the host audit page still lists the host rows.
+#[tokio::test]
+async fn a_tenant_named_like_the_host_audit_key_cannot_read_host_rows() {
+    let log_dir = tempdir().unwrap();
+    write_oauth_audit_fixture(log_dir.path());
+    let (app, audit_db, data) = app_with_log_dir(log_dir.path().to_path_buf()).await;
+    audit_db.seed_from_jsonl(log_dir.path()).await;
+    let (member_id, member) = insert_member_session(data.path(), "dash-owner@example.invalid");
+    {
+        let conn = rusqlite::Connection::open(data.path().join("meta.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES ('-', 'Dash', ?1)",
+            [member_id],
+        )
+        .unwrap();
+    }
+    let _ = drust::storage::tenant_db::open_write(data.path(), "-").unwrap();
+
+    let get = |uri: &'static str, cookie: String| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            (resp.status(), body_string(resp).await)
+        }
+    };
+
+    let (s, b) = get("/admin/tenants/-/_logs?tab=browse", member.clone()).await;
+    assert_eq!((s, b.as_str()), (StatusCode::NOT_FOUND, "tenant not found"));
+    let (s, b) = get("/admin/api/tenants/-/audit", member.clone()).await;
+    assert_eq!(
+        (s, b.as_str()),
+        (
+            StatusCode::NOT_FOUND,
+            r#"{"error_code":"TENANT_NOT_FOUND","message":"no such tenant"}"#
+        )
+    );
+
+    let owner = login_session_cookie(&app).await;
+    let (s, b) = get("/admin/audit?tab=browse", owner).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        b.contains("admin@example.com"),
+        "the host page still lists the host rows"
+    );
+}

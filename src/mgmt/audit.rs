@@ -809,6 +809,11 @@ pub async fn audit_tenant_page(
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
+    // The host audit key is never a tenant's log, even for a row that holds
+    // it from before the reservation: that view would list every host row.
+    if tenant_id == crate::storage::tenant_db::HOST_AUDIT_KEY {
+        return (axum::http::StatusCode::NOT_FOUND, "tenant not found").into_response();
+    }
     // Tenant existence check (mirrors src/mgmt/tokens.rs:api_keys_page).
     let conn = state.session.meta.lock().await;
     let tenant_name: Option<String> = conn
@@ -1284,7 +1289,10 @@ pub async fn audit_tenant_json(
     axum::extract::Path(tenant_id): axum::extract::Path<String>,
     Query(q): Query<AuditQuery>,
 ) -> Response {
-    let (map, exists) = {
+    // Never a tenant's log: see `audit_tenant_page`.
+    let (map, exists) = if tenant_id == crate::storage::tenant_db::HOST_AUDIT_KEY {
+        (std::collections::HashMap::new(), false)
+    } else {
         let meta = state.session.meta.lock().await;
         let exists = meta
             .query_row(

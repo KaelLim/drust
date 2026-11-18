@@ -102,6 +102,28 @@ async fn main() -> anyhow::Result<()> {
             "boot completed with degraded maintenance; see x-drust-boot-degraded"
         );
     }
+    // The host audit key is a reserved tenant id; a live tenant can only hold
+    // it from before the reservation. Read-only: nothing is renamed or removed.
+    if migration_report
+        .tenants_ok
+        .iter()
+        .chain(migration_report.tenants_failed.iter().map(|(t, _)| t))
+        .any(|t| t == drust::storage::tenant_db::HOST_AUDIT_KEY)
+        && meta
+            .query_row(
+                "SELECT 1 FROM tenants WHERE id = ?1 AND deleted_at IS NULL",
+                [drust::storage::tenant_db::HOST_AUDIT_KEY],
+                |_| Ok(()),
+            )
+            .is_ok()
+    {
+        tracing::warn!(
+            tenant = drust::storage::tenant_db::HOST_AUDIT_KEY,
+            "a live tenant has the id reserved for host audit rows; it predates the \
+             reservation. Its log view, overview page and MCP access are refused; rename \
+             is not possible, delete it or keep using its data plane"
+        );
+    }
     let meta = Arc::new(Mutex::new(meta));
 
     let audit_db_path = cfg.data_dir.join("meta_logs.sqlite");

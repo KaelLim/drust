@@ -446,6 +446,23 @@ mod tests {
             ),
             (Some("<invalid>"), Some("<invalid>"))
         );
+        // The host audit key is a reserved id: a refused call naming it never
+        // records a requested tenant that reads as the host key.
+        let d = denied_entry(
+            Some(1),
+            Some(2),
+            DeniedSurface::Resource("drust://-/schema"),
+            Some("-"),
+            "TENANT_NOT_FOUND",
+        );
+        assert_eq!(
+            (
+                d.tenant.as_str(),
+                d.extra["name"].as_str(),
+                d.extra["requested_tenant"].as_str()
+            ),
+            ("-", Some("<invalid>"), Some("<invalid>"))
+        );
     }
 
     /// The string below only has the shape of a tenant key; it is not one.

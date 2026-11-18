@@ -257,3 +257,61 @@ async fn form_route_lets_a_member_below_the_cap_create() {
         "a successful form create redirects back to the list"
     );
 }
+
+// ─── the host audit key ───────────────────────────────────────────────────────
+
+/// `-` is the key host-level audit rows are stored under, so a tenant holding
+/// it would read them all through its own log view. Both creation faces must
+/// refuse it for every role, before anything is written.
+#[tokio::test]
+async fn the_host_audit_key_cannot_be_created_as_a_tenant_id() {
+    let (app, dir) = spin_up().await;
+    let (_, owner_cookie) = insert_admin(&dir, "own-dash@example.invalid", "owner");
+    let (member_id, member_cookie) = insert_admin(&dir, "mem-dash@example.invalid", "member");
+    seed_tenants(&dir, member_id, default_cap() - 1);
+
+    for (who, cookie) in [("owner", &owner_cookie), ("member", &member_cookie)] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/api/tenants")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"id":"-","name":"Host Key"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{who}");
+        let body = body_text(resp).await;
+        assert!(body.contains("INVALID_TENANT_ID"), "{who}: {body}");
+        assert!(body.contains("reserved"), "{who}: {body}");
+
+        // The form face mints its own id and never reads one from the body.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/tenants/new")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=Host+Key&id=-"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{who}");
+    }
+
+    let conn = rusqlite::Connection::open(dir.path().join("meta.sqlite")).unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(count("SELECT COUNT(*) FROM tenants WHERE id = '-'"), 0);
+    assert_eq!(
+        count("SELECT COUNT(*) FROM tokens WHERE tenant_id = '-'"),
+        0
+    );
+    assert!(!dir.path().join("tenants").join("-").exists());
+}

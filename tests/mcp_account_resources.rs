@@ -321,3 +321,61 @@ async fn resources_and_prompts_follow_an_owner_transfer_on_the_next_call() {
     let (_, _, msg) = prompt(&h, &m.access, "secure_collection", args).await;
     assert_eq!(msg["error"]["message"], "tenant not found");
 }
+
+/// `-` is the host audit key and reserved as a tenant id. A live row with that
+/// id (one that predates the reservation, owned by the caller) changes no
+/// answer: a tool call, a resource read and a prompt naming it answer exactly
+/// what they answered before the row existed, which is the missing-tenant
+/// answer.
+#[tokio::test]
+async fn the_host_audit_key_answers_like_a_missing_tenant_even_when_a_row_has_it() {
+    let h = spin_up_account_mcp("acct-res").await;
+    let tool = |t: &'static str| {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": "list_collections", "arguments": {"tenant": t}}})
+    };
+    let answers = || async {
+        let (ts, _, mut tm) = mcp_rpc(&h.app, Some(&h.access), tool("-")).await;
+        let (rs, rct, r) = read(&h, &h.access, "drust://-/schema").await;
+        let (ps, pct, p) = prompt(
+            &h,
+            &h.access,
+            "secure_collection",
+            json!({"tenant": "-", "collection": "posts"}),
+        )
+        .await;
+        (ts, tm.swap_remove(0), rs, rct, r, ps, pct, p)
+    };
+    let before = answers().await;
+    let (_, _, mut missing) = mcp_rpc(&h.app, Some(&h.access), tool("nope-dash")).await;
+    assert_eq!(before.1["result"], missing.swap_remove(0)["result"]);
+    assert_eq!(
+        before.1["result"]["isError"], true,
+        "the tool answer is the missing-tenant refusal"
+    );
+
+    h.tenants.get_or_create("-").unwrap();
+    {
+        let g = h.meta.lock().await;
+        g.execute(
+            "INSERT INTO tenants (id, name, owner_admin_id) VALUES ('-', 'Dash', ?1)",
+            [h.admin_id],
+        )
+        .unwrap();
+    }
+    let after = answers().await;
+    assert_eq!(after.0, before.0);
+    assert_eq!(after.1, before.1, "tools/call");
+    assert_eq!(
+        (after.2, &after.3, &after.4),
+        (before.2, &before.3, &before.4),
+        "resources/read"
+    );
+    assert_eq!(
+        (after.5, &after.6, &after.7),
+        (before.5, &before.6, &before.7),
+        "prompts/get"
+    );
+    assert_eq!(after.4["error"]["code"], -32002);
+    assert_eq!(after.7["error"]["data"]["error_code"], "TENANT_NOT_FOUND");
+}
