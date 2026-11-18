@@ -84,8 +84,8 @@ optional environment variables.
   own log view. Creating one answers `400 INVALID_TENANT_ID` ("tenant id '-' is reserved");
   ids such as `a-b` and `--` stay valid. A tenant named `-` that already exists keeps its
   data plane, but its log page and log JSON answer `404`, its overview page, room eviction
-  and broadcast inspector answer `400`, the MCP endpoint answers it like a missing tenant,
-  and every boot logs one warning naming it. It cannot be renamed: delete it, or keep using
+  and broadcast inspector answer `400`, the MCP endpoint answers it like a missing tenant
+  and leaves it out of `list_tenants`, and every boot logs one warning naming it. It cannot be renamed: delete it, or keep using
   its data plane.
 - **`POST /login` refuses a browser-declared cross-site submission.** The admin password
   login had no CSRF token, and the session cookie's `SameSite=Lax` does not stop a

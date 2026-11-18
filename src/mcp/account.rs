@@ -196,9 +196,12 @@ fn list_tenants_value(
     let Some(v) = visible_tenants_for_admin(conn, caller.grant_id(), caller.admin_id())? else {
         return Ok(None);
     };
+    // A tenant whose id `resolve_tenant` refuses is not listed: every call
+    // naming it would answer TENANT_NOT_FOUND.
     let tenants: Vec<serde_json::Value> = v
         .tenants
         .iter()
+        .filter(|t| crate::storage::tenant_db::validate_tenant_id(&t.id).is_ok())
         .map(|t| {
             serde_json::json!({
                 "id": t.id,
@@ -2198,6 +2201,36 @@ mod list_tenants_tests {
             ov["tenants"][0]["resources"]["schema_md"],
             "drust://alpha/schema.md"
         );
+    }
+
+    /// A tenant whose id no call can name (`-`, the host audit key, from a
+    /// release before it was reserved) is not listed; the rest keep their
+    /// order, for a member and for a sees-all admin.
+    #[test]
+    fn list_tenants_value_leaves_out_an_id_no_call_can_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = meta(dir.path());
+        let m = admin(&c, "m", None, "member");
+        let o = admin(&c, "o", None, "owner");
+        for t in ["zeta", "-", "alpha"] {
+            c.execute(
+                "INSERT INTO tenants (id, name, owner_admin_id) VALUES (?1, upper(?1), ?2)",
+                params![t, m],
+            )
+            .unwrap();
+        }
+        for who in [m, o] {
+            let v = list_tenants_value(&c, &caller(&c, who), "u")
+                .unwrap()
+                .unwrap();
+            let ids: Vec<&str> = v["tenants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, ["alpha", "zeta"], "admin {who}");
+        }
     }
 
     #[test]
