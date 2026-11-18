@@ -809,7 +809,10 @@ fn mcp_ui_locale_sections_match_and_are_js_safe() {
         flatten("", &v, &mut all);
         all.into_iter()
             .filter(|(k, _)| {
-                k.starts_with("settings.mcp_grants.") || k.starts_with("admin_team.mcp.")
+                k.starts_with("settings.mcp_grants.")
+                    || k.starts_with("admin_team.mcp.")
+                    || k.starts_with("mcp_connect.")
+                    || k.starts_with("mcp_diag.")
             })
             .collect::<std::collections::BTreeMap<_, _>>()
     };

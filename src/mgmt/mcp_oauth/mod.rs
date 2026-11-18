@@ -9,6 +9,7 @@ pub mod authorize;
 pub mod caller;
 pub mod clients;
 pub mod config;
+pub mod connect;
 pub mod consent;
 pub mod envelope;
 pub mod metadata;
@@ -111,7 +112,13 @@ pub fn team_routes(state: &MgmtState) -> Router {
 mod i18n_parity {
     use std::collections::BTreeMap;
 
-    const PREFIXES: &[&str] = &["mcp_oauth.", "settings.mcp_grants.", "admin_team.mcp."];
+    const PREFIXES: &[&str] = &[
+        "mcp_oauth.",
+        "settings.mcp_grants.",
+        "admin_team.mcp.",
+        "mcp_connect.",
+        "mcp_diag.",
+    ];
 
     fn flatten(prefix: &str, v: &toml::Value, out: &mut BTreeMap<String, String>) {
         match v {

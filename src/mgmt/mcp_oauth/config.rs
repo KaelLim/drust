@@ -348,6 +348,11 @@ impl McpOauthConfig {
         self.endpoint_url("/.well-known/oauth-protected-resource/mcp")
     }
 
+    /// The normalized public origin (scheme://host[:port], no trailing '/'); None while disabled.
+    pub fn public_origin(&self) -> Option<&str> {
+        self.enabled().then_some(self.origin.as_str())
+    }
+
     /// Whether a browser `Origin` header may reach the resource server: this
     /// server's own origin (scheme and host case-insensitive, the default port
     /// optional) or a loopback origin (`localhost`, `127.0.0.1`, `::1`) on any
@@ -1373,5 +1378,18 @@ mod tests {
                 assert!(!l.contains("allowed_hosts"), "{l}");
             }
         }
+    }
+
+    #[test]
+    fn public_origin_is_the_bare_origin_and_none_while_disabled() {
+        assert_eq!(
+            McpOauthConfig::for_tests("https://drust.test").public_origin(),
+            Some("https://drust.test")
+        );
+        assert_eq!(
+            McpOauthConfig::for_tests("https://drust.test:8443").public_origin(),
+            Some("https://drust.test:8443")
+        );
+        assert_eq!(McpOauthConfig::disabled().public_origin(), None);
     }
 }

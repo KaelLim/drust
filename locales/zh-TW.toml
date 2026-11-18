@@ -846,6 +846,39 @@ csrf = "無法驗證這份表單，請回上一頁、重新整理同意頁後再
 admin_missing = "你的帳號已不存在於此伺服器。"
 internal = "發生錯誤，沒有授權任何東西。"
 
+[mcp_diag.check.mcp]
+label = "MCP 端點回應登入 challenge（401）"
+hint = "421：proxy 送出的 Host 既不是 127.0.0.1:47826 也不是公開主機。404 且為 MCP_DISABLED：回應的那台伺服器關閉了 MCP。其他 404：base path 底下的請求沒有轉到 drust。"
+
+[mcp_diag.check.prm]
+label = "challenge 指向的 protected-resource metadata"
+hint = "resource 與 authorization_servers 必須等於上方的預期值。"
+
+[mcp_diag.check.prm_root]
+label = "主機根目錄的 protected-resource metadata"
+hint = "本機 proxy 或前面那層 proxy 缺少這個網址的根目錄規則時會失敗。"
+
+[mcp_diag.check.as_root]
+label = "主機根目錄的 authorization-server metadata"
+hint = "issuer 必須等於預期值。掛在路徑下的伺服器，每一層 proxy 都要有這個網址的根目錄規則。"
+
+[mcp_diag.check.as_base]
+label = "base path 底下的 authorization-server metadata"
+hint = "只有連接頁上手動設定 authServerMetadataUrl 的退路會用到。"
+
+[mcp_diag.check.token]
+label = "token 端點對空請求回 OAuth 錯誤（400）"
+hint = "這裡出現轉址代表有 proxy 在轉址，例如 http 轉 https 或補結尾斜線。Claude Code 遇到任何轉址都會停止登入。"
+
+[mcp_diag.reason]
+mode_off = "DRUST_MCP 是 off。"
+auto = "DRUST_MCP 是 auto（預設），在這個版本不會開啟 MCP。請設 DRUST_MCP=on。"
+invalid_mode = "DRUST_MCP 的值不是 auto、on、off 之一，視為 off。"
+public_url_missing = "DRUST_MCP 是 on，但 DRUST_PUBLIC_URL 是空的。請設成公開的 https origin。"
+public_url_invalid = "DRUST_PUBLIC_URL 必須是單純的 origin（scheme://host[:port]），主機或 port 之後不能有任何東西。"
+insecure_http = "DRUST_PUBLIC_URL 在非 loopback 主機上用了 http。請改用 https。"
+base_path_invalid = "DRUST_BASE_PATH 只能用英數字與 . _ ~ / -，而且不能有空的、. 或 .. 的路徑段。"
+
 [settings.page]
 title = "drust 管理 — 設定"
 meta_description = "drust 管理 — 個別管理員偏好設定（語言等）。"

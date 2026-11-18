@@ -826,6 +826,39 @@ csrf = "The form could not be verified. Go back, reload the consent page, and tr
 admin_missing = "Your account no longer exists on this server."
 internal = "Something went wrong. Nothing was authorized."
 
+[mcp_diag.check.mcp]
+label = "MCP endpoint answers with a sign-in challenge (401)"
+hint = "421: the proxy sends a Host that is neither 127.0.0.1:47826 nor the public host. 404 with MCP_DISABLED: the server that answered has MCP off. Any other 404: requests under the base path do not reach drust."
+
+[mcp_diag.check.prm]
+label = "Protected-resource metadata that the challenge points to"
+hint = "resource and authorization_servers must equal the expected values above."
+
+[mcp_diag.check.prm_root]
+label = "Protected-resource metadata at the host root"
+hint = "Fails when the root rule for this address is missing on the local proxy or on the proxy in front of it."
+
+[mcp_diag.check.as_root]
+label = "Authorization-server metadata at the host root"
+hint = "issuer must equal the expected value. On a path-mounted server this address needs a root rule on every proxy."
+
+[mcp_diag.check.as_base]
+label = "Authorization-server metadata under the base path"
+hint = "Used only by the manual authServerMetadataUrl fallback on the connect page."
+
+[mcp_diag.check.token]
+label = "Token endpoint answers an empty request with an OAuth error (400)"
+hint = "A redirect here means a proxy redirects, for example http to https or a trailing slash. Claude Code stops signing in on any redirect."
+
+[mcp_diag.reason]
+mode_off = "DRUST_MCP is off."
+auto = "DRUST_MCP is auto (the default), which leaves MCP off on this build. Set DRUST_MCP=on."
+invalid_mode = "DRUST_MCP has a value other than auto, on or off, so it is treated as off."
+public_url_missing = "DRUST_MCP is on but DRUST_PUBLIC_URL is empty. Set it to the public https origin."
+public_url_invalid = "DRUST_PUBLIC_URL must be a bare origin, scheme://host[:port], with nothing after the host or port."
+insecure_http = "DRUST_PUBLIC_URL uses http on a host that is not loopback. Use https."
+base_path_invalid = "DRUST_BASE_PATH may use only letters, digits and . _ ~ / - and may not have an empty, . or .. segment."
+
 [settings.page]
 title = "drust admin — settings"
 meta_description = "drust admin — per-admin preferences (language, etc)."

@@ -236,3 +236,40 @@ fn account_ticket_urls_drop_the_prefix() {
         )
     );
 }
+
+#[test]
+fn connect_and_diagnostics_urls_drop_the_prefix() {
+    drust::base_path::set("");
+    let cfg = drust::mgmt::mcp_oauth::config::McpOauthConfig::for_tests("https://drust.test");
+    let c = drust::mgmt::mcp_oauth::connect::connect_commands(&cfg).unwrap();
+    assert_eq!(
+        c.add,
+        "claude mcp add --transport http --scope user drust https://drust.test/mcp"
+    );
+    assert!(
+        c.metadata_fallback.is_none(),
+        "no authServerMetadataUrl fallback under an empty base"
+    );
+    let checks: Vec<(&str, String)> = drust::mgmt::mcp_oauth::connect::diag_checks(&cfg)
+        .into_iter()
+        .map(|c| (c.id, c.url))
+        .collect();
+    assert_eq!(
+        checks,
+        vec![
+            ("mcp", "https://drust.test/mcp".to_string()),
+            (
+                "prm",
+                "https://drust.test/.well-known/oauth-protected-resource/mcp".to_string()
+            ),
+            (
+                "as_root",
+                "https://drust.test/.well-known/oauth-authorization-server".to_string()
+            ),
+            ("token", "https://drust.test/oauth/token".to_string()),
+        ]
+    );
+    let v = drust::mgmt::mcp_oauth::connect::diagnostics_json(&cfg).unwrap();
+    assert_eq!(v["page"], "https://drust.test/admin/mcp/diagnostics");
+    assert_eq!(v["issuer"], "https://drust.test");
+}
