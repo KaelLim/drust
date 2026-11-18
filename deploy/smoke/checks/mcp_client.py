@@ -379,12 +379,14 @@ def mint(base, resource, username, password):
         if r.status == 200 and not good:
             # Tokens were issued but this client will not use them: end the
             # grant now rather than leave it live on the smoke admin's card.
+            # When nothing was revoked (including a body that did not parse, so
+            # no token is held) the grant may still be live: say so.
             held = [t for t in (issued.get("access_token"), issued.get("refresh_token"))
                     if isinstance(t, str) and t]
             gone = bool(held) and request("POST", base + "/oauth/revoke", {"Content-Type": FORM},
                                           _form({"token": held[0]})).status == 200
             raise Failed("token", summary_of(r) + " (tokens rejected by this client)"
-                         + (REVOKE_BY_HAND if held and not gone else ""))
+                         + (REVOKE_BY_HAND if not gone else ""))
         step("token", r, lambda r: good)
         return issued["access_token"]
     finally:
