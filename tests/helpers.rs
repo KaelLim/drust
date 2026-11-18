@@ -1587,6 +1587,40 @@ pub async fn mcp_tool_text(
         .to_string()
 }
 
+/// The tus chunk limit of the account harness's files router: above axum's
+/// 2 MiB default body limit, so a test can tell the route's own limit apart.
+pub const ACCOUNT_FILES_CHUNK_MAX: usize = 3 * 1024 * 1024;
+
+/// One owner (`mcp-owner`) owning every id in `tenants`, with the files router
+/// on an in-memory object store; `mcp_enabled` turns upload-ticket redemption
+/// on.
+pub async fn spin_up_ticket_harness(
+    tenants: &[&'static str],
+    mcp_enabled: bool,
+) -> AccountMcpHarness {
+    spin_up_account_mcp_with(AccountMcpOpts {
+        admins: vec![("mcp-owner", "owner")],
+        tenants: tenants.iter().map(|t| (*t, Some(0))).collect(),
+        files: true,
+        mcp_enabled,
+    })
+    .await
+}
+
+/// An upload ticket issued from a real access token, the way the account
+/// endpoint issues one. Panics when the token does not authorize or the
+/// tenant is not visible to its admin.
+pub async fn seed_upload_ticket(
+    meta: &Arc<Mutex<rusqlite::Connection>>,
+    access: &str,
+    req: &drust::mgmt::mcp_oauth::store::TicketRequest<'_>,
+) -> String {
+    let g = meta.lock().await;
+    drust::mgmt::mcp_oauth::store::issue_upload_ticket_for_tests(&g, access, req)
+        .unwrap()
+        .expect("ticket issued")
+}
+
 /// One owner (`mcp-owner`) owning `tenant`, MCP enabled, no files router.
 pub async fn spin_up_account_mcp(tenant: &'static str) -> AccountMcpHarness {
     spin_up_account_mcp_with(AccountMcpOpts {
@@ -1603,6 +1637,7 @@ pub async fn spin_up_account_mcp(tenant: &'static str) -> AccountMcpHarness {
 /// PAT.
 pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness {
     use drust::mgmt::mcp_oauth::config::McpOauthConfig;
+    use drust::mgmt::mcp_oauth::rl::McpOauthLimiters;
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_path_buf();
     let conn = open_meta(&data.join("meta.sqlite")).unwrap();
@@ -1639,7 +1674,18 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     let meta = Arc::new(Mutex::new(conn));
     let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
     let bus = EventBus::new();
+    // ONE config and ONE limiter set, shared by the tenant stack and the
+    // management state as in `main`: upload-ticket redemption is mounted on
+    // the files router only when the tenant stack's config is enabled.
+    let cfg = Arc::new(if opts.mcp_enabled {
+        McpOauthConfig::for_tests(MCP_PUBLIC_URL)
+    } else {
+        McpOauthConfig::disabled()
+    });
+    let rl = Arc::new(McpOauthLimiters::new());
     let mut state = TenantAuthState::test_default(meta.clone(), tenants.clone());
+    state.mcp_oauth = cfg.clone();
+    state.mcp_oauth_rl = rl.clone();
     let bus_rooms = shared_bus_rooms(&mut state);
     let mcp = test_mcp_http_live(
         tenants.clone(),
@@ -1653,7 +1699,7 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     let (garage, files_state) = if opts.files {
         let garage = Some(Arc::new(drust::storage::garage::GarageClient::from_store(
             Arc::new(object_store::memory::InMemory::new()),
-            "unused",
+            "private",
         )));
         let mut fs = drust::mgmt::tenant_files::TenantFilesState::test_default(
             garage.clone(),
@@ -1661,6 +1707,10 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
             tenants.clone(),
         );
         fs.disk_min_free_pct = 0;
+        // Production threads the real meta: the tus handlers lock it again
+        // (quota tier), which a meta guard held across them would deadlock.
+        fs.meta = Some(meta.clone());
+        fs.large_upload_chunk_max_bytes = ACCOUNT_FILES_CHUNK_MAX;
         (garage, Some(fs))
     } else {
         (None, None)
@@ -1690,11 +1740,8 @@ pub async fn spin_up_account_mcp_with(opts: AccountMcpOpts) -> AccountMcpHarness
     );
     mgmt.log_dir = data.join("audit");
     std::fs::create_dir_all(&mgmt.log_dir).unwrap();
-    mgmt.mcp_oauth = Arc::new(if opts.mcp_enabled {
-        McpOauthConfig::for_tests(MCP_PUBLIC_URL)
-    } else {
-        McpOauthConfig::disabled()
-    });
+    mgmt.mcp_oauth = cfg;
+    mgmt.mcp_oauth_rl = rl;
     mgmt.garage = garage;
     let app = Router::new()
         .merge(mgmt.with_data_dir(data.clone()))

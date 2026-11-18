@@ -992,7 +992,6 @@ pub(crate) fn issue_upload_ticket(
 /// One live ticket as redemption sees it. NO `Debug` (pinned by
 /// `credential_types_do_not_derive_debug`): it carries the ticket's hash and
 /// the bound tus token.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct TicketRow {
     pub ticket_hash: String,
     pub grant_id: i64,
@@ -1009,7 +1008,6 @@ pub(crate) struct TicketRow {
 
 /// The ticket, re-joined to its grant, admin and tenant incarnations. A wrong
 /// prefix or length answers `None` without touching SQL.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn find_live_ticket(
     conn: &Connection,
     ticket: &str,
@@ -1071,7 +1069,6 @@ pub fn ticket_hash_known(conn: &Connection, ticket: &str) -> rusqlite::Result<bo
 
 /// Claims the ticket's one create (`NULL` -> `'creating'`). `false` = already
 /// claimed or bound, revoked, or past `create_by` / `expires_at`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn claim_ticket_create(conn: &Connection, ticket_hash: &str) -> rusqlite::Result<bool> {
     Ok(conn.execute(SQL_TICKET_CLAIM, params![ticket_hash])? == 1)
 }
@@ -1080,7 +1077,6 @@ pub(crate) fn claim_ticket_create(conn: &Connection, ticket_hash: &str) -> rusql
 /// deadline to the session's (`ttl_secs` from now). `false` = not claimed any
 /// more, or revoked in between. A TTL that `datetime()` cannot represent makes
 /// the UPDATE fail on `expires_at NOT NULL`: an `Err`, which fails closed.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bind_ticket(
     conn: &Connection,
     ticket_hash: &str,
@@ -1093,7 +1089,6 @@ pub(crate) fn bind_ticket(
 
 /// Gives a claimed ticket its create back (`'creating'` -> `NULL`) after a
 /// create that did not answer 201. A bound ticket is left as it is.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn release_ticket_claim(conn: &Connection, ticket_hash: &str) -> rusqlite::Result<()> {
     conn.execute(SQL_TICKET_RELEASE, params![ticket_hash])?;
     Ok(())

@@ -580,7 +580,7 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
     let files_router = if let Some(files_state) = state.files {
         let max_upload_bytes = files_state.max_upload_bytes;
         let chunk_max = files_state.large_upload_chunk_max_bytes;
-        Router::new()
+        let r = Router::new()
             .route(
                 "/t/{tenant}/files",
                 post(crate::mgmt::tenant_files::upload)
@@ -629,8 +629,22 @@ pub fn build_tenant_router(state: TenantStack) -> Router {
             .layer(axum::middleware::from_fn_with_state(
                 auth_state.clone(),
                 router::bearer_auth_layer,
+            ));
+        // Upload tickets, only when MCP OAuth is enabled: outermost, so a
+        // ticket never reaches the bearer stack. `route_layer`, not `layer`,
+        // keeps an unknown path the router's own 404. The ticket router the
+        // dispatch re-routes into is reached only through it and is never
+        // merged here, and the dispatch never holds the meta lock across that
+        // re-route (the tus handlers lock meta themselves).
+        let r = if auth_state.mcp_oauth.enabled() {
+            r.route_layer(axum::middleware::from_fn_with_state(
+                uploads::ticket::TicketDispatch::new(auth_state.clone(), files_state.clone()),
+                uploads::ticket::upload_ticket_dispatch,
             ))
-            .with_state(files_state)
+        } else {
+            r
+        };
+        r.with_state(files_state)
     } else {
         Router::new()
     };

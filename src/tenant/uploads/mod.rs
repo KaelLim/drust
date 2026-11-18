@@ -1,5 +1,6 @@
 //! v1.33 — Mode B large-file upload: tus 1.0 server + spool-to-Garage.
 pub mod session;
+pub(crate) mod ticket;
 
 use crate::error::{json_error, json_error_with_aliases};
 use crate::mgmt::tenant_files::TenantFilesState;
@@ -787,7 +788,6 @@ pub async fn terminate(
 /// row and the append lock, the same three things `terminate` removes. A
 /// malformed token or a tenant that is gone is `Ok(())` with nothing touched
 /// (the token is shape-checked before any filesystem use).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn abort_session(
     files: &TenantFilesState,
     tenant_id: &str,

@@ -1,8 +1,8 @@
-//! #925 — merged harness for the storage test group (6 members).
+//! #925 — merged harness for the storage test group (7 members).
 //! Each module is one former standalone integration-test binary, unchanged.
 //!
-//! No member of this group loads a shared module file twice, so
-//! `duplicate_mod` has nothing to fire on here today. The allow is still
+//! One member (`mcp_upload_ticket`) loads tests/helpers.rs; no other member
+//! does, so `duplicate_mod` has nothing to fire on here today. The allow is still
 //! present because the plan puts it on every #925 harness: a member added later
 //! that declares `mod helpers;` alongside an existing one would otherwise turn
 //! CI's `cargo clippy --all-targets -- -D warnings` red for a duplication that
@@ -13,6 +13,8 @@
 // it itself and now says `use crate::common;` (spec 鐵律 2).
 mod common;
 
+#[path = "mcp_upload_ticket.rs"]
+mod mcp_upload_ticket;
 #[path = "storage_disk.rs"]
 mod storage_disk;
 #[path = "storage_files_helpers.rs"]
