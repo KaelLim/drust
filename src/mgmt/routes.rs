@@ -931,6 +931,7 @@ impl MgmtState {
             functions_exec: self.functions_exec.clone(),
             fn_data_root: self.fn_data_root.clone(),
             cron: self.cron.clone(),
+            mcp_oauth: self.mcp_oauth.clone(),
         };
         let public_files_state = PublicFilesState {
             session: session.clone(),

@@ -186,10 +186,6 @@ scope = "主機層級範圍"
 organization = "組織"
 resources = "資源"
 
-[mcp_pat.alert]
-no_pat_title = "尚無可用 PAT"
-no_pat_body = "請到 /drust/admin/settings 查看你的 PAT，然後再按一次。"
-
 [admin_team.action]
 remove = "移除"
 change_role = "變更角色"
@@ -554,7 +550,7 @@ title = "外送 webhook 訂閱"
 
 [collections.empty]
 body = "當你的客戶端寫入第一筆記錄後，資料表會自動出現在此處。"
-hint = "透過 REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> 端點，或該租戶專屬的 MCP server 寫入（需 service key）。"
+hint = "透過 REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> 端點，或帳號層級的 MCP 端點寫入。"
 title = "此資料庫沒有任何資料表"
 
 [collections.head]
@@ -1006,8 +1002,8 @@ card_title = "偏好設定"
 unsaved = "未儲存"
 
 [settings.tokens]
-card_title = "個人 MCP token"
-desc = "每位 admin 一把 PAT，綁定你的 Claude Code mcp.json 與任何 tenant 的 MCP endpoint。重抽會讓所有貼過此 PAT 的機器立即失效。"
+card_title = "個人 API token（REST／admin API）"
+desc = "每位管理員一個 PAT，給 drust CLI、腳本與 admin API 使用。MCP 用戶端不使用它：它們在帳號 MCP 端點以 OAuth 登入。Reroll 會讓目前的 PAT 在所有貼過的地方失效。"
 fingerprint = "指紋"
 last_used = "最後使用"
 last_used_never = "從未使用"
@@ -1018,12 +1014,12 @@ btn_reroll = "重抽"
 legacy_plaintext_unavailable = "舊版 PAT 沒有 plaintext —— 請按重抽產生新的。"
 
 [settings.tokens.confirm]
-reroll_text = "重抽會立即讓目前的 PAT 失效。所有正在使用此 PAT 的 Claude Code mcp.json、環境變數、腳本都會回 401，必須到每一台機器更新 token。確定要繼續嗎？"
+reroll_text = "Reroll 會立即讓目前的 PAT 失效。所有使用它的腳本、環境變數或 CLI 登入都會收到 401，每台機器都要更新 token。要繼續嗎？"
 reroll_title = "重抽 PAT"
 
 [settings.cli_tokens]
 card_title = "CLI 存取 token"
-desc = "由 `drust auth login`（device flow）產生、帶標籤且會過期的 token。撤銷其中一個等於把那台機器登出，不影響上方的 MCP PAT。"
+desc = "由 `drust auth login`（device flow）產生、帶標籤且會過期的 token。撤銷其中一個等於把那台機器登出，不影響上方的個人 API token。"
 col_created = "建立時間"
 col_last_used = "最後使用"
 col_expires = "過期時間"
@@ -1083,12 +1079,9 @@ reroll_title = "重新產生金鑰"
 title = "API 金鑰"
 intro = "這個租戶有兩種金鑰，請依照要整合的介面挑一支用；重新產生會立刻作廢前一支 bearer。租戶 <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code>・建立於 {created_at}。"
 
-[tenant_api_keys.mcp]
-copy_title = "複製 claude mcp add 指令"
-desc = "Streamable HTTP・透過 service token 認證"
-name = "MCP 端點"
-# {n} placeholder: 渲染時由 handler 透過 t.fmt(...) 帶入即時的 MCP 工具數量。
-tools_pill = "{n} 個工具"
+[tenant_api_keys.mcp_hint]
+body = "MCP 用戶端不再使用這個 tenant 的金鑰：每個帳號用 OAuth 連一次即可。"
+link = "連接 MCP 用戶端"
 
 [tenant_api_keys.page]
 title = "drust 管理—{tenant_name} / _api_keys"
@@ -1895,26 +1888,6 @@ verified = "已驗證"
 profile = "個人資料"
 created_at = "建立時間"
 updated_at = "更新時間"
-
-[mcp_setup]
-modal_title = "MCP 設定指引"
-button_more_clients = "更多 client"
-close = "關閉"
-path_label = "貼到："
-linux_unsupported = "Claude Desktop 官方不支援 Linux。"
-os_tablist_label = "作業系統"
-
-[mcp_setup.tab]
-windows = "Windows"
-macos = "macOS"
-linux = "Linux"
-
-[mcp_setup.client]
-claude_code = "Claude Code CLI"
-codex = "Codex CLI"
-cursor = "Cursor"
-claude_desktop = "Claude Desktop"
-gemini = "Gemini CLI"
 
 [tenants_list.table]
 copy_id_label = "複製 id"

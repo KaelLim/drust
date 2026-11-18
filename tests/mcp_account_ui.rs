@@ -673,3 +673,49 @@ async fn disabled_diagnostics_page_shows_the_reason_to_owners() {
         }
     }
 }
+
+// ─── the API Keys page and the settings card ────────────────────────────────
+
+#[tokio::test]
+async fn api_keys_page_links_to_the_connect_page_only_when_enabled() {
+    // The per-tenant MCP block is gone whatever the switch says; with MCP on
+    // the page links to the connect page instead.
+    let en = bundle("en.toml");
+    let link_text = en["tenant_api_keys.mcp_hint.link"].clone();
+    let connect = drust::base_path::base("/admin/mcp");
+    for enabled in [true, false] {
+        let fx = mo::fixture(enabled).await;
+        seed_tenant_keys(&fx).await;
+        let pat = known_pat(&fx, fx.owner_id).await;
+        assert!(pat.starts_with("drust_pat_"));
+        let s = session(&fx, fx.owner_id).await;
+        let r = get_page(&fx.app, "/admin/tenants/acme/_api_keys", Some(&s)).await;
+        assert_eq!(r.status(), StatusCode::OK, "enabled={enabled}");
+        let b = body(r).await;
+        assert_eq!(b.contains(&connect), enabled, "enabled={enabled}: link");
+        assert_eq!(
+            b.contains(link_text.as_str()),
+            enabled,
+            "enabled={enabled}: link text"
+        );
+        for gone in ["key-mcp-pat", "copyMcpCommand", "/t/acme/mcp", "drust_pat_"] {
+            assert!(!b.contains(gone), "enabled={enabled}: page has {gone:?}");
+        }
+        assert!(!b.contains("!!"), "a missing locale key renders as !!key!!");
+    }
+}
+
+#[tokio::test]
+async fn settings_pat_card_says_mcp_does_not_use_it() {
+    let en = bundle("en.toml");
+    let title = en["settings.tokens.card_title"].clone();
+    assert_eq!(title, "Personal API token (REST / admin API)");
+    for enabled in [true, false] {
+        let fx = mo::fixture(enabled).await;
+        let s = session(&fx, fx.owner_id).await;
+        let r = get_page(&fx.app, "/admin/settings", Some(&s)).await;
+        assert_eq!(r.status(), StatusCode::OK, "enabled={enabled}");
+        let b = body(r).await;
+        assert!(b.contains(&esc(&title)), "enabled={enabled}: card title");
+    }
+}

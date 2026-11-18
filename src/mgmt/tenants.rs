@@ -91,6 +91,9 @@ pub struct TenantsState {
     /// by the minute tick (the fire-time re-assert would fail closed anyway,
     /// but noisily, every minute until restart).
     pub cron: Arc<crate::cron::CronState>,
+    /// The MCP OAuth config. The API Keys page links to the connect page only
+    /// while it says MCP is enabled.
+    pub mcp_oauth: Arc<crate::mgmt::mcp_oauth::config::McpOauthConfig>,
 }
 
 /// Test-only constructor available in debug builds.
@@ -145,6 +148,7 @@ impl TenantsState {
             functions_exec,
             fn_data_root,
             cron: Arc::new(crate::cron::CronState::test_default()),
+            mcp_oauth: Arc::new(crate::mgmt::mcp_oauth::config::McpOauthConfig::disabled()),
         }
     }
 }

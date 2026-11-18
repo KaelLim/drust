@@ -180,10 +180,6 @@ scope = "host-level scope"
 organization = "Organization"
 resources = "Resources"
 
-[mcp_pat.alert]
-no_pat_title = "No PAT available"
-no_pat_body = "Visit /drust/admin/settings to view your PAT, then click here again."
-
 [admin_team.action]
 remove = "Remove"
 change_role = "Change role"
@@ -539,7 +535,7 @@ title = "outbound webhook subscriptions"
 
 [collections.empty]
 body = "Once your client writes its first record, collections will appear here automatically."
-hint = "Write via the REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> endpoint or via the per-tenant MCP server (service key required)."
+hint = "Write via the REST <code>/t/{tenant_id}/records/&lt;collection&gt;</code> endpoint or with the account-level MCP endpoint."
 title = "This database has no tables"
 
 [collections.head]
@@ -986,8 +982,8 @@ card_title = "Preferences"
 unsaved = "Unsaved"
 
 [settings.tokens]
-card_title = "Personal MCP token"
-desc = "One PAT per admin, bound to your Claude Code mcp.json and any tenant's MCP endpoint. Reroll invalidates the current PAT on every machine you've pasted it into."
+card_title = "Personal API token (REST / admin API)"
+desc = "One PAT per admin, for the drust CLI, scripts and the admin API. MCP clients do not use it: they sign in with OAuth at the account MCP endpoint. Reroll invalidates the current PAT everywhere you have pasted it."
 fingerprint = "Fingerprint"
 last_used = "Last used"
 last_used_never = "never"
@@ -998,12 +994,12 @@ btn_reroll = "Reroll"
 legacy_plaintext_unavailable = "Plaintext unavailable for legacy PAT — press Reroll to regenerate."
 
 [settings.tokens.confirm]
-reroll_text = "Rerolling immediately invalidates your current PAT. Every Claude Code mcp.json, environment variable, or script using this PAT will return 401 — you'll have to update the token on each machine. Continue?"
+reroll_text = "Rerolling immediately invalidates your current PAT. Every script, environment variable or CLI login using it will get 401, and you will have to update the token on each machine. Continue?"
 reroll_title = "Reroll PAT"
 
 [settings.cli_tokens]
 card_title = "CLI access tokens"
-desc = "Labeled, expiring tokens minted by `drust auth login` (device flow). Revoking one signs that machine out; it does not affect your MCP PAT above."
+desc = "Labeled, expiring tokens minted by `drust auth login` (device flow). Revoking one signs that machine out; it does not affect your personal API token above."
 col_created = "Created"
 col_last_used = "Last used"
 col_expires = "Expires"
@@ -1063,14 +1059,9 @@ reroll_title = "Reroll key"
 title = "API keys"
 intro = "Two personalities for this tenant — pick whichever matches the surface you're integrating with. Reroll clears the previous bearer immediately. Tenant <b>{tenant_name}</b> <code style=\"opacity:0.6;font-size:11px;\">{tenant_id}</code> · created {created_at}."
 
-[tenant_api_keys.mcp]
-copy_title = "copy claude mcp add command"
-desc = "Streamable HTTP · authenticated via service token"
-name = "MCP endpoint"
-# {n} placeholder: filled at render time via t.fmt(...) — the handler
-# substitutes the current MCP tool count so the pill stays accurate as tools
-# are added/removed. See Theme SP swap of tenant_api_keys.html.
-tools_pill = "{n} tools"
+[tenant_api_keys.mcp_hint]
+body = "MCP clients no longer use this tenant's keys: each account connects once, with OAuth."
+link = "Connect an MCP client"
 
 [tenant_api_keys.page]
 title = "drust admin — {tenant_name} / _api_keys"
@@ -1873,26 +1864,6 @@ verified = "Verified"
 profile = "Profile"
 created_at = "Created"
 updated_at = "Updated"
-
-[mcp_setup]
-modal_title = "MCP server setup"
-button_more_clients = "More clients"
-close = "close"
-path_label = "Paste into:"
-linux_unsupported = "Claude Desktop is not officially supported on Linux."
-os_tablist_label = "operating system"
-
-[mcp_setup.tab]
-windows = "Windows"
-macos = "macOS"
-linux = "Linux"
-
-[mcp_setup.client]
-claude_code = "Claude Code CLI"
-codex = "Codex CLI"
-cursor = "Cursor"
-claude_desktop = "Claude Desktop"
-gemini = "Gemini CLI"
 
 [tenants_list.table]
 copy_id_label = "copy id"

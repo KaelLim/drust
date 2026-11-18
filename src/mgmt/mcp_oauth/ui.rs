@@ -598,10 +598,14 @@ mod tests {
             "_team_mcp_revoke_js.html",
             include_str!("../templates/_team_mcp_revoke_js.html"),
         ),
+        (
+            "_api_keys_mcp_hint.html",
+            include_str!("../templates/_api_keys_mcp_hint.html"),
+        ),
     ];
 
     /// Invariant 15: default mode is byte-identical, so a hardcoded `/drust`
-    /// would pass every page test. Every outbound URL in the four partials and
+    /// would pass every page test. Every outbound URL in the five partials and
     /// the two OAuth pages starts with the base-path helper: a form `action=`
     /// (after any whitespace; `data-action="…"` is a JS hook, not a form
     /// action), a `fetch('` and an `href="`. The one exception is the error
@@ -660,9 +664,10 @@ mod tests {
             }
         }
         // Card: two form actions and the connect link; team page: one fetch;
-        // consent: three form actions and one link; connect page: the
-        // settings and diagnostics links; diagnostics page: the link back.
-        assert_eq!(urls, 11);
+        // API Keys hint: the connect link; consent: three form actions and one
+        // link; connect page: the settings and diagnostics links; diagnostics
+        // page: the link back.
+        assert_eq!(urls, 12);
         assert_eq!(back_links, 1, "the error page's back link");
     }
 
@@ -683,6 +688,12 @@ mod tests {
                 include_str!("../templates/admin_team.html"),
                 &["_team_mcp_revoke_btn.html", "_team_mcp_revoke_js.html"][..],
                 3,
+            ),
+            (
+                "tenant_api_keys.html",
+                include_str!("../templates/tenant_api_keys.html"),
+                &["_api_keys_mcp_hint.html"][..],
+                1,
             ),
         ];
         for (page, src, names, want) in pages {

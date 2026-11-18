@@ -20,8 +20,8 @@ use rusqlite::params;
 use crate::common::mcp_oauth::{self as mo, SeedGrant};
 
 /// Markup that only the MCP connections card / team button emit. The settings
-/// page already says "MCP" today (`key-mcp-pat`, "Personal MCP token"), so the
-/// disabled-mode guard looks for these instead.
+/// page still carries `key-mcp-pat` as an element id, so the disabled-mode
+/// guard looks for these instead.
 const NEW_MARKERS: &[&str] = &["mcp-grants", "revoke-mcp", "data-mcp-grant"];
 /// en `settings.mcp_grants.card_title`.
 const CARD_TITLE_EN: &str = "MCP connections";
