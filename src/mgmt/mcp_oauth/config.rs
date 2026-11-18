@@ -567,13 +567,26 @@ fn host_is_loopback(u: &Url) -> Option<bool> {
     }
 }
 
-/// Whether a normalized origin names a loopback host. An origin that does not
-/// parse counts as loopback, so `auto` fails closed and stays off.
+/// Whether a normalized origin names a loopback host, for the `auto` decision
+/// only. Broader than [`host_is_loopback`]: any address in 127.0.0.0/8, `::1`,
+/// an IPv4-mapped loopback (`::ffff:127.x.x.x`), `localhost` and any name under
+/// `.localhost`, each also with one trailing dot. An origin that does not parse
+/// or has no host counts as loopback, so `auto` fails closed and stays off.
 fn origin_is_loopback(origin: &str) -> bool {
-    Url::parse(origin)
-        .ok()
-        .and_then(|u| host_is_loopback(&u))
-        .unwrap_or(true)
+    let Some(u) = Url::parse(origin).ok() else {
+        return true;
+    };
+    match u.host() {
+        Some(Host::Domain(d)) => {
+            let d = d.strip_suffix('.').unwrap_or(d).to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        Some(Host::Ipv4(a)) => a.is_loopback(),
+        Some(Host::Ipv6(a)) => {
+            a.is_loopback() || a.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        None => true,
+    }
 }
 
 /// `bp` is the NORMALIZED base (`base_path::normalize`: "" or "/seg[/seg…]", no
@@ -783,6 +796,19 @@ mod tests {
             Some("https://localhost"),
             Some("https://127.0.0.1:47826"),
             Some("https://[::1]"),
+            // every other loopback spelling, each also with one trailing dot
+            Some("https://127.0.0.2"),
+            Some("https://127.255.255.254:8443"),
+            Some("https://127.1"),
+            Some("https://127.0.0.1."),
+            Some("https://127.9.8.7."),
+            Some("https://[::ffff:127.0.0.1]"),
+            Some("https://[::ffff:127.3.2.1]"),
+            Some("https://localhost."),
+            Some("https://LOCALHOST"),
+            Some("https://drust.localhost"),
+            Some("https://a.b.localhost."),
+            Some("https://localhost:47826"),
         ] {
             let c = auto_with(url, "");
             assert!(!c.enabled(), "{url:?}");
