@@ -1,216 +1,80 @@
-//! Smoke-level integration test for the rmcp Streamable HTTP endpoint
-//! at `/t/{tenant}/mcp`. Exercises the real HTTP surface — JSON-RPC
-//! initialize, tools/list, tools/call — without a full rmcp client.
+//! Smoke-level integration test for the rmcp Streamable HTTP transport
+//! at the account-level `/mcp` endpoint. Exercises the real HTTP surface —
+//! JSON-RPC initialize, tools/list, tools/call — without a full rmcp client.
 //!
 //! We keep it deliberately minimal: the goal is to prove the wiring is
-//! real (rmcp handler → axum route → bearer auth → per-tenant service)
-//! rather than to re-test every tool. Per-tool behavior is covered by
+//! real (rmcp handler → axum route → OAuth bearer layer → per-call tenant
+//! service) rather than to re-test every tool. Per-tool behavior is covered by
 //! the in-process tests in `mcp_write_schema.rs`, `mcp_read.rs`,
 //! `mcp_exploration.rs`.
 //!
-//! NOTE: every request that reaches rmcp must carry a loopback `Host`
-//! header — rmcp's DNS-rebinding guard rejects anything else with 400
-//! "missing Host header". In production Caddy sets this via
-//! `header_up Host "127.0.0.1:47826"`. Tests must do it themselves.
+//! NOTE: every request must carry an allowed `Host` header — the endpoint's
+//! Host check answers anything else before authentication. In production
+//! Caddy sets this via `header_up Host "127.0.0.1:47826"`; `helpers::http_raw`
+//! sends `Host: 127.0.0.1` by default.
 
 mod helpers;
 
-use axum::body::{Body, to_bytes};
-use axum::http::{Method, Request, StatusCode, header};
-use drust::auth::bearer::{generate_token, hash_token};
-use drust::storage::meta::open_meta;
-use drust::storage::pool::TenantRegistry;
-use drust::tenant::{TenantStack, build_tenant_router, events::EventBus, router::TenantAuthState};
+use axum::http::StatusCode;
 use serde_json::{Value, json};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tower::ServiceExt;
 
-async fn mcp_stack(tenant: &str) -> (axum::Router, String, String, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let data = dir.path().to_path_buf();
-    let conn = open_meta(&data.join("meta.sqlite")).unwrap();
-    conn.execute(
-        "INSERT INTO tenants (id, name) VALUES (?1, 'x')",
-        rusqlite::params![tenant],
-    )
-    .unwrap();
-    let service_tok = generate_token();
-    let anon_tok = generate_token();
-    conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
-         VALUES (?1, ?2, 'svc', 'service')",
-        rusqlite::params![tenant, hash_token(&service_tok)],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO tokens (tenant_id, token_hash, label, role) \
-         VALUES (?1, ?2, 'anon', 'anon')",
-        rusqlite::params![tenant, hash_token(&anon_tok)],
-    )
-    .unwrap();
-    let _ = drust::storage::tenant_db::open_write(&data, tenant).unwrap();
-    // Migrate so meta `tenants` gains the v1.32.5 allow_*_publish columns the
-    // bearer-auth CTE reads (open_meta only creates the base schema).
-    drust::db::migrations::run_migrations(&conn, &data).unwrap();
-
-    let tenants = Arc::new(TenantRegistry::new(data.clone(), 2));
-    let bus = EventBus::new();
-    let webhooks = drust::tenant::WebhookDispatcher::new(tenants.clone(), None);
-    let meta = Arc::new(Mutex::new(conn));
-    let mut state = TenantAuthState::test_default(meta, tenants.clone());
-    let bus_rooms = helpers::shared_bus_rooms(&mut state);
-    let (functions, functions_exec, fn_cfg) = drust::functions::test_stack_parts(tenants.clone());
-    let app = build_tenant_router(TenantStack {
-        auth: state,
-        bus: bus.clone(),
-        bus_rooms: bus_rooms.clone(),
-        bucket: drust::tenant::rooms::RoomsConfig::test_defaults().bucket(),
-        rooms_cfg: drust::tenant::rooms::RoomsConfig::test_defaults(),
-        mcp: helpers::test_mcp_http(tenants, bus, bus_rooms.clone()),
-        files: None,
-        webhooks,
-        functions,
-        functions_exec,
-        fn_cfg,
-        cron: std::sync::Arc::new(drust::cron::CronState::test_default()),
-        cors_origins: Vec::new(),
-    });
-    (app, service_tok, anon_tok, dir)
+/// One `tools/call` with `"tenant"` added; the JSON-RPC message.
+async fn call(h: &helpers::AccountMcpHarness, name: &str, args: Value) -> Value {
+    helpers::mcp_call(&h.app, &h.access, &h.tid, name, args).await
 }
 
-fn mcp_request(tenant: &str, bearer: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method(Method::POST)
-        .uri(format!("/t/{tenant}/mcp"))
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        // The MCP Streamable HTTP transport requires the client advertise
-        // that it accepts both JSON and SSE responses on the POST.
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+/// A harness whose tenant already has a `t` collection (title TEXT).
+async fn with_collection(tenant: &'static str) -> helpers::AccountMcpHarness {
+    let h = helpers::spin_up_account_mcp(tenant).await;
+    let m = call(
+        &h,
+        "create_collection",
+        json!({"name": "t", "fields": [{"name": "title", "sql_type": "text"}]}),
+    )
+    .await;
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    h
 }
 
-/// Parse the rmcp Streamable-HTTP response body. The server can answer
-/// a POST in either `application/json` (single response) or
-/// `text/event-stream` (one event per message). We normalise both
-/// into a flat Vec<Value>.
-async fn parse_mcp_body(resp: axum::response::Response) -> Vec<Value> {
-    let ct = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    if ct.starts_with("text/event-stream") {
-        // SSE frames separated by blank line; each frame has `data: <json>` lines.
-        let mut out = Vec::new();
-        for frame in text.split("\n\n") {
-            for line in frame.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    let trimmed = data.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    let v: Value = serde_json::from_str(trimmed)
-                        .unwrap_or_else(|e| panic!("bad SSE JSON {trimmed:?}: {e}"));
-                    out.push(v);
-                }
-            }
-        }
-        out
-    } else {
-        vec![serde_json::from_str(&text).unwrap_or_else(|e| panic!("bad JSON {text:?}: {e}"))]
-    }
+/// The `result` of one JSON-RPC request to `/mcp`, sent with the harness's
+/// access token.
+async fn rpc_result(h: &helpers::AccountMcpHarness, body: Value) -> Value {
+    let (status, _, msgs) = helpers::mcp_rpc(&h.app, Some(&h.access), body).await;
+    assert_eq!(status, StatusCode::OK);
+    msgs.into_iter()
+        .find_map(|m| m.get("result").cloned())
+        .expect("the answer must carry a result")
 }
 
 #[tokio::test]
 async fn initialize_then_tools_list_returns_core_tools() {
-    let (app, service_tok, _anon, _dir) = mcp_stack("mcp1").await;
-
-    // Step 1: MCP initialize handshake — this is required before any
-    // other methods. The response MUST come back with a session ID
-    // header that we echo on subsequent requests.
-    let init = mcp_request(
-        "mcp1",
-        &service_tok,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "drust-test", "version": "0.0.0"}
-            }
-        }),
+    let h = helpers::spin_up_account_mcp("mcp1").await;
+    let (status, headers, msgs) =
+        helpers::mcp_rpc(&h.app, Some(&h.access), helpers::mcp_init("2024-11-05")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers.get("mcp-session-id").is_none(),
+        "the account endpoint is stateless"
     );
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(init_resp.status(), StatusCode::OK);
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize response must set mcp-session-id header")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let init_msgs = parse_mcp_body(init_resp).await;
-    assert!(!init_msgs.is_empty());
-    let result = &init_msgs[0]["result"];
+    assert!(!msgs.is_empty());
+    let result = &msgs[0]["result"];
     assert_eq!(result["serverInfo"]["name"], "drust");
 
-    // Step 2: notifications/initialized — no response expected, just
-    // acknowledge to the server that handshake is complete.
-    let initd = Request::builder()
-        .method(Method::POST)
-        .uri("/t/mcp1/mcp")
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .body(Body::from(
-            json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let ack = app.clone().oneshot(initd).await.unwrap();
-    // 202 Accepted for notification (no response body).
-    assert!(ack.status() == StatusCode::ACCEPTED || ack.status() == StatusCode::OK);
-
-    // Step 3: tools/list — assert the core read/write/schema tools are
-    // present. We do NOT assert the total count: new tools (set_anon_caps,
-    // whoami, …) get added over time and a strict count just rots.
-    let tl_req = Request::builder()
-        .method(Method::POST)
-        .uri("/t/mcp1/mcp")
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .body(Body::from(
-            json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let tl_resp = app.clone().oneshot(tl_req).await.unwrap();
-    assert_eq!(tl_resp.status(), StatusCode::OK);
-    let tl_msgs = parse_mcp_body(tl_resp).await;
-    let tools = tl_msgs
-        .iter()
-        .find_map(|m| m["result"]["tools"].as_array().cloned())
+    // tools/list — assert the core read/write/schema tools are present. We do
+    // NOT assert the total count: new tools get added over time and a strict
+    // count just rots. No session: a stateless endpoint answers it directly.
+    let tl = rpc_result(
+        &h,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+    )
+    .await;
+    let tools = tl["tools"]
+        .as_array()
+        .cloned()
         .expect("tools/list must return a tools array");
     let names: Vec<String> = tools
         .iter()
@@ -237,120 +101,67 @@ async fn initialize_then_tools_list_returns_core_tools() {
 }
 
 #[tokio::test]
-async fn anon_bearer_is_rejected_with_403() {
-    let (app, _svc, anon_tok, _dir) = mcp_stack("mcp2").await;
-    let req = mcp_request(
-        "mcp2",
-        &anon_tok,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "x", "version": "0"}
-            }
-        }),
+async fn anon_tenant_key_is_rejected_with_401() {
+    let h = helpers::spin_up_account_mcp("mcp2").await;
+    let auth = format!("Bearer {}", h.anon);
+    let (status, headers, body) = helpers::mcp_raw(
+        &h.app,
+        "POST",
+        &[("authorization", auth.as_str())],
+        Some(helpers::mcp_init("2025-06-18")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error_code"], "MCP_OAUTH_REQUIRED");
+    assert!(
+        headers["www-authenticate"]
+            .to_str()
+            .unwrap()
+            .contains("error=\"invalid_token\"")
     );
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
-    let v: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(v["error_code"], "WRITE_DENIED");
 }
 
 #[tokio::test]
 async fn missing_bearer_is_rejected_with_401() {
-    let (app, _svc, _anon, _dir) = mcp_stack("mcp3").await;
-    let req = Request::builder()
-        .method(Method::POST)
-        .uri("/t/mcp3/mcp")
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .body(Body::from(
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
-        ))
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let h = helpers::spin_up_account_mcp("mcp3").await;
+    let (status, headers, _) = helpers::mcp_raw(
+        &h.app,
+        "POST",
+        &[],
+        Some(json!({"jsonrpc":"2.0","id":1,"method":"initialize"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let www = headers["www-authenticate"].to_str().unwrap();
+    assert!(
+        www.starts_with(
+            "Bearer resource_metadata=\"https://drust.test/drust/.well-known/oauth-protected-resource/mcp\""
+        ),
+        "{www}"
+    );
+    assert!(
+        !www.contains("error="),
+        "a request without a token gets a bare challenge: {www}"
+    );
 }
 
 #[tokio::test]
 async fn tools_call_list_collections_succeeds() {
-    let (app, service_tok, _anon, _dir) = mcp_stack("mcp4").await;
+    let h = helpers::spin_up_account_mcp("mcp4").await;
     // Seed a table so list_collections has something to report.
-    let pool = helpers::grab_pool("mcp4", &_dir).await;
+    let pool = h.tenants.get_or_create(&h.tid).unwrap();
     pool.with_writer(|c| {
         c.execute_batch("CREATE TABLE stuff (id INTEGER PRIMARY KEY AUTOINCREMENT, x TEXT);")
     })
     .await
     .unwrap();
 
-    // Initialize + notifications/initialized + call list_collections.
-    let init = mcp_request(
-        "mcp4",
-        &service_tok,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "x", "version": "0"}
-            }
-        }),
-    );
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    // drain body
-    let _ = parse_mcp_body(init_resp).await;
-
-    let ack = Request::builder()
-        .method(Method::POST)
-        .uri("/t/mcp4/mcp")
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .body(Body::from(
-            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-        ))
-        .unwrap();
-    let _ = app.clone().oneshot(ack).await.unwrap();
-
-    let call = Request::builder()
-        .method(Method::POST)
-        .uri("/t/mcp4/mcp")
-        .header(header::HOST, "127.0.0.1")
-        .header(header::AUTHORIZATION, format!("Bearer {}", service_tok))
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .body(Body::from(
-            json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": { "name": "list_collections", "arguments": {} }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let call_resp = app.clone().oneshot(call).await.unwrap();
-    assert_eq!(call_resp.status(), StatusCode::OK);
-    let msgs = parse_mcp_body(call_resp).await;
-    let content = msgs
-        .iter()
-        .find_map(|m| m["result"]["content"].as_array().cloned())
+    let m = call(&h, "list_collections", json!({})).await;
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let content = m["result"]["content"]
+        .as_array()
+        .cloned()
         .expect("tools/call must return a content array");
     let text = content[0]["text"].as_str().expect("text content");
     let parsed: Value = serde_json::from_str(text).unwrap();
@@ -361,74 +172,19 @@ async fn tools_call_list_collections_succeeds() {
     );
 }
 
-/// initialize + notifications/initialized, returning the session id and the
-/// initialize `result` (instructions, capabilities, serverInfo).
-async fn open_session(app: &axum::Router, tenant: &str, tok: &str) -> (String, Value) {
-    let init = mcp_request(
-        tenant,
-        tok,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "drust-test", "version": "0.0.0"}
-            }
-        }),
-    );
-    let init_resp = app.clone().oneshot(init).await.unwrap();
-    assert_eq!(init_resp.status(), StatusCode::OK);
-    let session_id = init_resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("initialize response must set mcp-session-id header")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let result = parse_mcp_body(init_resp)
-        .await
-        .into_iter()
-        .find_map(|m| m.get("result").cloned())
-        .expect("initialize must return a result");
-    let ack = session_request(
-        tenant,
-        tok,
-        &session_id,
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
-    let ack = app.clone().oneshot(ack).await.unwrap();
-    assert!(ack.status() == StatusCode::ACCEPTED || ack.status() == StatusCode::OK);
-    (session_id, result)
-}
-
-fn session_request(tenant: &str, bearer: &str, session_id: &str, body: Value) -> Request<Body> {
-    let mut req = mcp_request(tenant, bearer, body);
-    req.headers_mut()
-        .insert("mcp-session-id", session_id.parse().unwrap());
-    req
-}
-
 /// The annotations Claude Code acts on (auto-resend after a dropped connection
 /// for readOnly OR idempotent tools) as they actually leave the server —
 /// `Some(false)` must serialize, not vanish into the spec default.
 #[tokio::test]
 async fn tools_list_wire_annotations_for_retry_sensitive_tools() {
-    let (app, service_tok, _anon, _dir) = mcp_stack("mcpann").await;
-    let (sid, _) = open_session(&app, "mcpann", &service_tok).await;
-    let req = session_request(
-        "mcpann",
-        &service_tok,
-        &sid,
+    let h = helpers::spin_up_account_mcp("mcpann").await;
+    let tools = rpc_result(
+        &h,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
-    );
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let tools = parse_mcp_body(resp)
-        .await
-        .iter()
-        .find_map(|m| m["result"]["tools"].as_array().cloned())
+    )
+    .await["tools"]
+        .as_array()
+        .cloned()
         .expect("tools/list must return a tools array");
     let ann = |name: &str| -> Value {
         tools
@@ -454,29 +210,15 @@ async fn tools_list_wire_annotations_for_retry_sensitive_tools() {
     }
 }
 
-/// M1 (B6): a tool-execution failure leaves the server as an `isError: true`
+/// A tool-execution failure leaves the server as an `isError: true`
 /// result — not `isError: false` with an error object in the text.
 #[tokio::test]
 async fn tools_call_describe_missing_collection_is_error_on_wire() {
-    let (app, service_tok, _anon, _dir) = mcp_stack("mcpiserr").await;
-    let (sid, _) = open_session(&app, "mcpiserr", &service_tok).await;
-    let req = session_request(
-        "mcpiserr",
-        &service_tok,
-        &sid,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": { "name": "describe_collection", "arguments": {"collection": "nope"} }
-        }),
-    );
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let result = parse_mcp_body(resp)
-        .await
-        .into_iter()
-        .find_map(|m| m.get("result").cloned())
+    let h = helpers::spin_up_account_mcp("mcpiserr").await;
+    let m = call(&h, "describe_collection", json!({"collection": "nope"})).await;
+    let result = m
+        .get("result")
+        .cloned()
         .expect("tools/call must return a result");
     assert_eq!(
         result["isError"],
@@ -488,12 +230,12 @@ async fn tools_call_describe_missing_collection_is_error_on_wire() {
     assert_eq!(parsed["error_code"], "COLLECTION_NOT_FOUND", "{parsed}");
 }
 
-/// M1 (B2/B3): the `initialize` result the client actually receives fits
-/// Claude Code's 4,096-character read and opens with the dry_run rule.
+/// The `initialize` result the client actually receives fits Claude Code's
+/// 4,096-character read and carries the dry_run rule.
 #[tokio::test]
 async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
-    let (app, service_tok, _anon, _dir) = mcp_stack("mcpinstr").await;
-    let (_sid, result) = open_session(&app, "mcpinstr", &service_tok).await;
+    let h = helpers::spin_up_account_mcp("mcpinstr").await;
+    let result = rpc_result(&h, helpers::mcp_init("2024-11-05")).await;
     let s = result["instructions"]
         .as_str()
         .expect("initialize result must carry string instructions");
@@ -508,36 +250,6 @@ async fn initialize_instructions_fit_and_lead_with_the_dry_run_rule() {
     );
 }
 
-/// One `tools/call` on an open session; returns the JSON-RPC message (with
-/// either `result` or `error`).
-async fn call_tool(
-    app: &axum::Router,
-    tenant: &str,
-    tok: &str,
-    sid: &str,
-    name: &str,
-    args: Value,
-) -> Value {
-    let req = session_request(
-        tenant,
-        tok,
-        sid,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 7,
-            "method": "tools/call",
-            "params": { "name": name, "arguments": args }
-        }),
-    );
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    parse_mcp_body(resp)
-        .await
-        .into_iter()
-        .find(|m| m.get("result").is_some() || m.get("error").is_some())
-        .expect("tools/call must answer a result or an error")
-}
-
 /// The isError body of a tools/call answer, parsed.
 fn tool_error_body(m: &Value) -> Value {
     assert_eq!(m["result"]["isError"], Value::Bool(true), "{m}");
@@ -547,21 +259,24 @@ fn tool_error_body(m: &Value) -> Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("isError text is not JSON ({e}): {text}"))
 }
 
+/// `(message, error_code)` of a refused tool call's isError body.
+fn tool_err(m: &Value) -> (String, String) {
+    let b = tool_error_body(m);
+    (
+        b["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("isError body without a message: {m}"))
+            .to_string(),
+        b["error_code"].as_str().unwrap_or("").to_string(),
+    )
+}
+
 /// rmcp 1.8 answers a malformed argument with its own plain-text isError;
 /// drust reshapes it into its one isError body (`finish_tool_call`).
 #[tokio::test]
 async fn tools_call_missing_argument_is_invalid_params_tool_error() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcparg1").await;
-    let (sid, _) = open_session(&app, "mcparg1", &tok).await;
-    let m = call_tool(
-        &app,
-        "mcparg1",
-        &tok,
-        &sid,
-        "describe_collection",
-        json!({}),
-    )
-    .await;
+    let h = helpers::spin_up_account_mcp("mcparg1").await;
+    let m = call(&h, "describe_collection", json!({})).await;
     let b = tool_error_body(&m);
     assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
     assert!(
@@ -576,17 +291,8 @@ async fn tools_call_missing_argument_is_invalid_params_tool_error() {
 
 #[tokio::test]
 async fn tools_call_wrongly_typed_argument_is_invalid_params_tool_error() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcparg2").await;
-    let (sid, _) = open_session(&app, "mcparg2", &tok).await;
-    let m = call_tool(
-        &app,
-        "mcparg2",
-        &tok,
-        &sid,
-        "delete_record",
-        json!({"collection": "x", "id": "abc"}),
-    )
-    .await;
+    let h = helpers::spin_up_account_mcp("mcparg2").await;
+    let m = call(&h, "delete_record", json!({"collection": "x", "id": "abc"})).await;
     let b = tool_error_body(&m);
     assert_eq!(b["error_code"], "INVALID_PARAMS", "{b}");
     assert!(
@@ -597,166 +303,105 @@ async fn tools_call_wrongly_typed_argument_is_invalid_params_tool_error() {
 
 #[tokio::test]
 async fn tools_call_unknown_tool_stays_protocol_error() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcparg3").await;
-    let (sid, _) = open_session(&app, "mcparg3", &tok).await;
-    let m = call_tool(&app, "mcparg3", &tok, &sid, "no_such_tool", json!({})).await;
+    let h = helpers::spin_up_account_mcp("mcparg3").await;
+    let m = call(&h, "no_such_tool", json!({})).await;
     assert_eq!(m["error"]["code"], -32602, "{m}");
     assert_eq!(m["error"]["message"], "tool not found", "{m}");
 }
 
-async fn session_with_collection(
-    tenant: &str,
-) -> (axum::Router, String, String, tempfile::TempDir) {
-    let (app, tok, _anon, dir) = mcp_stack(tenant).await;
-    let (sid, _) = open_session(&app, tenant, &tok).await;
-    let m = call_tool(
-        &app,
-        tenant,
-        &tok,
-        &sid,
-        "create_collection",
-        json!({"name": "t", "fields": [{"name": "title", "sql_type": "text"}]}),
-    )
-    .await;
-    assert!(
-        m.get("result").is_some() && m["result"]["isError"] != true,
-        "{m}"
-    );
-    (app, tok, sid, dir)
-}
-
 /// `query`'s write refusal used to ship the prose before its first colon as
-/// `data.error_code`.
+/// its `error_code`.
 #[tokio::test]
 async fn query_write_refusal_carries_query_forbidden() {
-    let (app, tok, sid, _dir) = session_with_collection("mcpqf").await;
-    let m = call_tool(
-        &app,
-        "mcpqf",
-        &tok,
-        &sid,
-        "query",
-        json!({"sql": "DELETE FROM t"}),
-    )
-    .await;
-    assert_eq!(m["error"]["code"], -32603, "{m}");
+    let h = with_collection("mcpqf").await;
+    let m = call(&h, "query", json!({"sql": "DELETE FROM t"})).await;
+    let b = tool_error_body(&m);
     assert!(
-        m["error"]["message"]
+        b["message"]
             .as_str()
             .unwrap()
             .contains("`query` is read-only"),
         "{m}"
     );
-    assert_eq!(m["error"]["data"]["error_code"], "QUERY_FORBIDDEN", "{m}");
+    assert_eq!(b["error_code"], "QUERY_FORBIDDEN", "{m}");
 }
 
 /// The unknown-key refusal names the caller's key first; a key shaped like a
 /// code must not become the code.
 #[tokio::test]
 async fn insert_unknown_key_carries_field_not_found() {
-    let (app, tok, sid, _dir) = session_with_collection("mcpfnf").await;
-    let m = call_tool(
-        &app,
-        "mcpfnf",
-        &tok,
-        &sid,
+    let h = with_collection("mcpfnf").await;
+    let m = call(
+        &h,
         "insert_record",
         json!({"collection": "t", "data": {"A_B: x": 1}}),
     )
     .await;
-    let msg = m["error"]["message"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{m}"));
+    let b = tool_error_body(&m);
+    let msg = b["message"].as_str().unwrap_or_else(|| panic!("{m}"));
     assert!(msg.starts_with("unknown field 'A_B: x'"), "{m}");
-    assert_eq!(m["error"]["data"]["error_code"], "FIELD_NOT_FOUND", "{m}");
+    assert_eq!(b["error_code"], "FIELD_NOT_FOUND", "{m}");
 }
 
-fn rpc_error(m: &Value) -> (i64, String, String) {
-    let e = &m["error"];
-    assert!(e.is_object(), "expected a JSON-RPC error, got {m}");
-    (
-        e["code"].as_i64().unwrap(),
-        e["message"].as_str().unwrap().to_string(),
-        e["data"]["error_code"].as_str().unwrap_or("").to_string(),
-    )
-}
-
-/// `create_rpc` refusals used to be `-32603` with no `data` at all. Each stage
-/// now names its own code; the message and JSON-RPC code are unchanged.
+/// `create_rpc` refusals used to carry no code at all. Each stage now names
+/// its own code; the message is unchanged.
 #[tokio::test]
 async fn create_rpc_refusals_carry_exact_codes() {
-    let (app, tok, sid, _dir) = session_with_collection("mcprpc1").await;
-    let t = "mcprpc1";
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let h = with_collection("mcprpc1").await;
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "bad", "sql": "SELECT name FROM sqlite_master", "params": []}),
     )
     .await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32603, "{m}");
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("prepare-time validation"), "{m}");
     assert_eq!(ec, "INVALID_SQL_FOR_MODE", "{m}");
 
     let ok = json!({"name": "r", "sql": "SELECT title FROM t", "params": []});
-    let m = call_tool(&app, t, &tok, &sid, "create_rpc", ok.clone()).await;
-    assert!(m.get("result").is_some(), "{m}");
-    let m = call_tool(&app, t, &tok, &sid, "create_rpc", ok).await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32603, "{m}");
+    let m = call(&h, "create_rpc", ok.clone()).await;
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(&h, "create_rpc", ok).await;
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("rpc already exists"), "{m}");
     assert_eq!(ec, "RPC_EXISTS", "{m}");
     assert!(
-        m["error"]["data"]["suggested_fix"].as_str().is_some(),
+        tool_error_body(&m)["suggested_fix"].as_str().is_some(),
         "{m}"
     );
 
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "q", "kind": "query", "query": {"collection": "_system_users"}, "params": []}),
     )
     .await;
-    assert_eq!(rpc_error(&m).2, "PROTECTED_COLLECTION", "{m}");
+    assert_eq!(tool_err(&m).1, "PROTECTED_COLLECTION", "{m}");
 
     // A template rejection with no sentinel of its own: the stage knows it
     // was the query arm (RPC_QUERY_TEMPLATE_INVALID, the admin form's code);
     // the message alone would only classify as a generic prepare failure.
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "q1", "kind": "query",
                "query": {"collection": "t", "filter": {"title": {"$param": "x"}}},
                "params": []}),
     )
     .await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32603, "{m}");
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("undeclared param"), "{m}");
     assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
 
     // The shape check runs before any DB work (`invalid_params`): the
     // backstop finds the sentinel right after PrepareError's prefix.
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "q2", "kind": "query", "params": []}),
     )
     .await;
-    let (code, _, ec) = rpc_error(&m);
-    assert_eq!(code, -32602, "{m}");
+    let (_, ec) = tool_err(&m);
     assert_eq!(ec, "RPC_KIND_INVALID", "{m}");
 }
 
@@ -765,14 +410,9 @@ async fn create_rpc_refusals_carry_exact_codes() {
 /// all carry the sentinel, not PrepareError's prose prefix.
 #[tokio::test]
 async fn owner_field_guard_carries_rpc_anon_owner_scoped() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcprpc2").await;
-    let t = "mcprpc2";
-    let (sid, _) = open_session(&app, t, &tok).await;
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let h = helpers::spin_up_account_mcp("mcprpc2").await;
+    let m = call(
+        &h,
         "create_collection",
         json!({"name": "pub", "fields": [
             {"name": "title", "sql_type": "text"},
@@ -780,52 +420,37 @@ async fn owner_field_guard_carries_rpc_anon_owner_scoped() {
         ]}),
     )
     .await;
-    assert!(
-        m.get("result").is_some() && m["result"]["isError"] != true,
-        "{m}"
-    );
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "r_pub", "sql": "SELECT id, title FROM pub", "params": [], "anon_callable": true}),
     )
     .await;
-    assert!(m.get("result").is_some(), "{m}");
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
 
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "set_owner_field",
         json!({"collection": "pub", "field": "owner"}),
     )
     .await;
-    let (_, msg, ec) = rpc_error(&m);
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("RPC_ANON_OWNER_SCOPED"), "{m}");
     assert_eq!(ec, "RPC_ANON_OWNER_SCOPED", "{m}");
 
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "set_policy",
         json!({"collection": "pub", "op": "select", "using": {"title": "x"}}),
     )
     .await;
-    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
+    assert_eq!(tool_err(&m).1, "RPC_ANON_OWNER_SCOPED", "{m}");
 
     // An owner-scoped collection: the create guard refuses an anon_callable
     // RPC over it, and the update guard refuses flipping a service-only one.
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "create_collection",
         json!({"name": "own", "fields": [
             {"name": "title", "sql_type": "text"},
@@ -833,73 +458,51 @@ async fn owner_field_guard_carries_rpc_anon_owner_scoped() {
         ]}),
     )
     .await;
-    assert!(
-        m.get("result").is_some() && m["result"]["isError"] != true,
-        "{m}"
-    );
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(
+        &h,
         "set_owner_field",
         json!({"collection": "own", "field": "owner"}),
     )
     .await;
-    assert!(m.get("result").is_some(), "{m}");
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "r_own", "sql": "SELECT id, title FROM own", "params": [], "anon_callable": true}),
     )
     .await;
-    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_eq!(tool_err(&m).1, "RPC_ANON_OWNER_SCOPED", "{m}");
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "r_own_svc", "sql": "SELECT id, title FROM own", "params": []}),
     )
     .await;
-    assert!(m.get("result").is_some(), "{m}");
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(
+        &h,
         "update_rpc",
         json!({"name": "r_own_svc", "anon_callable": true}),
     )
     .await;
-    assert_eq!(rpc_error(&m).2, "RPC_ANON_OWNER_SCOPED", "{m}");
+    assert_eq!(tool_err(&m).1, "RPC_ANON_OWNER_SCOPED", "{m}");
 }
 
 #[tokio::test]
 async fn update_and_delete_rpc_missing_name_is_rpc_not_found() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcprpc3").await;
-    let t = "mcprpc3";
-    let (sid, _) = open_session(&app, t, &tok).await;
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let h = helpers::spin_up_account_mcp("mcprpc3").await;
+    let m = call(
+        &h,
         "update_rpc",
         json!({"name": "nope", "description": "x"}),
     )
     .await;
-    let (code, _, ec) = rpc_error(&m);
-    assert_eq!(code, -32603, "{m}");
+    let (_, ec) = tool_err(&m);
     assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
 
-    let m = call_tool(&app, t, &tok, &sid, "delete_rpc", json!({"name": "nope"})).await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32602, "{m}");
+    let m = call(&h, "delete_rpc", json!({"name": "nope"})).await;
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("rpc not found"), "{m}");
     assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
 }
@@ -910,35 +513,24 @@ async fn update_and_delete_rpc_missing_name_is_rpc_not_found() {
 /// INVALID_SQL_FOR_MODE.
 #[tokio::test]
 async fn update_rpc_template_rejection_is_rpc_query_template_invalid() {
-    let (app, tok, sid, _dir) = session_with_collection("mcprpc5").await;
-    let t = "mcprpc5";
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let h = with_collection("mcprpc5").await;
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "q", "kind": "query",
                "query": {"collection": "t", "filter": {"title": "a"}},
                "params": []}),
     )
     .await;
-    assert!(
-        m.get("result").is_some() && m["result"]["isError"] != true,
-        "{m}"
-    );
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(
+        &h,
         "update_rpc",
         json!({"name": "q",
                "query": {"collection": "t", "filter": {"title": {"$param": "x"}}}}),
     )
     .await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32603, "{m}");
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("undeclared param"), "{m}");
     assert_eq!(ec, "RPC_QUERY_TEMPLATE_INVALID", "{m}");
 }
@@ -948,21 +540,16 @@ async fn update_rpc_template_rejection_is_rpc_query_template_invalid() {
 /// still be COLLECTION_EXISTS, not INDEX_EXISTS.
 #[tokio::test]
 async fn create_collection_repeat_is_collection_exists_whatever_the_name() {
-    let (app, tok, _anon, _dir) = mcp_stack("mcpdup").await;
-    let t = "mcpdup";
-    let (sid, _) = open_session(&app, t, &tok).await;
+    let h = helpers::spin_up_account_mcp("mcpdup").await;
     let args = json!({"name": "index_log", "fields": [{"name": "title", "sql_type": "text"}]});
-    let m = call_tool(&app, t, &tok, &sid, "create_collection", args.clone()).await;
-    assert!(
-        m.get("result").is_some() && m["result"]["isError"] != true,
-        "{m}"
-    );
-    let m = call_tool(&app, t, &tok, &sid, "create_collection", args).await;
-    let (_, msg, ec) = rpc_error(&m);
+    let m = call(&h, "create_collection", args.clone()).await;
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(&h, "create_collection", args).await;
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("already exists"), "{m}");
     assert_eq!(ec, "COLLECTION_EXISTS", "{m}");
     assert!(
-        m["error"]["data"]["suggested_fix"].as_str().is_some(),
+        tool_error_body(&m)["suggested_fix"].as_str().is_some(),
         "{m}"
     );
 }
@@ -970,39 +557,30 @@ async fn create_collection_repeat_is_collection_exists_whatever_the_name() {
 /// `call_rpc` answers with the codes REST's RPC handler uses.
 #[tokio::test]
 async fn call_rpc_errors_carry_rest_param_codes() {
-    let (app, tok, sid, _dir) = session_with_collection("mcprpc4").await;
-    let t = "mcprpc4";
-    let m = call_tool(&app, t, &tok, &sid, "call_rpc", json!({"name": "nope"})).await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32602, "{m}");
+    let h = with_collection("mcprpc4").await;
+    let m = call(&h, "call_rpc", json!({"name": "nope"})).await;
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("no such rpc"), "{m}");
     assert_eq!(ec, "RPC_NOT_FOUND", "{m}");
 
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "create_rpc",
         json!({"name": "by_id", "sql": "SELECT title FROM t WHERE id > :n",
                "params": [{"name": "n", "type": "integer"}]}),
     )
     .await;
-    assert!(m.get("result").is_some(), "{m}");
-    let m = call_tool(&app, t, &tok, &sid, "call_rpc", json!({"name": "by_id"})).await;
-    let (code, msg, ec) = rpc_error(&m);
-    assert_eq!(code, -32602, "{m}");
+    assert_ne!(m["result"]["isError"], json!(true), "{m}");
+    let m = call(&h, "call_rpc", json!({"name": "by_id"})).await;
+    let (msg, ec) = tool_err(&m);
     assert!(msg.contains("missing required param"), "{m}");
     assert_eq!(ec, "PARAM_MISSING", "{m}");
 
-    let m = call_tool(
-        &app,
-        t,
-        &tok,
-        &sid,
+    let m = call(
+        &h,
         "call_rpc",
         json!({"name": "by_id", "body": {"n": "abc"}}),
     )
     .await;
-    assert_eq!(rpc_error(&m).2, "PARAM_TYPE_MISMATCH", "{m}");
+    assert_eq!(tool_err(&m).1, "PARAM_TYPE_MISMATCH", "{m}");
 }
