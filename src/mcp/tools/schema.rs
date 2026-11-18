@@ -996,9 +996,10 @@ pub async fn set_user_caps(
     }))
 }
 
-/// MCP impl: set/clear the collection-level description. Service-key only
-/// (enforced by the dispatcher before this is called). Empty/whitespace
-/// description clears.
+/// MCP impl: set/clear the collection-level description. Service-only by
+/// construction (reachable only through the account-level `/mcp`, which admits
+/// only an admin-tier OAuth caller and runs every tool as Service on a tenant
+/// that caller can see). Empty/whitespace description clears.
 pub async fn set_collection_description(
     pool: &crate::storage::pool::SharedTenantPool,
     collection: &str,

@@ -307,8 +307,10 @@ pub struct SetFileVisibilityArgs {
 
 /// Toggle a file between public and private. Moves the Garage object to the
 /// target bucket and updates the `_system_files` row (see
-/// `crate::storage::visibility::change_visibility`). MCP is service-only by
-/// dispatch, so no extra role check is needed here.
+/// `crate::storage::visibility::change_visibility`). Service-only by
+/// construction: the tool is reachable only through the account-level `/mcp`,
+/// which admits only an admin-tier OAuth caller and runs every tool as Service
+/// on a tenant that caller can see, so no extra role check is needed here.
 pub async fn set_file_visibility(
     s: &DrustMcp,
     args: SetFileVisibilityArgs,
