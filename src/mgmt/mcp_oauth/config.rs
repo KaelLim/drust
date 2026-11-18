@@ -784,6 +784,28 @@ mod tests {
     }
 
     #[test]
+    fn auto_enables_on_public_hosts_that_only_look_like_loopback() {
+        for url in [
+            "https://notlocalhost",
+            "https://localhost.example.com",
+            "https://128.0.0.1",
+            "https://[::ffff:10.0.0.1]",
+        ] {
+            let c = McpOauthConfig::from_parts(
+                &McpOauthEnv {
+                    mode: Some("auto"),
+                    public_url: Some(url),
+                    ..Default::default()
+                },
+                "",
+                ENV_KEY,
+                CSRF_KEY,
+            );
+            assert!(c.enabled(), "{url}: {:?}", c.disabled_reason());
+        }
+    }
+
+    #[test]
     fn auto_needs_an_https_public_url_on_a_public_host() {
         for url in [
             None,

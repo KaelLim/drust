@@ -766,6 +766,7 @@ async fn account_tool_calls_clear_the_process_auth_cache() {
     };
 
     h.auth_cache.insert("pub-h".to_string(), entry("u-pub"));
+    assert!(h.auth_cache.get("pub-h").is_some(), "seeded");
     let r = call(
         &h,
         &h.access,
@@ -780,6 +781,7 @@ async fn account_tool_calls_clear_the_process_auth_cache() {
     );
 
     h.auth_cache.insert("rev-h".to_string(), entry("u-rev"));
+    assert!(h.auth_cache.get("rev-h").is_some(), "seeded");
     let r = call(
         &h,
         &h.access,
