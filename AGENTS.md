@@ -1,7 +1,7 @@
 # drust — reviewer's brief
 
-drust is a multi-tenant SQLite BaaS: one admin plane plus per-tenant REST and MCP
-endpoints over isolated SQLite files.
+drust is a multi-tenant SQLite BaaS: one admin plane, per-tenant REST endpoints and one
+account-level MCP endpoint over isolated SQLite files.
 
 This repo is one service inside the `tool.tzuchi-org.tw` monorepo, but the **git root is
 `drust/`**, so `../AGENTS.md` is above the project root and is **not** loaded automatically
@@ -287,18 +287,62 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
   page names the signed-in account next to its buttons, which is the only mitigation for
   the same-site residual there.
 
+**Deliberate — the account-level MCP endpoint (not the PAT family):**
+
+- **`/mcp` has no `{id}` and deliberately does not join `require_owner_layer`** (CLAUDE.md
+  invariant 8's exception). It is not a host-wide surface: every call names a tenant and is
+  admitted only through the grant-anchored `tenant_authz::tenant_access_for_admin`, checked
+  by `account::resolve_tenant` before and after the tenant is opened, and `list_tenants`
+  filters through `visible_tenants_for_admin`. A member reaches exactly the tenants it owns;
+  owner-only would shut members out of their own tenants.
+- **One `mcp__drust__*` permission rule covers every tenant the caller can see.** Tool names
+  carry no tenant, so Claude Code cannot approve per tenant. This is the direct consequence
+  of one account-level endpoint; the per-call tenant check is what scopes it.
+- **A bad or missing `Host` on `/mcp` is `421 MCP_HOST_NOT_ALLOWED`, never 403**, and it is
+  checked before authentication: Claude Code treats a 403 like a 401 and starts a sign-in
+  that can never succeed, while a 421 stops with the body's hint.
+- **The retired `/t/<id>/mcp` answers 410 before bearer authentication**, identically for
+  every tenant id (existing, missing or malformed) and every method, so it is not an
+  existence oracle. 401 or 403 would send clients into a doomed sign-in, 404 would read as
+  a deleted tenant, and a redirect would carry the old header to an endpoint that refuses it.
+- **The account-level endpoint sends no CORS headers.** It is merged into the management
+  router, outside the tenant router's CORS layer: MCP clients are not browsers, and the only
+  page that fetches it, the diagnostics page, is same-origin.
+- **A request carrying a disallowed `Origin` gets `403 MCP_ORIGIN_NOT_ALLOWED`** (any
+  `Origin` value that is not UTF-8, or not the public origin or loopback). This is the
+  browser-origin defense of the MCP transport; MCP clients outside a browser send no
+  `Origin`, and a request with none passes.
+- **`/admin/mcp/diagnostics` is owner-only** (`require_owner_layer`, invariant 8): it shows
+  the host's MCP configuration and its disabled reason, which is host-wide state.
+- **`/admin/mcp`, the connect page, is a personal page like `/admin/settings`**, open to
+  every signed-in admin with no `require_owner_layer`: it shows only the endpoint URL and the
+  caller's own setup steps.
+- **The `/mcp` bearer layer has no per-IP miss budget.** An unknown or expired access token
+  always gets 401, never 429: the hourly sweep deletes expired access rows, so an idle
+  client's expired token looks like one never issued, and Claude Code refreshes only on a
+  401 — a shared-IP flood must not turn that 401 into a 429. Compensations: a 401 returns
+  only the challenge, the lookup is one primary-key query (the same cost as
+  `/oauth/revoke`), and limiting before the lookup belongs to the general rate-limit work,
+  not to this layer.
+- **`rs_miss_ip` is used by upload tickets only.** An unknown `drust_upl_` ticket is charged
+  to that per-IP budget under `rl::ticket_miss_ip_key`, a known one to the per-token limiter
+  under `rl::ticket_key`; neither 429 writes an audit row. The `upl:` key space keeps any
+  later consumer apart.
+
 **Deliberate — MCP OAuth AS (not the PAT family):**
 
 - `_mcp_upload_tickets.tenant_id` has **no FK to `tenants`** — deliberate. The tenant
   id-recycle branch hard-`DELETE`s the `tenants` row (`mgmt::tenants::crud`); a non-CASCADE
-  FK would make that recycle fail on any leftover ticket. Nothing issues or reads tickets
-  yet. What keeps a recycled id safe once tickets ship is `tenant_created_at`, copied in SQL
-  from `tenants.created_at` at issue, plus a read that joins `tenants` on `id`, `created_at`
-  and `deleted_at IS NULL` (the contract above the DDL in `db/migrations.rs`), the way
-  `admin_created_at` guards against `admins` rowid recycling. Do not "add the missing FK".
-  Accepted residual: a ticket carries `grant_id` only, so cutting one refresh branch does
-  not reach a ticket minted through that branch; a nullable column for the minting branch
-  can be added through `add_column_if_missing` when tickets ship.
+  FK would make that recycle fail on any leftover ticket, so the same branch deletes the
+  id's tickets explicitly instead. What keeps a recycled id safe is `tenant_created_at`,
+  copied in SQL from `tenants.created_at` at issue, plus a read that joins `tenants` on `id`,
+  `created_at` and `deleted_at IS NULL` (the contract above the DDL in `db/migrations.rs`),
+  the way `admin_created_at` guards against `admins` rowid recycling. Do not "add the
+  missing FK". Accepted residual: a ticket carries `grant_id` only, so cutting one refresh
+  branch does not reach a ticket minted through that branch; what survives is one upload,
+  capped by the ticket's `max_bytes` and the tenant's quota, until the ticket's `create_by`
+  (15 minutes after issue) or, once bound, its upload session's expiry. Revoking the grant
+  does reach it.
 - An unrecognised `DRUST_MCP`, or an unusable `DRUST_PUBLIC_URL` with `DRUST_MCP=on`,
   **boots with MCP off and an `error` line**, never a boot failure — fail closed for the new
   surface without taking the trusted planes down. Do not turn it into a startup error.
@@ -348,9 +392,9 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
 
 **Deliberate — MCP OAuth authorize:**
 
-- `/oauth/*` ignores unknown parameters (OAuth 2.1 MUST). The "reject unknown top-level
-  arguments" rule planned for the tool arguments of the future account-level MCP endpoint
-  does not apply here; applying it would break conforming clients.
+- `/oauth/*` ignores unknown parameters (OAuth 2.1 MUST). The account-level MCP endpoint's
+  rule that rejects unknown top-level tool arguments (`INVALID_ARGUMENTS`) does not apply
+  here; applying it would break conforming clients.
 - `prompt` is always ignored, including `prompt=none`: drust is not an OpenID provider and
   Claude Code only sends `prompt=consent`. Consent is shown every time regardless.
 - `redirect_uri_allowed` deliberately does **not** call `url::Url::parse`. WHATWG parsing
@@ -450,7 +494,7 @@ anon/user data plane that were judged deliberate during the E-track access-gate 
 
 | Fact | Authority |
 |---|---|
-| MCP tool count | `grep -c '#\[tool(' src/mcp/handler.rs` |
+| MCP tool count | `AccountMcp::tool_count()` in `src/mcp/account.rs`: the inner `#[tool(` count in `src/mcp/handler.rs` plus `list_tenants` and `create_upload_url` |
 | MCP tool annotations | `annotation_tests::TABLE` + `RETRY_SAFE_WRITES` in `src/mcp/handler.rs` |
 | Routes | the router builders in `src/mgmt/routes.rs`, `src/tenant/mod.rs` |
 | Per-file structure | `docs/architecture.md` (generated — `bash docs/gen-architecture.sh`) |
@@ -488,7 +532,7 @@ reviewer would open:
 
 | Concern | File |
 |---|---|
-| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*`, **`../garage/deploy/Caddyfile` for the host's `/public/*`**. Compose: `deploy/compose.Caddyfile` for both |
+| Reverse-proxy routing, headers, response rewriting | `/etc/caddy/Caddyfile` (live, un-versioned). Snippets: `deploy/Caddyfile` for `/drust/*` and the two root `/.well-known/*` MCP discovery rules, **`../garage/deploy/Caddyfile` for the host's `/public/*`**. Compose: `deploy/compose.Caddyfile` for both |
 | Process sandbox, environment, restart policy | `deploy/drust.service` |
 | Secrets | `.env`, mode 0640 — a non-root read fails **silently**, so an unprivileged `grep` that finds nothing proves nothing |
 
@@ -496,11 +540,14 @@ Cross-service rules that also bind drust:
 
 - **TLS terminates upstream at `.221`, never on this host.** Local Caddy is plain HTTP on
   `:8793`. Never add `tls` or `auto_https`.
-- **MCP SDKs reject a non-loopback `Host` header** with a 403/421 that reads like a WAF
-  block, so the `/mcp` Caddy block needs `header_up Host "127.0.0.1:47826"`. On the
-  bare-metal host Garage's `s3_web` is the mirror image — it routes *by* Host, so `/public/*`
-  sends `Host: public.web.local`. The Compose block talks to RustFS's S3 API path-style and
-  must not.
+- **The account-level `/mcp` checks `Host` before authentication** and answers a Host
+  outside `localhost`, `127.0.0.1`, `::1` and the host of `DRUST_PUBLIC_URL` with
+  `421 MCP_HOST_NOT_ALLOWED`; the `/drust/*` block keeps `header_up Host "127.0.0.1:47826"`
+  as the default. The two root `/.well-known/*` discovery rules live in
+  `/etc/caddy/Caddyfile` (snippet: `deploy/Caddyfile`) and must also be forwarded, without
+  a redirect, by the upstream at `.221`. On the bare-metal host Garage's `s3_web` is the
+  mirror image — it routes *by* Host, so `/public/*` sends `Host: public.web.local`. The
+  Compose block talks to RustFS's S3 API path-style and must not.
 - **`backups/*.tar.zst` contains plaintext credentials** for every tenant and every admin
   PAT. Treat as a secret store.
 
