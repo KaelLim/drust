@@ -95,6 +95,22 @@ async fn rows_eventually(sql: &str, p1: &str, want: usize) -> Vec<Value> {
     }
 }
 
+/// Sends a call that writes one host denial naming `marker` (a tenant id that
+/// does not exist) and waits for that row. The writer is FIFO, so once it is
+/// visible every row this test caused before it is in the file too, and an
+/// absence check that follows is not a race against the writer.
+async fn fence(h: &helpers::AccountMcpHarness, marker: &str) {
+    let text = mcp_tool_text(&h.app, &h.access, marker, "list_collections", json!({})).await;
+    assert!(text.contains("TENANT_NOT_FOUND"), "{text}");
+    rows_eventually(
+        "SELECT op FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
+         AND json_extract(extra, '$.requested_tenant') = ?1",
+        marker,
+        1,
+    )
+    .await;
+}
+
 /// recent_writes as the tool computes it, read straight from the writer's file.
 async fn recent(
     tenant: &str,
@@ -349,7 +365,7 @@ async fn member_denied_on_foreign_tenant_pollutes_nothing() {
         extra_of(&d[0]),
         json!({"surface": "tool", "name": "insert_record", "requested_tenant": "aud-deny", "grant_id": m.grant_id})
     );
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-deny").await;
     assert_eq!(
         rows_now(
             &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
@@ -359,11 +375,14 @@ async fn member_denied_on_foreign_tenant_pollutes_nothing() {
         before
     );
     assert_eq!(recent("aud-deny", None).await.len(), rw_before);
+    // Scoped to this test's tenant: admin ids repeat across the harnesses
+    // that share this audit file.
     let mine = rows_now(
         &format!(
-            "SELECT {COLS} FROM audit WHERE actor_admin_id = CAST(?1 AS INTEGER) AND tenant <> '-'"
+            "SELECT {COLS} FROM audit WHERE tenant = ?1 AND actor_admin_id = {}",
+            m.admin_id
         ),
-        &m.admin_id.to_string(),
+        "aud-deny",
     );
     assert!(
         mine.is_empty(),
@@ -423,7 +442,7 @@ async fn precheck_denials_are_host_rows() {
         "{}",
         b[0]
     );
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-pre").await;
     assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-pre").is_empty());
 }
 
@@ -440,7 +459,7 @@ async fn list_tenants_and_unknown_tools_write_nothing() {
         assert_eq!(s, axum::http::StatusCode::OK);
         assert!(!m.is_empty());
     }
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-quiet").await;
     assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-quiet").is_empty());
     assert!(rows_now("SELECT op FROM audit WHERE op = ?1", "list_tenants").is_empty());
     assert!(
@@ -547,7 +566,7 @@ async fn resource_read_writes_one_row_with_the_uri() {
     )
     .await;
     assert!(m[0]["result"]["messages"].is_array(), "{}", m[0]);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-res").await;
     assert!(
         rows_now(
             "SELECT op FROM audit WHERE tenant = ?1 AND op LIKE '%prompt%'",
@@ -604,15 +623,9 @@ async fn denied_resource_and_prompt_reads_are_host_rows() {
             &json!("aud-rdeny")
         )
     );
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-rdeny").await;
+    // Nothing at all in the tenant, so the member's identity is not there either.
     assert!(rows_now("SELECT op FROM audit WHERE tenant = ?1", "aud-rdeny").is_empty());
-    assert!(
-        rows_now(
-            "SELECT op FROM audit WHERE actor_admin_id = CAST(?1 AS INTEGER) AND tenant <> '-'",
-            &m.admin_id.to_string()
-        )
-        .is_empty()
-    );
 }
 
 /// An upload ticket for `tenant` from the harness's own access token.
@@ -945,7 +958,12 @@ async fn create_upload_url_denials_audit_on_the_host_only() {
         json!({"surface": "upload_tool", "name": "create_upload_url",
             "requested_tenant": "aud-upl-deny", "grant_id": m.grant_id})
     );
-    // (b) no tenant at all
+    // (b) no tenant at all. Such a row names no tenant, so it is found as one
+    // more row of its kind (others in this binary may exist), not by admin id.
+    let no_tenant = "SELECT tenant, op, error_code, actor_admin_id, extra FROM audit \
+         WHERE tenant = '-' AND op = 'mcp_denied' AND error_code = 'TENANT_REQUIRED' \
+         AND json_extract(extra, '$.name') = ?1";
+    let earlier = rows_now(no_tenant, "create_upload_url").len();
     let (st, _, msgs) = mcp_rpc(
         &h.app,
         Some(&m.access),
@@ -954,21 +972,18 @@ async fn create_upload_url_denials_audit_on_the_host_only() {
     .await;
     assert_eq!(st, 200);
     assert_eq!(msgs[0]["result"]["isError"], true);
-    let r = rows_eventually(
-        &format!(
-            "SELECT {COLS} FROM audit WHERE tenant = '-' AND op = 'mcp_denied' \
-             AND actor_admin_id = CAST(?1 AS INTEGER) AND error_code = 'TENANT_REQUIRED' \
-             AND json_extract(extra, '$.name') = 'create_upload_url'"
-        ),
-        &m.admin_id.to_string(),
-        1,
-    )
-    .await;
-    let x = extra_of(&r[0]);
-    assert_eq!(x["surface"], "upload_tool");
-    assert_eq!(x["name"], "create_upload_url");
-    assert!(x.get("requested_tenant").is_none());
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-upl-deny").await;
+    let r = rows_now(no_tenant, "create_upload_url");
+    assert!(r.len() > earlier, "no TENANT_REQUIRED row was written");
+    for row in &r {
+        let x = extra_of(row);
+        assert_eq!(x["surface"], "upload_tool");
+        assert!(x.get("requested_tenant").is_none(), "{row}");
+    }
+    assert!(
+        r.iter()
+            .any(|row| row["actor_admin_id"] == json!(m.admin_id))
+    );
     assert_eq!(
         rows_now(
             &format!("SELECT {COLS} FROM audit WHERE tenant = ?1"),
@@ -1012,7 +1027,7 @@ async fn create_upload_url_refused_after_resolve_audits_on_the_tenant() {
     assert_eq!(rows[0]["actor_admin_id"], json!(o.admin_id));
     // No host row names this tenant (admin ids repeat across this binary's
     // harnesses, so the tenant id is the filter).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fence(&h, "fence-upl-big").await;
     assert!(
         rows_now(
             "SELECT * FROM audit WHERE tenant = '-' \
