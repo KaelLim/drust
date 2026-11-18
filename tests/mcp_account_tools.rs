@@ -577,6 +577,22 @@ async fn disabling_realtime_over_the_account_endpoint_closes_anon_streams() {
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "anon subscribe");
     let mut stream = resp.into_body().into_data_stream();
+    // Control: the stream is open before the disable. Any opening frames are
+    // read; then 200 ms pass with no end of stream.
+    let mut open = false;
+    for _ in 0..20 {
+        match tokio::time::timeout(Duration::from_millis(200), stream.next()).await {
+            Err(_) => {
+                open = true;
+                break;
+            }
+            Ok(Some(frame)) => {
+                frame.expect("frame");
+            }
+            Ok(None) => panic!("the anon stream ended before realtime was disabled"),
+        }
+    }
+    assert!(open, "the anon stream never went quiet");
     ok_body(
         &call(
             &h,
